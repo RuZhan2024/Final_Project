@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 .DS_Store
-node_modules/
+apps/node_modules/
 *.mp4
 *.avi
 *.mov

@@ -13,3 +13,6 @@ mediapipe==0.10.14
 
 pyyaml
 torch
+
+fastapi
+uvicorn[standard]
