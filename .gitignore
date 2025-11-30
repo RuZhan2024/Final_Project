@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.DS_Store
+node_modules/
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar.gz
+*.pt
+outputs/
+data/
