@@ -419,3 +419,5 @@ usage: metrics.py --eval_dir DIR --ckpt FILE --ops configs/ops.yaml --report FIL
 ```
 usage: plot_fa_recall.py --reports FILE --title STR --subtitle STR --out_fig FILE
 ```
+
+uvicorn server.app:app --reload --host 0.0.0.0 --port 8000

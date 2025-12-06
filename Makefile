@@ -24,9 +24,15 @@ WIN_DIR_URFD      := data/processed/urfd/windows_W$(WIN_W)_S$(WIN_S)
 WIN_DIR_CAUC      := data/processed/caucafall/windows_W$(WIN_W)_S$(WIN_S)
 WIN_DIR_MUVIM     := data/processed/muvim/windows_W$(WIN_W)_S$(WIN_S)
 
+# TCN checkpoints
 CKPT_LE2I         := outputs/le2i_tcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_URFD         := outputs/urfd_tcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_CAUC         := outputs/caucafall_tcn_W$(WIN_W)S$(WIN_S)/best.pt
+
+# (optional) GCN checkpoints – useful later for eval / server
+CKPT_LE2I_GCN     := outputs/le2i_gcn_W$(WIN_W)S$(WIN_S)/best.pt
+CKPT_URFD_GCN     := outputs/urfd_gcn_W$(WIN_W)S$(WIN_S)/best.pt
+CKPT_CAUC_GCN     := outputs/caucafall_gcn_W$(WIN_W)S$(WIN_S)/best.pt
 
 .PHONY: help install \
         extract-le2i extract-urfd extract-caucafall extract-muvim \
@@ -35,9 +41,10 @@ CKPT_CAUC         := outputs/caucafall_tcn_W$(WIN_W)S$(WIN_S)/best.pt
         windows-le2i windows-le2i-unlabeled windows-urfd windows-caucafall windows-muvim \
         check-le2i check-urfd check-caucafall check-muvim \
         train train-le2i train-urfd train-caucafall \
+        train-gcn-le2i train-gcn-urfd train-gcn-caucafall train-gcn \
         fit-ops fit-ops-le2i fit-ops-urfd fit-ops-caucafall \
-        eval-le2i eval-urfd eval-caucafall eval-caucafall-on-urfd \
-        plot plot-urfd-cross plot-le2i plot-caucafall \
+        eval-le2i eval-urfd eval-le2i-on-urfd eval-caucafall eval-caucafall-on-urfd \
+        plot plot-urfd-cross plot-le2i plot-caucafall plot-caucafall-on-urfd \
         pipeline score-unlabeled-le2i \
         clean clean-le2i clean-urfd clean-caucafall clean-muvim clean-windows clean-outputs
 
@@ -49,16 +56,18 @@ help:
 	@echo "  make splits-<ds>             # stratified splits"
 	@echo "  make windows-<ds>            # windowify datasets"
 	@echo "  make check-<ds>              # sanity-check window counts/labels"
-	@echo "  make train-le2i|train-urfd|train-caucafall  # train TCN per dataset"
-	@echo "  make train                   # alias for train-le2i (baseline)"
-	@echo "  make fit-ops-le2i            # fit OP1/2/3 on LE2I val"
+	@echo "  make train-le2i|train-urfd|train-caucafall        # train TCN per dataset"
+	@echo "  make train-gcn-le2i|train-gcn-urfd|train-gcn-caucafall  # train GCN per dataset"
+	@echo "  make train                   # alias for train-le2i (baseline TCN)"
+	@echo "  make train-gcn               # train GCN on all datasets"
+	@echo "  make fit-ops-le2i            # fit OP1/2/3 on LE2I val (TCN)"
 	@echo "  make fit-ops                 # alias for fit-ops-le2i"
-	@echo "  make eval-le2i               # LE2I in-domain evaluation"
-	@echo "  make eval-urfd               # LE2I model on URFD (cross-dataset)"
-	@echo "  make eval-caucafall          # CAUCAFall in-domain evaluation"
-	@echo "  make eval-caucafall-on-urfd  # CAUCAFall model on URFD"
-	@echo "  make plot-urfd-cross         # FA/24h vs recall plot for URFD cross"
-	@echo "  make plot-le2i|plot-caucafall# FA/24h vs recall plots (in-domain)"
+	@echo "  make eval-le2i               # LE2I in-domain (TCN)"
+	@echo "  make eval-urfd               # alias: LE2I TCN model on URFD (cross)"
+	@echo "  make eval-caucafall          # CAUCAFall in-domain (TCN)"
+	@echo "  make eval-caucafall-on-urfd  # CAUCAFall TCN model on URFD (cross)"
+	@echo "  make plot-urfd-cross         # FA/24h vs recall plot for LE2I→URFD (TCN)"
+	@echo "  make plot-le2i|plot-caucafall# FA/24h vs recall plots (in-domain TCN)"
 	@echo "  make plot                    # alias for plot-urfd-cross"
 	@echo "  make pipeline                # end-to-end LE2I pipeline (extract→train→fit-ops)"
 	@echo "  make clean*                  # remove intermediates/outputs"
@@ -235,6 +244,9 @@ check-muvim:
 # Train / Eval / Plot
 # -----------------------------------------
 
+# ----------------------
+# TCN training
+# ----------------------
 # Baseline LE2I training
 train-le2i:
 	$(VENV) && $(PY) models/train_tcn.py \
@@ -260,7 +272,46 @@ train-caucafall:
 	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
 	  --save_dir outputs/caucafall_tcn_W$(WIN_W)S$(WIN_S)
 
-# Fit OP thresholds (LE2I model, used for LE2I + cross-dataset evals)
+# ----------------------
+# GCN training
+# ----------------------
+train-gcn-le2i:
+	$(VENV) && $(PY) models/train_gcn.py \
+	  --train_dir $(WIN_DIR_LE2I)/train \
+	  --val_dir   $(WIN_DIR_LE2I)/val \
+	  --test_dir  $(WIN_DIR_LE2I)/test \
+	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
+	  --save_dir      outputs/le2i_gcn_W$(WIN_W)S$(WIN_S) \
+	  --report_json   outputs/reports/le2i_gcn_in_domain.json \
+	  --report_dataset_name test
+
+train-gcn-urfd:
+	$(VENV) && $(PY) models/train_gcn.py \
+	  --train_dir $(WIN_DIR_URFD)/train \
+	  --val_dir   $(WIN_DIR_URFD)/val \
+	  --test_dir  $(WIN_DIR_URFD)/test \
+	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
+	  --save_dir      outputs/urfd_gcn_W$(WIN_W)S$(WIN_S) \
+	  --report_json   outputs/reports/urfd_gcn_in_domain.json \
+	  --report_dataset_name test
+
+train-gcn-caucafall:
+	$(VENV) && $(PY) models/train_gcn.py \
+	  --train_dir $(WIN_DIR_CAUC)/train \
+	  --val_dir   $(WIN_DIR_CAUC)/val \
+	  --test_dir  $(WIN_DIR_CAUC)/test \
+	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
+	  --save_dir      outputs/caucafall_gcn_W$(WIN_W)S$(WIN_S) \
+	  --report_json   outputs/reports/caucafall_gcn_in_domain.json \
+	  --report_dataset_name test
+
+# Convenience: train all three GCNs
+train-gcn: train-gcn-le2i train-gcn-urfd train-gcn-caucafall
+	@echo "GCN training complete for LE2I, URFD, CAUCAFall"
+
+# ----------------------
+# Fit OP thresholds (TCN)
+# ----------------------
 fit-ops-le2i:
 	@mkdir -p configs
 	$(VENV) && $(PY) eval/fit_ops.py \
@@ -282,6 +333,13 @@ fit-ops-caucafall:
 	  --ckpt $(CKPT_CAUC) \
 	  --out configs/ops_caucafall.yaml
 
+# Alias: used by pipeline
+fit-ops: fit-ops-le2i
+	@echo "fit-ops → fit-ops-le2i (TCN)"
+
+# ----------------------
+# Evaluations (TCN)
+# ----------------------
 # In-domain LE2I evaluation
 eval-le2i:
 	@mkdir -p outputs/reports
@@ -300,6 +358,9 @@ eval-le2i-on-urfd:
 	  --ops configs/ops_le2i.yaml --fps 30 \
 	  --report outputs/reports/urfd_cross.json
 
+# Alias for backwards compatibility
+eval-urfd: eval-le2i-on-urfd
+	@echo "eval-urfd → eval-le2i-on-urfd (TCN LE2I→URFD)"
 
 # In-domain CAUCAFall evaluation
 eval-caucafall:
@@ -319,7 +380,9 @@ eval-caucafall-on-urfd:
 	  --ops configs/ops_caucafall.yaml --fps 30 \
 	  --report outputs/reports/caucafall_on_urfd.json
 
-# Plots
+# ----------------------
+# Plots (TCN)
+# ----------------------
 plot-urfd-cross:
 	@mkdir -p outputs/figures
 	$(VENV) && $(PY) eval/plot_fa_recall.py \
@@ -351,6 +414,38 @@ plot-caucafall-on-urfd:
 	  --title "CAUCAFall Model → URFD: FA/24h vs Recall" \
 	  --subtitle "TCN (W$(WIN_W), S$(WIN_S))" \
 	  --out_fig outputs/figures/tcn_caucafall_on_urfd_fa_recall_W$(WIN_W)_S$(WIN_S).png
+
+# Alias: plot = plot-urfd-cross
+plot: plot-urfd-cross
+	@echo "plot → plot-urfd-cross"
+
+# ----------------------
+# Plots for GCN (optional, nice for the report)
+# ----------------------
+plot-le2i-gcn:
+	@mkdir -p outputs/figures
+	$(VENV) && $(PY) eval/plot_fa_recall.py \
+	  --reports outputs/reports/le2i_gcn_in_domain.json \
+	  --title "LE2I In-Domain: FA/24h vs Recall (GCN)" \
+	  --subtitle "GCN (W$(WIN_W), S$(WIN_S))" \
+	  --out_fig outputs/figures/gcn_le2i_on_le2i_fa_recall_W$(WIN_W)_S$(WIN_S).png
+
+plot-urfd-gcn:
+	@mkdir -p outputs/figures
+	$(VENV) && $(PY) eval/plot_fa_recall.py \
+	  --reports outputs/reports/urfd_gcn_in_domain.json \
+	  --title "URFD In-Domain: FA/24h vs Recall (GCN)" \
+	  --subtitle "GCN (W$(WIN_W), S$(WIN_S))" \
+	  --out_fig outputs/figures/gcn_urfd_on_urfd_fa_recall_W$(WIN_W)_S$(WIN_S).png
+
+plot-caucafall-gcn:
+	@mkdir -p outputs/figures
+	$(VENV) && $(PY) eval/plot_fa_recall.py \
+	  --reports outputs/reports/caucafall_gcn_in_domain.json \
+	  --title "CAUCAFall In-Domain: FA/24h vs Recall (GCN)" \
+	  --subtitle "GCN (W$(WIN_W), S$(WIN_S))" \
+	  --out_fig outputs/figures/gcn_caucafall_on_caucafall_fa_recall_W$(WIN_W)_S$(WIN_S).png
+
 
 # Shadow-deploy alert rate on unlabeled Office/Lecture
 THR ?= 0.50
