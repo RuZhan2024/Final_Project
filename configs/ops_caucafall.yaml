@@ -1,14 +1,14 @@
 OP1_high_recall:
-  thr: 0.03205
+  thr: 0.01
   recall: 1.0
-  precision: 0.6068376068376068
+  precision: 0.4863013698630137
 OP2_balanced:
-  thr: 0.59555
-  f1: 0.8142857142857143
-  precision: 0.8260869565217391
-  recall: 0.8028169014084507
+  thr: 0.49755
+  f1: 0.7133757961783439
+  precision: 0.6511627906976745
+  recall: 0.7887323943661971
 OP3_low_alarm:
-  thr: 0.19375
-  fpr: 0.3466666666666667
-  recall_at_thr: 0.9014084507042254
-  precision: 0.7111111111111111
+  thr: 0.01
+  fpr: 1.0
+  recall_at_thr: 1.0
+  precision: 0.4863013698630137

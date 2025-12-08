@@ -28,11 +28,13 @@ WIN_DIR_MUVIM     := data/processed/muvim/windows_W$(WIN_W)_S$(WIN_S)
 CKPT_LE2I         := outputs/le2i_tcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_URFD         := outputs/urfd_tcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_CAUC         := outputs/caucafall_tcn_W$(WIN_W)S$(WIN_S)/best.pt
+CKPT_MUVIM        := outputs/muvim_tcn_W$(WIN_W)S$(WIN_S)/best.pt
 
 # (optional) GCN checkpoints – useful later for eval / server
 CKPT_LE2I_GCN     := outputs/le2i_gcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_URFD_GCN     := outputs/urfd_gcn_W$(WIN_W)S$(WIN_S)/best.pt
 CKPT_CAUC_GCN     := outputs/caucafall_gcn_W$(WIN_W)S$(WIN_S)/best.pt
+CKPT_MUVIM_GCN    := outputs/muvim_gcn_W$(WIN_W)S$(WIN_S)/best.pt
 
 .PHONY: help install \
         extract-le2i extract-urfd extract-caucafall extract-muvim \
@@ -106,10 +108,14 @@ extract-caucafall:
 
 # Optional: requires pose/parse_muvim_csv.py
 extract-muvim:
-	$(VENV) && $(PY) pose/parse_muvim_csv.py \
-	  --csv_glob 'data/raw/MUVIM/*/*.csv' \
-	  --out_root data/interim/muvim/pose_npz \
-	  --x_pat 'x{i}' --y_pat 'y{i}' --score_pat 'score{i}' --i_start 1 --i_end 34
+	$(VENV) && $(PY) pose/extract_2d_from_images.py \
+	  --images_glob 'data/raw/MUVIM/ZED_RGB/ADL/*/*.png' \
+	                'data/raw/MUVIM/ZED_RGB/Fall/*/*.png' \
+	  --sequence_id_depth 1 \
+	  --out_dir data/interim/muvim/pose_npz \
+	  --dataset muvim
+
+
 
 # -----------------------------------------
 # Labels
@@ -166,8 +172,8 @@ splits-caucafall:
 
 splits-muvim:
 	@mkdir -p configs/splits
-	$(VENV) && $(PY) tools/make_random_splits_from_npz.py \
-	  --npz_dir data/interim/muvim/pose_npz \
+	$(VENV) && $(PY) tools/make_splits.py \
+	  --labels_json configs/labels/muvim_auto.json \
 	  --out_dir configs/splits \
 	  --train $(TRAIN_FRAC) --val $(VAL_FRAC) --test $(TEST_FRAC) --seed $(SPLIT_SEED) \
 	  --prefix muvim
@@ -219,8 +225,9 @@ windows-caucafall:
 windows-muvim:
 	$(VENV) && $(PY) pose/make_windows.py \
 	  --npz_dir data/interim/muvim/pose_npz \
+	  --labels_json configs/labels/muvim_auto.json \
 	  --out_dir $(WIN_DIR_MUVIM) \
-	  --W $(WIN_W) --stride $(WIN_S) --use_npz_labels \
+	  --W $(WIN_W) --stride $(WIN_S) \
 	  --train_list configs/splits/muvim_train.txt \
 	  --val_list   configs/splits/muvim_val.txt \
 	  --test_list  configs/splits/muvim_test.txt
@@ -255,9 +262,6 @@ train-le2i:
 	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
 	  --save_dir outputs/le2i_tcn_W$(WIN_W)S$(WIN_S)
 
-# Alias: old 'make train' = train-le2i
-train: train-le2i
-
 train-urfd:
 	$(VENV) && $(PY) models/train_tcn.py \
 	  --train_dir $(WIN_DIR_URFD)/train \
@@ -271,6 +275,13 @@ train-caucafall:
 	  --val_dir   $(WIN_DIR_CAUC)/val \
 	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
 	  --save_dir outputs/caucafall_tcn_W$(WIN_W)S$(WIN_S)
+
+train-muvim:
+	$(VENV) && $(PY) models/train_tcn.py \
+	  --train_dir $(WIN_DIR_MUVIM)/train \
+	  --val_dir   $(WIN_DIR_MUVIM)/val \
+	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
+	  --save_dir outputs/muvim_tcn_W$(WIN_W)S$(WIN_S)
 
 # ----------------------
 # GCN training
@@ -305,6 +316,19 @@ train-gcn-caucafall:
 	  --report_json   outputs/reports/caucafall_gcn_in_domain.json \
 	  --report_dataset_name test
 
+train-gcn-muvim:
+	$(VENV) && $(PY) models/train_gcn.py \
+	  --train_dir $(WIN_DIR_MUVIM)/train \
+	  --val_dir   $(WIN_DIR_MUVIM)/val \
+	  --test_dir  $(WIN_DIR_MUVIM)/test \
+	  --epochs 50 --batch 128 --lr 1e-3 --seed $(SPLIT_SEED) \
+	  --save_dir      outputs/muvim_gcn_W$(WIN_W)S$(WIN_S) \
+	  --report_json   outputs/reports/muvim_gcn_in_domain.json \
+	  --report_dataset_name test
+
+train-gcn: train-gcn-le2i train-gcn-urfd train-gcn-caucafall train-gcn-muvim
+	@echo "GCN training complete for LE2I, URFD, CAUCAFall, MUVIM"
+
 # Convenience: train all three GCNs
 train-gcn: train-gcn-le2i train-gcn-urfd train-gcn-caucafall
 	@echo "GCN training complete for LE2I, URFD, CAUCAFall"
@@ -333,13 +357,14 @@ fit-ops-caucafall:
 	  --ckpt $(CKPT_CAUC) \
 	  --out configs/ops_caucafall.yaml
 
-# Alias: used by pipeline
-fit-ops: fit-ops-le2i
-	@echo "fit-ops → fit-ops-le2i (TCN)"
+fit-ops-muvim:
+	@mkdir -p configs
+	$(VENV) && $(PY) eval/fit_ops.py \
+	  --val_dir $(WIN_DIR_MUVIM)/val \
+	  --ckpt $(CKPT_MUVIM) \
+	  --out configs/ops_muvim.yaml
 
-# ----------------------
 # Evaluations (TCN)
-# ----------------------
 # In-domain LE2I evaluation
 eval-le2i:
 	@mkdir -p outputs/reports
@@ -358,10 +383,6 @@ eval-le2i-on-urfd:
 	  --ops configs/ops_le2i.yaml --fps 30 \
 	  --report outputs/reports/urfd_cross.json
 
-# Alias for backwards compatibility
-eval-urfd: eval-le2i-on-urfd
-	@echo "eval-urfd → eval-le2i-on-urfd (TCN LE2I→URFD)"
-
 # In-domain CAUCAFall evaluation
 eval-caucafall:
 	@mkdir -p outputs/reports
@@ -379,6 +400,14 @@ eval-caucafall-on-urfd:
 	  --ckpt $(CKPT_CAUC) \
 	  --ops configs/ops_caucafall.yaml --fps 30 \
 	  --report outputs/reports/caucafall_on_urfd.json
+
+eval-muvim:
+	@mkdir -p outputs/reports
+	$(VENV) && $(PY) eval/metrics.py \
+	  --eval_dir $(WIN_DIR_MUVIM)/test \
+	  --ckpt $(CKPT_MUVIM) \
+	  --ops configs/ops_muvim.yaml --fps 30 \
+	  --report outputs/reports/muvim_in_domain.json
 
 # ----------------------
 # Plots (TCN)
@@ -414,10 +443,14 @@ plot-caucafall-on-urfd:
 	  --title "CAUCAFall Model → URFD: FA/24h vs Recall" \
 	  --subtitle "TCN (W$(WIN_W), S$(WIN_S))" \
 	  --out_fig outputs/figures/tcn_caucafall_on_urfd_fa_recall_W$(WIN_W)_S$(WIN_S).png
-
-# Alias: plot = plot-urfd-cross
-plot: plot-urfd-cross
-	@echo "plot → plot-urfd-cross"
+	
+plot-muvim:
+	@mkdir -p outputs/figures
+	$(VENV) && $(PY) eval/plot_fa_recall.py \
+	  --reports outputs/reports/muvim_in_domain.json \
+	  --title "MUVIM In-Domain: FA/24h vs Recall" \
+	  --subtitle "TCN (W$(WIN_W), S$(WIN_S))" \
+	  --out_fig outputs/figures/tcn_muvim_on_muvim_fa_recall_W$(WIN_W)_S$(WIN_S).png
 
 # ----------------------
 # Plots for GCN (optional, nice for the report)
@@ -446,6 +479,13 @@ plot-caucafall-gcn:
 	  --subtitle "GCN (W$(WIN_W), S$(WIN_S))" \
 	  --out_fig outputs/figures/gcn_caucafall_on_caucafall_fa_recall_W$(WIN_W)_S$(WIN_S).png
 
+plot-muvim-gcn:
+	@mkdir -p outputs/figures
+	$(VENV) && $(PY) eval/plot_fa_recall.py \
+	  --reports outputs/reports/muvim_gcn_in_domain.json \
+	  --title "MUVIM In-Domain: FA/24h vs Recall (GCN)" \
+	  --subtitle "GCN (W$(WIN_W), S$(WIN_S))" \
+	  --out_fig outputs/figures/gcn_muvim_on_muvim_fa_recall_W$(WIN_W)_S$(WIN_S).png
 
 # Shadow-deploy alert rate on unlabeled Office/Lecture
 THR ?= 0.50

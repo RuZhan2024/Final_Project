@@ -421,3 +421,363 @@ usage: plot_fa_recall.py --reports FILE --title STR --subtitle STR --out_fig FIL
 ```
 
 uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
+
+Nice, this is a good moment to freeze the “runbook” for your examiner 👍
+I’ll give you a **clear step-by-step order**, then a **short per-dataset mini-recipe**.
+
+---
+
+## 0. Pre-requisite
+
+Before anything:
+
+* Put raw datasets here (already done in your project):
+
+  * `data/raw/LE2i/...`
+  * `data/raw/UR_Fall/...`
+  * `data/raw/CAUCAFall/CAUCAFall/...`
+  * `data/raw/MUVIM/ZED_RGB/{ADL,Fall}/...`
+
+---
+
+## Global run order (full project, all 4 datasets)
+
+### 1️⃣ Install environment
+
+```bash
+make install
+```
+
+Creates `.venv`, compiles `requirements.txt`, installs deps.
+
+---
+
+### 2️⃣ Extract pose → NPZ (per dataset)
+
+**LE2i (videos → NPZ)**
+
+```bash
+make extract-le2i
+```
+
+**URFD (image sequences → NPZ)**
+
+```bash
+make extract-urfd
+```
+
+**CAUCAFall (image sequences → NPZ)**
+
+```bash
+make extract-caucafall
+```
+
+**MUVIM (ZED_RGB ADL/Fall → NPZ)**
+
+```bash
+make extract-muvim
+```
+
+Output: `data/interim/<ds>/pose_npz/*.npz`
+
+---
+
+### 3️⃣ Build labels & unlabeled list
+
+**LE2i labels + spans**
+
+```bash
+make labels-le2i
+```
+
+**URFD labels (from stems)**
+
+```bash
+make labels-urfd
+```
+
+**CAUCAFall labels**
+
+* Already written during `extract-caucafall` as:
+
+  * `configs/labels/caucafall_auto.json`
+    (so no extra command needed)
+
+**MUVIM labels**
+
+* Also written during `extract-muvim` (using your updated script with `--dataset muvim`).
+
+**Optional LE2i unlabeled office/lecture list**
+
+```bash
+make le2i-unlabeled-list
+```
+
+---
+
+### 4️⃣ Train/val/test splits
+
+Make stratified (or random, for MUVIM) splits:
+
+```bash
+make splits-le2i
+make splits-urfd
+make splits-caucafall
+make splits-muvim
+# or all at once:
+make splits-all
+```
+
+Outputs: `configs/splits/*.txt`
+
+---
+
+### 5️⃣ Windowing (sequence → overlapping windows)
+
+Create sliding windows for each dataset:
+
+```bash
+make windows-le2i
+make windows-urfd
+make windows-caucafall
+make windows-muvim
+```
+
+Optional unlabeled windows (office / lecture scenes):
+
+```bash
+make windows-le2i-unlabeled
+```
+
+Outputs:
+`data/processed/<ds>/windows_W48_S12/{train,val,test}/...`
+
+---
+
+### 6️⃣ Sanity checks
+
+Quick check that window counts and label balance look reasonable:
+
+```bash
+make check-le2i
+make check-urfd
+make check-caucafall
+make check-muvim
+```
+
+---
+
+### 7️⃣ Train TCN baselines
+
+Train one TCN per dataset:
+
+```bash
+make train-le2i      # alias: make train
+make train-urfd
+make train-caucafall
+make train-muvim
+```
+
+Outputs checkpoints:
+
+* `outputs/le2i_tcn_W48S12/best.pt`
+* `outputs/urfd_tcn_W48S12/best.pt`
+* `outputs/caucafall_tcn_W48S12/best.pt`
+* `outputs/muvim_tcn_W48S12/best.pt`
+
+---
+
+### 8️⃣ Fit OP1/OP2/OP3 thresholds (TCN)
+
+Fit 3 operating points per dataset on **validation** windows:
+
+```bash
+make fit-ops-le2i
+make fit-ops-urfd
+make fit-ops-caucafall
+make fit-ops-muvim
+
+# alias used in pipeline (just LE2i)
+make fit-ops   # == fit-ops-le2i
+```
+
+Outputs:
+
+* `configs/ops_le2i.yaml`
+* `configs/ops_urfd.yaml`
+* `configs/ops_caucafall.yaml`
+* `configs/ops_muvim.yaml`
+
+---
+
+### 9️⃣ Evaluate TCN models
+
+In-domain & cross-dataset (for your hypotheses):
+
+```bash
+# LE2i test (in-domain)
+make eval-le2i
+
+# LE2i model on URFD test (cross, your H2 / innovation impact)
+make eval-le2i-on-urfd   # alias: make eval-urfd
+
+# CAUCAFall test (in-domain)
+make eval-caucafall
+
+# CAUCAFall model on URFD test (cross)
+make eval-caucafall-on-urfd
+
+# MUVIM test (in-domain)
+make eval-muvim
+```
+
+Outputs (JSON reports with FA/24h etc.):
+
+* `outputs/reports/le2i_in_domain.json`
+* `outputs/reports/urfd_cross.json`
+* `outputs/reports/caucafall_in_domain.json`
+* `outputs/reports/caucafall_on_urfd.json`
+* `outputs/reports/muvim_in_domain.json`
+
+---
+
+### 🔟 Plot TCN FA/24h vs recall curves
+
+```bash
+make plot-le2i
+make plot-urfd-cross
+make plot-caucafall
+make plot-caucafall-on-urfd
+make plot-muvim
+
+# alias
+make plot   # == plot-urfd-cross
+```
+
+Outputs PNGs under `outputs/figures/`.
+
+---
+
+### 1️⃣1️⃣ Train GCN models (with in-domain reports)
+
+```bash
+make train-gcn-le2i
+make train-gcn-urfd
+make train-gcn-caucafall
+make train-gcn-muvim
+# or all:
+make train-gcn
+```
+
+Outputs:
+
+* checkpoints: `outputs/<ds>_gcn_W48S12/best.pt`
+* reports: `outputs/reports/<ds>_gcn_in_domain.json`
+  (with OP1/2/3 style thresholds & F1 for your thesis comparison)
+
+---
+
+### 1️⃣2️⃣ Plot GCN FA/24h vs recall curves
+
+```bash
+make plot-le2i-gcn
+make plot-urfd-gcn
+make plot-caucafall-gcn
+make plot-muvim-gcn
+```
+
+Outputs PNGs under `outputs/figures/` for GCN vs TCN comparison.
+
+---
+
+### 1️⃣3️⃣ Shadow-deploy on unlabeled office/lecture (optional)
+
+For “alarm fatigue in normal days” on LE2i unlabeled scenes:
+
+```bash
+make score-unlabeled-le2i
+# or override threshold / fps / cooldown:
+make score-unlabeled-le2i THR=0.38 FPS=25 COOL=3
+```
+
+Outputs CSV:
+
+* `outputs/reports/office_lecture_unlabeled_scores.csv`
+
+---
+
+## Short “recipes” per dataset
+
+### LE2i (main in-domain + cross-URFD)
+
+```bash
+make extract-le2i
+make labels-le2i
+make splits-le2i
+make windows-le2i
+make check-le2i
+
+make train-le2i           # TCN
+make fit-ops-le2i
+make eval-le2i            # in-domain
+make eval-le2i-on-urfd    # cross → URFD
+make plot-le2i
+make plot-urfd-cross
+
+make train-gcn-le2i       # GCN + report
+make plot-le2i-gcn
+```
+
+### URFD
+
+```bash
+make extract-urfd
+make labels-urfd
+make splits-urfd
+make windows-urfd
+make check-urfd
+
+make train-urfd
+make fit-ops-urfd
+make eval-muvim   # (for URFD we mostly care about cross with LE2i/CAUCAFall)
+make plot-urfd-gcn (after train-gcn-urfd)
+```
+
+### CAUCAFall
+
+```bash
+make extract-caucafall
+make splits-caucafall
+make windows-caucafall
+make check-caucafall
+
+make train-caucafall
+make fit-ops-caucafall
+make eval-caucafall
+make eval-caucafall-on-urfd
+make plot-caucafall
+make plot-caucafall-on-urfd
+
+make train-gcn-caucafall
+make plot-caucafall-gcn
+```
+
+### MUVIM
+
+```bash
+make extract-muvim
+make splits-muvim
+make windows-muvim
+make check-muvim
+
+make train-muvim
+make fit-ops-muvim
+make eval-muvim
+make plot-muvim
+
+make train-gcn-muvim
+make plot-muvim-gcn
+```
+
+
+
