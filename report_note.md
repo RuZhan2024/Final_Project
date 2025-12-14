@@ -1,8 +1,4 @@
-Nice, let’s turn this into something you can literally paste into your report / thesis and tweak.
 
-I’ll write it as a self-contained section with equations and a small comparison table.
-
----
 
 ## 4. Model Architectures and Incremental Enhancements
 
