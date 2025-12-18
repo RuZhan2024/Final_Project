@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Stratified train/val/test split from a labels JSON.
 

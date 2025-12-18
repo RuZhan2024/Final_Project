@@ -1,196 +1,266 @@
-## 1. Setup and notation
 
-You have a **validation set** of (N) windows:
 
-* Ground truth labels
-  $$y_i \in {0,1}, \quad i = 1,\dots,N,$$
-  where (y_i = 1) = fall window, (y_i = 0) = non-fall.
-* Model predicted **probabilities of fall**
-  $$p_i \in [0,1], \quad i = 1,\dots,N.$$
+# The Note for the meeting
 
-For any threshold (\tau \in [0,1]) you turn probabilities into binary predictions:
+Focus: Full Workflow (Pose → Windows → TCN/GCN → Thresholds → Deployment)
 
-$$
-\hat y_i(\tau) =
-\begin{cases}
-1, & p_i \ge \tau \
-0, & p_i < \tau
-\end{cases}
-$$
+## 0. Executive Summary
 
-From these, define counts:
+**Goal:** Prove the pipeline is reproducible, methodologically sound (leakage-free), and operationally realistic.
 
-[
-\begin{aligned}
-TP(\tau) &= \sum_{i=1}^N \mathbf{1}\big[y_i = 1 \land \hat y_i(\tau) = 1\big] \
-FP(\tau) &= \sum_{i=1}^N \mathbf{1}\big[y_i = 0 \land \hat y_i(\tau) = 1\big] \
-FN(\tau) &= \sum_{i=1}^N \mathbf{1}\big[y_i = 1 \land \hat y_i(\tau) = 0\big] \
-TN(\tau) &= \sum_{i=1}^N \mathbf{1}\big[y_i = 0 \land \hat y_i(\tau) = 0\big]
-\end{aligned}
-]
+- **The Flow:** Raw video/image $\rightarrow$ MediaPipe Pose $\rightarrow$ Clean/Gate $\rightarrow$ Split (Subject-wise) $\rightarrow$ Window ($W=48, S=12$) $\rightarrow$ Train TCN/GCN $\rightarrow$ Fit Thresholds (Val) $\rightarrow$ Evaluate (Test).
+- **The Key Defense:** We don't just "train a model"; we build a deployment system. We use **Operating Points (OPs)** to tune for safety (Recall) vs. usability (Alerts/24h) and explicitly handle real-world issues like FPS variance and overlapping detections.
 
-Here (\mathbf{1}[\cdot]) is the indicator function (1 if the condition is true, 0 otherwise).
+## 1. Pipeline Overview & Architecture
 
-In the code you don’t consider all real (\tau), you consider a **discrete grid**:
+### 1.1 The "Map" of the Project
 
-$$
-\mathcal{T} = {\tau_1, \dots, \tau_K},
-\quad \text{e.g. } \tau_k \in {0.01, 0.01 + \Delta, \dots, 0.99}.
-$$
+Explain the physical structure of your data to show auditability.
 
+- **`data/raw/`**: Original datasets.
+- **`data/interim/`**: JSON/NPZ pose extraction and metadata normalization.
+- **`data/processed/<dataset>/windows_W48_S12/`**: The final training artifacts. Each file is one sample.
 
-## 2. Metrics as functions of the threshold
+### 1.2 Key Design Principles
 
-For each threshold (\tau) you compute:
+- **Reproducibility:** Config-driven $W$ and $S$. Changes to window size regenerate the entire dataset cleanly.
 
-**Precision**
+- Leakage Prevention: Splitting happens at the Subject/Video level before windowing. Windows inherit the split of their parent video.
 
-$$
-P(\tau) =
-\frac{TP(\tau)}{TP(\tau) + FP(\tau) + \epsilon}
-$$
+  $\rightarrow$ What to show:
 
-**Recall**
+- A directory tree of `data/processed/...`.
 
-$$
-R(\tau) =
-\frac{TP(\tau)}{TP(\tau) + FN(\tau) + \epsilon}
-$$
+- A "Table of Stages": Input $\rightarrow$ Output $\rightarrow$ Script.
 
-**F1-score**
+## 2. Pose Extraction (MediaPipe)
 
-$$
-F_1(\tau) =
-\frac{2,P(\tau),R(\tau)}{P(\tau) + R(\tau) + \epsilon}
-$$
+### 2.1 The Data Artifact
 
-**False Positive Rate (per window)**
+For every frame $t$, we extract 33 landmarks.
 
-$$
-\mathrm{FPR}(\tau) =
-\frac{FP(\tau)}{FP(\tau) + TN(\tau) + \epsilon}
-$$
+- **Input:** $xy \in [T, 33, 2]$ (Normalized 0-1) and $conf \in [T, 33]$ (Visibility score).
+- **Output:** A cleaned, "gated" feature vector.
 
-(\epsilon) is a tiny constant in the code to avoid division by zero; mathematically you can omit it in the write-up if you assume denominators are non-zero.
+### 2.2 Confidence Gating (Noise Suppression)
 
-## 3. OP2 – **Balanced operating point** (max F1)
+Raw pose detection is noisy. We suppress jitter using confidence scores.
 
-This is the easiest:
+- **Formula:**
 
-> Choose the threshold that gives the **highest F1-score** on the validation set.
+$$\tilde{xy}_{t,j} = xy_{t,j} \cdot conf_{t,j}$$
 
-Formally, over the grid (\mathcal{T}):
+*Where $\tilde{xy}$ represents the weighted coordinate that effectively "zeros out" unreliable joints.*
 
-$$
-\tau_{\mathrm{OP2}}
-===================
+- **Why:** If a joint is occluded ($conf \approx 0$), it contributes $0$ to the model input rather than a hallucinated position.
 
-\arg\max_{\tau \in \mathcal{T}} F_1(\tau)
-$$
+- Missing Values: NaNs are zeroed out; the gating handles the "uncertainty".
 
-* Intuition: OP2 is your **“balanced” operating point**, trading off precision and recall symmetrically.
+  $\rightarrow$ Supervisor Q&A
 
-In code: `i2 = argmax(F1)` and `thr = thr[i2]`.
+- **Q: Why MediaPipe and not OpenPose?**
 
-## 4. OP1 – **High-recall operating point**
+  - **A:** MediaPipe is CPU-optimizable and privacy-preserving (skeleton-only), meeting our real-time and privacy-first constraints.
 
-Here the goal is:
+- **Q: How do you handle deep fakes or missing joints?**
 
-> Achieve **very high recall** (e.g. ≥ 0.95), and among those, prefer higher precision and lower threshold.
+  - **A:** Confidence gating ensures the model relies on visible joints. If a person is largely occluded, the input vector shrinks towards zero, which the model learns to associate with "low information" rather than a fall.
 
-Let the recall floor be
+## 3. Labeling & Splitting (The "Methodology" Core)
 
-$$
-r_{\text{floor}}^{(1)} = 0.95
-$$
+### 3.1 Labeling Strategy
 
-(you can generalise it in text as “a high recall floor, e.g. 0.95”).
+We use **interval-based labeling** where possible.
 
-1. First define the set of thresholds that meet the recall requirement:
+- **Rule:** A window is labeled "Fall" ($y=1$) if it overlaps significantly with the ground-truth fall interval $[t_{fall\_onset}, t_{fall\_end}]$.
+- **Formula:**
 
-$$
-S_1 = \Big{ \tau \in \mathcal{T} ;:; R(\tau) \ge r_{\text{floor}}^{(1)} \Big}.
-$$
+$$\text{overlap} = \max(0, \min(t_{end}, t_{fall\_end}) - \max(t_{start}, t_{fall\_onset}) + 1)$$
 
-2. If (S_1) is **not empty**, you pick OP1 by **lexicographic optimisation**:
+$$y_{window} = \begin{cases} 1 & \text{if } \text{overlap} \ge k_{frames} \\ 0 & \text{otherwise} \end{cases}$$
 
-* maximise recall,
-* then (if multiple thresholds have the same recall) maximise precision,
-* then (if still tied) choose the **smallest** threshold (i.e. lowest (\tau)).
+- **Unlabeled Data:** Windows from purely unlabeled footage are marked $y=-1$ and excluded from training, used only for false-alarm analysis.
 
-You can write this as:
+### 3.2 Splitting Strategy (The Leakage Defense)
 
-$$
-\tau_{\mathrm{OP1}}
-===================
+- **The Golden Rule:** Split **Subjects**, not Windows.
 
-\arg\max_{\tau \in S_1}
-\big( R(\tau),, P(\tau),, -\tau \big)
-$$
+- **Why:** If you split windows randomly, Window A (Frame 0-48) could be in Train, and Window B (Frame 12-60) in Test. This is **leakage**.
 
-where the argmax is taken in lexicographic order: first (R), then (P), then (-\tau).
+- Our Approach: We split the list of video stems first. All windows from subject_01 go to Train; all from subject_02 go to Test.
 
-3. If (S_1) is **empty** (your model can’t reach that recall), then OP1 degenerates to:
+  $\rightarrow$ Supervisor Q&A
 
-$$
-\tau_{\mathrm{OP1}}
-===================
+- **Q: Where is the split decision made?**
 
-\arg\max_{\tau \in \mathcal{T}} R(\tau)
-$$
+  - **A:** Before windowing. The script `split_labels.py` generates `train.txt`, which `make_windows.py` reads.
 
-> Intuition: OP1 is your **“safety-first”** operating point: it prioritises catching as many falls as possible, even if that costs false alarms. Within that constraint, it still prefers better precision and slightly lower thresholds.
+- **Q: Is the test set used during development?**
 
-## 5. OP3 – **Low-alarm operating point (FA-friendly)**
+  - **A:** No. We tune hyperparameters and thresholds on **Validation**. Test is held out for the final report.
 
-Here the goal is:
+## 4. Windows and Stride (Time & Latency)
 
-> Keep recall reasonably high (e.g. ≥ 0.90), and among those thresholds choose the one with **lowest false positive rate** (≈ fewest false alarms).
+### 4.1 Definitions
 
-Let the recall floor for OP3 be:
+- **Window ($W=48$):** The "observation context". At 25 FPS, duration is:
 
-$$
-r_{\text{floor}}^{(3)} = 0.90
-$$
+$$\text{duration} = \frac{W}{fps} = \frac{48}{25} = 1.92s$$
 
-1. Define the feasible set:
+- **Stride ($S=12$):** The "step size". We slide the window forward by 12 frames.
+- **Overlap:**
 
-$$
-S_3 = \Big{ \tau \in \mathcal{T} ;:; R(\tau) \ge r_{\text{floor}}^{(3)} \Big}.
-$$
+$$\text{Overlap} = W - S = 48 - 12 = 36 \text{ frames}$$
 
-2. If (S_3) is **not empty**, choose:
+### 4.2 Practical Implications
 
-$$
-\tau_{\mathrm{OP3}}
-===================
+1. **Dataset Size:**
 
-\arg\min_{\tau \in S_3} \mathrm{FPR}(\tau)
-$$
+$$N_{windows} = \lfloor \frac{T_{total} - W}{S} \rfloor + 1$$
 
-3. If (S_3) is **empty** (model can’t reach 0.90 recall), then fall back to:
+1. **Real-time Latency:** You update the decision every $S$ frames.
 
-$$
-\tau_{\mathrm{OP3}}
-===================
+$$\text{Update Interval} \approx \frac{S}{fps} \approx 0.48s$$
 
-\arg\min_{\tau \in \mathcal{T}} \mathrm{FPR}(\tau)
-$$
+1. Detection Delay: The system waits for enough "fall frames" to enter the window. The worst-case delay is roughly one stride duration.
 
-> Intuition: OP3 is your **“caregiver-friendly” / low-alarm** setting: it allows a small drop in recall (compared to OP1) in exchange for **significantly fewer false alarms**, which is measured via the false positive rate (and then converted to FA/24h in your report).
+   $\rightarrow$ Supervisor Q&A
 
-## 6. How this matches your code (in one sentence each)
+- **Q: Why overlap?**
+  - **A:** Overlap ensures we don't miss a fall that happens right on the edge of a window partition. It provides multiple chances to detect the event.
+- **Q: How does this meet the <200ms latency requirement?**
+  - **A:** "Latency" usually refers to inference time (forward pass), which is milliseconds. "Decision Delay" is driven by stride ($S$). If we need faster reaction, we reduce $S$ (e.g., to 6), accepting higher compute costs.
 
-* **OP2**:
-  $$\tau_{\mathrm{OP2}} = \arg\max_{\tau} F_1(\tau)$$
-  ↔ `i2 = np.argmax(F1)`
+## 5. Models (TCN vs. GCN)
 
-* **OP1**:
-  $$\tau_{\mathrm{OP1}} = \arg\max_{\tau \in S_1} (R(\tau), P(\tau), -\tau)$$
-  ↔ sort indices where `R >= 0.95` by `(-R, -P, thr)` and pick the first.
+### 5.1 TCN (Temporal Convolutional Network)
 
-* **OP3**:
-  $$\tau_{\mathrm{OP3}} = \arg\min_{\tau \in S_3} \mathrm{FPR}(\tau)$$
-  ↔ among indices where `R >= 0.90`, take the one with smallest `FPR`.
+- **Input:** Flat vector $x \in \mathbb{R}^{T \times 66}$.
+- **Structure:** 1D convolutions excel at detecting temporal anomalies (sudden accelerations) but ignore spatial connectivity.
 
+### 5.2 GCN (Graph Convolutional Network)
 
+- **Input:** Graph-structured $x \in \mathbb{R}^{T \times 33 \times 4}$.
+- **Features:** Relative coordinates plus velocity.
+
+$$x_{feat} = (x_{rel}, y_{rel}, v_x, v_y)$$
+
+*Where $x_{rel}$ is pelvis-centered to remove global translation.*
+
+- Why: Explicitly models body topology and is more robust to camera location.
+
+  $\rightarrow$ Supervisor Q&A
+
+- **Q: How do you handle class imbalance?**
+
+  - **A:** We use class weights in the loss function (BCE/CrossEntropy) or oversample fall windows during training.
+
+- **Q: Checkpoint compatibility issues?**
+
+  - **A:** I'm implementing a "Model Factory" to ensure the evaluation script rebuilds the exact architecture (1-head vs 2-head) used in training.
+
+## 6. Threshold Definitions & Operating Points (fit_ops)
+
+This section defines exactly how raw model outputs become decisions.
+
+### 6.1 From Logits to Probability
+
+The models output a raw logit $z_i \in \mathbb{R}$ for each time window $i$. These are converted to a fall probability using the sigmoid function:
+
+$$p_i = \sigma(z_i) = \frac{1}{1 + e^{-z_i}}$$
+
+### 6.2 Threshold $\to$ Predicted Label
+
+Given a specific threshold $\tau \in [0,1]$, the predicted label $\hat{y}_i(\tau)$ is determined by:
+
+$$\hat{y}_i(\tau) = \mathbf{1} \ \ [p_i \ge \tau]$$
+
+Where $y_i \in \{0,1\}$ is the true label (1=fall, 0=ADL).
+
+### 6.3 Confusion Counts & Metrics (at threshold $\tau$)
+
+To evaluate performance at a specific cut-off, we calculate:
+
+$$\begin{aligned} TP(\tau) &= \sum_i \mathbf{1}[y_i=1 \land \hat{y}_i(\tau)=1] \\ FP(\tau) &= \sum_i \mathbf{1}[y_i=0 \land \hat{y}_i(\tau)=1] \\ TN(\tau) &= \sum_i \mathbf{1}[y_i=0 \land \hat{y}_i(\tau)=0] \\ FN(\tau) &= \sum_i \mathbf{1}[y_i=1 \land \hat{y}_i(\tau)=0] \end{aligned}$$
+
+Based on these counts, the core metrics are:
+
+$$\text{Precision}(\tau) = \frac{TP(\tau)}{TP(\tau) + FP(\tau)}$$
+
+$$\text{Recall}(\tau) = \frac{TP(\tau)}{TP(\tau) + FN(\tau)}$$
+
+$$F1(\tau) = \frac{2 \cdot \text{Precision}(\tau) \cdot \text{Recall}(\tau)}{\text{Precision}(\tau) + \text{Recall}(\tau)}$$
+
+### 6.4 Operating Point Selection (Validation Phase)
+
+The fit_ops.py script performs a sweep over a grid of thresholds $\mathcal{T}$ on the validation set to select three distinct Operating Points (OPs).
+
+OP2: Balanced (Max F1)
+
+Equivalent to the training strategy, but calibrated on validation data:
+
+$$\tau_{\text{OP2}} = \operatorname*{arg\,max}_{\tau \in \mathcal{T}} F1(\tau)$$
+
+OP1: High Recall (Safety Focus)
+
+Given a required recall floor $r_1$ (e.g., 0.95):
+
+$$\tau_{\text{OP1}} = \operatorname*{arg\,max}_{\tau \in \{ \tau \in \mathcal{T} : \text{Recall}(\tau) \ge r_1 \}} F1(\tau)$$
+
+Note: We maximize F1 (or Precision) among thresholds that meet the safety constraint.
+
+OP3: Low Alarm (False Positive Reduction)
+
+First, define the False Positive Rate (FPR):
+
+$$\text{FPR}(\tau) = \frac{FP(\tau)}{FP(\tau) + TN(\tau)}$$
+
+Given a required recall floor $r_3$ (e.g., 0.90), OP3 selects the threshold that minimizes false alarms while maintaining that recall:
+
+$$\tau_{\text{OP3}} = \operatorname*{arg\,min}_{\tau \in \{ \tau \in \mathcal{T} : \text{Recall}(\tau) \ge r_3 \}} \text{FPR}(\tau)$$
+
+**$\rightarrow$ Supervisor Q&A**
+
+- **Q: Why not just use 0.5?**
+  - **A:** 0.5 is arbitrary. In fall detection, a missed fall (FN) is worse than a false alarm (FP). We need data-driven thresholds that respect this asymmetry.
+- **Q: Why fit on Validation?**
+  - **A:** Fitting on Test is "data snooping" (cheating). We freeze criteria on Validation, then evaluate honestly on Test.
+
+## 7. Evaluation & Alert Rates
+
+### 7.1 Standard Metrics (`metrics.py`)
+
+Produces Precision, Recall, F1, and FPR on the Test set using the frozen OPs.
+
+### 7.2 The "Real" Metric: Alerts/24h (`score_unlabeled_alert_rate.py`)
+
+Classification metrics don't tell you how annoying the system is.
+
+- **The Problem:** Overlapping windows mean one fall event might trigger 20 consecutive "positive" windows.
+- **The Solution (Cooldown):** We merge adjacent alerts into a single **Event**.
+- **Metric:**
+
+$$\text{Alerts/24h} = \frac{\text{Total Events}}{\text{Hours Covered}} \times 24$$
+
+- **Why it matters:** This proves the system is usable in a real home/hospital.
+
+## 8. Deployment (Real-Time Alignment)
+
+### 8.1 The Contract
+
+- **Frontend:** Captures frames, resamples to target FPS, buffers to length $W$, sends to API.
+- **Backend:** Receives window $\rightarrow$ Preprocess (Gate/Normalize) $\rightarrow$ Model Inference $\rightarrow$ Compare $p(fall)$ to OP Threshold.
+
+### 8.2 FPS Mismatch Risk
+
+If training data is 25 FPS and the webcam is 30 FPS, $W=48$ represents different durations.
+
+- **Fix:** We must resample input streams to the training FPS before windowing.
+
+## 9. Meeting Checklist (What to Bring)
+
+1. **Repo Tree:** Screenshot of clean folder structure.
+2. **NPZ Sample:** Printout of `xy`, `conf`, `fps`, `label` keys.
+3. **Ops YAML:** The file showing the specific $\tau$ values for OP1/2/3.
+4. **Results Summary:** Best TCN vs. GCN metrics + Alerts/24h.
+5. **Latency Note:** $W=48$, $S=12$, FPS=25 $\rightarrow$ 0.48s update interval.

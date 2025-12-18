@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Parse LE2i Annotation_files to produce:
   - configs/labels/le2i.json        (video-level labels: 'adl' or 'fall')

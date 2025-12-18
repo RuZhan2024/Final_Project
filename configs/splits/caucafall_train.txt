@@ -1,10 +1,10 @@
 Subject.6_Fall backwards
 Subject.6_Pick up object
-Subject.10_Fall backwards
+Subject.1_Fall backwards
 Subject.9_Fall sitting
 Subject.6_Fall forward
 Subject.2_Pick up object
-Subject.1_Hop
+Subject.10_Hop
 Subject.4_Hop
 Subject.3_Fall forward
 Subject.7_Fall sitting
@@ -25,7 +25,7 @@ Subject.3_Walk
 Subject.5_Fall left
 Subject.2_Hop
 Subject.9_Kneel
-Subject.1_Walk
+Subject.10_Walk
 Subject.7_Walk
 Subject.5_Sit down
 Subject.4_Fall sitting
@@ -34,26 +34,26 @@ Subject.4_Walk
 Subject.3_Sit down
 Subject.6_Fall right
 Subject.7_Hop
-Subject.1_Pick up object
-Subject.10_Fall right
+Subject.10_Pick up object
+Subject.1_Fall right
 Subject.5_Fall sitting
 Subject.6_Walk
 Subject.3_Fall right
 Subject.7_Pick up object
 Subject.2_Fall backwards
-Subject.1_Fall forward
+Subject.10_Fall forward
 Subject.9_Fall left
-Subject.10_Hop
-Subject.10_Walk
+Subject.1_Hop
+Subject.1_Walk
 Subject.8_Sit down
 Subject.5_Fall forward
 Subject.7_Fall backwards
 Subject.4_Fall left
-Subject.10_Fall sitting
+Subject.1_Fall sitting
 Subject.6_Kneel
 Subject.7_Fall forward
 Subject.9_Fall backwards
-Subject.1_Fall sitting
+Subject.10_Fall sitting
 Subject.9_Sit down
 Subject.6_Sit down
 Subject.3_Fall backwards
@@ -62,18 +62,18 @@ Subject.8_Pick up object
 Subject.4_Kneel
 Subject.7_Fall right
 Subject.2_Walk
-Subject.1_Sit down
-Subject.1_Fall right
-Subject.10_Fall forward
+Subject.10_Sit down
+Subject.10_Fall right
+Subject.1_Fall forward
 Subject.2_Sit down
 Subject.7_Fall left
 Subject.8_Fall sitting
 Subject.8_Fall right
-Subject.1_Kneel
+Subject.10_Kneel
 Subject.5_Kneel
 Subject.2_Fall sitting
-Subject.1_Fall backwards
-Subject.1_Fall left
+Subject.10_Fall backwards
+Subject.10_Fall left
 Subject.4_Sit down
 Subject.9_Fall forward
 Subject.8_Hop

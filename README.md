@@ -780,4 +780,15 @@ make plot-muvim-gcn
 ```
 
 
+1. Extract pose         → unlabeled NPZ sequences
+2. Attach labels        → labels JSON (per-sequence)
+3. Split sequences      → train/val/test .txt lists
+4. Make window NPZs     → each with xy, conf, y
+5. Train models
 
+
+How to run the server: 
+```
+source .venv/bin/activate
+uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
+```

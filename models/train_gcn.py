@@ -1,57 +1,34 @@
-#!/usr/bin/env python3
+
 # -*- coding: utf-8 -*-
 """
 Train a spatio-temporal GCN on windowed pose sequences (MediaPipe Pose, 33 joints).
 
-Input windows are the same NPZ files used for the TCN:
-  - xy  : [T, 33, 2]  (normalized 2D joints)
-  - conf: [T, 33]     (visibility / confidence)
-  - y   : scalar label (0/1) or string ('adl' / 'fall')
+Input windows are NPZ files:
+  - xy  : [T, 33, 2]
+  - conf: [T, 33]
+  - y   : scalar label (0/1) or string ('adl' / 'fall') depending on your pipeline
 
-Model:
-  - Graph layers over the 33-joint skeleton for each time step
-    (with symmetric-normalised adjacency).
-  - Temporal 1D conv over the sequence of frame embeddings.
-  - Final linear → fall / no-fall logit.
+GCN features:
+  - pelvis-centred (x,y)
+  - per-second velocity (dx/dt, dy/dt) using fps from each window NPZ (fallback fps_default)
 
-This script also (optionally) evaluates on a test split and writes a JSON
-report with OP1/OP2/OP3, in the same structure as your TCN reports:
-
-{
-  "dataset": "test",
-  "n_windows": 361,
-  "pos_windows": 78,
-  "ops": {
-    "OP1_high_recall": {...},
-    "OP2_balanced": {...},
-    "OP3_low_alarm": {...}
-  }
-}
-
-Example usage (LE2I):
-
-  python models/train_gcn.py \
-    --train_dir data/processed/le2i/windows_W48_S12/train \
-    --val_dir   data/processed/le2i/windows_W48_S12/val \
-    --test_dir  data/processed/le2i/windows_W48_S12/test \
-    --epochs 50 --batch 128 --lr 1e-3 --seed 33724876 \
-    --save_dir      outputs/le2i_gcn_W48S12 \
-    --report_json   outputs/reports/le2i_gcn_in_domain.json \
-    --report_dataset_name test
+Output:
+  - best.pt in save_dir
+  - optional JSON test report with OP1/OP2/OP3 (precision/recall/f1/fpr vs thresholds)
 """
 
 import os
-import glob
 import json
 import argparse
 import random
-from typing import Tuple
+from pathlib import Path
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import precision_recall_fscore_support
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 from tqdm import tqdm
 
 
@@ -77,21 +54,16 @@ def pick_device() -> torch.device:
 # -------------------------------------------------------------------
 # Label helper (same semantics as train_tcn.py)
 # -------------------------------------------------------------------
-def _label_from_npz(d) -> float | None:
+def _label_from_npz(d) -> Optional[float]:
     """
-    Try to read a label from an NPZ window.
     Returns:
       1.0 for fall, 0.0 for adl/negative,
       None for unlabeled (e.g. label == -1 or missing).
     """
-    # Prefer numeric 'y'
     if "y" in d.files:
         y = d["y"]
         if isinstance(y, np.ndarray):
-            if y.shape == ():
-                y = y.item()
-            else:
-                y = y.ravel()[0]
+            y = y.item() if y.shape == () else y.ravel()[0]
         try:
             y = float(y)
         except Exception:
@@ -100,7 +72,6 @@ def _label_from_npz(d) -> float | None:
             return None
         return 1.0 if y >= 0.5 else 0.0
 
-    # Fallback to label-like fields
     for k in ("label", "y_label", "target"):
         if k in d.files:
             lab = d[k]
@@ -112,7 +83,6 @@ def _label_from_npz(d) -> float | None:
                 except Exception:
                     lab = str(lab)
 
-            # numeric?
             try:
                 v = float(lab)
                 if v < 0:
@@ -128,7 +98,7 @@ def _label_from_npz(d) -> float | None:
                 return 0.0
             return None
 
-    return None  # completely unlabeled
+    return None
 
 
 # -------------------------------------------------------------------
@@ -136,132 +106,79 @@ def _label_from_npz(d) -> float | None:
 # -------------------------------------------------------------------
 class WindowNPZGraph(Dataset):
     """
-    NPZ windows for GCN:
-
-      - xy   : [T, 33, 2]
-      - conf : [T, 33]
-      - y    : scalar (0/1) or label string
-
-    We build richer features per joint:
-      - pelvis-centred coordinates
-      - per-frame velocity
-
-    Final x shape: [T, 33, 4] = (x_rel, y_rel, v_x, v_y)
-
     Returns:
-      x: [T, 33, 4]  (float32)
-      y: [1]         (float32 0./1.)
+      x: [T,33,4] float32
+      y: [1] float32 (0/1)  (ready for BCEWithLogitsLoss with logits [B,1])
     """
-    def __init__(self, root: str, skip_unlabeled: bool = True):
-        all_files = sorted(glob.glob(os.path.join(root, "**", "*.npz"), recursive=True))
-        if not all_files:
-            raise FileNotFoundError(f"No .npz windows found under: {root}")
-
-        kept, skipped = [], 0
-        for p in all_files:
-            try:
-                d = np.load(p, allow_pickle=False)
+    def __init__(self, root: str, skip_unlabeled: bool = True, fps_default: float = 30.0):
+        self.files = sorted([str(p) for p in Path(root).glob("*.npz")])
+        kept: List[str] = []
+        for p in self.files:
+            with np.load(p, allow_pickle=False) as d:
                 y = _label_from_npz(d)
-                if skip_unlabeled and y is None:
-                    skipped += 1
-                    continue
+            if (not skip_unlabeled) or (y in (0.0, 1.0)):
                 kept.append(p)
-            except Exception:
-                skipped += 1
-
-        if not kept:
-            raise FileNotFoundError(f"All windows under {root} were unlabeled or unreadable.")
-        if skipped:
-            print(f"[WindowNPZGraph] skipped {skipped} unlabeled/unreadable windows under {root}")
         self.files = kept
+        self.fps_default = float(fps_default)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int):
-        d = np.load(self.files[idx], allow_pickle=False)
-        xy   = d["xy"].astype(np.float32)      # [T,33,2]
-        conf = d["conf"].astype(np.float32)    # [T,33]
+        p = self.files[idx]
+        with np.load(p, allow_pickle=False) as d:
+            xy = d["xy"].astype(np.float32)      # [T,33,2]
+            conf = d["conf"].astype(np.float32)  # [T,33]
+            fps = float(d["fps"]) if ("fps" in d.files) else self.fps_default
+            y = _label_from_npz(d)
 
-        # NaNs → 0
-        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0)  # [T,33,2]
-
-        # Gate by confidence
-        x = xy * conf[..., None]              # [T,33,2]
-
-        # --- Build richer features ---
-        # 1) Pelvis-centred coordinates (use average of 23 and 24 as reference)
-        #    (Matches lower spine / mid-hip region in MediaPipe Pose.)
-        if x.shape[1] >= 25:  # safety check
-            ref = (x[:, 23, :] + x[:, 24, :]) / 2.0   # [T,2]
-        else:
-            # Fallback: mean over visible joints
-            ref = x.mean(axis=1)  # [T,2]
-
-        x_rel = x - ref[:, None, :]               # [T,33,2]
-
-        # 2) Velocity (frame-to-frame difference in pelvis-centred coords)
-        vel = np.zeros_like(x_rel)
-        vel[1:] = x_rel[1:] - x_rel[:-1]          # [T,33,2]
-
-        # 3) Stack → [T,33,4]
-        x_full = np.concatenate([x_rel, vel], axis=-1)
-
-        y = _label_from_npz(d)
         if y is None:
+            # Should not happen if skip_unlabeled=True, but keep safe.
             y = 0.0
 
-        return torch.from_numpy(x_full).float(), torch.tensor([y], dtype=torch.float32)
+        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0)
+        conf = np.nan_to_num(conf, nan=0.0, posinf=0.0, neginf=0.0)
+
+        x = xy * conf[..., None]                # [T,33,2]
+        pelvis = x[:, 23:24, :]                 # [T,1,2]
+        x_rel = x - pelvis                      # [T,33,2]
+
+        vel = np.zeros_like(x_rel)
+        vel[1:] = (x_rel[1:] - x_rel[:-1]) * fps
+        feats = np.concatenate([x_rel, vel], axis=-1)  # [T,33,4]
+
+        x_t = torch.from_numpy(feats)                       # [T,33,4]
+        y_t = torch.tensor([float(y)], dtype=torch.float32)  # [1]
+        return x_t, y_t
 
 
 # -------------------------------------------------------------------
 # Skeleton graph (33-joint MediaPipe Pose, approximated)
 # -------------------------------------------------------------------
 def build_mediapipe_adjacency(num_joints: int = 33) -> np.ndarray:
-    """
-    Undirected adjacency for MediaPipe Pose (33 landmarks).
-    This is a reasonable subset of the official connections; it does not
-    need to be perfect for the model to work.
-    """
     edges = [
-        # torso & head
         (0, 1), (1, 2), (2, 3), (3, 7),
         (0, 4), (4, 5), (5, 6), (6, 8),
         (9, 10),
         (11, 12),
         (11, 23), (12, 24),
         (23, 24),
-
-        # left arm
         (11, 13), (13, 15), (15, 17),
-        # right arm
         (12, 14), (14, 16), (16, 18),
-
-        # left leg
         (23, 25), (25, 27), (27, 29), (29, 31),
-        # right leg
         (24, 26), (26, 28), (28, 30), (30, 32),
-
-        # cross-links
         (7, 28), (8, 27),
     ]
-
     A = np.zeros((num_joints, num_joints), dtype=np.float32)
     for i, j in edges:
         if 0 <= i < num_joints and 0 <= j < num_joints:
             A[i, j] = 1.0
             A[j, i] = 1.0
-
-    # self-connections
-    for i in range(num_joints):
-        A[i, i] = 1.0
+    np.fill_diagonal(A, 1.0)
     return A
 
 
 def normalize_adjacency(A: np.ndarray) -> np.ndarray:
-    """
-    Standard symmetric normalisation: D^(-1/2) A D^(-1/2)
-    """
     D = A.sum(axis=1)
     D_inv_sqrt = np.diag(1.0 / np.sqrt(D + 1e-6))
     return D_inv_sqrt @ A @ D_inv_sqrt
@@ -271,11 +188,6 @@ def normalize_adjacency(A: np.ndarray) -> np.ndarray:
 # GCN block + spatio-temporal model
 # -------------------------------------------------------------------
 class GCNBlock(nn.Module):
-    """
-    Simple GCN-style block:
-      - graph aggregation with A_hat
-      - Linear + BatchNorm + ReLU + Dropout
-    """
     def __init__(self, in_feats: int, out_feats: int, dropout: float = 0.2):
         super().__init__()
         self.lin = nn.Linear(in_feats, out_feats)
@@ -284,29 +196,21 @@ class GCNBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,V,Cin]
-        x = torch.einsum("vw,btwc->btvc", A_hat, x)  # graph aggregation
-        B, T, V, C = x.shape
-        x = self.lin(x)                              # [B,T,V,Cout]
-
-        # batchnorm over features (flatten B,T,V)
-        x = x.view(B * T * V, -1)
+        # x: [B,T,V,Cin]  A_hat: [V,V]
+        x = torch.einsum("vw,btwc->btvc", A_hat, x)
+        B, T, V, _ = x.shape
+        x = self.lin(x)                      # [B,T,V,Cout]
+        x = x.reshape(B * T * V, -1)
         x = self.bn(x)
         x = self.relu(x)
         x = self.dropout(x)
-        x = x.view(B, T, V, -1)
+        x = x.reshape(B, T, V, -1)
         return x
 
 
 class GCNTemporal(nn.Module):
     """
-    Very small spatio-temporal GCN:
-
-      1. Two GCNBlocks over 33 joints at each time step.
-      2. Global mean over joints → frame embeddings [B,T,F].
-      3. Temporal Conv1d over the sequence → pooled → Linear → logit.
-
-    Input:  x [B, T, 33, C]  (C=4 with our features)
+    Input:  x [B,T,V,C]
     Output: logits [B,1]
     """
     def __init__(
@@ -319,13 +223,11 @@ class GCNTemporal(nn.Module):
         dropout: float = 0.3,
     ):
         super().__init__()
-
-        A = build_mediapipe_adjacency(num_joints)
-        A_hat = normalize_adjacency(A)
+        A_hat = normalize_adjacency(build_mediapipe_adjacency(num_joints))
         self.register_buffer("A_hat", torch.from_numpy(A_hat))  # [V,V]
 
-        self.block1 = GCNBlock(in_feats,  gcn_hidden, dropout)
-        self.block2 = GCNBlock(gcn_hidden, gcn_out,   dropout)
+        self.block1 = GCNBlock(in_feats, gcn_hidden, dropout)
+        self.block2 = GCNBlock(gcn_hidden, gcn_out, dropout)
 
         self.temporal = nn.Sequential(
             nn.Conv1d(gcn_out, tcn_hidden, kernel_size=5, padding=2),
@@ -336,163 +238,105 @@ class GCNTemporal(nn.Module):
         self.head = nn.Linear(tcn_hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,V,C]
-        B, T, V, C = x.shape
-        A_hat = self.A_hat  # [V,V]
-
-        h = self.block1(x, A_hat)  # [B,T,V,H]
-        h = self.block2(h, A_hat)  # [B,T,V,G]
-
-        # Pool over joints → [B,T,G]
-        h = h.mean(dim=2)
-
-        # Temporal conv expects [B,G,T]
-        h = h.permute(0, 2, 1)     # [B,G,T]
-        h = self.temporal(h).squeeze(-1)  # [B,tcn_hidden]
-
-        logits = self.head(h)      # [B,1]
-        return logits
+        h = self.block1(x, self.A_hat)
+        h = self.block2(h, self.A_hat)
+        h = h.mean(dim=2)            # pool joints -> [B,T,F]
+        h = h.permute(0, 2, 1)       # [B,F,T]
+        h = self.temporal(h).squeeze(-1)
+        return self.head(h)          # [B,1]
 
 
 # -------------------------------------------------------------------
-# Validation with threshold sweep (for early stopping)
+# Metrics helpers
 # -------------------------------------------------------------------
+def _fpr_from_preds(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
+
+
 @torch.no_grad()
-def evaluate_with_sweep(model: nn.Module, loader: DataLoader, device: torch.device):
-    """
-    Sweep thresholds on the validation set to find best F1.
-    Used for checkpoint selection.
-    """
+def evaluate_with_sweep(model: nn.Module, loader: DataLoader, device: torch.device) -> Dict[str, Any]:
     model.eval()
     all_logits, all_y = [], []
-    batch0_printed = False
 
     for xb, yb in loader:
-        xb, yb = xb.to(device), yb.to(device)
-        if not batch0_printed:
-            print(f"[val] batch0 positives = {int(yb.sum().item())}/{yb.numel()}")
-            batch0_printed = True
-        logits = model(xb).squeeze(-1)
+        xb = xb.to(device)
+        logits = model(xb).squeeze(-1)            # [B]
         all_logits.append(logits.detach().cpu().numpy())
-        all_y.append(yb.detach().cpu().numpy())
+        all_y.append(yb.detach().cpu().numpy())   # [B,1]
 
     if not all_logits:
         return dict(P=0.0, R=0.0, F1=0.0, thr=0.5, note="empty val loader")
 
-    y_true = np.concatenate(all_y, axis=0).ravel().astype(int)
-    if y_true.sum() == 0:
-        return dict(P=0.0, R=0.0, F1=0.0, thr=0.5, note="val has no positives")
+    y_true = np.concatenate(all_y, axis=0).reshape(-1).astype(int)
+    if y_true.size == 0:
+        return dict(P=0.0, R=0.0, F1=0.0, thr=0.5, note="no labels")
 
-    probs = torch.sigmoid(
-        torch.from_numpy(np.concatenate(all_logits, axis=0).ravel())
-    ).numpy()
+    probs = torch.sigmoid(torch.from_numpy(np.concatenate(all_logits, axis=0).reshape(-1))).numpy()
 
     best = dict(F1=-1.0, P=0.0, R=0.0, thr=0.5)
     for thr in np.linspace(0.05, 0.95, 19):
         pred = (probs >= thr).astype(int)
-        pr, rc, f1, _ = precision_recall_fscore_support(
-            y_true, pred, average="binary", zero_division=0
-        )
+        pr, rc, f1, _ = precision_recall_fscore_support(y_true, pred, average="binary", zero_division=0)
         if f1 > best["F1"]:
             best.update(dict(F1=float(f1), P=float(pr), R=float(rc), thr=float(thr)))
     return best
 
 
-# -------------------------------------------------------------------
-# Test-time sweep and OP1/OP2/OP3 report
-# -------------------------------------------------------------------
 @torch.no_grad()
-def collect_probs_and_labels(model: nn.Module, loader: DataLoader, device: torch.device):
+def collect_probs_and_labels(model: nn.Module, loader: DataLoader, device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
     model.eval()
     all_logits, all_y = [], []
     for xb, yb in loader:
-        xb, yb = xb.to(device), yb.to(device)
-        logits = model(xb).squeeze(-1)
+        xb = xb.to(device)
+        logits = model(xb).squeeze(-1)            # [B]
         all_logits.append(logits.detach().cpu().numpy())
-        all_y.append(yb.detach().cpu().numpy())
-
-    if not all_logits:
-        return None, None
-
-    y_true = np.concatenate(all_y, axis=0).ravel().astype(int)
-    probs = torch.sigmoid(
-        torch.from_numpy(np.concatenate(all_logits, axis=0).ravel())
-    ).numpy()
+        all_y.append(yb.detach().cpu().numpy())   # [B,1]
+    y_true = np.concatenate(all_y, axis=0).reshape(-1).astype(int)
+    probs = torch.sigmoid(torch.from_numpy(np.concatenate(all_logits, axis=0).reshape(-1))).numpy()
     return probs, y_true
 
 
-def compute_ops_from_sweep(probs: np.ndarray, y_true: np.ndarray):
-    """
-    Compute OP1/OP2/OP3 from a dense sweep of thresholds [0,1].
-
-    - OP2_balanced: argmax F1
-    - OP1_high_recall: among all thresholds, choose the one with
-      highest recall (tie-breaker: higher F1)
-    - OP3_low_alarm: among all thresholds, choose the one with
-      highest precision (tie-breaker: higher F1)
-
-    This matches the JSON structure your TCN reports use, but without FA/24h.
-    """
+def compute_ops_from_sweep(probs: np.ndarray, y_true: np.ndarray, recall_floor: float = 0.80) -> Dict[str, Dict[str, float]]:
     thresholds = np.linspace(0.0, 1.0, 101)
     rows = []
     for thr in thresholds:
         pred = (probs >= thr).astype(int)
-        pr, rc, f1, _ = precision_recall_fscore_support(
-            y_true, pred, average="binary", zero_division=0
-        )
+        pr, rc, f1, _ = precision_recall_fscore_support(y_true, pred, average="binary", zero_division=0)
+        fpr = _fpr_from_preds(y_true, pred)
         rows.append(
-            {
-                "thr": float(thr),
-                "precision": float(pr),
-                "recall": float(rc),
-                "f1": float(f1),
-            }
+            dict(thr=float(thr), precision=float(pr), recall=float(rc), f1=float(f1), fpr=float(fpr))
         )
 
-    if not rows:
-        return {
-            "OP1_high_recall": {"thr": 0.5, "precision": 0.0, "recall": 0.0, "f1": 0.0},
-            "OP2_balanced":    {"thr": 0.5, "precision": 0.0, "recall": 0.0, "f1": 0.0},
-            "OP3_low_alarm":   {"thr": 0.5, "precision": 0.0, "recall": 0.0, "f1": 0.0},
-        }
-
-    # OP2: best F1
     op2 = max(rows, key=lambda r: r["f1"])
-
-    # OP1: highest recall (then F1)
     op1 = max(rows, key=lambda r: (r["recall"], r["f1"]))
 
-    # OP3: highest precision (then F1)
-    op3 = max(rows, key=lambda r: (r["precision"], r["f1"]))
+    eligible = [r for r in rows if r["recall"] >= recall_floor]
+    if not eligible:
+        eligible = rows
+    op3 = min(eligible, key=lambda r: (r["fpr"], -r["f1"]))
 
-    return {
-        "OP1_high_recall": op1,
-        "OP2_balanced": op2,
-        "OP3_low_alarm": op3,
-    }
+    return {"OP1_high_recall": op1, "OP2_balanced": op2, "OP3_low_alarm": op3}
 
 
 # -------------------------------------------------------------------
 # Training loop
 # -------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Train a GCN+TCN on skeleton windows (MediaPipe Pose).")
+    ap = argparse.ArgumentParser(description="Train a GCN+temporal head on skeleton windows (MediaPipe Pose).")
     ap.add_argument("--train_dir", required=True)
     ap.add_argument("--val_dir", required=True)
-    ap.add_argument("--test_dir", required=False,
-                    help="Optional test dir; if given with --report_json, we write OP1/2/3 metrics.")
+    ap.add_argument("--test_dir", required=False)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=33724876)
+    ap.add_argument("--fps_default", type=float, default=30.0)
     ap.add_argument("--save_dir", required=True)
     ap.add_argument("--grad_clip", type=float, default=1.0)
 
-    # Reporting on test set
-    ap.add_argument("--report_json", default=None,
-                    help="Path to JSON file for test-set OP1/2/3 report (optional).")
-    ap.add_argument("--report_dataset_name", default="test",
-                    help="Dataset name label in the JSON report (e.g., 'test').")
+    ap.add_argument("--report_json", default=None)
+    ap.add_argument("--report_dataset_name", default="test")
 
     args = ap.parse_args()
 
@@ -501,19 +345,21 @@ def main():
     if args.report_json:
         os.makedirs(os.path.dirname(args.report_json), exist_ok=True)
 
-    # Datasets
-    train_ds = WindowNPZGraph(args.train_dir, skip_unlabeled=True)
-    val_ds   = WindowNPZGraph(args.val_dir,   skip_unlabeled=True)
+    train_ds = WindowNPZGraph(args.train_dir, skip_unlabeled=True, fps_default=args.fps_default)
+    val_ds   = WindowNPZGraph(args.val_dir,   skip_unlabeled=True, fps_default=args.fps_default)
 
-    # Inspect one sample
+    if len(train_ds) == 0:
+        raise SystemExit(f"[ERR] No labelled windows found in train_dir={args.train_dir}")
+    if len(val_ds) == 0:
+        raise SystemExit(f"[ERR] No labelled windows found in val_dir={args.val_dir}")
+
     x0, y0 = train_ds[0]
     T, V, C = x0.shape
-    print(f"[info] window shape (T={T}, V={V}, C={C}); first y={float(y0.item())}")
+    print(f"[info] window shape: T={T}, V={V}, C={C}; first y={y0.item():.0f}")
 
     device = pick_device()
     print(f"[info] device: {device.type}")
 
-    # Model / optim / loss
     model = GCNTemporal(num_joints=V, in_feats=C).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     criterion = nn.BCEWithLogitsLoss()
@@ -527,26 +373,24 @@ def main():
     for ep in range(1, args.epochs + 1):
         model.train()
         pbar = tqdm(train_loader, desc=f"train GCN ep{ep}", leave=False)
-        batch0_printed = False
 
         for xb, yb in pbar:
-            xb, yb = xb.to(device), yb.to(device)
-            if not batch0_printed:
-                print(f"[train] epoch {ep} batch0 positives = {int(yb.sum().item())}/{yb.numel()}")
-                batch0_printed = True
+            xb = xb.to(device)
+            yb = yb.to(device)               # [B,1] float32
 
             opt.zero_grad(set_to_none=True)
-            logits = model(xb)
+            logits = model(xb)               # [B,1]
             loss = criterion(logits, yb)
             loss.backward()
+
             if args.grad_clip and args.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
             opt.step()
             pbar.set_postfix(loss=float(loss.detach().cpu()))
 
         stats = evaluate_with_sweep(model, val_loader, device)
-        note = stats.get("note", "")
-        print(f"[val] P={stats['P']:.3f} R={stats['R']:.3f} F1={stats['F1']:.3f} @thr={stats['thr']:.2f} {note}")
+        print(f"[val] P={stats['P']:.3f} R={stats['R']:.3f} F1={stats['F1']:.3f} @thr={stats['thr']:.2f} {stats.get('note','')}")
 
         if stats["F1"] >= best_f1:
             best_f1 = stats["F1"]
@@ -563,21 +407,25 @@ def main():
 
     print(f"[done] best F1={best_f1:.3f}  ckpt={best_path}")
 
-    # ------------------------------------------------------------------
-    # Optional: test-set report with OP1/OP2/OP3, like TCN's JSON
-    # ------------------------------------------------------------------
+    # Optional: test-set report (load best checkpoint)
     if args.test_dir and args.report_json:
-        print(f"[report] evaluating on test_dir={args.test_dir}")
-        test_ds = WindowNPZGraph(args.test_dir, skip_unlabeled=True)
-        test_loader = DataLoader(test_ds, batch_size=args.batch, shuffle=False, num_workers=0)
+        print(f"[report] evaluating best checkpoint on test_dir={args.test_dir}")
 
-        probs, y_true = collect_probs_and_labels(model.to(device), test_loader, device)
-        if probs is None or y_true is None:
-            print("[report] no test logits/labels; skipping JSON report.")
+        ck = torch.load(best_path, map_location="cpu")
+        model.load_state_dict(ck["model"])
+        model.to(device).eval()
+
+        test_ds = WindowNPZGraph(args.test_dir, skip_unlabeled=True, fps_default=args.fps_default)
+        if len(test_ds) == 0:
+            print("[report] no labelled windows in test_dir; skipping JSON report.")
             return
+
+        test_loader = DataLoader(test_ds, batch_size=args.batch, shuffle=False, num_workers=0)
+        probs, y_true = collect_probs_and_labels(model, test_loader, device)
 
         ops = compute_ops_from_sweep(probs, y_true)
         report = {
+            "arch": "gcn",
             "dataset": args.report_dataset_name,
             "n_windows": int(len(test_ds)),
             "pos_windows": int(y_true.sum()),

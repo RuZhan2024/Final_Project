@@ -1,14 +1,22 @@
+arch: tcn
+val_dir: data/processed/muvim/windows_W48_S12/val
+ckpt: outputs/muvim_tcn_W48S12/best.pt
+floors:
+  op1_recall: 0.95
+  op3_recall: 0.9
 OP1_high_recall:
-  thr: 0.4216
-  recall: 1.0
-  precision: 0.7244350512111851
+  thr: 0.02
+  recall_at_thr: 0.921875
+  precision: 0.06533776301218161
+  fpr: 0.13861060929545083
 OP2_balanced:
-  thr: 0.42405
-  f1: 0.840804001132396
-  precision: 0.7254518808011724
-  recall: 0.9997755834829444
+  thr: 0.87
+  f1: 0.44594594594594594
+  precision: 0.39285714285714285
+  recall: 0.515625
+  fpr: 0.00837575956643127
 OP3_low_alarm:
-  thr: 0.4363
-  fpr: 0.9222156747200942
-  recall_at_thr: 0.921903052064632
-  precision: 0.72413185263529
+  thr: 0.02
+  fpr: 0.13861060929545083
+  recall_at_thr: 0.921875
+  precision: 0.06533776301218161

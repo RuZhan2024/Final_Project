@@ -1,10 +1,10 @@
-Subject.10_Pick up object
+Subject.1_Pick up object
 Subject.9_Fall right
 Subject.7_Kneel
 Subject.4_Fall backwards
 Subject.5_Fall backwards
 Subject.6_Fall sitting
 Subject.8_Kneel
-Subject.10_Sit down
+Subject.1_Sit down
 Subject.2_Kneel
 Subject.5_Fall right

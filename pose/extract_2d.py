@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Extract 2D human pose from videos using MediaPipe Pose and save as NPZ.
 
@@ -44,6 +44,10 @@ def parse_args():
                     help="Optional cap for debugging (process only first N).")
     ap.add_argument("--skip_existing", action="store_true",
                     help="Skip processing if output NPZ already exists.")
+    ap.add_argument("--fps_default", type=float, default=30.0,
+                    help="Fallback FPS to store if video metadata FPS is missing/0 (default: 30).")
+    ap.add_argument("--force_fps", type=float, default=None,
+                    help="If set, override and store this FPS for all videos (useful for dataset-level correction).")
     return ap.parse_args()
 
 def list_videos(patterns):
@@ -65,7 +69,7 @@ def make_safe_stem(video_path, common_root):
     stem = "".join(c if (c.isalnum() or c in "._-") else "_" for c in stem)
     return stem
 
-def run_one_video(path, out_npz, pose):
+def run_one_video(path, out_npz, pose, fps_default=30.0, force_fps=None):
     """Read video frame-by-frame, run MediaPipe Pose, collect arrays, save NPZ."""
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -73,8 +77,11 @@ def run_one_video(path, out_npz, pose):
         return False
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-    if not fps or np.isnan(fps):
-        fps = 30.0
+    if force_fps is not None:
+        fps = float(force_fps)
+    elif (not fps) or np.isnan(fps) or fps <= 0.0:
+        fps = float(fps_default)
+
     w  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)  or 0)
     h  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
@@ -167,7 +174,7 @@ def main():
                 continue
 
             try:
-                ok = run_one_video(vp, out, pose)
+                ok = run_one_video(vp, out, pose, fps_default=args.fps_default, force_fps=args.force_fps)
                 ok_count += int(ok)
             except KeyboardInterrupt:
                 print("\n[abort] interrupted by user", file=sys.stderr)

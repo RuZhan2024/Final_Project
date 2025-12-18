@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import json, argparse
 import matplotlib.pyplot as plt
 

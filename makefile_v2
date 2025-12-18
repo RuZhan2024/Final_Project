@@ -4,11 +4,6 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# CAUCAFall frame-label annotations
-# NOTE: Fix path/case to match your extract-caucafall raw root (data/raw/CAUCAFall/...)
-CAUCA_ANN_GLOB ?= data/raw/CAUCAFall/CAUCAFall/**/{stem}/*.txt
-CAUCA_FALL_CLASS_ID ?= 0
-
 # Python + venv
 PY=python
 VENV=source .venv/bin/activate
@@ -28,6 +23,60 @@ FPS_LE2I ?= 25
 FPS_CAUC ?= 23
 FPS_URFD ?= 30
 FPS_MUVIM ?= 30
+
+# -----------------------------------------
+# Preprocess (pose NPZ cleaning) — optional
+# -----------------------------------------
+# Toggle: if 1, windowing uses pose_npz_clean instead of pose_npz
+USE_PREPROCESS ?= 0
+
+# Script location (override if you put it elsewhere)
+PREPROCESS_SCRIPT ?= preprocess_pose_npz.py
+
+# Preprocess knobs (override: make preprocess-le2i CONF_THR=0.25 SMOOTH_K=7)
+CONF_THR   ?= 0.2
+SMOOTH_K   ?= 5
+MAX_GAP    ?= 4
+NORM_MODE  ?= torso   # none | torso | shoulder
+
+# Pose dirs (raw + cleaned)
+POSE_RAW_LE2I   := data/interim/le2i/pose_npz
+POSE_CLEAN_LE2I := data/interim/le2i/pose_npz_clean
+
+POSE_RAW_URFD   := data/interim/urfd/pose_npz
+POSE_CLEAN_URFD := data/interim/urfd/pose_npz_clean
+
+POSE_RAW_CAUC   := data/interim/caucafall/pose_npz
+POSE_CLEAN_CAUC := data/interim/caucafall/pose_npz_clean
+
+POSE_RAW_MUVIM   := data/interim/muvim/pose_npz
+POSE_CLEAN_MUVIM := data/interim/muvim/pose_npz_clean
+
+# Which pose dir windowing should read from (auto-switch with USE_PREPROCESS)
+NPZ_DIR_LE2I := $(POSE_RAW_LE2I)
+NPZ_DIR_URFD := $(POSE_RAW_URFD)
+NPZ_DIR_CAUC := $(POSE_RAW_CAUC)
+NPZ_DIR_MUVIM := $(POSE_RAW_MUVIM)
+
+ifeq ($(USE_PREPROCESS),1)
+NPZ_DIR_LE2I := $(POSE_CLEAN_LE2I)
+NPZ_DIR_URFD := $(POSE_CLEAN_URFD)
+NPZ_DIR_CAUC := $(POSE_CLEAN_CAUC)
+NPZ_DIR_MUVIM := $(POSE_CLEAN_MUVIM)
+endif
+
+# Optional: pipeline inserts preprocess step only when enabled
+PREPROCESS_STEP_LE2I :=
+PREPROCESS_STEP_URFD :=
+PREPROCESS_STEP_CAUC :=
+PREPROCESS_STEP_MUVIM :=
+
+ifeq ($(USE_PREPROCESS),1)
+PREPROCESS_STEP_LE2I := preprocess-le2i
+PREPROCESS_STEP_URFD := preprocess-urfd
+PREPROCESS_STEP_CAUC := preprocess-caucafall
+PREPROCESS_STEP_MUVIM := preprocess-muvim
+endif
 
 # Derived paths
 WIN_DIR_LE2I      := data/processed/le2i/windows_W$(WIN_W)_S$(WIN_S)
@@ -61,6 +110,7 @@ OPS_MUVIM_GCN     := configs/ops_muvim_gcn.yaml
 
 .PHONY: help install \
         extract-le2i extract-urfd extract-caucafall extract-muvim \
+        preprocess-le2i preprocess-urfd preprocess-caucafall preprocess-muvim preprocess-all \
         labels-le2i le2i-unlabeled-list labels-urfd labels-caucafall labels-muvim \
         splits-le2i splits-urfd splits-caucafall splits-muvim splits-all \
         windows-le2i windows-le2i-unlabeled windows-urfd windows-caucafall windows-muvim \
@@ -84,6 +134,9 @@ help:
 	@echo "Targets:"
 	@echo "  make install                 # create venv, lock & install deps"
 	@echo "  make extract-<ds>            # extract pose/NPZ for le2i|urfd|caucafall|muvim"
+	@echo "  make preprocess-<ds>         # clean/smooth/normalise pose NPZs (optional)"
+	@echo "  make preprocess-all          # preprocess all datasets"
+	@echo "  make USE_PREPROCESS=1 windows-le2i    # window using pose_npz_clean"
 	@echo "  make labels-<ds>             # build labels for le2i/urfd/caucafall/muvim"
 	@echo "  make splits-<ds>             # stratified splits"
 	@echo "  make windows-<ds>            # windowify datasets"
@@ -152,6 +205,52 @@ extract-muvim:
 	  --fps $(FPS_MUVIM)
 
 # -----------------------------------------
+# Preprocess (pose_npz -> pose_npz_clean)
+# -----------------------------------------
+preprocess-le2i:
+	$(VENV) && $(PY) $(PREPROCESS_SCRIPT) \
+	  --in_dir  $(POSE_RAW_LE2I) \
+	  --out_dir $(POSE_CLEAN_LE2I) \
+	  --recursive \
+	  --conf_thr $(CONF_THR) \
+	  --smooth_k $(SMOOTH_K) \
+	  --max_gap $(MAX_GAP) \
+	  --normalize $(NORM_MODE)
+
+preprocess-urfd:
+	$(VENV) && $(PY) $(PREPROCESS_SCRIPT) \
+	  --in_dir  $(POSE_RAW_URFD) \
+	  --out_dir $(POSE_CLEAN_URFD) \
+	  --recursive \
+	  --conf_thr $(CONF_THR) \
+	  --smooth_k $(SMOOTH_K) \
+	  --max_gap $(MAX_GAP) \
+	  --normalize $(NORM_MODE)
+
+preprocess-caucafall:
+	$(VENV) && $(PY) $(PREPROCESS_SCRIPT) \
+	  --in_dir  $(POSE_RAW_CAUC) \
+	  --out_dir $(POSE_CLEAN_CAUC) \
+	  --recursive \
+	  --conf_thr $(CONF_THR) \
+	  --smooth_k $(SMOOTH_K) \
+	  --max_gap $(MAX_GAP) \
+	  --normalize $(NORM_MODE)
+
+preprocess-muvim:
+	$(VENV) && $(PY) $(PREPROCESS_SCRIPT) \
+	  --in_dir  $(POSE_RAW_MUVIM) \
+	  --out_dir $(POSE_CLEAN_MUVIM) \
+	  --recursive \
+	  --conf_thr $(CONF_THR) \
+	  --smooth_k $(SMOOTH_K) \
+	  --max_gap $(MAX_GAP) \
+	  --normalize $(NORM_MODE)
+
+preprocess-all: preprocess-le2i preprocess-urfd preprocess-caucafall preprocess-muvim
+	@echo "Preprocess complete for all datasets."
+
+# -----------------------------------------
 # Labels
 # -----------------------------------------
 labels-le2i:
@@ -165,7 +264,7 @@ labels-le2i:
 le2i-unlabeled-list:
 	@mkdir -p configs/splits
 	$(VENV) && $(PY) labels/make_unlabeled_test_list.py \
-	  --npz_dir data/interim/le2i/pose_npz \
+	  --npz_dir $(NPZ_DIR_LE2I) \
 	  --out configs/splits/le2i_test_unlabeled.txt \
 	  --scenes Office "Lecture room"
 
@@ -179,31 +278,26 @@ labels-caucafall:
 	@mkdir -p configs/labels
 	$(VENV) && $(PY) labels/make_caucafall_labels.py \
 	  --npz_dir data/interim/caucafall/pose_npz \
-	  --ann_glob '$(CAUCA_ANN_GLOB)' \
-	  --fall_class_id $(CAUCA_FALL_CLASS_ID) \
-	  --out_labels configs/labels/caucafall_auto.json \
-	  --out_spans  configs/labels/caucafall_spans.json \
-	  --print_stats
+	  --out configs/labels/caucafall_auto.json
 
+# If you have a MUVIM label generator, point it here.
 labels-muvim:
 	@mkdir -p configs/labels
 	$(VENV) && $(PY) labels/make_muvim_labels.py \
 	  --npz_dir data/interim/muvim/pose_npz \
-	  --zed_csv data/raw/MUVIM/ZED_RGB/ZED_RGB.csv \
-	  --out_labels configs/labels/muvim_auto.json \
-	  --out_spans  configs/labels/muvim_spans.json
+	  --out configs/labels/muvim_auto.json
 
 # -----------------------------------------
 # Splits
 # -----------------------------------------
-splits-le2i: labels-le2i
+splits-le2i:
 	@mkdir -p configs/splits
 	$(VENV) && $(PY) split/make_splits.py \
 	  --labels_json configs/labels/le2i.json \
 	  --out_dir configs/splits \
 	  --train $(TRAIN_FRAC) --val $(VAL_FRAC) --test $(TEST_FRAC) --seed $(SPLIT_SEED)
 
-splits-urfd: labels-urfd
+splits-urfd:
 	@mkdir -p configs/splits
 	$(VENV) && $(PY) split/make_splits.py \
 	  --labels_json configs/labels/urfd_auto.json \
@@ -211,7 +305,7 @@ splits-urfd: labels-urfd
 	  --train $(TRAIN_FRAC) --val $(VAL_FRAC) --test $(TEST_FRAC) --seed $(SPLIT_SEED) \
 	  --prefix urfd
 
-splits-caucafall: labels-caucafall
+splits-caucafall:
 	@mkdir -p configs/splits
 	$(VENV) && $(PY) split/make_splits.py \
 	  --labels_json configs/labels/caucafall_auto.json \
@@ -219,7 +313,7 @@ splits-caucafall: labels-caucafall
 	  --train $(TRAIN_FRAC) --val $(VAL_FRAC) --test $(TEST_FRAC) --seed $(SPLIT_SEED) \
 	  --prefix caucafall
 
-splits-muvim: labels-muvim
+splits-muvim:
 	@mkdir -p configs/splits
 	$(VENV) && $(PY) split/make_splits.py \
 	  --labels_json configs/labels/muvim_auto.json \
@@ -233,9 +327,9 @@ splits-all: splits-le2i splits-urfd splits-caucafall splits-muvim
 # -----------------------------------------
 # Windowing
 # -----------------------------------------
-windows-le2i: labels-le2i splits-le2i
+windows-le2i:
 	$(VENV) && $(PY) windows/make_windows.py \
-	  --npz_dir data/interim/le2i/pose_npz \
+	  --npz_dir $(NPZ_DIR_LE2I) \
 	  --labels_json configs/labels/le2i.json \
 	  --spans_json  configs/labels/le2i_spans.json \
 	  --out_dir $(WIN_DIR_LE2I) \
@@ -245,17 +339,17 @@ windows-le2i: labels-le2i splits-le2i
 	  --val_list   configs/splits/le2i_val.txt \
 	  --test_list  configs/splits/le2i_test.txt
 
-windows-le2i-unlabeled: extract-le2i labels-le2i le2i-unlabeled-list
+windows-le2i-unlabeled:
 	$(VENV) && $(PY) windows/make_unlabeled_windows.py \
-	  --npz_dir data/interim/le2i/pose_npz \
+	  --npz_dir $(NPZ_DIR_LE2I) \
 	  --stems_txt configs/splits/le2i_test_unlabeled.txt \
 	  --out_dir $(WIN_DIR_LE2I) \
 	  --W $(WIN_W) --stride $(WIN_S) \
 	  --fps_default $(FPS_LE2I)
 
-windows-urfd: labels-urfd splits-urfd
+windows-urfd:
 	$(VENV) && $(PY) windows/make_windows.py \
-	  --npz_dir data/interim/urfd/pose_npz \
+	  --npz_dir $(NPZ_DIR_URFD) \
 	  --labels_json configs/labels/urfd_auto.json \
 	  --out_dir $(WIN_DIR_URFD) \
 	  --W $(WIN_W) --stride $(WIN_S) \
@@ -264,13 +358,10 @@ windows-urfd: labels-urfd splits-urfd
 	  --val_list   configs/splits/urfd_val.txt \
 	  --test_list  configs/splits/urfd_test.txt
 
-windows-caucafall: labels-caucafall splits-caucafall
+windows-caucafall:
 	$(VENV) && $(PY) windows/make_windows.py \
-	  --npz_dir data/interim/caucafall/pose_npz \
+	  --npz_dir $(NPZ_DIR_CAUC) \
 	  --labels_json configs/labels/caucafall_auto.json \
-	  --spans_json  configs/labels/caucafall_spans.json \
-	  --spans_end_exclusive \
-	  --min_overlap_frac 0.25 \
 	  --out_dir $(WIN_DIR_CAUC) \
 	  --W $(WIN_W) --stride $(WIN_S) \
 	  --fps_default $(FPS_CAUC) \
@@ -278,13 +369,10 @@ windows-caucafall: labels-caucafall splits-caucafall
 	  --val_list   configs/splits/caucafall_val.txt \
 	  --test_list  configs/splits/caucafall_test.txt
 
-windows-muvim: labels-muvim splits-muvim
+windows-muvim:
 	$(VENV) && $(PY) windows/make_windows.py \
-	  --npz_dir data/interim/muvim/pose_npz \
+	  --npz_dir $(NPZ_DIR_MUVIM) \
 	  --labels_json configs/labels/muvim_auto.json \
-	  --spans_json  configs/labels/muvim_spans.json \
-	  --spans_end_exclusive \
-	  --min_overlap_frac 0.25 \
 	  --out_dir $(WIN_DIR_MUVIM) \
 	  --W $(WIN_W) --stride $(WIN_S) \
 	  --fps_default $(FPS_MUVIM) \
@@ -685,18 +773,18 @@ pipeline: pipeline-le2i
 # Pipelines
 # -----------------------------------------
 # ---- per-dataset pipelines (TCN) ----
-pipeline-le2i: extract-le2i labels-le2i splits-le2i windows-le2i le2i-unlabeled-list windows-le2i-unlabeled check-le2i \
+pipeline-le2i: extract-le2i labels-le2i splits-le2i $(PREPROCESS_STEP_LE2I) windows-le2i le2i-unlabeled-list windows-le2i-unlabeled check-le2i \
               train-le2i fit-ops-le2i eval-le2i plot-le2i score-unlabeled-le2i
 	@echo "LE2I pipeline complete (TCN)."
 
-pipeline-urfd: extract-urfd labels-urfd splits-urfd windows-urfd check-urfd train-urfd fit-ops-urfd
+pipeline-urfd: extract-urfd labels-urfd splits-urfd $(PREPROCESS_STEP_URFD) windows-urfd check-urfd train-urfd fit-ops-urfd
 	@echo "URFD pipeline complete (TCN)."
 
-pipeline-caucafall: extract-caucafall labels-caucafall splits-caucafall windows-caucafall check-caucafall \
+pipeline-caucafall: extract-caucafall labels-caucafall splits-caucafall $(PREPROCESS_STEP_CAUC) windows-caucafall check-caucafall \
                    train-caucafall fit-ops-caucafall eval-caucafall plot-caucafall
 	@echo "CAUCAFall pipeline complete (TCN)."
 
-pipeline-muvim: extract-muvim labels-muvim splits-muvim windows-muvim check-muvim \
+pipeline-muvim: extract-muvim labels-muvim splits-muvim $(PREPROCESS_STEP_MUVIM) windows-muvim check-muvim \
               train-muvim fit-ops-muvim eval-muvim plot-muvim
 	@echo "MUVIM pipeline complete (TCN)."
 
@@ -707,19 +795,19 @@ pipeline-cross: eval-le2i-on-urfd plot-urfd-cross eval-caucafall-on-urfd plot-ca
 	@echo "Cross-dataset evaluations complete (TCN)."
 
 # ---- per-dataset pipelines (GCN) ----
-pipeline-le2i-gcn: extract-le2i labels-le2i splits-le2i windows-le2i le2i-unlabeled-list windows-le2i-unlabeled check-le2i \
+pipeline-le2i-gcn: extract-le2i labels-le2i splits-le2i $(PREPROCESS_STEP_LE2I) windows-le2i le2i-unlabeled-list windows-le2i-unlabeled check-le2i \
                   train-gcn-le2i fit-ops-gcn-le2i eval-le2i-gcn plot-le2i-gcn score-unlabeled-le2i-gcn
 	@echo "LE2I pipeline complete (GCN)."
 
-pipeline-urfd-gcn: extract-urfd labels-urfd splits-urfd windows-urfd check-urfd \
+pipeline-urfd-gcn: extract-urfd labels-urfd splits-urfd $(PREPROCESS_STEP_URFD) windows-urfd check-urfd \
                   train-gcn-urfd fit-ops-gcn-urfd
 	@echo "URFD pipeline complete (GCN)."
 
-pipeline-caucafall-gcn: extract-caucafall labels-caucafall splits-caucafall windows-caucafall check-caucafall \
+pipeline-caucafall-gcn: extract-caucafall labels-caucafall splits-caucafall $(PREPROCESS_STEP_CAUC) windows-caucafall check-caucafall \
                        train-gcn-caucafall fit-ops-gcn-caucafall eval-caucafall-gcn plot-caucafall-gcn
 	@echo "CAUCAFall pipeline complete (GCN)."
 
-pipeline-muvim-gcn: extract-muvim labels-muvim splits-muvim windows-muvim check-muvim \
+pipeline-muvim-gcn: extract-muvim labels-muvim splits-muvim $(PREPROCESS_STEP_MUVIM) windows-muvim check-muvim \
                    train-gcn-muvim fit-ops-gcn-muvim eval-muvim-gcn plot-muvim-gcn
 	@echo "MUVIM pipeline complete (GCN)."
 

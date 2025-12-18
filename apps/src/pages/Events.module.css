@@ -1,0 +1,180 @@
+/* src/pages/Events.module.css */
+
+/* --- Global Container --- */
+.container {
+  padding: 32px;
+  background-color: #F3F4F6; /* FallGuard Light Grey */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.pageTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #111827; /* Dark Slate */
+  margin: 0;
+}
+
+/* --- Section 1: Stats Grid --- */
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+
+.statCard {
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  /* Refined Shadow & Border */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid #E5E7EB;
+  padding: 24px;
+  display: flex;
+  gap: 10px;
+  flex-direction: column;
+  align-items: center; /* Aligns text to left per modern UI */
+  justify-content: center;
+  min-height: 120px;
+}
+
+.statNumber {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 4px;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 0.75rem;
+  color: #6B7280; /* Muted Grey */
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* --- Section 2: Filters --- */
+.filterCard {
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid #E5E7EB;
+  padding: 20px 24px;
+}
+
+.sectionTitle {
+  margin: 0 0 16px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filterInputs {
+  display: flex;
+  gap: 16px;
+}
+
+.inputField, .selectField {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: #374151;
+  background-color: #FFFFFF;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.inputField:focus, .selectField:focus {
+  outline: none;
+  border-color: #4F46E5; /* Indigo Focus */
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.inputField::placeholder {
+  color: #9CA3AF;
+}
+
+/* --- Section 3: Table --- */
+.tableCard {
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid #E5E7EB;
+  padding: 0;
+  overflow: hidden;
+}
+
+.eventsTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.eventsTable th {
+  background-color: #F9FAFB; /* Light Grey Header */
+  text-align: left; /* Modern tables usually align left */
+  padding: 16px 24px;
+  font-weight: 600;
+  color: #6B7280;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.eventsTable td {
+  text-align: left;
+  padding: 16px 24px;
+  border-bottom: 1px solid #F3F4F6;
+  color: #111827;
+  font-size: 0.9rem;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.eventsTable tr:last-child td {
+  border-bottom: none;
+}
+
+/* Optional: Row Hover Effect */
+.eventsTable tr:hover td {
+  background-color: #F9FAFB;
+}
+
+/* --- Status Badges (Add this class to your status span) --- */
+.statusBadge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 99px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #FEF3C7; /* Light Yellow */
+  color: #D97706; /* Dark Yellow/Orange */
+  border: 1px solid #FDE68A;
+}
+
+/* --- Action Button --- */
+.viewBtn {
+  background: none;
+  border: none;
+  color: #4B5563; /* Grey by default */
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.viewBtn:hover {
+  color: #4F46E5; /* Indigo on hover */
+  background-color: #EEF2FF;
+}

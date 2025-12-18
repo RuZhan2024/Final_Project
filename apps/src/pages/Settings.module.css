@@ -1,0 +1,361 @@
+/* src/pages/Settings.module.css */
+
+/* --- Global Layout --- */
+.container {
+  padding: 32px;
+  background-color: #F3F4F6; /* FallGuard Light Grey */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.pageTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #111827; /* Dark Slate */
+  margin: 0;
+}
+
+.contentGrid {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+/* 2-Column Layout Logic */
+.leftColumn {
+  flex: 1;
+  min-width: 300px;
+}
+
+.rightColumn {
+  flex: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 300px;
+}
+
+/* --- Card Styles --- */
+.card {
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  padding: 32px;
+  /* Refined Shadow & Border */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid #E5E7EB;
+}
+
+.cardTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #111827;
+  margin-top: 0;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px; /* For potential icons */
+}
+
+/* --- Input Fields (Left Column) --- */
+.formGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.inputWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inputWrapper label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151; /* Medium Grey */
+}
+
+.textInput {
+  padding: 10px 12px;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  color: #111827;
+  background-color: #FFFFFF;
+  transition: all 0.2s;
+}
+
+.textInput:focus {
+  outline: none;
+  border-color: #4F46E5; /* Indigo Focus */
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.textInput::placeholder {
+  color: #9CA3AF;
+}
+
+/* --- Action Button (Send Test Alert) --- */
+.actionBtn {
+  background-color: #FFFFFF;
+  color: #4F46E5;
+  border: 1px solid #E0E7FF;
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 12px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.actionBtn:hover {
+  background-color: #EEF2FF; /* Light Indigo Hover */
+  border-color: #C7D2FE;
+}
+
+/* --- Toggle Switch (Updated to Indigo) --- */
+.toggleRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px; /* Slightly more compact */
+  height: 24px;
+}
+
+.switch input { 
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #E5E7EB; /* Grey when off */
+  border-radius: 34px;
+  transition: .3s;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  border-radius: 50%;
+  transition: .3s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+input:checked + .slider {
+  background-color: #4F46E5; /* FallGuard Indigo Active */
+}
+
+input:checked + .slider:before {
+  transform: translateX(20px);
+}
+
+/* --- Right Column Controls --- */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* Spreads label and radio apart */
+  margin-bottom: 24px;
+}
+
+.labelBold {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+/* Custom Radio Buttons */
+.radioGroup {
+  display: flex;
+  gap: 16px;
+}
+
+.radioLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #4B5563;
+}
+
+.radioLabel input {
+  display: none; 
+}
+
+.customRadio {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #D1D5DB;
+  border-radius: 50%;
+  position: relative;
+  transition: all 0.2s;
+}
+
+/* Radio Checked State: Indigo Ring */
+.radioLabel input:checked + .customRadio {
+  border-color: #4F46E5;
+  border-width: 5px; /* Creates the "dot" effect using border */
+}
+
+/* Presets */
+.sectionSpace {
+  margin-bottom: 32px;
+}
+
+.presetButtons {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.presetBtn {
+  flex: 1;
+  padding: 8px 12px;
+  background-color: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #4B5563;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.presetBtn:hover {
+  background-color: #F9FAFB;
+  border-color: #9CA3AF;
+}
+
+/* Add this class in JSX conditionally for the active button */
+.activePreset {
+  background-color: #EEF2FF !important;
+  color: #4F46E5 !important;
+  border-color: #4F46E5 !important;
+  font-weight: 600;
+}
+
+/* Sliders */
+.sliderGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.sliderRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sliderHeader {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.rangeInput {
+  width: 100%;
+  height: 6px;
+  background: #E5E7EB;
+  border-radius: 3px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.rangeInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #4F46E5; /* Indigo Border */
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.rangeInput::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+/* --- Privacy Section --- */
+.privacyItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.privacyItem:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.privacyText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 80%;
+}
+
+.itemTitle {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.itemDesc {
+  font-size: 0.85rem;
+  color: #6B7280;
+  line-height: 1.4;
+}
+
+.privacyFooter {
+  background-color: #F9FAFB;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 0.85rem;
+  color: #4B5563;
+  line-height: 1.5;
+  margin-top: 8px;
+  border: 1px solid #F3F4F6;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .contentGrid {
+    flex-direction: column;
+  }
+  .leftColumn, .rightColumn {
+    width: 100%;
+  }
+}

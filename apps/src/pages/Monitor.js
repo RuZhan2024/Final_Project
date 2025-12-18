@@ -1,50 +1,138 @@
 // src/pages/Monitor.jsx
-import React, { useState, useRef, useEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 
 const { POSE_CONNECTIONS } = mpPose;
 const { drawConnectors, drawLandmarks } = drawingUtils;
 
-const API_BASE = "http://localhost:8000"; // FastAPI backend
+// Prefer env var, fallback to localhost
+const API_BASE = (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE)
+  ? process.env.REACT_APP_API_BASE
+  : "http://localhost:8000";
+
+
 const WINDOW_SIZE = 48;
 const NUM_JOINTS = 33;
 
-const MODEL_OPTIONS = [
-  { id: "le2i", label: "LE2I TCN" },
-  { id: "urfd", label: "URFD TCN" },
-  { id: "caucafall", label: "CAUCAFall TCN" },
-];
+// If server doesn't provide fps, use these defaults
+const MODEL_TARGET_FPS_FALLBACK = {
+  le2i: 25,
+  urfd: 30,
+  caucafall: 23,
+};
 
-function Monitor() {
+function clamp01(x) {
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+/**
+ * Build a fixed-length [T,33,2] + [T,33] window at a target FPS by resampling
+ * the raw pose frames (which arrive at variable FPS).
+ */
+function buildResampledWindow(rawFrames, targetFps, windowSize) {
+  if (!rawFrames || rawFrames.length === 0) return null;
+
+  const dt = 1000 / targetFps;
+  const endTs = rawFrames[rawFrames.length - 1].t;
+  const startTs = endTs - (windowSize - 1) * dt;
+
+  // Need at least one sample at/before startTs to cover full window
+  if (rawFrames[0].t > startTs) return null;
+
+  const xyOut = [];
+  const confOut = [];
+
+  let j = 0;
+  for (let k = 0; k < windowSize; k++) {
+    const tWanted = startTs + k * dt;
+    while (j + 1 < rawFrames.length && rawFrames[j + 1].t <= tWanted) j++;
+    const fr = rawFrames[j] || rawFrames[0];
+    xyOut.push(fr.xy);
+    confOut.push(fr.conf);
+  }
+
+  return { xy: xyOut, conf: confOut, startTs, endTs };
+}
+
+export default function Monitor() {
+  // Models come from backend (/api/models/summary)
+  const [models, setModels] = useState([]);
+  const [modelsErr, setModelsErr] = useState(null);
+
   const [selectedModel, setSelectedModel] = useState("le2i");
   const [liveRunning, setLiveRunning] = useState(false);
 
+  const [backendOk, setBackendOk] = useState(null); // null/true/false
   const [pFall, setPFall] = useState(null);
   const [threshold, setThreshold] = useState(null);
   const [framesCollected, setFramesCollected] = useState(0);
-  const [frameIndex, setFrameIndex] = useState("-");
+  const [frameIndex, setFrameIndex] = useState(0);
   const [statusText, setStatusText] = useState("SAFE");
 
-  const videoRef = useRef(null);        // hidden video
-  const canvasRef = useRef(null);       // visible skeleton canvas
-  const poseRef = useRef(null);         // MediaPipe Pose instance
-  const streamRef = useRef(null);       // MediaStream
-  const rafRef = useRef(null);          // rAF id
-  const liveFlagRef = useRef(false);    // so loop can see state
-  const windowBufferRef = useRef([]);   // rolling T=48 frames
-  const modelIdRef = useRef("le2i");    // latest selected model
-  const lastSentRef = useRef(0);        // throttle backend calls
+  const [streamFps, setStreamFps] = useState(null);
+  const [targetFps, setTargetFps] = useState(MODEL_TARGET_FPS_FALLBACK.le2i);
 
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  const poseRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const liveFlagRef = useRef(false);
+
+  const rawFramesRef = useRef([]); // [{t,xy,conf}]
+  const lastPoseTsRef = useRef(null);
+  const fpsDeltasRef = useRef([]);
+
+  const modelIdRef = useRef("le2i");
+  const lastSentRef = useRef(0);
+
+  const selectedModelObj = useMemo(
+    () => models.find((m) => m.id === selectedModel) || null,
+    [models, selectedModel]
+  );
+
+  // Load model list from backend (so frontend always matches server)
+  useEffect(() => {
+    (async () => {
+      try {
+        setModelsErr(null);
+        const r = await fetch(`${API_BASE}/api/models/summary`);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        const arr = Array.isArray(data?.models) ? data.models : [];
+        setModels(arr);
+
+        // Ensure selected model exists
+        if (arr.length > 0 && !arr.some((m) => m.id === selectedModel)) {
+          setSelectedModel(arr[0].id);
+        }
+      } catch (e) {
+        setModelsErr(String(e?.message || e));
+        // fallback to a safe set that matches your backend payload type
+        setModels([
+          { id: "le2i", label: "TCN trained on LE2I" },
+          { id: "urfd", label: "TCN trained on URFD" },
+          { id: "caucafall", label: "TCN trained on CAUCAFall" },
+        ]);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync refs + target fps
   useEffect(() => {
     modelIdRef.current = selectedModel;
+    const fallback = MODEL_TARGET_FPS_FALLBACK[selectedModel] ?? 30;
+    setTargetFps(fallback);
   }, [selectedModel]);
 
-  // cleanup on unmount
+  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      stopLiveInternal();
-    };
+    return () => stopLiveInternal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -52,9 +140,36 @@ function Monitor() {
     setPFall(null);
     setThreshold(null);
     setFramesCollected(0);
-    setFrameIndex("-");
+    setFrameIndex(0);
     setStatusText("SAFE");
-    windowBufferRef.current = [];
+    setStreamFps(null);
+
+    rawFramesRef.current = [];
+    lastPoseTsRef.current = null;
+    fpsDeltasRef.current = [];
+  }
+
+  async function pingBackend() {
+    try {
+      const r = await fetch(`${API_BASE}/api/health`);
+      setBackendOk(r.ok);
+      return r.ok;
+    } catch {
+      setBackendOk(false);
+      return false;
+    }
+  }
+
+  function ensureCanvasMatchesVideo() {
+    const videoEl = videoRef.current;
+    const canvasEl = canvasRef.current;
+    if (!videoEl || !canvasEl) return;
+
+    const vw = videoEl.videoWidth || 640;
+    const vh = videoEl.videoHeight || 480;
+
+    if (canvasEl.width !== vw) canvasEl.width = vw;
+    if (canvasEl.height !== vh) canvasEl.height = vh;
   }
 
   async function startLive() {
@@ -64,40 +179,70 @@ function Monitor() {
     setLiveRunning(true);
     liveFlagRef.current = true;
 
+    const ok = await pingBackend();
+    if (!ok) {
+      console.error("Backend not reachable at", API_BASE);
+      // Still allow pose drawing even if backend is down
+    }
+
     try {
       const videoEl = videoRef.current;
       const canvasEl = canvasRef.current;
       if (!videoEl || !canvasEl) {
         console.error("Video or canvas ref missing");
-        setLiveRunning(false);
-        liveFlagRef.current = false;
+        stopLiveInternal();
         return;
       }
 
-      // 1) getUserMedia
+      // Ask camera for an ideal FPS near target
+      const tgtFps = MODEL_TARGET_FPS_FALLBACK[modelIdRef.current] ?? 30;
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480 },
+        video: { width: 640, height: 480, frameRate: { ideal: tgtFps } },
         audio: false,
       });
+
       streamRef.current = stream;
       videoEl.srcObject = stream;
-      await videoEl.play();
 
-      // 2) MediaPipe Pose (note: use namespace import)
+      // Wait for metadata so videoWidth/videoHeight are valid
+      await new Promise((resolve) => {
+        const onLoaded = () => resolve();
+        videoEl.onloadedmetadata = onLoaded;
+      });
+
+      await videoEl.play();
+      ensureCanvasMatchesVideo();
+
+      // Try camera-reported FPS if available
+      try {
+        const track = stream.getVideoTracks()[0];
+        const settings = track?.getSettings?.();
+        if (settings && typeof settings.frameRate === "number") {
+          setStreamFps(settings.frameRate);
+        }
+      } catch {
+        // ignore
+      }
+
+      // MediaPipe Pose
       const pose = new mpPose.Pose({
         locateFile: (file) =>
+          // If you get 404s here, pin a version:
+          // `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
           `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
       });
+
       pose.setOptions({
         modelComplexity: 1,
         smoothLandmarks: true,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5,
       });
+
       pose.onResults(handlePoseResults);
       poseRef.current = pose;
 
-      // 3) pose loop
       const loop = async () => {
         if (!liveFlagRef.current) return;
         if (videoEl.readyState >= 2 && poseRef.current) {
@@ -109,6 +254,7 @@ function Monitor() {
         }
         rafRef.current = requestAnimationFrame(loop);
       };
+
       loop();
     } catch (err) {
       console.error("Error starting live monitoring:", err);
@@ -126,7 +272,11 @@ function Monitor() {
     }
 
     if (poseRef.current && poseRef.current.close) {
-      poseRef.current.close();
+      try {
+        poseRef.current.close();
+      } catch {
+        // ignore
+      }
     }
     poseRef.current = null;
 
@@ -138,19 +288,17 @@ function Monitor() {
     resetState();
   }
 
-  function handleStopClick() {
-    stopLiveInternal();
-  }
-
   function handlePoseResults(results) {
     const canvasEl = canvasRef.current;
     if (!canvasEl) return;
 
     const ctx = canvasEl.getContext("2d");
+    if (!ctx) return;
+
     const w = canvasEl.width;
     const h = canvasEl.height;
 
-    // Clear + dark background
+    // Clear + dark bg
     ctx.save();
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = "#020617";
@@ -162,67 +310,92 @@ function Monitor() {
       return;
     }
 
-    // ---- draw skeleton (no extra scaling, drawing_utils handles it) ----
-    drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {
-      color: "#22c55e",
-      lineWidth: 2,
-    });
+    drawConnectors(ctx, landmarks, POSE_CONNECTIONS, { color: "#22c55e", lineWidth: 2 });
     drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
     ctx.restore();
 
-    // ---- build one frame for the window ----
-    const xyFrame = [];
-    const confFrame = [];
+    // Build raw frame
+    const xyFrame = new Array(NUM_JOINTS);
+    const confFrame = new Array(NUM_JOINTS);
     for (let i = 0; i < NUM_JOINTS; i++) {
       const lm = landmarks[i];
       if (!lm) {
-        xyFrame.push([0, 0]);
-        confFrame.push(0);
+        xyFrame[i] = [0, 0];
+        confFrame[i] = 0;
       } else {
-        xyFrame.push([lm.x, lm.y]); // normalized
-        confFrame.push(
-          typeof lm.visibility === "number" ? lm.visibility : 1.0
-        );
+        xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
+        confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
       }
     }
 
-    const buf = windowBufferRef.current;
-    buf.push({ xy: xyFrame, conf: confFrame });
-    if (buf.length > WINDOW_SIZE) buf.shift();
+    const tNow = performance.now();
 
-    setFramesCollected(buf.length);
-    setFrameIndex((prev) =>
-      typeof prev === "number" ? prev + 1 : 0
-    );
-
-    // send to backend once we have a full window (throttled)
-    if (buf.length === WINDOW_SIZE) {
-      maybeSendWindow();
+    // Estimate FPS from callback timing
+    const last = lastPoseTsRef.current;
+    if (typeof last === "number") {
+      const dt = tNow - last;
+      if (dt > 0 && dt < 5000) {
+        const arr = fpsDeltasRef.current;
+        arr.push(dt);
+        if (arr.length > 30) arr.shift();
+        const meanDt = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
+        const estFps = meanDt > 0 ? 1000 / meanDt : null;
+        if (estFps && Number.isFinite(estFps)) {
+          setStreamFps((prev) => (prev == null ? estFps : prev * 0.8 + estFps * 0.2));
+        }
+      }
     }
+    lastPoseTsRef.current = tNow;
+
+    // Push raw
+    const raw = rawFramesRef.current;
+    raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
+
+    // Keep ~10s max
+    const maxRaw = 600;
+    if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
+
+    // Window readiness
+    const modelId = modelIdRef.current || "le2i";
+    const tgt = MODEL_TARGET_FPS_FALLBACK[modelId] ?? 30;
+    const dtTarget = 1000 / tgt;
+    const endTs = raw[raw.length - 1].t;
+    const startNeed = endTs - (WINDOW_SIZE - 1) * dtTarget;
+
+    const collected = raw[0].t <= startNeed
+      ? WINDOW_SIZE
+      : Math.max(0, Math.min(WINDOW_SIZE, Math.floor((endTs - raw[0].t) / dtTarget) + 1));
+
+    setFramesCollected(collected);
+    setFrameIndex((prev) => prev + 1);
+
+    if (collected === WINDOW_SIZE) maybeSendWindow();
   }
 
   async function maybeSendWindow() {
     const now = performance.now();
-    if (now - lastSentRef.current < 500) return; // at most ~2 req/sec
+    if (now - lastSentRef.current < 500) return; // ~2 req/sec
     lastSentRef.current = now;
 
     const modelId = modelIdRef.current || "le2i";
-    const buf = windowBufferRef.current;
-    if (buf.length < WINDOW_SIZE) return;
+    const tgtFps = MODEL_TARGET_FPS_FALLBACK[modelId] ?? 30;
 
-    const xy = buf.map((f) => f.xy);     // [T,33,2]
-    const conf = buf.map((f) => f.conf); // [T,33]
+    const raw = rawFramesRef.current;
+    const win = buildResampledWindow(raw, tgtFps, WINDOW_SIZE);
+    if (!win) return;
 
     try {
       const resp = await fetch(`${API_BASE}/api/monitor/predict_window`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId, xy, conf }),
+        body: JSON.stringify({ model_id: modelId, xy: win.xy, conf: win.conf }),
       });
+
       if (!resp.ok) {
         console.error("Backend error", await resp.text());
         return;
       }
+
       const data = await resp.json();
       const pf = data.p_fall;
       const thr = data.threshold;
@@ -235,18 +408,31 @@ function Monitor() {
     }
   }
 
-  const circleColor =
-    statusText === "FALL DETECTED" ? "#dc2626" : "#16a34a";
+  const circleColor = statusText === "FALL DETECTED" ? "#dc2626" : "#16a34a";
+  const displayedTargetFps = targetFps ?? 30;
 
   return (
     <div style={{ padding: "1.5rem" }}>
       <h1 style={{ fontSize: "1.5rem", marginBottom: "0.25rem" }}>
         Live Monitor
       </h1>
-      <p style={{ marginBottom: "1rem", color: "#4b5563" }}>
-        Webcam → MediaPipe Pose → skeleton window (T=48) → TCN model on
-        FastAPI backend. Only the skeleton (no RGB video) is shown for privacy.
+
+      <p style={{ marginBottom: "0.75rem", color: "#4b5563" }}>
+        Webcam → MediaPipe Pose → resample to model FPS → window (T={WINDOW_SIZE}) → FastAPI
       </p>
+
+      {/* Backend status */}
+      <div style={{ marginBottom: "0.75rem", fontSize: "0.9rem", color: "#4b5563" }}>
+        <strong>Backend:</strong>{" "}
+        {backendOk == null ? "unknown" : backendOk ? "OK" : "NOT REACHABLE"}{" "}
+        <span style={{ color: "#9ca3af" }}>({API_BASE})</span>
+      </div>
+
+      {modelsErr && (
+        <div style={{ marginBottom: "0.75rem", color: "#b45309" }}>
+          Could not load /api/models/summary: {modelsErr}
+        </div>
+      )}
 
       {/* Controls */}
       <div
@@ -270,9 +456,9 @@ function Monitor() {
               border: "1px solid #d1d5db",
             }}
           >
-            {MODEL_OPTIONS.map((m) => (
+            {models.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.label}
+                {m.label || m.id}
               </option>
             ))}
           </select>
@@ -294,7 +480,7 @@ function Monitor() {
         </button>
 
         <button
-          onClick={handleStopClick}
+          onClick={stopLiveInternal}
           style={{
             padding: "0.5rem 1rem",
             borderRadius: 9999,
@@ -305,18 +491,20 @@ function Monitor() {
         >
           ⏹ Stop
         </button>
+
+        <div style={{ fontSize: "0.85rem", color: "#4b5563" }}>
+          <div>
+            <strong>Target FPS:</strong> {displayedTargetFps}
+          </div>
+          <div>
+            <strong>Stream FPS:</strong>{" "}
+            {streamFps != null ? streamFps.toFixed(1) : "-"}
+          </div>
+        </div>
       </div>
 
-      {/* Status + skeleton preview */}
-      <div
-        style={{
-          display: "flex",
-          gap: "2rem",
-          alignItems: "flex-start",
-          flexWrap: "wrap",
-        }}
-      >
-        {/* Status circle */}
+      {/* Status + skeleton */}
+      <div style={{ display: "flex", gap: "2rem", alignItems: "flex-start", flexWrap: "wrap" }}>
         <div
           style={{
             width: 200,
@@ -333,39 +521,19 @@ function Monitor() {
           <div style={{ fontSize: "1.8rem", fontWeight: 600 }}>
             {pFall != null ? pFall.toFixed(2) : "-"}
           </div>
-          <div
-            style={{
-              marginTop: "0.25rem",
-              fontWeight: 600,
-              color: circleColor,
-              fontSize: "0.9rem",
-              textAlign: "center",
-            }}
-          >
+          <div style={{ marginTop: "0.25rem", fontWeight: 600, color: circleColor, fontSize: "0.9rem", textAlign: "center" }}>
             {statusText}
           </div>
-          <div
-            style={{
-              marginTop: "0.25rem",
-              fontSize: "0.75rem",
-              color: "#6b7280",
-            }}
-          >
-            Live skeleton window
+          <div style={{ marginTop: "0.25rem", fontSize: "0.75rem", color: "#6b7280" }}>
+            Model: {selectedModelObj?.label || selectedModel}
           </div>
         </div>
 
-        {/* Skeleton canvas */}
         <div style={{ flex: 1, minWidth: 320 }}>
-          <div
-            style={{
-              marginBottom: "0.25rem",
-              fontSize: "0.9rem",
-              fontWeight: 500,
-            }}
-          >
+          <div style={{ marginBottom: "0.25rem", fontSize: "0.9rem", fontWeight: 500 }}>
             Skeleton preview
           </div>
+
           <canvas
             ref={canvasRef}
             width={640}
@@ -379,17 +547,26 @@ function Monitor() {
               border: "1px solid #111827",
             }}
           />
-          {/* hidden video */}
+
+          {/* IMPORTANT: keep video decoding by NOT using display:none */}
           <video
             ref={videoRef}
             playsInline
             muted
-            style={{ display: "none" }}
+            style={{
+              position: "absolute",
+              left: "-9999px",
+              top: "0",
+              width: 640,
+              height: 480,
+              opacity: 0,
+              pointerEvents: "none",
+            }}
           />
         </div>
       </div>
 
-      {/* Monitoring details */}
+      {/* Details */}
       <div
         style={{
           marginTop: "1.5rem",
@@ -402,44 +579,15 @@ function Monitor() {
           Monitoring details
         </h2>
         <p style={{ margin: 0 }}>
-          <strong>Selected model:</strong>{" "}
-          {
-            MODEL_OPTIONS.find((m) => m.id === selectedModel)?.label ??
-            selectedModel
-          }
+          <strong>Collected frames:</strong> {framesCollected}/{WINDOW_SIZE}
         </p>
         <p style={{ margin: 0 }}>
-          <strong>Mode:</strong> Live (webcam + MediaPipe Pose)
+          <strong>Frame index:</strong> {frameIndex}
         </p>
         <p style={{ margin: 0 }}>
-          <strong>Frame index:</strong> {String(frameIndex)}
-        </p>
-        <p style={{ margin: 0 }}>
-          <strong>Collected frames (live window):</strong>{" "}
-          {framesCollected}/{WINDOW_SIZE}
-        </p>
-        <p style={{ margin: 0 }}>
-          <strong>Decision threshold:</strong>{" "}
-          {threshold != null ? threshold.toFixed(2) : "-"}
-        </p>
-        <p
-          style={{
-            marginTop: "0.5rem",
-            fontSize: "0.85rem",
-            color: "#4b5563",
-          }}
-        >
-          Every {WINDOW_SIZE} frames, the page builds a pose window (33 joints ×
-          2D) and periodically sends it to the FastAPI backend. When the fall
-          probability crosses the threshold, the status flips from SAFE to{" "}
-          <span style={{ color: "#dc2626", fontWeight: 600 }}>
-            FALL DETECTED
-          </span>
-          .
+          <strong>Decision threshold:</strong> {threshold != null ? threshold.toFixed(3) : "-"}
         </p>
       </div>
     </div>
   );
 }
-
-export default Monitor;

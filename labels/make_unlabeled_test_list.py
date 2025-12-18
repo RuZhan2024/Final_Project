@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import argparse, glob, os, pathlib, re
 
 def norm(s: str) -> str:
