@@ -39,13 +39,11 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 0 24px;         /* Padding inside sidebar */
   margin-bottom: 32px;     /* Space between logo and links */
 }
 
 .logoImage {
   width: 100%;
-  max-width: 150px;        /* Restrict size nicely */
   height: auto;            /* Maintain aspect ratio */
   display: block;
 }

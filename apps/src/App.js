@@ -1,4 +1,3 @@
-
 import React from "react";
 import { Routes, Route, Link, Navigate, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
@@ -7,51 +6,56 @@ import Events from "./pages/Events";
 import Settings from "./pages/Settings";
 import Monitor_demo from "./pages/Monitor_demo";
 
-
-
-import styles from "./App.module.css"; 
+import styles from "./App.module.css";
 
 function App() {
   return (
     <div className={styles.container}>
-      
       <aside className={styles.sideNav}>
         <div className={styles.logoContainer}>
-          <img 
-          src="/logo_dark.png" 
-          alt="Guardian Angel Logo" 
-          className={styles.logoImage}
-      />
+          <img
+            src="/logo_dark.png"
+            alt="Guardian Angel Logo"
+            className={styles.logoImage}
+          />
         </div>
-       <nav className={styles.sideNavList}>
-  <NavLink 
-    to="/dashboard" 
-    className={({ isActive }) => isActive ? styles.activeLink : undefined}
-  >
-    Dashboard
-  </NavLink>
+        <nav className={styles.sideNavList}>
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) =>
+              isActive ? styles.activeLink : undefined
+            }
+          >
+            Dashboard
+          </NavLink>
 
-  <NavLink 
-    to="/monitor" 
-    className={({ isActive }) => isActive ? styles.activeLink : undefined}
-  >
-    Live Monitor
-  </NavLink>
+          <NavLink
+            to="/monitor"
+            className={({ isActive }) =>
+              isActive ? styles.activeLink : undefined
+            }
+          >
+            Live Monitor
+          </NavLink>
 
-  <NavLink 
-    to="/events" 
-    className={({ isActive }) => isActive ? styles.activeLink : undefined}
-  >
-    Event History
-  </NavLink>
+          <NavLink
+            to="/events"
+            className={({ isActive }) =>
+              isActive ? styles.activeLink : undefined
+            }
+          >
+            Event History
+          </NavLink>
 
-  <NavLink 
-    to="/settings" 
-    className={({ isActive }) => isActive ? styles.activeLink : undefined}
-  >
-    Settings
-  </NavLink>
-</nav>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              isActive ? styles.activeLink : undefined
+            }
+          >
+            Settings
+          </NavLink>
+        </nav>
       </aside>
 
       <main className={styles.mainContent}>
@@ -72,7 +76,6 @@ function App() {
           />
         </Routes>
       </main>
-      
     </div>
   );
 }
