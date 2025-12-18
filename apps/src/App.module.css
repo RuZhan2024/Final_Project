@@ -2,36 +2,23 @@
 
 /* 1. The Main Wrapper */
 .container {
-  display: flex;            /* Enables side-by-side layout */
+  display: flex;
   width: 100%;
-  
-  /* Layout Constraints */
-  min-width: 800px;
-  max-width: 1400px;
-  margin: 0 auto;
-  min-height: 100vh;
-  
-  /* UPDATED: FallGuard Light Grey Background */
-  background-color: #F3F4F6; 
+  height: 100vh;      /* Force full viewport height */
+  overflow: hidden;   /* Prevent the wrapper itself from scrolling */
+  background-color: #F3F4F6;
 }
 
-/* 2. The Sidebar */
+/* Sidebar remains the same */
 .sideNav {
   width: 250px;
-  height: 100vh;           /* Full height */
-  flex-shrink: 0;          /* CRITICAL: Prevents sidebar from squishing */
-  
-  /* UPDATED: White background with subtle border */
-  background-color: #FFFFFF; 
-  border-right: 1px solid #E5E7EB; 
-  
+  height: 100%;
+  flex-shrink: 0;
+  background-color: #FFFFFF;
+  border-right: 1px solid #E5E7EB;
   display: flex;
   flex-direction: column;
-  padding: 24px 0;         /* Vertical padding */
-  
-  /* UX Improvement: Keeps sidebar fixed while scrolling */
-  position: sticky;        
-  top: 0;
+  padding: 24px 0;
 }
 
 /* 3. Logo Area */
@@ -86,8 +73,9 @@
 
 /* 8. Main Content Area */
 .mainContent {
-  flex: 1;                 /* Grow to fill remaining space */
-  padding: 32px;           /* Generous padding for content */
-  background-color: #F3F4F6; /* Matches container background */
-  overflow-y: auto;        /* Allows scrolling */
+  flex: 1;
+  height: 100%;       /* Match parent height */
+  overflow-y: auto;   /* THIS is the only scrollbar you want */
+  padding: 32px;
+  background-color: #F3F4F6;
 }

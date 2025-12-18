@@ -4,7 +4,7 @@
 .container {
   padding: 32px;
   background-color: #F0F2F5; /* Material Light Grey */
-  min-height: 100vh;
+  min-height: auto;
   display: flex;
   flex-direction: column;
   gap: 24px;

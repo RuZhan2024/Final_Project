@@ -2,7 +2,7 @@
 .pageContainer {
   padding: 20px;
   background-color: #f4f6f8; /* Light grey background from image */
-  min-height: 100vh;
+  min-height: auto;
 }
 
 .pageTitle {
