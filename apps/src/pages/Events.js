@@ -1,16 +1,73 @@
 import React from "react";
+import DatePicker from "react-datepicker";
 import styles from "./Events.module.css";
 
 function Events() {
   // Sample data to mimic the table in your image
   const eventsData = [
-    { id: 1, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 2, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 3, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 4, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 5, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 6, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
-    { id: 7, time: "23/11/2025", type: "fall", model: "TCN", prob: "85%", delay: "0.8", status: "Pending Review" },
+    {
+      id: 1,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 2,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 3,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 4,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 5,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 6,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
+    {
+      id: 7,
+      time: "23/11/2025",
+      type: "fall",
+      model: "TCN",
+      prob: "85%",
+      delay: "0.8",
+      status: "Pending Review",
+    },
   ];
 
   return (
@@ -41,25 +98,47 @@ function Events() {
       <div className={styles.filterCard}>
         <h3 className={styles.sectionTitle}>Filters</h3>
         <div className={styles.filterInputs}>
-          {/* Mimicking the Date Picker */}
-          <input 
-            type="text" 
-            placeholder="20/11/2025 - 23/11/2025" 
-            className={styles.inputField} 
+          {/* Date Range Pickers */}
+          {/* Start Date Picker */}
+          <input
+            type="text"
+            placeholder="Start Date"
+            className={styles.inputField}
+            onFocus={(e) => (e.target.type = "date")}
+            onBlur={(e) => {
+              if (!e.target.value) e.target.type = "text";
+            }}
+          />
+
+          {/* End Date Picker */}
+          <input
+            type="text"
+            placeholder="End Date"
+            className={styles.inputField}
+            onFocus={(e) => (e.target.type = "date")}
+            onBlur={(e) => {
+              if (!e.target.value) e.target.type = "text";
+            }}
           />
           {/* Dropdowns */}
           <select className={styles.selectField} defaultValue="">
-            <option value="" disabled hidden>All Types</option>
+            <option value="" disabled hidden>
+              All Types
+            </option>
             <option value="fall">Fall</option>
             <option value="manual">Manual</option>
           </select>
           <select className={styles.selectField} defaultValue="">
-            <option value="" disabled hidden>All Status</option>
+            <option value="" disabled hidden>
+              All Status
+            </option>
             <option value="pending">Pending Review</option>
             <option value="confirmed">Confirmed</option>
           </select>
           <select className={styles.selectField} defaultValue="">
-            <option value="" disabled hidden>All Models</option>
+            <option value="" disabled hidden>
+              All Models
+            </option>
             <option value="tcn">TCN</option>
             <option value="gcn">GCN</option>
           </select>
@@ -97,7 +176,6 @@ function Events() {
           </tbody>
         </table>
       </div>
-
     </div>
   );
 }

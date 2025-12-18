@@ -3,17 +3,18 @@
 /* --- Global Layout --- */
 .container {
   padding: 32px;
-  background-color: #F3F4F6; /* FallGuard Light Grey */
+  background-color: #F0F2F5; /* Material Light Grey */
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  font-family: 'Roboto', sans-serif;
 }
 
 .pageTitle {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: #111827; /* Dark Slate */
+  font-size: 1.75rem;
+  font-weight: 500;
+  color: #202124;
   margin: 0;
 }
 
@@ -39,23 +40,19 @@
 
 /* --- Card Styles --- */
 .card {
-  background-color: #FFFFFF;
-  border-radius: 12px;
+  background-color: white;
+  border-radius: 8px;
   padding: 32px;
-  /* Refined Shadow & Border */
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  border: 1px solid #E5E7EB;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  border: none;
 }
 
 .cardTitle {
   font-size: 1.1rem;
-  font-weight: 600;
-  color: #111827;
+  font-weight: 500;
+  color: #202124;
   margin-top: 0;
   margin-bottom: 24px;
-  display: flex;
-  align-items: center;
-  gap: 8px; /* For potential icons */
 }
 
 /* --- Input Fields (Left Column) --- */
@@ -68,73 +65,65 @@
 .inputWrapper {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .inputWrapper label {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: #374151; /* Medium Grey */
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #5F6368;
 }
 
 .textInput {
-  padding: 10px 12px;
-  border: 1px solid #D1D5DB;
-  border-radius: 6px;
-  font-size: 0.95rem;
-  color: #111827;
-  background-color: #FFFFFF;
-  transition: all 0.2s;
+  padding: 12px;
+  border: 1px solid #DADCE0;
+  border-radius: 4px;
+  font-size: 1rem;
+  color: #202124;
+  transition: border 0.2s;
 }
 
 .textInput:focus {
   outline: none;
-  border-color: #4F46E5; /* Indigo Focus */
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-}
-
-.textInput::placeholder {
-  color: #9CA3AF;
+  border: 2px solid #1A73E8;
+  padding: 11px; /* Adjust for border width change */
 }
 
 /* --- Action Button (Send Test Alert) --- */
 .actionBtn {
-  background-color: #FFFFFF;
-  color: #4F46E5;
-  border: 1px solid #E0E7FF;
+  background-color: white;
+  color: #1A73E8;
+  border: 1px solid #DADCE0;
   padding: 12px;
-  border-radius: 6px;
-  font-size: 0.95rem;
-  font-weight: 600;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
   cursor: pointer;
   margin-top: 12px;
   transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .actionBtn:hover {
-  background-color: #EEF2FF; /* Light Indigo Hover */
-  border-color: #C7D2FE;
+  background-color: #F8F9FA;
+  border-color: #1A73E8;
 }
 
-/* --- Toggle Switch (Updated to Indigo) --- */
+/* --- Toggle Switch (Material Design) --- */
 .toggleRow {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.95rem;
-  font-weight: 500;
-  color: #374151;
+  font-size: 0.875rem;
+  color: #3C4043;
 }
 
 .switch {
   position: relative;
   display: inline-block;
-  width: 44px; /* Slightly more compact */
-  height: 24px;
+  width: 36px;
+  height: 14px;
 }
 
 .switch input { 
@@ -147,47 +136,48 @@
   position: absolute;
   cursor: pointer;
   top: 0; left: 0; right: 0; bottom: 0;
-  background-color: #E5E7EB; /* Grey when off */
-  border-radius: 34px;
-  transition: .3s;
+  background-color: #BDBDBD;
+  border-radius: 14px;
+  transition: .4s;
 }
 
 .slider:before {
   position: absolute;
   content: "";
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background-color: white;
+  height: 20px;
+  width: 20px;
+  left: -2px;
+  bottom: -3px;
+  background-color: #FAFAFA;
   border-radius: 50%;
-  transition: .3s;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  transition: .4s;
 }
 
 input:checked + .slider {
-  background-color: #4F46E5; /* FallGuard Indigo Active */
+  background-color: #AECBFA; /* Light Blue Track */
 }
 
 input:checked + .slider:before {
   transform: translateX(20px);
+  background-color: #1A73E8; /* Blue Thumb */
 }
 
 /* --- Right Column Controls --- */
 .row {
   display: flex;
   align-items: center;
-  justify-content: space-between; /* Spreads label and radio apart */
+  justify-content: space-between;
   margin-bottom: 24px;
 }
 
 .labelBold {
-  font-weight: 600;
-  font-size: 0.9rem;
-  color: #374151;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: #3C4043;
 }
 
-/* Custom Radio Buttons */
+/* --- Custom Radio Buttons (Fixed: No Shaking) --- */
 .radioGroup {
   display: flex;
   gap: 16px;
@@ -198,8 +188,8 @@ input:checked + .slider:before {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 0.9rem;
-  color: #4B5563;
+  font-size: 0.875rem;
+  color: #5F6368;
 }
 
 .radioLabel input {
@@ -209,19 +199,38 @@ input:checked + .slider:before {
 .customRadio {
   width: 18px;
   height: 18px;
-  border: 1px solid #D1D5DB;
+  border: 2px solid #5F6368; /* Fixed border width */
   border-radius: 50%;
   position: relative;
   transition: all 0.2s;
+  
+  /* Flex to center the dot */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* Radio Checked State: Indigo Ring */
+/* The inner dot (initially hidden/scaled down) */
+.customRadio::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  background-color: #1A73E8;
+  border-radius: 50%;
+  transform: scale(0);
+  transition: transform 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+/* Active State */
 .radioLabel input:checked + .customRadio {
-  border-color: #4F46E5;
-  border-width: 5px; /* Creates the "dot" effect using border */
+  border-color: #1A73E8;
 }
 
-/* Presets */
+.radioLabel input:checked + .customRadio::after {
+  transform: scale(1);
+}
+
+/* --- Presets --- */
 .sectionSpace {
   margin-bottom: 32px;
 }
@@ -235,30 +244,27 @@ input:checked + .slider:before {
 .presetBtn {
   flex: 1;
   padding: 8px 12px;
-  background-color: #FFFFFF;
-  border: 1px solid #D1D5DB;
-  border-radius: 6px;
+  background-color: white;
+  border: 1px solid #DADCE0;
+  border-radius: 4px;
   cursor: pointer;
-  color: #4B5563;
+  color: #5F6368;
   font-size: 0.85rem;
   font-weight: 500;
   transition: all 0.2s;
 }
 
 .presetBtn:hover {
-  background-color: #F9FAFB;
-  border-color: #9CA3AF;
+  background-color: #F8F9FA;
 }
 
-/* Add this class in JSX conditionally for the active button */
 .activePreset {
-  background-color: #EEF2FF !important;
-  color: #4F46E5 !important;
-  border-color: #4F46E5 !important;
-  font-weight: 600;
+  background-color: #E8F0FE !important;
+  color: #1967D2 !important;
+  border-color: #1967D2 !important;
 }
 
-/* Sliders */
+/* --- Sliders --- */
 .sliderGroup {
   display: flex;
   flex-direction: column;
@@ -275,34 +281,58 @@ input:checked + .slider:before {
   display: flex;
   justify-content: space-between;
   font-size: 0.85rem;
-  font-weight: 600;
-  color: #374151;
+  font-weight: 500;
+  color: #5F6368;
 }
 
 .rangeInput {
   width: 100%;
-  height: 6px;
-  background: #E5E7EB;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   outline: none;
   -webkit-appearance: none;
+  
+  /* CRITICAL: Transparent background so JS gradient shows */
+  background-color: transparent; 
 }
 
 .rangeInput::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: white;
-  border: 2px solid #4F46E5; /* Indigo Border */
-  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  background: #1A73E8;
   cursor: pointer;
-  transition: transform 0.1s;
+  box-shadow: 0 0 0 0 rgba(26,115,232,0);
+  transition: box-shadow 0.2s;
+  
+  /* Fix vertical alignment */
+  margin-top: -6px; /* (Thumb Height - Track Height) / 2 */
 }
 
+/* For Firefox support */
+.rangeInput::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #1A73E8;
+  cursor: pointer;
+}
+
+/* Chrome track (needed for alignment) */
+.rangeInput::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  border-radius: 2px;
+  /* Background is handled by JS inline style */
+}
+
+/* Hover Effect */
 .rangeInput::-webkit-slider-thumb:hover {
-  transform: scale(1.1);
+  box-shadow: 0 0 0 8px rgba(26,115,232,0.1);
 }
 
 /* --- Privacy Section --- */
@@ -312,7 +342,7 @@ input:checked + .slider:before {
   align-items: flex-start;
   margin-bottom: 24px;
   padding-bottom: 24px;
-  border-bottom: 1px solid #F3F4F6;
+  border-bottom: 1px solid #F1F3F4;
 }
 
 .privacyItem:last-of-type {
@@ -328,26 +358,26 @@ input:checked + .slider:before {
 }
 
 .itemTitle {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: #111827;
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: #202124;
 }
 
 .itemDesc {
-  font-size: 0.85rem;
-  color: #6B7280;
+  font-size: 0.8rem;
+  color: #5F6368;
   line-height: 1.4;
 }
 
 .privacyFooter {
-  background-color: #F9FAFB;
-  border-radius: 8px;
+  background-color: #F8F9FA;
+  border-radius: 4px;
   padding: 16px;
   font-size: 0.85rem;
-  color: #4B5563;
+  color: #5F6368;
   line-height: 1.5;
   margin-top: 8px;
-  border: 1px solid #F3F4F6;
+  border: 1px solid #F1F3F4;
 }
 
 /* Responsive */
