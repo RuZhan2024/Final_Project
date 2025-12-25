@@ -1,0 +1,57 @@
+arch: "gcn"
+ckpt: "outputs/le2i_gcn_W48S12_hnm/best.pt"
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.35999998450279236
+  tau_low: 0.21599999070167542
+  cooldown_s: 30.0
+ops:
+  op1:
+    tau_high: 0.35999998450279236
+    tau_low: 0.21599999070167542
+    precision: 0.7674418604651163
+    recall: 1.0
+    f1: 0.868421052631579
+    fa24h: 1595.223601726423
+    fa_per_hour: 66.4676500719343
+    mean_delay_s: 0.5721192757288615
+    median_delay_s: 0.47999995946884155
+    hits_boundary: false
+  op2:
+    tau_high: 0.35999998450279236
+    tau_low: 0.21599999070167542
+    precision: 0.7674418604651163
+    recall: 1.0
+    f1: 0.868421052631579
+    fa24h: 1595.223601726423
+    fa_per_hour: 66.4676500719343
+    mean_delay_s: 0.5721192757288615
+    median_delay_s: 0.47999995946884155
+    hits_boundary: false
+  op3:
+    tau_high: 0.3799999952316284
+    tau_low: 0.22799999713897703
+    precision: 1.0
+    recall: 0.3333333333333333
+    f1: 0.5
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 1.412720723585649
+    median_delay_s: 1.4999761581420898
+    hits_boundary: false
+sweep_meta:
+  n_videos: 48
+  total_duration_s: 541.6168611503366
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[47, 38, 37, 36, 35]"

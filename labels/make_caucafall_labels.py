@@ -1,53 +1,33 @@
-
+#!/usr/bin/env python3
 """
-CAUCAFall – build labels (stem -> "adl"/"fall") and optional per-frame fall spans.
+CAUCAFall labels (+ optional fall spans) builder (rewrite).
 
-Why this exists
----------------
-Some CAUCAFall releases provide per-frame annotation .txt files (often in YOLO
-format) where the *class id* indicates "fall" vs "nofall". If you label an
-entire "fall video" as positive, then pre-fall / post-fall windows become
-positive too, which can inflate positives after windowing and push thresholds
-lower / increase false alarms.
+Writes
+------
+- --out_labels : JSON {stem: "adl"|"fall"} (video/sequence-level label)
+- --out_spans  : JSON {stem: [[start, stop], ...]} (optional; half-open)
 
-This script can optionally derive fall spans from per-frame .txt annotations so
-window labels can be computed by span overlap in make_windows.py.
+Why spans?
+----------
+CAUCAFall "fall" sequences often contain pre-fall ADL motion. If you label the whole clip
+as positive, you contaminate training (walk/stand becomes "fall-ish") and increase false alarms.
+If per-frame annotation txts encode fall-vs-adl classes, we can derive fall spans and later
+label windows by span overlap.
 
-Outputs
--------
-1) labels JSON:
-   { "<stem>": "fall" | "adl" }
+Inputs
+------
+- --npz_dir: cleaned pose sequences (.npz) (default: data/interim/caucafall/pose_npz)
 
-2) spans JSON (optional):
-   { "<stem>": [[start, stop], ...] }
+Optional per-frame annotation support:
+- --ann_glob: pattern with "{stem}" placeholder, e.g. 'data/raw/CAUCAFall/**/{stem}/*.txt'
+- --fall_class_id: numeric class id indicating FALL (only if your txts encode action classes)
+- --min_run / --gap_fill: run-length cleanup for spans
 
-Span convention: half-open intervals [start, stop) in *frame index units*
-relative to the extraction order (sorted by filename). Use
-`--spans_end_exclusive` in make_windows.py when consuming these spans.
-
-Per-frame annotation assumption
--------------------------------
-Each frame has a corresponding .txt file that may contain one or more lines.
-We interpret a frame as "fall" if ANY line has class_id == fall_class_id.
-
-Common YOLO line format:
-  <class_id> <x_center> <y_center> <width> <height>
-
-If your annotation files literally contain the strings "fall"/"nofall" instead
-of numeric IDs, this script also supports that.
-
-Usage examples
---------------
-# Video-level labels only (legacy behaviour)
-python labels/make_caucafall_labels.py --npz_dir data/interim/caucafall/pose_npz --out_labels configs/labels/caucafall.json
-
-# Labels + spans (recommended if you have per-frame .txt annotations)
-python labels/make_caucafall_labels.py \
-  --npz_dir data/interim/caucafall/pose_npz \
-  --ann_glob 'data/raw/caucafall/frames/{stem}/*.txt' \
-  --out_labels configs/labels/caucafall.json \
-  --out_spans  configs/labels/caucafall_spans.json \
-  --fall_class_id 0 --min_run 3 --gap_fill 1
+Important caveat
+----------------
+Some CAUCAFall per-frame txt files may be *person bounding boxes only* (class=person).
+In that case, span derivation will not work (no "fall class"). The script will still
+write labels inferred from folder/stem tokens, but spans may be empty.
 """
 
 from __future__ import annotations
@@ -58,29 +38,47 @@ import json
 import os
 import pathlib
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+import numpy as np
 
 
-def list_npzs(npz_dir: str) -> List[str]:
+def read_npz_src(npz_path: str) -> str:
+    """Read embedded 'src' field from a cleaned pose npz if present."""
+    try:
+        with np.load(npz_path, allow_pickle=True) as z:
+            if "src" in z.files:
+                v = z["src"]
+                # np arrays can store bytes/object; normalize to str
+                if isinstance(v, (bytes, bytearray)):
+                    return v.decode("utf-8", errors="ignore")
+                if hasattr(v, "item"):
+                    try:
+                        return str(v.item())
+                    except Exception:
+                        return str(v)
+                return str(v)
+    except Exception:
+        return ""
+    return ""
+
+def list_npz_files(npz_dir: str) -> List[str]:
     return sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
 
-
 def tokenise(s: str) -> List[str]:
-    # split by non-alphanumeric boundaries
     return [t for t in re.split(r"[^A-Za-z0-9]+", s.lower()) if t]
-
 
 def infer_label_from_path(npz_path: str) -> str:
     """
-    Safer heuristic than `'fall' in name`:
-    - If tokens include nonfall/nofall/adl -> adl
-    - Else if tokens include fall -> fall
-    - Else -> adl
+    Safer heuristic than 'fall' substring:
+      - if tokens contain nonfall/nofall/adl -> adl
+      - elif tokens contain fall -> fall
+      - else -> adl
     """
     p = pathlib.Path(npz_path)
-    stem_tokens = tokenise(p.stem)
-    parent_tokens = tokenise(p.parent.name if p.parent else "")
-    toks = set(stem_tokens + parent_tokens + [t for part in p.parts for t in tokenise(part)])
+    toks = set()
+    for part in p.parts:
+        toks.update(tokenise(part))
+    toks.update(tokenise(p.stem))
 
     if any(t in toks for t in ("nonfall", "nofall", "adl", "normal")):
         return "adl"
@@ -88,43 +86,23 @@ def infer_label_from_path(npz_path: str) -> str:
         return "fall"
     return "adl"
 
-
 def expand_ann_glob(ann_glob: str, stem: str) -> List[str]:
-    """
-    ann_glob should include "{stem}" placeholder, e.g.
-      data/raw/caucafall/labels/{stem}/*.txt
-      data/raw/caucafall/**/{stem}/*.txt
-      data/raw/caucafall/**/{stem}/*.txt
-    """
-    pattern = ann_glob.format(stem=stem)
-    return sorted(glob.glob(pattern, recursive=True))
+    return sorted(glob.glob(ann_glob.format(stem=stem), recursive=True))
 
-
-def parse_frame_label(txt_path: str, fall_class_id: int) -> Optional[bool]:
-    """
-    Return True if frame labeled fall, False if nofall, None if file unreadable.
-    Supports:
-      - YOLO-like numeric first token (class id)
-      - literal 'fall' / 'nofall' tokens anywhere in the file
-    """
+def parse_frame_is_fall(txt_path: str, fall_class_id: int) -> Optional[bool]:
     try:
         content = pathlib.Path(txt_path).read_text(encoding="utf-8", errors="ignore").strip()
     except Exception:
         return None
-
     if not content:
-        # empty annotation: treat as no fall (common if no object detected)
         return False
 
     low = content.lower()
-    # literal labels
     if "nofall" in low or "nonfall" in low:
         return False
-    # careful: "fall" is substring of "nonfall", already handled above
     if re.search(r"\bfall\b", low):
         return True
 
-    # numeric class id case: check first token on each line
     for line in content.splitlines():
         line = line.strip()
         if not line:
@@ -136,23 +114,11 @@ def parse_frame_label(txt_path: str, fall_class_id: int) -> Optional[bool]:
             cid = int(float(parts[0]))
         except Exception:
             continue
-        if cid == fall_class_id:
+        if cid == int(fall_class_id):
             return True
-
     return False
 
-
-def bool_runs_to_spans(
-    flags: List[bool],
-    min_run: int = 1,
-    gap_fill: int = 0,
-) -> List[List[int]]:
-    """
-    Convert per-frame boolean flags to half-open spans [start, stop).
-
-    gap_fill: fill gaps of up to this many False frames inside a True run.
-    min_run:  minimum run length (in frames) to keep.
-    """
+def bool_runs_to_spans(flags: List[bool], min_run: int, gap_fill: int) -> List[List[int]]:
     if not flags:
         return []
 
@@ -165,7 +131,6 @@ def bool_runs_to_spans(
             if filled[i]:
                 i += 1
                 continue
-            # find a false gap
             j = i
             while j < n and not filled[j]:
                 j += 1
@@ -189,80 +154,98 @@ def bool_runs_to_spans(
         j = i
         while j < n and flags[j]:
             j += 1
-        stop = j  # half-open
+        stop = j
         if (stop - start) >= max(1, int(min_run)):
             spans.append([start, stop])
         i = stop
     return spans
 
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--npz_dir", required=True, help="data/interim/caucafall/pose_npz")
-    ap.add_argument("--out_labels", required=True, help="configs/labels/caucafall.json")
-    ap.add_argument("--out_spans", default=None, help="configs/labels/caucafall_spans.json (optional)")
-    ap.add_argument(
-        "--ann_glob",
-        default=None,
-        help="Glob pattern with {stem} placeholder pointing to per-frame .txt annotations, e.g. 'data/raw/caucafall/**/{stem}/*.txt'",
-    )
-    ap.add_argument("--fall_class_id", type=int, default=0, help="Numeric class id that means FALL in per-frame txt.")
-    ap.add_argument("--min_run", type=int, default=3, help="Minimum consecutive fall frames to form a span.")
-    ap.add_argument("--gap_fill", type=int, default=1, help="Fill short gaps (False runs) up to this many frames.")
-    ap.add_argument("--print_stats", action="store_true", help="Print simple stats about derived spans.")
+    ap.add_argument("--npz_dir", default="data/interim/caucafall/pose_npz")
+    ap.add_argument("--out_labels", default="configs/labels/caucafall.json")
+    ap.add_argument("--out_spans", default="configs/labels/caucafall_spans.json")
+    ap.add_argument("--ann_glob", default=None,
+                    help="Per-frame txt glob with {stem} placeholder, e.g. 'data/raw/CAUCAFall/**/{stem}/*.txt'")
+    ap.add_argument("--use_per_frame_action_txt", type=int, default=0,
+                    help="Set to 1 to parse per-frame action txt files via --ann_glob. Default 0 uses clip-level labels only.")
+    ap.add_argument("--fall_class_id", type=int, default=0)
+    ap.add_argument("--min_run", type=int, default=3)
+    ap.add_argument("--gap_fill", type=int, default=1)
+    ap.add_argument("--print_stats", action="store_true")
     args = ap.parse_args()
 
-    npzs = list_npzs(args.npz_dir)
-    if not npzs:
-        raise SystemExit(f"[ERR] No NPZs under {args.npz_dir}")
+    if args.ann_glob and int(args.use_per_frame_action_txt) != 1:
+        print("[warn] CAUCAFall: ignoring --ann_glob because --use_per_frame_action_txt=0. "
+              "This is the SAFE default (YOLO bbox .txt are not fall spans).")
+
+    files = list_npz_files(args.npz_dir)
+    if not files:
+        raise SystemExit(f"[ERR] No npz under {args.npz_dir}")
 
     labels: Dict[str, str] = {}
     spans_out: Dict[str, List[List[int]]] = {}
+    suspicious_ann = 0
 
-    for npz_path in npzs:
-        stem = pathlib.Path(npz_path).stem
+    for p in files:
+        stem = pathlib.Path(p).stem
+        src = read_npz_src(str(p))
+        lab = infer_label_from_path(src or str(p))
 
-        # default heuristic label
-        lab = infer_label_from_path(npz_path)
-
-        # optional: derive spans from per-frame annotations
-        if args.ann_glob and args.out_spans:
+        if int(args.use_per_frame_action_txt) == 1 and args.ann_glob:
             txts = expand_ann_glob(args.ann_glob, stem)
             if txts:
-                # interpret sorted txts as the same temporal order as extraction
                 flags: List[bool] = []
-                for tpath in txts:
-                    is_fall = parse_frame_label(tpath, args.fall_class_id)
-                    flags.append(bool(is_fall))  # None treated as False
-                spans = bool_runs_to_spans(flags, min_run=args.min_run, gap_fill=args.gap_fill)
-                if spans:
-                    spans_out[stem] = spans
-                    lab = "fall"  # spans imply this sequence has fall frames
+                for t in txts:
+                    is_fall = parse_frame_is_fall(t, args.fall_class_id)
+                    flags.append(bool(is_fall))
+
+                # Heuristic guard: if almost every frame is "fall", it's very likely that
+                # the txt files are person bounding boxes (YOLO) rather than fall-vs-ADL action labels.
+                # In that case, deriving spans will poison training, so we skip spans.
+                if len(flags) >= 20:
+                    fall_ratio = float(sum(flags)) / float(len(flags))
+                    if fall_ratio >= 0.95:
+                        suspicious_ann += 1
+                        # Keep clip-level label inferred from path; do not force "fall" from spans.
+                        txts = []
+
+                if txts:
+                    spans = bool_runs_to_spans(flags, min_run=args.min_run, gap_fill=args.gap_fill)
+                    if spans:
+                        spans_out[stem] = spans
+                        lab = "fall"
 
         labels[stem] = lab
 
-    # write outputs
     os.makedirs(os.path.dirname(args.out_labels) or ".", exist_ok=True)
-    with open(args.out_labels, "w") as f:
+    with open(args.out_labels, "w", encoding="utf-8") as f:
         json.dump(labels, f, indent=2)
 
     fall_n = sum(1 for v in labels.values() if v == "fall")
     adl_n = sum(1 for v in labels.values() if v == "adl")
-    print(f"[OK] wrote {len(labels)} labels → {args.out_labels} (fall={fall_n}, adl={adl_n})")
+    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)}, fall={fall_n}, adl={adl_n})")
 
-    if args.out_spans:
+    if int(args.use_per_frame_action_txt) == 1 and args.ann_glob:
         os.makedirs(os.path.dirname(args.out_spans) or ".", exist_ok=True)
-        with open(args.out_spans, "w") as f:
+        with open(args.out_spans, "w", encoding="utf-8") as f:
             json.dump(spans_out, f, indent=2)
-        print(f"[OK] wrote {len(spans_out)} span entries → {args.out_spans} (half-open [start, stop))")
+        print(f"[OK] wrote spans  → {args.out_spans}  (videos_with_spans={len(spans_out)})")
 
         if args.print_stats and spans_out:
-            # simple stats: average span length and how many spans per video
-            lens = [stop - start for sps in spans_out.values() for start, stop in sps]
+            lens = [e - s for sps in spans_out.values() for s, e in sps]
             nsp = [len(sps) for sps in spans_out.values()]
             print(f"[stats] spans/videos: min={min(nsp)}, median={sorted(nsp)[len(nsp)//2]}, max={max(nsp)}")
             print(f"[stats] span length (frames): min={min(lens)}, median={sorted(lens)[len(lens)//2]}, max={max(lens)}")
 
+        if not spans_out:
+            print("[warn] no spans were derived; this can happen if per-frame txt files do not encode fall-vs-adl classes.")
+
+        if suspicious_ann:
+            print(
+                f"[warn] skipped span-derivation for {suspicious_ann} videos because per-frame txts looked like bounding boxes (almost all frames flagged as fall).\n"
+                "       If you truly have per-frame action labels, set --fall_class_id correctly or disable this guard by editing make_caucafall_labels.py."
+            )
 
 if __name__ == "__main__":
     main()

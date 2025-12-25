@@ -1,0 +1,57 @@
+arch: "gcn"
+ckpt: "outputs/muvim_gcn_W48S12/best.pt"
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.009999999776482582
+  tau_low: 0.005999999865889549
+  cooldown_s: 30.0
+ops:
+  op1:
+    tau_high: 0.009999999776482582
+    tau_low: 0.005999999865889549
+    precision: 0.625
+    recall: 0.7692307692307693
+    f1: 0.6896551724137931
+    fa24h: 2164.7058823529405
+    fa_per_hour: 90.19607843137251
+    mean_delay_s: 2.295652174949646
+    median_delay_s: 2.34782612323761
+    hits_boundary: true
+  op2:
+    tau_high: 0.009999999776482582
+    tau_low: 0.005999999865889549
+    precision: 0.625
+    recall: 0.7692307692307693
+    f1: 0.6896551724137931
+    fa24h: 2164.7058823529405
+    fa_per_hour: 90.19607843137251
+    mean_delay_s: 2.295652174949646
+    median_delay_s: 2.34782612323761
+    hits_boundary: true
+  op3:
+    tau_high: 0.9099999666213989
+    tau_low: 0.5459999799728393
+    precision: nan
+    recall: 0.0
+    f1: nan
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: nan
+    median_delay_s: nan
+    hits_boundary: false
+sweep_meta:
+  n_videos: 28
+  total_duration_s: 239.4782608695653
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[94, 41, 23, 16, 1, 0]"

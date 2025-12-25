@@ -1,91 +1,120 @@
-
+#!/usr/bin/env python3
 """
-Create fixed-length windows for *unlabeled* sequences (e.g., LE2I Office/Lecture).
+windows/make_unlabeled_windows.py  (rewritten)
 
-Writes NPZ windows at: {out_dir}/{subset}/{stem}__w{start:06d}_{end:06d}.npz
+Create fixed-length windows for unlabeled sequences (e.g., LE2i Office/Lecture).
 
-Each window NPZ contains (schema aligned with make_windows.py):
-  - xy       : [W, 33, 2]
-  - conf     : [W, 33]
-  - y        : -1  (explicitly unlabeled)
-  - label    : -1  (kept for backward compatibility)
-  - start    : start frame index (inclusive)
-  - end      : end frame index (inclusive)
-  - video_id : stem (string)
-  - stem     : stem (string, kept for backward compatibility)
-  - fps      : fps of the source sequence (float32)
+This version matches the redesigned make_windows.py schema:
+  - saves xy/conf + joints/motion/mask
+  - y = -1, label = -1
+  - supports quality gating using precomputed sequence mask if present
+
+Output:
+  {out_dir}/{subset}/{stem}__w{start:06d}_{end:06d}.npz
 """
 
-import os
-import glob
+from __future__ import annotations
+
 import argparse
+import glob
+import os
 import pathlib
-import sys
+import random
+from typing import Dict, List, Any
+
 import numpy as np
 
 
-def read_stems(stems_txt):
-    stems = []
+def read_stems(stems_txt: str) -> List[str]:
+    out: List[str] = []
     with open(stems_txt, "r", encoding="utf-8") as f:
         for line in f:
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            stems.append(s)
-    return stems
+            out.append(s)
+    return out
 
 
-def index_npz(npz_root):
-    idx = {}
+def index_npz(npz_root: str) -> Dict[str, str]:
+    idx: Dict[str, str] = {}
     files = glob.glob(os.path.join(npz_root, "**", "*.npz"), recursive=True)
     for p in files:
         idx[pathlib.Path(p).stem] = p
     return idx
 
 
-def window_sequence(npz_path, W, stride, fps_default):
-    with np.load(npz_path, allow_pickle=False) as z:
-        xy = np.nan_to_num(
-            z["xy"].astype(np.float32),
-            nan=0.0, posinf=0.0, neginf=0.0
-        )
-        conf = np.nan_to_num(
-            z["conf"].astype(np.float32),
-            nan=0.0, posinf=0.0, neginf=0.0
-        )
-        fps = float(z["fps"]) if "fps" in z.files else float(fps_default)
-
-    T = int(xy.shape[0])
-    if T < W:
-        return xy, conf, fps, []
-
-    starts = list(range(0, T - W + 1, stride))
-    return xy, conf, fps, starts
+def safe_fps(z, fps_default: float) -> float:
+    if "fps" in z.files:
+        try:
+            return float(np.array(z["fps"]).reshape(-1)[0])
+        except Exception:
+            return float(fps_default)
+    return float(fps_default)
 
 
-def main():
+def derive_mask(xy: np.ndarray, conf: np.ndarray, conf_gate: float) -> np.ndarray:
+    finite = np.isfinite(xy[..., 0]) & np.isfinite(xy[..., 1])
+    if conf_gate > 0:
+        return (conf >= conf_gate) & finite
+    return finite
+
+
+def compute_motion(joints: np.ndarray) -> np.ndarray:
+    motion = np.zeros_like(joints, dtype=np.float32)
+    motion[1:] = joints[1:] - joints[:-1]
+    motion[0] = 0.0
+    return motion
+
+
+def window_passes_quality(mask_w: np.ndarray, conf_w: np.ndarray, min_valid_frac: float, min_avg_conf: float) -> bool:
+    if min_avg_conf > 0 and float(conf_w.mean()) < float(min_avg_conf):
+        return False
+    if min_valid_frac > 0 and float(mask_w.mean()) < float(min_valid_frac):
+        return False
+    return True
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--npz_dir", required=True)
     ap.add_argument("--stems_txt", required=True)
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--W", type=int, required=True)
     ap.add_argument("--stride", type=int, required=True)
-    ap.add_argument("--fps_default", type=float, default=30.0,
-                    help="Fallback FPS if source NPZ lacks fps (default: 30).")
+    ap.add_argument("--fps_default", type=float, default=30.0)
     ap.add_argument("--subset", default="test_unlabeled")
+    ap.add_argument("--seed", type=int, default=33724876)
+
+    ap.add_argument("--max_windows_per_video", type=int, default=400, help="Cap windows per video (0 disables).")
+
+    # quality gating
+    ap.add_argument("--use_precomputed_mask", action="store_true")
+    ap.add_argument("--conf_gate", type=float, default=0.20)
+    ap.add_argument("--min_valid_frac", type=float, default=0.00)
+    ap.add_argument("--min_avg_conf", type=float, default=0.00)
+
+    ap.add_argument("--skip_existing", action="store_true")
     args = ap.parse_args()
+
+    if args.W <= 0 or args.stride <= 0:
+        raise SystemExit("[ERR] W and stride must be positive integers.")
+
+    rng = random.Random(int(args.seed))
 
     stems = read_stems(args.stems_txt)
     if not stems:
-        sys.exit(f"[ERR] No stems found in {args.stems_txt}")
+        raise SystemExit(f"[ERR] No stems found in {args.stems_txt}")
 
     idx = index_npz(args.npz_dir)
+
     out_base = os.path.join(args.out_dir, args.subset)
     os.makedirs(out_base, exist_ok=True)
 
     total_win = 0
-    missing = []
+    missing: List[str] = []
     too_short = 0
+    skipped_quality = 0
 
     for stem in stems:
         p = idx.get(stem)
@@ -93,34 +122,87 @@ def main():
             missing.append(stem)
             continue
 
-        xy, conf, fps, starts = window_sequence(p, args.W, args.stride, args.fps_default)
-        if not starts:
+        with np.load(p, allow_pickle=False) as z:
+            if "xy" not in z.files or "conf" not in z.files:
+                continue
+            xy = np.nan_to_num(z["xy"]).astype(np.float32, copy=False)
+            conf = np.nan_to_num(z["conf"]).astype(np.float32, copy=False)
+            fps = safe_fps(z, args.fps_default)
+
+            seq_id = str(stem)
+            src = ""
+            seq_stem = str(stem)
+            if "seq_id" in z.files:
+                seq_id = str(np.array(z["seq_id"]).reshape(-1)[0])
+            if "src" in z.files:
+                src = str(np.array(z["src"]).reshape(-1)[0])
+            if "seq_stem" in z.files:
+                seq_stem = str(np.array(z["seq_stem"]).reshape(-1)[0])
+
+            pre_mask = None
+            if args.use_precomputed_mask and "mask" in z.files:
+                pre_mask = z["mask"]
+
+        T = int(xy.shape[0])
+        if T < args.W:
             too_short += 1
             continue
 
-        for s in starts:
-            e = s + args.W - 1  # inclusive
-            xy_w = xy[s:s + args.W]
-            conf_w = conf[s:s + args.W]
+        starts = list(range(0, T - args.W + 1, int(args.stride)))
+        if args.max_windows_per_video > 0 and len(starts) > args.max_windows_per_video:
+            starts = rng.sample(starts, args.max_windows_per_video)
+            starts = sorted(starts)
 
-            out_p = os.path.join(out_base, f"{stem}__w{s:06d}_{e:06d}.npz")
+        for st in starts:
+            ed = st + args.W - 1
+            out_name = f"{stem}__w{st:06d}_{ed:06d}.npz"
+            out_path = os.path.join(out_base, out_name)
+            if args.skip_existing and os.path.exists(out_path):
+                continue
+
+            xy_w = xy[st:ed + 1]
+            conf_w = conf[st:ed + 1]
+
+            if pre_mask is not None:
+                mask_w = np.array(pre_mask[st:ed + 1]).astype(bool, copy=False)
+            else:
+                mask_w = derive_mask(xy_w, conf_w, float(args.conf_gate))
+
+            if not window_passes_quality(mask_w, conf_w, float(args.min_valid_frac), float(args.min_avg_conf)):
+                skipped_quality += 1
+                continue
+
+            joints = xy_w.astype(np.float32, copy=False)
+            motion = compute_motion(joints)
+            valid_frac = float(mask_w.mean()) if mask_w.size else 0.0
+
             np.savez_compressed(
-                out_p,
-                xy=xy_w,
+                out_path,
+                xy=joints,
                 conf=conf_w,
                 y=np.int64(-1),
-                label=np.int32(-1),          # backward compat
-                start=np.int64(s),
-                end=np.int64(e),
-                video_id=str(stem),
-                stem=str(stem),              # backward compat
+                label=np.int64(-1),
+                joints=joints,
+                motion=motion,
+                mask=mask_w.astype(np.uint8),
+                valid_frac=np.float32(valid_frac),
+                overlap_frames=np.int16(0),
+                overlap_frac=np.float32(0.0),
                 fps=np.float32(fps),
+                video_id=np.array(seq_id),
+                seq_id=np.array(seq_id),
+                src=np.array(src),
+                seq_stem=np.array(seq_stem),
+                w_start=np.int32(st),
+                w_end=np.int32(ed),
             )
             total_win += 1
 
-    print(f"[OK] wrote {total_win} windows → {out_base}")
+    print(f"[OK] wrote {total_win} unlabeled windows → {out_base}")
     if too_short:
         print(f"[WARN] {too_short} sequences shorter than W={args.W} (skipped).")
+    if skipped_quality:
+        print(f"[WARN] skipped_quality={skipped_quality}")
     if missing:
         print(f"[WARN] {len(missing)} stems not found in {args.npz_dir}. Examples: {missing[:5]}")
 

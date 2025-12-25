@@ -1,679 +1,437 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""eval/metrics.py
 
+Evaluate a trained checkpoint on a windows directory, producing a JSON report.
+
+This version evaluates REAL deployment behavior:
+  - Threshold sweep is under the FULL alert policy (EMA + k-of-n + hysteresis + cooldown)
+  - FA/24h counts FALSE alert events only (alerts not overlapping GT fall events)
+
+Also supports evaluating OP-1/OP-2/OP-3 from an ops YAML (produced by eval/fit_ops.py).
 """
-Evaluate a trained model on a directory of window NPZ files and write a JSON report.
 
-Supports:
-  - TCN windows : x [T,66]
-  - GCN windows : x [T,33,4] (uses fps stored in each window NPZ for velocity)
-
-If an ops YAML is provided (from fit_ops.py), we report metrics at OP1/OP2/OP3.
-Otherwise, we still produce the threshold sweep arrays for plotting.
-
-Important (checkpoint compatibility)
------------------------------------
-- TCN checkpoints may be:
-    (A) simple TCN with keys like net.* and usually 2-logit head (softmax), OR
-    (B) enhanced TCN with keys like conv_in.*, blocks.*, head.* and often 1-logit head (sigmoid).
-- GCN checkpoints may be:
-    (A) conv-temporal GCN from your models/train_gcn.py:
-        keys like block1.*, block2.*, temporal.0.*, head.* (often 1-logit -> sigmoid), OR
-    (B) GRU-temporal GCN:
-        keys like g1.*, g2.*, temporal.weight_ih_l0, head.* (1-logit sigmoid or 2-logit softmax).
-"""
 
 from __future__ import annotations
 
+# -------------------------
+# Path bootstrap (so `from core.*` works when running as a script)
+# -------------------------
+import os as _os
+import sys as _sys
+_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
+
+
 import argparse
+import glob
 import json
 import os
-from pathlib import Path
-from typing import Dict, Tuple, List, Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
+from torch.utils.data import DataLoader, Dataset
+
+from core.ckpt import load_ckpt, get_cfg
+from core.features import FeatCfg, read_window_npz, build_tcn_input, build_gcn_input
+from core.metrics import ap_auc
+from core.models import build_model, pick_device, logits_1d
+from core.yamlio import yaml_load_simple
+from core.alerting import AlertCfg, times_from_windows, event_metrics_from_windows, sweep_alert_policy_from_windows
 
 
-# -------------------------------------------------------------
-# YAML (tiny) reader: supports the simple structure written by fit_ops.py
-# -------------------------------------------------------------
-def load_simple_yaml(path: str) -> Dict[str, Any]:
-    # If PyYAML is present, prefer it.
-    try:
-        import yaml  # type: ignore
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    except Exception:
-        pass
-
-    root: Dict[str, Any] = {}
-    stack: List[Tuple[int, Dict[str, Any]]] = [(0, root)]
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            if not raw.strip() or raw.strip().startswith("#"):
-                continue
-            indent = len(raw) - len(raw.lstrip(" "))
-            key, _, val = raw.strip().partition(":")
-            val = val.strip()
-            while stack and indent < stack[-1][0]:
-                stack.pop()
-            cur = stack[-1][1]
-            if val == "":
-                cur[key] = {}
-                stack.append((indent + 2, cur[key]))
-            else:
-                if val.lower() in ("true", "false"):
-                    cur[key] = (val.lower() == "true")
-                else:
-                    try:
-                        if "." in val:
-                            cur[key] = float(val)
-                        else:
-                            cur[key] = int(val)
-                    except Exception:
-                        cur[key] = val
-    return root
+@dataclass
+class MetaRow:
+    path: str
+    video_id: str
+    w_start: int
+    w_end: int
+    fps: float
+    y: int
 
 
-# -------------------------------------------------------------
-# Datasets
-# -------------------------------------------------------------
-def _label_from_npz(d: np.lib.npyio.NpzFile) -> int:
-    """
-    Returns:
-      0/1 for labelled
-      -1 for unlabeled
-    """
-    if "y" in d.files:
-        y = d["y"]
-        if isinstance(y, np.ndarray):
-            y = y.item() if y.shape == () else y.ravel()[0]
-        try:
-            y = float(y)
-        except Exception:
-            return -1
-        if y < 0:
-            return -1
-        return 1 if y >= 0.5 else 0
-
-    if "label" in d.files:
-        lab = d["label"]
-        if isinstance(lab, bytes):
-            lab = lab.decode()
-        if isinstance(lab, np.ndarray):
-            lab = lab.item() if lab.shape == () else lab.ravel()[0]
-        try:
-            v = float(lab)
-            if v < 0:
-                return -1
-            return 1 if v >= 0.5 else 0
-        except Exception:
-            s = str(lab).lower()
-            if s in ("fall", "1", "true", "pos", "positive"):
-                return 1
-            if s in ("adl", "0", "false", "neg", "negative", "normal", "nofall", "no_fall", "nonfall"):
-                return 0
-            return -1
-
-    return -1
-
-
-class WindowNPZ(Dataset):
-    """TCN windows: returns (x[T,66], y, meta)."""
-    def __init__(self, root: str, skip_unlabeled: bool = True):
-        self.files = sorted([str(p) for p in Path(root).glob("*.npz")])
-        kept: List[str] = []
-        for p in self.files:
-            with np.load(p, allow_pickle=False) as d:
-                y = _label_from_npz(d)
-            if (not skip_unlabeled) or (y in (0, 1)):
-                kept.append(p)
-        self.files = kept
-
-    def __len__(self) -> int:
-        return len(self.files)
-
-    def __getitem__(self, idx: int):
-        p = self.files[idx]
-        with np.load(p, allow_pickle=False) as d:
-            xy = d["xy"].astype(np.float32)
-            conf = d["conf"].astype(np.float32)
-            y = _label_from_npz(d)
-
-            meta = {
-                "path": p,
-                "video_id": str(d["video_id"]) if "video_id" in d.files else None,
-                "start": int(d["start"]) if "start" in d.files else None,
-                "end": int(d["end"]) if "end" in d.files else None,
-                "fps": float(d["fps"]) if "fps" in d.files else None,
-            }
-
-        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0)
-        conf = np.nan_to_num(conf, nan=0.0, posinf=0.0, neginf=0.0)
-
-        x = (xy * conf[..., None]).reshape(xy.shape[0], -1)  # [T,66]
-        return torch.from_numpy(x), torch.tensor(y, dtype=torch.long), meta
-
-
-class WindowNPZGraph(Dataset):
-    """GCN windows: returns (x[T,33,4], y, meta)."""
-    def __init__(self, root: str, skip_unlabeled: bool = True, fps_default: float = 30.0):
-        self.files = sorted([str(p) for p in Path(root).glob("*.npz")])
-        kept: List[str] = []
-        for p in self.files:
-            with np.load(p, allow_pickle=False) as d:
-                y = _label_from_npz(d)
-            if (not skip_unlabeled) or (y in (0, 1)):
-                kept.append(p)
-        self.files = kept
+class Windows(Dataset):
+    def __init__(self, root: str, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
+        self.files = sorted(glob.glob(os.path.join(root, "*.npz")))
+        if not self.files:
+            raise FileNotFoundError(f"No .npz in {root}")
+        self.feat_cfg = feat_cfg
         self.fps_default = float(fps_default)
+        self.arch = str(arch).lower()
+        self.two_stream = bool(two_stream)
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int):
         p = self.files[idx]
-        with np.load(p, allow_pickle=False) as d:
-            xy = d["xy"].astype(np.float32)
-            conf = d["conf"].astype(np.float32)
-            y = _label_from_npz(d)
-            fps = float(d["fps"]) if "fps" in d.files else self.fps_default
+        joints, motion, conf, mask, fps, meta = read_window_npz(p, fps_default=self.fps_default)
+        y = int(meta.y) if meta.y is not None else int(meta.label) if meta.label is not None else 0
 
-            meta = {
-                "path": p,
-                "video_id": str(d["video_id"]) if "video_id" in d.files else None,
-                "start": int(d["start"]) if "start" in d.files else None,
-                "end": int(d["end"]) if "end" in d.files else None,
-                "fps": float(fps),
-            }
-
-        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0)
-        conf = np.nan_to_num(conf, nan=0.0, posinf=0.0, neginf=0.0)
-
-        x = xy * conf[..., None]        # [T,33,2]
-        pelvis = x[:, 23:24, :]         # [T,1,2]
-        x_rel = x - pelvis              # [T,33,2]
-
-        vel = np.zeros_like(x_rel)
-        vel[1:] = (x_rel[1:] - x_rel[:-1]) * fps
-
-        feats = np.concatenate([x_rel, vel], axis=-1)  # [T,33,4]
-        return torch.from_numpy(feats), torch.tensor(y, dtype=torch.long), meta
-
-
-def collate_keep_meta(batch):
-    xs, ys, metas = zip(*batch)
-    return torch.stack(xs, 0), torch.stack(ys, 0), list(metas)
-
-
-# -------------------------------------------------------------
-# Models (TCN family)
-# -------------------------------------------------------------
-class SimpleTCN(nn.Module):
-    def __init__(self, in_ch=66, hidden=128, dropout=0.2, out_dim=2):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv1d(in_ch, hidden, 5, padding=2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(hidden, hidden, 3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),
-        )
-        self.head = nn.Linear(hidden, out_dim)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)  # [B,C,T]
-        h = self.net(x).squeeze(-1)
-        return self.head(h)
-
-
-class ResTCNBlock(nn.Module):
-    def __init__(self, ch: int, kernel_size: int = 3, dilation: int = 1, p: float = 0.3):
-        super().__init__()
-        padding = dilation * (kernel_size - 1) // 2
-        self.conv = nn.Conv1d(ch, ch, kernel_size=kernel_size, padding=padding, dilation=dilation)
-        self.bn = nn.BatchNorm1d(ch)
-        self.relu = nn.ReLU()
-        self.drop = nn.Dropout(p)
-
-    def forward(self, x):
-        y = self.drop(self.relu(self.bn(self.conv(x))))
-        return x + y
-
-
-class EnhancedTCN(nn.Module):
-    """
-    Matches keys:
-      conv_in.0.weight, conv_in.1.running_mean, blocks.N.conv.weight, ..., head.weight
-    """
-    def __init__(
-        self,
-        in_dim: int,
-        hidden: int,
-        out_dim: int,
-        kernel_in: int = 5,
-        kernel_block: int = 3,
-        dilations: List[int] | None = None,
-        dropout: float = 0.3,
-    ):
-        super().__init__()
-        pad_in = (kernel_in - 1) // 2
-        self.conv_in = nn.Sequential(
-            nn.Conv1d(in_dim, hidden, kernel_size=kernel_in, padding=pad_in),
-            nn.BatchNorm1d(hidden),
-            nn.ReLU(),
-        )
-        if dilations is None:
-            dilations = [1, 2, 4]
-        self.blocks = nn.ModuleList(
-            [ResTCNBlock(hidden, kernel_size=kernel_block, dilation=d, p=dropout) for d in dilations]
-        )
-        self.head = nn.Linear(hidden, out_dim)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)  # [B,C,T]
-        x = self.conv_in(x)
-        for b in self.blocks:
-            x = b(x)
-        h = x.mean(dim=-1)
-        return self.head(h)
-
-
-# -------------------------------------------------------------
-# GCN utilities + models (two checkpoint styles)
-# -------------------------------------------------------------
-def build_mediapipe_adjacency(num_joints: int = 33) -> np.ndarray:
-    edges = [
-        (0, 1), (1, 2), (2, 3), (3, 7),
-        (0, 4), (4, 5), (5, 6), (6, 8),
-        (9, 10),
-        (11, 12),
-        (11, 23), (12, 24),
-        (23, 24),
-        (11, 13), (13, 15), (15, 17),
-        (12, 14), (14, 16), (16, 18),
-        (23, 25), (25, 27), (27, 29), (29, 31),
-        (24, 26), (26, 28), (28, 30), (30, 32),
-        (7, 28), (8, 27),
-    ]
-    A = np.zeros((num_joints, num_joints), dtype=np.float32)
-    for i, j in edges:
-        if 0 <= i < num_joints and 0 <= j < num_joints:
-            A[i, j] = 1.0
-            A[j, i] = 1.0
-    np.fill_diagonal(A, 1.0)
-    return A
-
-
-def normalize_adjacency(A: np.ndarray) -> np.ndarray:
-    D = A.sum(axis=1)
-    D_inv_sqrt = np.diag(1.0 / np.sqrt(D + 1e-6))
-    return D_inv_sqrt @ A @ D_inv_sqrt
-
-
-# --- GCN style B: GRU-temporal (g1/g2 + GRU) ---
-class GraphConv(nn.Module):
-    def __init__(self, in_feats: int, out_feats: int):
-        super().__init__()
-        self.lin = nn.Linear(in_feats, out_feats)
-
-    def forward(self, x: torch.Tensor, A_hat: torch.Tensor):
-        x = torch.einsum("ij,btjc->btic", A_hat, x)
-        return self.lin(x)
-
-
-class GCNBlock(nn.Module):
-    def __init__(self, in_feats: int, out_feats: int, dropout: float = 0.2):
-        super().__init__()
-        self.gc = GraphConv(in_feats, out_feats)
-        self.act = nn.ReLU()
-        self.do = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor, A_hat: torch.Tensor):
-        return self.do(self.act(self.gc(x, A_hat)))
-
-
-class GCNTemporalGRU(nn.Module):
-    def __init__(
-        self,
-        num_joints: int = 33,
-        in_feats: int = 4,
-        hidden: int = 64,
-        dropout: float = 0.2,
-        out_dim: int = 2,
-    ):
-        super().__init__()
-        A = normalize_adjacency(build_mediapipe_adjacency(num_joints))
-        self.register_buffer("A_hat", torch.from_numpy(A))
-        self.g1 = GCNBlock(in_feats, hidden, dropout)
-        self.g2 = GCNBlock(hidden, hidden, dropout)
-        self.temporal = nn.GRU(input_size=num_joints * hidden, hidden_size=hidden, batch_first=True)
-        self.head = nn.Linear(hidden, out_dim)
-
-    def forward(self, x: torch.Tensor):
-        x = self.g1(x, self.A_hat)
-        x = self.g2(x, self.A_hat)
-        b, t, v, c = x.shape
-        x = x.reshape(b, t, v * c)
-        _, h = self.temporal(x)
-        return self.head(h.squeeze(0))
-
-
-# --- GCN style A: conv-temporal (block1/block2 + temporal.0 conv) ---
-class BNGraphBlock(nn.Module):
-    def __init__(self, in_feats: int, out_feats: int, dropout: float = 0.3):
-        super().__init__()
-        self.lin = nn.Linear(in_feats, out_feats)
-        self.bn = nn.BatchNorm1d(out_feats)
-        self.relu = nn.ReLU()
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
-        x = torch.einsum("vw,btwc->btvc", A_hat, x)  # [B,T,V,C]
-        B, T, V, _ = x.shape
-        x = self.lin(x)                              # [B,T,V,Cout]
-        x = x.reshape(B * T * V, -1)
-        x = self.bn(x)
-        x = self.relu(x)
-        x = self.drop(x)
-        return x.reshape(B, T, V, -1)
-
-
-class ConvTemporalGCN(nn.Module):
-    def __init__(
-        self,
-        num_joints: int,
-        in_feats: int,
-        gcn_hidden: int,
-        gcn_out: int,
-        tcn_hidden: int,
-        out_dim: int,
-        dropout: float = 0.3,
-        kernel_size: int = 5,
-    ):
-        super().__init__()
-        A_hat = normalize_adjacency(build_mediapipe_adjacency(num_joints))
-        self.register_buffer("A_hat", torch.from_numpy(A_hat))
-
-        self.block1 = BNGraphBlock(in_feats, gcn_hidden, dropout)
-        self.block2 = BNGraphBlock(gcn_hidden, gcn_out, dropout)
-
-        pad = (kernel_size - 1) // 2
-        self.temporal = nn.Sequential(
-            nn.Conv1d(gcn_out, tcn_hidden, kernel_size=kernel_size, padding=pad),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.AdaptiveAvgPool1d(1),
-        )
-        self.head = nn.Linear(tcn_hidden, out_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.block1(x, self.A_hat)
-        x = self.block2(x, self.A_hat)
-        x = x.mean(dim=2)              # [B,T,gcn_out]
-        x = x.permute(0, 2, 1)         # [B,gcn_out,T]
-        h = self.temporal(x).squeeze(-1)
-        return self.head(h)            # [B,out_dim]
-
-
-# -------------------------------------------------------------
-# Checkpoint -> model factory
-# -------------------------------------------------------------
-def _strip_module_prefix(sd: dict) -> dict:
-    if not sd:
-        return sd
-    if all(isinstance(k, str) and k.startswith("module.") for k in sd.keys()):
-        return {k[len("module."):]: v for k, v in sd.items()}
-    return sd
-
-
-def _get_state_dict(ckpt: dict) -> dict:
-    if "model" in ckpt and isinstance(ckpt["model"], dict):
-        return _strip_module_prefix(ckpt["model"])
-    if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-        return _strip_module_prefix(ckpt["state_dict"])
-    raise KeyError("Checkpoint has no 'model' or 'state_dict' dict.")
-
-
-def _infer_num_blocks(sd: dict) -> int:
-    idxs: List[int] = []
-    for k in sd.keys():
-        if isinstance(k, str) and k.startswith("blocks.") and ".conv.weight" in k:
-            try:
-                idxs.append(int(k.split(".")[1]))
-            except Exception:
-                pass
-    return (max(idxs) + 1) if idxs else 0
-
-
-def _infer_dilations(ckpt: dict, n_blocks: int) -> List[int]:
-    d = ckpt.get("dilations", None)
-    if isinstance(d, (list, tuple)) and len(d) == n_blocks:
-        return [int(x) for x in d]
-    return [2 ** i for i in range(n_blocks)] if n_blocks > 0 else [1, 2, 4]
-
-
-def build_model_from_ckpt(ckpt: dict, arch: str) -> Tuple[nn.Module, str]:
-    """
-    Returns (model, prob_mode):
-      - "sigmoid" for 1-logit binary head
-      - "softmax" for 2-logit head
-    """
-    sd = _get_state_dict(ckpt)
-
-    if arch == "gcn":
-        # style A: conv-temporal GCN (train_gcn.py) has block1.*
-        if any(k.startswith("block1.") for k in sd.keys()):
-            gcn_hidden = int(sd["block1.lin.weight"].shape[0])
-            in_feats = int(sd["block1.lin.weight"].shape[1])
-            gcn_out = int(sd["block2.lin.weight"].shape[0])
-
-            tcn_hidden = int(sd["temporal.0.weight"].shape[0])
-            kernel = int(sd["temporal.0.weight"].shape[2])
-
-            out_dim = int(sd["head.weight"].shape[0])  # 1 or 2
-            num_joints = int(ckpt.get("num_joints", 33))
-
-            model = ConvTemporalGCN(
-                num_joints=num_joints,
-                in_feats=in_feats,
-                gcn_hidden=gcn_hidden,
-                gcn_out=gcn_out,
-                tcn_hidden=tcn_hidden,
-                out_dim=out_dim,
-                dropout=float(ckpt.get("dropout", 0.3)),
-                kernel_size=kernel,
-            )
-            return model, ("sigmoid" if out_dim == 1 else "softmax")
-
-        # style B: GRU-temporal GCN (g1/g2 + GRU)
-        if "g1.gc.lin.weight" in sd:
-            hidden = int(sd["g1.gc.lin.weight"].shape[0])
-            in_feats = int(sd["g1.gc.lin.weight"].shape[1])
+        if self.arch == "tcn":
+            X, _ = build_tcn_input(joints, motion, conf, mask, fps=float(fps), feat_cfg=self.feat_cfg)
         else:
-            hidden = int(ckpt.get("hidden", 64))
-            in_feats = int(ckpt.get("in_feats", 4))
+            X, _ = build_gcn_input(joints, motion, conf, mask, fps=float(fps), feat_cfg=self.feat_cfg)
+            if self.two_stream:
+                xy = X[..., 0:2]
+                if self.feat_cfg.use_conf_channel:
+                    c = X[..., -1:]
+                    xj = np.concatenate([xy, c], axis=-1)
+                else:
+                    xj = xy
 
-        out_dim = int(sd["head.weight"].shape[0]) if "head.weight" in sd else 2
-        num_joints = int(ckpt.get("num_joints", 33))
-        model = GCNTemporalGRU(
-            num_joints=num_joints,
-            in_feats=in_feats,
-            hidden=hidden,
-            dropout=float(ckpt.get("dropout", 0.2)),
-            out_dim=out_dim,
+                if self.feat_cfg.use_motion and X.shape[-1] >= 4:
+                    xm = X[..., 2:4]
+                else:
+                    xm = np.zeros_like(xy)
+
+                X = (xj, xm)
+
+        m = MetaRow(
+            path=str(p),
+            video_id=str(meta.video_id or meta.seq_id or os.path.splitext(os.path.basename(p))[0]),
+            w_start=int(meta.w_start),
+            w_end=int(meta.w_end),
+            fps=float(fps),
+            y=int(y),
         )
-        return model, ("sigmoid" if out_dim == 1 else "softmax")
-
-    # arch == "tcn"
-    if any(k.startswith("conv_in.") for k in sd.keys()) and any(k.startswith("blocks.") for k in sd.keys()):
-        conv_w = sd["conv_in.0.weight"]  # [hidden, in_dim, k]
-        hidden = int(conv_w.shape[0])
-        in_dim = int(conv_w.shape[1])
-        k_in = int(conv_w.shape[2])
-
-        out_dim = int(sd["head.weight"].shape[0])  # 1 or 2
-        n_blocks = _infer_num_blocks(sd)
-        dilations = _infer_dilations(ckpt, n_blocks)
-
-        model = EnhancedTCN(
-            in_dim=in_dim,
-            hidden=hidden,
-            out_dim=out_dim,
-            kernel_in=k_in,
-            kernel_block=3,
-            dilations=dilations,
-            dropout=float(ckpt.get("dropout", 0.3)),
-        )
-        return model, ("sigmoid" if out_dim == 1 else "softmax")
-
-    # simple TCN (net.*)
-    if "net.0.weight" in sd:
-        in_ch = int(sd["net.0.weight"].shape[1])
-        hidden = int(sd["net.0.weight"].shape[0])
-    else:
-        in_ch = int(ckpt.get("in_ch", 66))
-        hidden = int(ckpt.get("hidden", 128))
-
-    out_dim = int(sd["head.weight"].shape[0]) if "head.weight" in sd else 2
-    model = SimpleTCN(in_ch=in_ch, hidden=hidden, dropout=float(ckpt.get("dropout", 0.2)), out_dim=out_dim)
-    return model, ("sigmoid" if out_dim == 1 else "softmax")
+        return X, np.int64(y), m
 
 
-# -------------------------------------------------------------
-# evaluation
-# -------------------------------------------------------------
-def pick_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+def _collate(batch):
+    Xs, ys, metas = zip(*batch)
+    return list(Xs), np.asarray(ys, dtype=np.int64), list(metas)
 
 
 @torch.no_grad()
-def predict_probs(ckpt_path: str, ds: Dataset, arch: str, batch=256):
-    device = pick_device()
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    sd = _get_state_dict(ckpt)
-
-    model, prob_mode = build_model_from_ckpt(ckpt, arch=arch)
-    model.load_state_dict(sd, strict=True)
-    model.to(device).eval()
-
-    loader = DataLoader(ds, batch_size=batch, shuffle=False, num_workers=0, collate_fn=collate_keep_meta)
-
-    probs, ys, metas = [], [], []
-    for xb, yb, mb in loader:
-        xb = xb.to(device)
-        logits = model(xb)
-
-        if prob_mode == "sigmoid":
-            # logits: [B,1] or [B]
-            if logits.ndim == 2 and logits.shape[1] == 1:
-                logits = logits[:, 0]
-            p = torch.sigmoid(logits).detach().cpu().numpy()
+def infer_probs(model, loader, device, arch: str, two_stream: bool):
+    probs = []
+    y_true = []
+    vids, ws, we, fps = [], [], [], []
+    for Xs, ys, metas in loader:
+        if arch == "tcn":
+            xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
+            logits = logits_1d(model(xb))
         else:
-            # logits: [B,2]
-            p = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
+            if two_stream:
+                xj = torch.from_numpy(np.stack([x[0] for x in Xs], axis=0)).to(device)
+                xm = torch.from_numpy(np.stack([x[1] for x in Xs], axis=0)).to(device)
+                logits = logits_1d(model(xj, xm))
+            else:
+                xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
+                logits = logits_1d(model(xb))
 
+        p = torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
         probs.append(p)
-        ys.append(yb.numpy())
-        metas.extend(mb)
+        y_true.append(ys)
 
-    return np.concatenate(probs), np.concatenate(ys), metas
+        for m in metas:
+            vids.append(m.video_id)
+            ws.append(int(m.w_start))
+            we.append(int(m.w_end))
+            fps.append(float(m.fps))
 
-
-def sweep(probs: np.ndarray, y_true: np.ndarray, thr: np.ndarray):
-    P, R, F1, FPR = [], [], [], []
-    for t in thr:
-        pred = (probs >= t).astype(np.int32)
-        pr, rc, f1, _ = precision_recall_fscore_support(y_true, pred, average="binary", zero_division=0)
-        tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
-        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-        P.append(pr); R.append(rc); F1.append(f1); FPR.append(fpr)
-    return np.array(P), np.array(R), np.array(F1), np.array(FPR)
+    return (
+        np.concatenate(probs) if probs else np.array([], dtype=np.float32),
+        np.concatenate(y_true) if y_true else np.array([], dtype=np.int32),
+        vids, ws, we, fps
+    )
 
 
-def main():
+def _aggregate_event_metrics(
+    probs: np.ndarray,
+    y_true: np.ndarray,
+    vids: List[str],
+    ws: List[int],
+    we: List[int],
+    fps_list: List[float],
+    *,
+    alert_cfg: AlertCfg,
+    merge_gap_s: Optional[float],
+    overlap_slack_s: float,
+    time_mode: str,
+    fps_default: float,
+) -> Dict[str, Any]:
+    vids_arr = np.asarray(vids).astype(str)
+    ws_arr = np.asarray(ws, dtype=np.int32)
+    we_arr = np.asarray(we, dtype=np.int32)
+    fps_arr = np.asarray(fps_list, dtype=np.float32)
+
+    unique_vids = list(dict.fromkeys(list(vids_arr)))
+    per_video: Dict[str, Any] = {}
+
+    total_duration_s = 0.0
+    gt_total = 0
+    matched_gt_total = 0
+    alert_total = 0
+    true_alert_total = 0
+    false_alert_total = 0
+    delays: List[float] = []
+
+    # auto merge gap if not provided
+    if merge_gap_s is None:
+        gaps = []
+        for v in unique_vids:
+            mv = vids_arr == v
+            if not mv.any():
+                continue
+            idx = np.argsort(ws_arr[mv])
+            fps_v = float(np.median(fps_arr[mv])) if np.isfinite(fps_arr[mv]).any() else float(fps_default)
+            if fps_v <= 0:
+                fps_v = float(fps_default)
+            t_v = times_from_windows(ws_arr[mv][idx], we_arr[mv][idx], fps_v, mode=time_mode)
+            if t_v.size >= 2:
+                gaps.append(float(np.median(np.diff(t_v))))
+        med_gap = float(np.median(gaps)) if gaps else 0.5
+        merge_gap_s = max(0.25, 2.0 * med_gap)
+
+    for v in unique_vids:
+        mv = vids_arr == v
+        if not mv.any():
+            continue
+        idx = np.argsort(ws_arr[mv])
+        p_v = probs[mv][idx]
+        y_v = y_true[mv][idx]
+        ws_v = ws_arr[mv][idx]
+        we_v = we_arr[mv][idx]
+        fps_v = float(np.median(fps_arr[mv])) if np.isfinite(fps_arr[mv]).any() else float(fps_default)
+        if fps_v <= 0:
+            fps_v = float(fps_default)
+        t_v = times_from_windows(ws_v, we_v, fps_v, mode=time_mode)
+        duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
+        total_duration_s += max(0.0, duration_s)
+
+        em, detail = event_metrics_from_windows(
+            p_v, y_v, t_v, alert_cfg,
+            duration_s=duration_s,
+            merge_gap_s=float(merge_gap_s),
+            overlap_slack_s=float(overlap_slack_s),
+        )
+        per_video[v] = {"event_metrics": em.to_dict(), "detail": detail}
+
+        gt_total += int(em.n_gt_events)
+        matched_gt_total += int(em.n_matched_gt)
+        alert_total += int(em.n_alert_events)
+        true_alert_total += int(em.n_true_alerts)
+        false_alert_total += int(em.n_false_alerts)
+        if np.isfinite(em.mean_delay_s):
+            delays.append(float(em.mean_delay_s))
+
+    dur_h = float(total_duration_s) / 3600.0 if total_duration_s > 0 else float("nan")
+    dur_d = float(total_duration_s) / 86400.0 if total_duration_s > 0 else float("nan")
+
+    recall = float(matched_gt_total / gt_total) if gt_total > 0 else float("nan")
+    precision = float(true_alert_total / alert_total) if alert_total > 0 else float("nan")
+    f1 = float(2.0 * precision * recall / (precision + recall)) if np.isfinite(precision) and np.isfinite(recall) and (precision + recall) > 0 else float("nan")
+    fa_h = float(false_alert_total / dur_h) if np.isfinite(dur_h) and dur_h > 0 else float("nan")
+    fa_d = float(false_alert_total / dur_d) if np.isfinite(dur_d) and dur_d > 0 else float("nan")
+
+    return {
+        "alert_cfg": alert_cfg.to_dict(),
+        "micro_event_recall": recall,
+        "micro_event_precision": precision,
+        "micro_event_f1": f1,
+        "false_alerts_per_hour": fa_h,
+        "fa24h": fa_d,
+        "mean_delay_s": float(np.mean(delays)) if delays else float("nan"),
+        "n_gt_events": int(gt_total),
+        "n_alert_events": int(alert_total),
+        "n_true_alerts": int(true_alert_total),
+        "n_false_alerts": int(false_alert_total),
+        "total_duration_s": float(total_duration_s),
+        "merge_gap_s": float(merge_gap_s),
+        "per_video": per_video,
+    }
+
+
+def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eval_dir", required=True)
+    # NOTE: For Makefile compatibility we accept both --win_dir (preferred)
+    # and the legacy flag name --test_dir (same meaning).
+    ap.add_argument("--win_dir", default="", help="e.g. data/processed/le2i/windows_W32_S8/test")
+    ap.add_argument("--test_dir", dest="win_dir", default="", help=argparse.SUPPRESS)
+    # Backward-compat aliases sometimes used by Make targets / notebooks.
+    ap.add_argument("--eval_dir", dest="win_dir", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--arch", type=str, default="", help=argparse.SUPPRESS)
+    ap.add_argument("--dataset_name", type=str, default="", help=argparse.SUPPRESS)
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--ops", default=None, help="ops YAML from fit_ops.py")
-    ap.add_argument("--arch", choices=["tcn", "gcn"], default="tcn")
-    ap.add_argument("--fps", type=float, default=None, help="Unused (kept for CLI compatibility).")
-    ap.add_argument("--fps_default", type=float, default=30.0, help="GCN only: fallback fps if window NPZ lacks fps")
+    ap.add_argument("--out_json", required=True)
+
+    # Optional feature flags (accepted for backwards compatibility with older Makefiles).
+    # Normally, we use the checkpoint's feat_cfg. If the checkpoint has no feat_cfg, we
+    # will fall back to these CLI values (if provided).
+    ap.add_argument("--center", type=str, default=None)
+    ap.add_argument("--use_motion", type=int, default=None)
+    ap.add_argument("--use_conf_channel", type=int, default=None)
+    ap.add_argument("--motion_scale_by_fps", type=int, default=None)
+    ap.add_argument("--conf_gate", type=float, default=None)
+    ap.add_argument("--use_precomputed_mask", type=int, default=None)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--report", required=True)
-    ap.add_argument("--report_dataset_name", default="test")
+
+    # Sweep range for tau_high
+    ap.add_argument("--thr_min", type=float, default=0.05)
+    ap.add_argument("--thr_max", type=float, default=0.95)
+    ap.add_argument("--thr_step", type=float, default=0.01)
+
+    # Alert policy base (used for sweep if no ops_yaml, or as fallback)
+    ap.add_argument("--ema_alpha", type=float, default=0.20)
+    ap.add_argument("--k", type=int, default=2)
+    ap.add_argument("--n", type=int, default=3)
+    ap.add_argument("--cooldown_s", type=float, default=30.0)
+    ap.add_argument("--tau_low_ratio", type=float, default=0.80)
+
+    ap.add_argument("--time_mode", choices=["start", "center", "end"], default="center")
+    ap.add_argument("--merge_gap_s", type=float, default=-1.0, help="<=0 => auto from data")
+    ap.add_argument("--overlap_slack_s", type=float, default=0.0)
+
+    ap.add_argument("--ops_yaml", default="", help="ops YAML from eval/fit_ops.py; evaluates OPs if provided")
+    ap.add_argument("--ops", dest="ops_yaml", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--fps_default", type=float, default=30.0)
+
+    # Extra flags sometimes passed by Make targets (not needed for metrics,
+    # but we accept them so users can keep a single 'eval' command template).
+    ap.add_argument("--pose_npz_dir", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--stride_frames_hint", default="", help=argparse.SUPPRESS)
+
     args = ap.parse_args()
+    if not str(args.win_dir).strip():
+        ap.error("the following arguments are required: --win_dir")
 
-    if args.arch == "tcn":
-        ds = WindowNPZ(args.eval_dir, skip_unlabeled=True)
-    else:
-        ds = WindowNPZGraph(args.eval_dir, skip_unlabeled=True, fps_default=args.fps_default)
-
-    if len(ds) == 0:
-        raise SystemExit(f"No labelled windows under {args.eval_dir}")
-
-    probs, y_true, metas = predict_probs(args.ckpt, ds, arch=args.arch, batch=args.batch)
-
-    thr = np.linspace(0.01, 0.99, 99)
-    P, R, F1, FPR = sweep(probs, y_true, thr)
-
-    # Load ops thresholds if provided
-    thr1 = thr2 = thr3 = None
-    if args.ops:
-        ops = load_simple_yaml(args.ops)
+    bundle = load_ckpt(args.ckpt, map_location="cpu")
+    model_cfg = get_cfg(bundle, "model_cfg", default={})
+    raw_feat = get_cfg(bundle, "feat_cfg", default={})
+    cli_feat = {}
+    for k in ["center","use_motion","use_conf_channel","motion_scale_by_fps","conf_gate","use_precomputed_mask"]:
+        v = getattr(args, k, None)
+        if v is not None:
+            cli_feat[k] = v
+    if hasattr(raw_feat, "to_dict"):
         try:
-            thr1 = float(ops["OP1_high_recall"]["thr"])
-            thr2 = float(ops["OP2_balanced"]["thr"])
-            thr3 = float(ops["OP3_low_alarm"]["thr"])
+            raw_feat = raw_feat.to_dict()
         except Exception:
             pass
+    if (not raw_feat) and cli_feat:
+        raw_feat = cli_feat
+    elif raw_feat and cli_feat and isinstance(raw_feat, dict):
+        for k, v in cli_feat.items():
+            if k in raw_feat and str(raw_feat.get(k)) != str(v):
+                print(f"[warn] CLI feat flag {k}={v} ignored (ckpt has {raw_feat.get(k)}).")
+    feat_cfg = FeatCfg.from_dict(raw_feat)
+    # Determine architecture.
+    ckpt_arch = get_cfg(bundle, "arch", default=model_cfg.get("arch", "")) or ""
+    ckpt_arch = str(ckpt_arch).lower().strip()
+    cli_arch = str(args.arch or "").lower().strip()
+    arch = ckpt_arch or cli_arch or "tcn"
+    if cli_arch and ckpt_arch and cli_arch != ckpt_arch:
+        print(f"[warn] CLI --arch={cli_arch} ignored (ckpt arch is {ckpt_arch}).")
 
-    def at_thr(t):
-        pred = (probs >= t).astype(np.int32)
-        pr, rc, f1, _ = precision_recall_fscore_support(y_true, pred, average="binary", zero_division=0)
-        tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
-        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-        return float(pr), float(rc), float(f1), float(fpr)
+    two_stream = bool(model_cfg.get("two_stream", False)) if arch == "gcn" else False
+    fps_default = float(get_cfg(bundle, "data_cfg", default={}).get("fps_default", args.fps_default))
 
-    ops_report = {}
-    if thr1 is not None:
-        p1, r1, f1v, fpr1 = at_thr(thr1)
-        ops_report["OP1_high_recall"] = {"thr": thr1, "precision": p1, "recall": r1, "f1": f1v, "fpr": fpr1}
-    if thr2 is not None:
-        p2, r2, f2v, fpr2 = at_thr(thr2)
-        ops_report["OP2_balanced"] = {"thr": thr2, "precision": p2, "recall": r2, "f1": f2v, "fpr": fpr2}
-    if thr3 is not None:
-        p3, r3, f3v, fpr3 = at_thr(thr3)
-        ops_report["OP3_low_alarm"] = {"thr": thr3, "precision": p3, "recall": r3, "f1": f3v, "fpr": fpr3}
+    device = pick_device()
+    model = build_model(arch, model_cfg, feat_cfg, fps_default=fps_default).to(device)
+    model.load_state_dict(bundle["state_dict"], strict=True)
+    model.eval()
 
-    have_meta = any((m.get("start") is not None and m.get("end") is not None) for m in metas)
+    ds = Windows(args.win_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
+    loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
 
-    report = {
-        "arch": args.arch,
-        "dataset": args.report_dataset_name,
-        "eval_dir": str(args.eval_dir),
+    probs, y_true, vids, ws, we, fps_list = infer_probs(model, loader, device, arch, two_stream)
+
+    # Base metrics (window-level): AP + ROC-AUC (if available)
+    base = {
+        "arch": arch,
         "ckpt": str(args.ckpt),
-        "n_windows": int(len(ds)),
-        "sweep": {
-            "thr": thr.tolist(),
-            "precision": P.tolist(),
-            "recall": R.tolist(),
-            "f1": F1.tolist(),
-            "fpr": FPR.tolist(),
-        },
-        "ops": ops_report,
+        "win_dir": str(args.win_dir),
+        "n_windows": int(probs.size),
+        "feat_cfg": feat_cfg.to_dict(),
     }
-    if not have_meta:
-        report["note"] = "Window metadata missing start/end; FA/24h not computed here (FPR is reported)."
 
-    os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
-    with open(args.report, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
-    print("[report]", args.report)
+    # core.metrics.ap_auc returns a dict {"ap": ..., "auc": ...}
+    # (do NOT unpack it, otherwise you'd unpack dict keys: "ap", "auc").
+    apm = ap_auc(probs, y_true)
+    ap_val = apm.get("ap", None) if isinstance(apm, dict) else None
+    auc_val = apm.get("auc", None) if isinstance(apm, dict) else None
+
+    # Convert NaN to None for cleaner JSON.
+    if ap_val is None or (isinstance(ap_val, float) and not np.isfinite(ap_val)):
+        base["window_ap"] = None
+    else:
+        base["window_ap"] = float(ap_val)
+
+    if auc_val is None or (isinstance(auc_val, float) and not np.isfinite(auc_val)):
+        base["window_auc"] = None
+    else:
+        base["window_auc"] = float(auc_val)
+
+    # Load ops yaml if provided (also sets base alert policy for sweep)
+    ops = None
+    alert_base = None
+    if args.ops_yaml:
+        ops = yaml_load_simple(args.ops_yaml)
+        alert_base = AlertCfg.from_dict(ops.get("alert_cfg") or {})
+
+    if alert_base is None:
+        alert_base = AlertCfg(
+            ema_alpha=float(args.ema_alpha),
+            k=int(args.k),
+            n=int(args.n),
+            tau_high=0.5,
+            tau_low=0.4,
+            cooldown_s=float(args.cooldown_s),
+        )
+
+    merge_gap_s = None if float(args.merge_gap_s) <= 0 else float(args.merge_gap_s)
+
+    sweep, sweep_meta = sweep_alert_policy_from_windows(
+        probs, y_true, vids, ws, we, fps_list,
+        alert_base=alert_base,
+        thr_min=float(args.thr_min),
+        thr_max=float(args.thr_max),
+        thr_step=float(args.thr_step),
+        tau_low_ratio=float(args.tau_low_ratio),
+        merge_gap_s=merge_gap_s,
+        overlap_slack_s=float(args.overlap_slack_s),
+        time_mode=str(args.time_mode),
+        fps_default=float(fps_default),
+    )
+
+    report: Dict[str, Any] = {**base, "sweep": sweep, "sweep_meta": sweep_meta}
+
+    # Optional: evaluate OP-1/OP-2/OP-3 from YAML (policy metrics under each OP thresholds)
+    if ops:
+        report["ops_yaml"] = str(args.ops_yaml)
+        report["ops_eval"] = {}
+        base_cfg = AlertCfg.from_dict(ops.get("alert_cfg") or {})
+        ops_points = ops.get("ops") or {}
+        for name, op in ops_points.items():
+            cfg = AlertCfg(
+                ema_alpha=float(base_cfg.ema_alpha),
+                k=int(base_cfg.k),
+                n=int(base_cfg.n),
+                tau_high=float(op.get("tau_high", base_cfg.tau_high)),
+                tau_low=float(op.get("tau_low", base_cfg.tau_low)),
+                cooldown_s=float(base_cfg.cooldown_s),
+            )
+            ev = _aggregate_event_metrics(
+                probs, y_true, vids, ws, we, fps_list,
+                alert_cfg=cfg,
+                merge_gap_s=merge_gap_s,
+                overlap_slack_s=float(args.overlap_slack_s),
+                time_mode=str(args.time_mode),
+                fps_default=float(fps_default),
+            )
+            report["ops_eval"][name] = ev
+
+    os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
+    with open(args.out_json, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"[OK] wrote report → {args.out_json}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

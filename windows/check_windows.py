@@ -1,70 +1,147 @@
+#!/usr/bin/env python3
+"""windows/check_windows.py
 
+Lightweight sanity-check for window folders produced by windows/make_windows.py
+or windows/make_unlabeled_windows.py.
+
+It prints per-split counts:
+- total windows
+- pos / neg / unlabeled / unknown / missing_y
+- number of unique videos
+- windows per video (mean / max)
+- how many files contain each schema key: joints / motion / mask
+
+Use:
+  python windows/check_windows.py --root data/processed/le2i/windows_W32_S8
 """
-check_windows.py
 
-Scan a windows directory (train/val/test/unsplit/test_unlabeled) and report:
-- total files
-- positives (y==1)
-- negatives (y==0)
-- unlabeled/unknown (y not in {0,1}, e.g. -1)
-- missing label key (no y field)
+from __future__ import annotations
 
-Usage:
-  python windows/check_windows.py --root data/processed/le2i/windows_W48_S12
-"""
-
-import os
-import glob
 import argparse
+import glob
+import os
+import pathlib
+from collections import Counter, defaultdict
+from typing import Dict, Tuple
+
 import numpy as np
 
 
-def count_split(path: str):
-    files = sorted(glob.glob(os.path.join(path, "*.npz")))
-    pos = neg = unk = miss = 0
+def _video_key_from_npz(z, fallback_path: str) -> str:
+    # Prefer explicit metadata written by make_windows.py
+    for k in ("video_id", "seq_id", "seq_stem", "src"):
+        if k in z.files:
+            try:
+                v = z[k].item() if np.ndim(z[k]) == 0 else z[k]
+                if isinstance(v, bytes):
+                    v = v.decode("utf-8", errors="ignore")
+                v = str(v)
+                if v and v != "None":
+                    return v
+            except Exception:
+                pass
 
+    # Fallback: derive from filename '<stem>__w000123_000155'
+    stem = pathlib.Path(fallback_path).stem
+    if "__w" in stem:
+        return stem.split("__w", 1)[0]
+    return stem
+
+
+def count_split(split_dir: str) -> Tuple[int, int, int, int, int, int, int, float, float, int, int, int, int]:
+    files = sorted(glob.glob(os.path.join(split_dir, "*.npz")))
+    if not files:
+        return (0, 0, 0, 0, 0, 0, 0, 0.0, float("nan"), 0, 0, 0, 0)
+
+    total = 0
+    pos = 0
+    neg = 0
+    unl = 0
+    unk = 0
+    missing_y = 0
+
+    has_joints = 0
+    has_motion = 0
+    has_mask = 0
+
+    per_video: Dict[str, int] = defaultdict(int)
     for p in files:
         try:
-            with np.load(p, allow_pickle=False) as z:
-                if "y" not in z.files:
-                    miss += 1
-                    continue
-                y = int(np.array(z["y"]).reshape(()))
+            z = np.load(p, allow_pickle=True)
         except Exception:
-            # Corrupt or unreadable NPZ counts as missing label
-            miss += 1
             continue
 
-        if y == 1:
+        total += 1
+        if "joints" in z.files:
+            has_joints += 1
+        if "motion" in z.files:
+            has_motion += 1
+        if "mask" in z.files:
+            has_mask += 1
+
+        if "y" not in z.files:
+            missing_y += 1
+            y = None
+        else:
+            try:
+                y = int(np.array(z["y"]).reshape(-1)[0])
+            except Exception:
+                y = None
+                missing_y += 1
+
+        if y is None:
+            pass
+        elif y == 1:
             pos += 1
         elif y == 0:
             neg += 1
+        elif y == -1:
+            unl += 1
         else:
             unk += 1
 
-    return len(files), pos, neg, unk, miss
+        vid = _video_key_from_npz(z, p)
+        per_video[vid] += 1
 
+    n_videos = len(per_video)
+    mean_per_video = (sum(per_video.values()) / max(1, n_videos)) if total else 0.0
+    max_per_video = max(per_video.values()) if per_video else 0
+    pos_frac = (pos / max(1, pos + neg)) if (pos + neg) > 0 else float("nan")
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--root",
-        required=True,
-        help="Base folder containing train/val/test or other split subfolders.",
+    return (
+        total,
+        pos,
+        neg,
+        unl,
+        unk,
+        missing_y,
+        n_videos,
+        mean_per_video,
+        pos_frac,
+        max_per_video,
+        has_joints,
+        has_motion,
+        has_mask,
     )
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True, help="windows root, containing train/val/test/... subfolders")
     args = ap.parse_args()
 
-    candidates = ["train", "val", "test", "unsplit", "test_unlabeled"]
-    splits = [d for d in candidates if os.path.isdir(os.path.join(args.root, d))]
-    if not splits:
-        raise SystemExit(f"[ERR] No split folders found under: {args.root}")
-
+    splits = ["train", "val", "test", "unsplit", "test_unlabeled"]
     print(f"[scan] {args.root}")
     for s in splits:
-        n, p, n0, u, m = count_split(os.path.join(args.root, s))
+        d = os.path.join(args.root, s)
+        if not os.path.isdir(d):
+            continue
+        n, p, n0, unl, unk, my, vids, mean_v, pos_frac, max_v, hj, hm, hk = count_split(d)
         print(
-            f"{s:15s} files={n:6d}  pos={p:6d}  neg={n0:6d}  "
-            f"unk(else)={u:6d}  missing_y={m:6d}"
+            f"{s:15s} files={n:6d}  pos={p:6d}  neg={n0:6d}  unl={unl:6d}  "
+            f"unk={unk:6d}  missing_y={my:6d}  videos={vids:5d}  "
+            f"win/video≈{mean_v:7.2f}  max/video={max_v:5d}  pos_frac={pos_frac:6.3f}  "
+            f"schema(joints/motion/mask)={hj:6d}/{hm:6d}/{hk:6d}"
         )
 
 

@@ -1,0 +1,57 @@
+arch: "tcn"
+ckpt: "outputs/caucafall_tcn_W48S12_hnm/best.pt"
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.5899999737739563
+  tau_low: 0.3539999842643738
+  cooldown_s: 30.0
+ops:
+  op1:
+    tau_high: 0.5899999737739563
+    tau_low: 0.3539999842643738
+    precision: 0.9285714285714286
+    recall: 1.0
+    f1: 0.962962962962963
+    fa24h: 360.78431372549005
+    fa_per_hour: 15.032679738562084
+    mean_delay_s: 0.6020066829828116
+    median_delay_s: 0.52173912525177
+    hits_boundary: false
+  op2:
+    tau_high: 0.5899999737739563
+    tau_low: 0.3539999842643738
+    precision: 0.9285714285714286
+    recall: 1.0
+    f1: 0.962962962962963
+    fa24h: 360.78431372549005
+    fa_per_hour: 15.032679738562084
+    mean_delay_s: 0.6020066829828116
+    median_delay_s: 0.52173912525177
+    hits_boundary: false
+  op3:
+    tau_high: 0.9199999570846558
+    tau_low: 0.5519999742507934
+    precision: 1.0
+    recall: 0.8461538461538461
+    f1: 0.9166666666666666
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 0.9486166022040627
+    median_delay_s: 0.52173912525177
+    hits_boundary: false
+sweep_meta:
+  n_videos: 28
+  total_duration_s: 239.4782608695653
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[94, 58]"
