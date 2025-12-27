@@ -117,6 +117,7 @@
   align-items: center;
   font-size: 0.875rem;
   color: #3C4043;
+  margin: 17px 0;
 }
 
 .switch {
@@ -376,4 +377,54 @@ input:checked + .slider:before {
   .leftColumn, .rightColumn {
     width: 100%;
   }
+}
+
+/* ... existing styles ... */
+
+/* --- Toast Notifications (Pop-up) --- */
+.toastContainer {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000; /* High z-index to sit on top of everything */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 90%;
+  max-width: 400px;
+  pointer-events: none; /* Allows clicking through the empty container */
+}
+
+.toastItem {
+  background-color: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  display: flex;
+  align-items: center;
+  font-weight: 500;
+  font-size: 0.95rem;
+  pointer-events: auto; /* Re-enable clicks on the actual message */
+  animation: slideDown 0.3s ease-out;
+}
+
+.toastSuccess {
+  color: #059669;
+  border-left: 4px solid #059669;
+}
+
+.toastWarning {
+  color: #D97706;
+  border-left: 4px solid #D97706;
+}
+
+.toastError {
+  color: #DC2626;
+  border-left: 4px solid #DC2626;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
 }

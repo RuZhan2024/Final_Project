@@ -1,331 +1,401 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import styles from "./Settings.module.css";
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import styles from './Settings.module.css';
 
-// Prefer env var, fallback to localhost
-const API_BASE =
-  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
-    ? process.env.REACT_APP_API_BASE
-    : "http://localhost:8000";
+// --- Logic & Helpers (Preserved from your uploaded file) ---
+
+// Keep this consistent with other pages (Monitor-demo uses localhost:8000 by default)
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
+
+// Fallback presets (used if the backend doesn't expose /api/operating_points)
+const PRESET_FALL_THR = {
+  'High Sensitivity': 0.75,
+  'Balanced': 0.85,
+  'Low Sensitivity': 0.93,
+};
+
+const PRESET_COOLDOWN = {
+  'High Sensitivity': 2,
+  'Balanced': 3,
+  'Low Sensitivity': 5,
+};
 
 function modelLabelToCode(label) {
-  if (label === "TCN") return "TCN";
-  if (label === "GCN") return "GCN";
-  if (label === "Hybrid") return "HYBRID";
-  return "GCN";
+  const v = String(label || '').toLowerCase();
+  if (v.includes('tcn')) return 'TCN';
+  if (v.includes('gcn') && !v.includes('tcn')) return 'GCN';
+  return 'HYBRID';
 }
 
-function codeToModelLabel(code) {
-  const c = (code || "").toUpperCase();
-  if (c === "TCN") return "TCN";
-  if (c === "GCN") return "GCN";
-  if (c === "HYBRID") return "Hybrid";
-  return "GCN";
+function modelCodeToLabel(code) {
+  const v = String(code || '').toUpperCase();
+  if (v === 'TCN') return 'TCN';
+  if (v === 'GCN') return 'GCN';
+  return 'Hybrid';
 }
 
-function pickOp(ops, preset) {
-  // ops: [{op_code, name, ...}]
-  const norm = (s) => String(s || "").toLowerCase();
-  if (!Array.isArray(ops) || ops.length === 0) return null;
-
-  // Prefer explicit OP codes if present in name/op_code
-  const isOp1 = (o) => norm(o.op_code).includes("op-1") || norm(o.name).includes("op-1") || norm(o.name).includes("high");
-  const isOp2 = (o) => norm(o.op_code).includes("op-2") || norm(o.name).includes("op-2") || norm(o.name).includes("balanced");
-  const isOp3 = (o) => norm(o.op_code).includes("op-3") || norm(o.name).includes("op-3") || norm(o.name).includes("low");
-
-  if (preset === "high") return ops.find(isOp1) || ops[0];
-  if (preset === "balanced") return ops.find(isOp2) || ops[0];
-  return ops.find(isOp3) || ops[ops.length - 1];
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
 }
+
+// Helper for gradient slider background
+function sliderBg(value, min, max) {
+  const v = clamp(Number(value), min, max);
+  const pct = ((v - min) / (max - min)) * 100;
+  // Using explicit colors to match the UI theme (Blue to Grey)
+  const fill = '#4F46E5'; 
+  const rest = '#E5E7EB';
+  return `linear-gradient(to right, ${fill} 0%, ${fill} ${pct}%, ${rest} ${pct}%, ${rest} 100%)`;
+}
+
+async function apiFetch(path, opts = {}) {
+  const url = `${API_BASE}${path}`;
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    ...opts,
+  });
+
+  let payload = null;
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('application/json')) {
+    try { payload = await res.json(); } catch { payload = null; }
+  } else {
+    try { payload = await res.text(); } catch { payload = null; }
+  }
+
+  if (!res.ok) {
+    const detail =
+      (payload && payload.detail && (typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail))) ||
+      (typeof payload === 'string' ? payload : payload ? JSON.stringify(payload) : '') ||
+      `${res.status} ${res.statusText}`;
+    throw new Error(detail);
+  }
+  return payload;
+}
+
+function pickOpForPreset(ops, presetLabel) {
+  const p = String(presetLabel || '').toLowerCase();
+  const want =
+    p.includes('high') ? 'op-1' :
+    p.includes('low') ? 'op-3' :
+    'op-2';
+
+  const byCode = ops.find((o) => String(o.op_code || '').toLowerCase() === want);
+  if (byCode) return byCode;
+
+  const byName = ops.find((o) => String(o.name || '').toLowerCase().includes(p.includes('high') ? 'high' : p.includes('low') ? 'low' : 'bal'));
+  if (byName) return byName;
+
+  const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
+  if (want === 'op-1') return sorted[0] || null;
+  if (want === 'op-3') return sorted[sorted.length - 1] || null;
+  return sorted[Math.floor(sorted.length / 2)] || null;
+}
+
+// --- Component ---
 
 export default function Settings() {
-  // --- Section 1: Caregiver Info (sync with /api/caregivers) ---
-  const [caregiverId, setCaregiverId] = useState(null);
-  const [caregiverName, setCaregiverName] = useState("John Smith");
-  const [caregiverEmail, setCaregiverEmail] = useState("john@example.com");
-  const [caregiverPhone, setCaregiverPhone] = useState("+1 234 567 890");
+  // UI state
+  const [loading, setLoading] = useState(true);
+  const [statusMsg, setStatusMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  // --- Section 2: Notification Preferences ---
-  const [notifyPush, setNotifyPush] = useState(true);
-  const [notifyEmail, setNotifyEmail] = useState(true);
-  const [notifySMS, setNotifySMS] = useState(false);
+  // Caregiver
+  const [caregiverName, setCaregiverName] = useState('');
+  const [caregiverEmail, setCaregiverEmail] = useState('');
+  const [caregiverPhone, setCaregiverPhone] = useState('');
 
-  // --- Section 3: Detection Settings ---
-  const [activeModel, setActiveModel] = useState("GCN"); // "TCN" | "GCN" | "Hybrid"
-  const [activePreset, setActivePreset] = useState("Balanced");
+  // System settings
+  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
+  const [requireConfirmation, setRequireConfirmation] = useState(false);
+  const [notifyOnEveryFall, setNotifyOnEveryFall] = useState(true);
 
-  // Sliders
-  const [fallThreshold, setFallThreshold] = useState(85); // 0-100
-  const [alertCooldown, setAlertCooldown] = useState(10); // 0-60 sec
+  // Detection
+  const [activeModel, setActiveModel] = useState('Hybrid');
+  const [activePreset, setActivePreset] = useState('Balanced');
+  const [fallThreshold, setFallThreshold] = useState(85); // percent
+  const [alertCooldown, setAlertCooldown] = useState(3);  // seconds
+  const [activeOpId, setActiveOpId] = useState(null);
 
-  // Privacy toggles
-  const [storeEventClips, setStoreEventClips] = useState(true);
-  const [privacyMode, setPrivacyMode] = useState(false);
+  // Privacy
+  const [storeEventClips, setStoreEventClips] = useState(false);
+  const [privacyMode, setPrivacyMode] = useState(true);
 
+  // Ops
   const [ops, setOps] = useState([]);
-  const [opsErr, setOpsErr] = useState(null);
+  const [opsErr, setOpsErr] = useState('');
 
-  const busyRef = useRef(false);
+  const savingRef = useRef(false);
+  const statusTimerRef = useRef(null);
 
-  // Helper to create the "Filled" slider effect
-  // Note: Backend logic uses 0-100 for threshold, so we calculate percentage directly
-  const getSliderStyle = (value, max = 100) => {
-    const percentage = (value / max) * 100;
-    return {
-      background: `linear-gradient(to right, #4F46E5 ${percentage}%, #E5E7EB ${percentage}%)`
-    };
+  // Helper to show temporary status messages
+  const setStatus = (msg) => {
+    setStatusMsg(msg);
+    if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = window.setTimeout(() => setStatusMsg(''), 2500);
   };
 
-  // --- API Effects ---
+  const safeSavePatch = async (patch) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setErrorMsg('');
+    try {
+      await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+      setStatus('Saved');
+    } catch (e) {
+      setErrorMsg(String(e?.message || e));
+    } finally {
+      savingRef.current = false;
+    }
+  };
 
-  // Load settings + caregiver + ops
+  const loadSettings = async () => {
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const data = await apiFetch('/api/settings', { method: 'GET' });
+      const sys = data?.system || data || {};
+
+      setMonitoringEnabled(Boolean(sys.monitoring_enabled ?? true));
+      setRequireConfirmation(Boolean(sys.require_confirmation ?? false));
+      setNotifyOnEveryFall(Boolean(sys.notify_on_every_fall ?? true));
+
+      if (sys.active_model_code) setActiveModel(modelCodeToLabel(sys.active_model_code));
+      if (typeof sys.active_operating_point === 'number') setActiveOpId(sys.active_operating_point);
+
+      if (typeof sys.fall_threshold === 'number') setFallThreshold(Math.round(sys.fall_threshold * 100));
+      if (typeof sys.alert_cooldown_sec === 'number') setAlertCooldown(sys.alert_cooldown_sec);
+
+      if (typeof sys.store_event_clips === 'boolean') setStoreEventClips(sys.store_event_clips);
+      if (typeof sys.anonymize_skeleton_data === 'boolean') setPrivacyMode(sys.anonymize_skeleton_data);
+    } catch (e) {
+      setErrorMsg(String(e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadOperatingPoints = async (modelLabel) => {
+    setOpsErr('');
+    try {
+      const model_code = modelLabelToCode(modelLabel);
+      const data = await apiFetch(`/api/operating_points?model_code=${encodeURIComponent(model_code)}`, { method: 'GET' });
+      const list = Array.isArray(data) ? data : Array.isArray(data?.operating_points) ? data.operating_points : [];
+      setOps(list);
+    } catch (e) {
+      setOps([]);
+      setOpsErr('Operating points unavailable. Using presets.');
+    }
+  };
+
   useEffect(() => {
-    (async () => {
-      // settings
-      try {
-        const rs = await fetch(`${API_BASE}/api/settings`);
-        if (rs.ok) {
-          const s = await rs.json();
-          const sys = s?.system || {};
-          if (sys?.active_model_code) setActiveModel(codeToModelLabel(sys.active_model_code));
-        }
-      } catch { /* ignore */ }
-
-      // caregiver (take first caregiver for resident 1)
-      try {
-        const rc = await fetch(`${API_BASE}/api/caregivers?resident_id=1`);
-        if (rc.ok) {
-          const data = await rc.json();
-          const arr = Array.isArray(data?.caregivers) ? data.caregivers : [];
-          if (arr.length > 0) {
-            const c = arr[0];
-            setCaregiverId(c.id);
-            if (c.name) setCaregiverName(c.name);
-            if (c.email) setCaregiverEmail(c.email);
-            if (c.phone) setCaregiverPhone(c.phone);
-          }
-        }
-      } catch { /* ignore */ }
-    })();
+    loadSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load operating points when model changes
   useEffect(() => {
-    (async () => {
-      try {
-        setOpsErr(null);
-        const modelCode = modelLabelToCode(activeModel);
-        const r = await fetch(`${API_BASE}/api/operating_points?model_code=${encodeURIComponent(modelCode)}`);
-        if (!r.ok) throw new Error(await r.text());
-        const data = await r.json();
-        const arr = Array.isArray(data?.operating_points) ? data.operating_points : [];
-        setOps(arr);
-      } catch (e) {
-        setOpsErr(String(e?.message || e));
-        setOps([]);
-      }
-    })();
+    loadOperatingPoints(activeModel);
+    safeSavePatch({ active_model_code: modelLabelToCode(activeModel) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeModel]);
 
-  const activeModelCode = useMemo(() => modelLabelToCode(activeModel), [activeModel]);
+  // Derived gradients for sliders
+  const fallThrBg = useMemo(() => sliderBg(fallThreshold, 50, 99), [fallThreshold]);
+  const cooldownBg = useMemo(() => sliderBg(alertCooldown, 1, 10), [alertCooldown]);
 
-  // --- Handlers ---
-
-  async function setBackendSettings(patch) {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    try {
-      const r = await fetch(`${API_BASE}/api/settings`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      if (!r.ok) throw new Error(await r.text());
-    } catch (e) {
-      console.error("Failed to update settings:", e);
-    } finally {
-      busyRef.current = false;
-    }
-  }
-
-  async function upsertCaregiver() {
-    try {
-      if (!caregiverEmail && !caregiverPhone && !caregiverName) return;
-
-      if (caregiverId == null) {
-        const r = await fetch(`${API_BASE}/api/caregivers`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            resident_id: 1,
-            name: caregiverName,
-            email: caregiverEmail,
-            phone: caregiverPhone,
-          }),
-        });
-        if (!r.ok) throw new Error(await r.text());
-        const data = await r.json();
-        if (data?.caregiver?.id != null) setCaregiverId(data.caregiver.id);
-      } else {
-        const r = await fetch(`${API_BASE}/api/caregivers/${caregiverId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: caregiverName,
-            email: caregiverEmail,
-            phone: caregiverPhone,
-          }),
-        });
-        if (!r.ok) throw new Error(await r.text());
-      }
-    } catch (e) {
-      console.error("Failed to save caregiver:", e);
-    }
-  }
-
-  async function selectModel(label) {
-    setActiveModel(label);
-    await setBackendSettings({ active_model_code: modelLabelToCode(label) });
-  }
-
-  async function selectPreset(presetLabel) {
+  const applyPreset = async (presetLabel) => {
     setActivePreset(presetLabel);
-    // Map UI preset labels to operating point logic keys
-    // "High Safety" -> high, "Balanced" -> balanced, "Low Alarms" -> low
-    const presetKey =
-      presetLabel === "High Safety" ? "high" : presetLabel === "Balanced" ? "balanced" : "low";
-    
-    const op = pickOp(ops, presetKey);
-    if (op?.op_code) {
-      await setBackendSettings({ active_operating_point: op.op_code });
-    }
-  }
 
-  async function sendTestAlert() {
-    try {
-      const r = await fetch(`${API_BASE}/api/notifications/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resident_id: 1,
-          channel: notifyEmail ? "email" : notifySMS ? "sms" : "push",
-          message: "Test alert from Settings page",
-        }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      alert("Test alert request sent.");
-    } catch (e) {
-      alert(`Failed to send test alert: ${String(e?.message || e)}`);
+    const thr = PRESET_FALL_THR[presetLabel] ?? PRESET_FALL_THR.Balanced;
+    const cd = PRESET_COOLDOWN[presetLabel] ?? PRESET_COOLDOWN.Balanced;
+    setFallThreshold(Math.round(thr * 100));
+    setAlertCooldown(cd);
+
+    let opId = null;
+    if (Array.isArray(ops) && ops.length > 0) {
+      const op = pickOpForPreset(ops, presetLabel);
+      if (op?.id != null) {
+        opId = Number(op.id);
+        setActiveOpId(opId);
+      }
     }
-  }
+
+    await safeSavePatch({
+      active_operating_point: opId ?? undefined,
+      fall_threshold: thr,
+      alert_cooldown_sec: cd,
+    });
+  };
+
+  const saveContact = async () => {
+    setErrorMsg('');
+    try {
+      await apiFetch('/api/caregivers', {
+        method: 'POST',
+        body: JSON.stringify({ name: caregiverName, email: caregiverEmail, phone: caregiverPhone }),
+      });
+      setStatus('Caregiver saved');
+    } catch (e) {
+      setErrorMsg(`Save failed: ${String(e?.message || e)}`);
+    }
+  };
+
+  // --- Render (New Style) ---
 
   return (
     <div className={styles.container}>
       <h2 className={styles.pageTitle}>Settings</h2>
 
+      {/* Global Alerts / Status */}
+      {/* Global Alerts / Status (Toast Style) */}
+      <div className={styles.toastContainer}>
+        {statusMsg && (
+          <div className={`${styles.toastItem} ${styles.toastSuccess}`}>
+            {statusMsg}
+          </div>
+        )}
+        {opsErr && (
+          <div className={`${styles.toastItem} ${styles.toastWarning}`}>
+            {opsErr}
+          </div>
+        )}
+        {errorMsg && (
+          <div className={`${styles.toastItem} ${styles.toastError}`}>
+            {errorMsg}
+          </div>
+        )}
+      </div>
+
       <div className={styles.contentGrid}>
         
-        {/* --- LEFT COLUMN: Notification Settings --- */}
+        {/* --- LEFT COLUMN --- */}
         <div className={styles.leftColumn}>
+          
+          {/* Caregiver Information */}
           <div className={styles.card}>
-            <h3 className={styles.cardTitle}>Notification Settings</h3>
-            
+            <h3 className={styles.cardTitle}>Caregiver Information</h3>
             <div className={styles.formGroup}>
+              
               <div className={styles.inputWrapper}>
-                <label>Caregiver Name</label>
-                <input 
-                  type="text" 
+                <label>Name</label>
+                <input
+                  type="text"
+                  className={styles.textInput}
                   value={caregiverName}
                   onChange={(e) => setCaregiverName(e.target.value)}
-                  onBlur={upsertCaregiver}
-                  className={styles.textInput} 
+                  placeholder="e.g. Alice"
                 />
               </div>
 
               <div className={styles.inputWrapper}>
                 <label>Email</label>
-                <input 
-                  type="email" 
+                <input
+                  type="email"
+                  className={styles.textInput}
                   value={caregiverEmail}
                   onChange={(e) => setCaregiverEmail(e.target.value)}
-                  onBlur={upsertCaregiver}
-                  className={styles.textInput} 
+                  placeholder="alice@example.com"
                 />
               </div>
 
               <div className={styles.inputWrapper}>
                 <label>Phone</label>
-                <input 
-                  type="tel" 
+                <input
+                  type="tel"
+                  className={styles.textInput}
                   value={caregiverPhone}
                   onChange={(e) => setCaregiverPhone(e.target.value)}
-                  onBlur={upsertCaregiver}
-                  className={styles.textInput} 
+                  placeholder="+44 ..."
                 />
               </div>
 
-              {/* Notification Toggles */}
-              <div className={styles.toggleRow}>
-                <span>Notify with Push</span>
-                <label className={styles.switch}>
-                  <input 
-                    type="checkbox" 
-                    checked={notifyPush}
-                    onChange={() => setNotifyPush(!notifyPush)}
-                  />
-                  <span className={styles.slider}></span>
-                </label>
-              </div>
-
-              <div className={styles.toggleRow}>
-                <span>Notify with Email</span>
-                <label className={styles.switch}>
-                  <input 
-                    type="checkbox" 
-                    checked={notifyEmail}
-                    onChange={() => setNotifyEmail(!notifyEmail)}
-                  />
-                  <span className={styles.slider}></span>
-                </label>
-              </div>
-
-              <div className={styles.toggleRow}>
-                <span>Notify with SMS</span>
-                <label className={styles.switch}>
-                  <input 
-                    type="checkbox" 
-                    checked={notifySMS}
-                    onChange={() => setNotifySMS(!notifySMS)}
-                  />
-                  <span className={styles.slider}></span>
-                </label>
-              </div>
-
-              <button type="button" className={styles.actionBtn} onClick={sendTestAlert}>
-                Send Test Alert
+              <button className={styles.actionBtn} onClick={saveContact}>
+                Save Caregiver
               </button>
             </div>
           </div>
+
+          {/* System & Monitoring */}
+          <div className={styles.card}>
+            <h3 className={styles.cardTitle}>Monitoring System</h3>
+            
+            <div className={styles.toggleRow}>
+              <span>Monitoring Enabled</span>
+              <label className={styles.switch}>
+                <input 
+                  type="checkbox" 
+                  checked={monitoringEnabled}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setMonitoringEnabled(v);
+                    safeSavePatch({ monitoring_enabled: v });
+                  }}
+                />
+                <span className={styles.slider}></span>
+              </label>
+            </div>
+
+            <div className={styles.toggleRow}>
+              <span>Notify on Every Fall</span>
+              <label className={styles.switch}>
+                <input 
+                  type="checkbox" 
+                  checked={notifyOnEveryFall}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setNotifyOnEveryFall(v);
+                    safeSavePatch({ notify_on_every_fall: v });
+                  }}
+                />
+                <span className={styles.slider}></span>
+              </label>
+            </div>
+
+            <div className={styles.toggleRow}>
+              <span>Require Confirmation</span>
+              <label className={styles.switch}>
+                <input 
+                  type="checkbox" 
+                  checked={requireConfirmation}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setRequireConfirmation(v);
+                    safeSavePatch({ require_confirmation: v });
+                  }}
+                />
+                <span className={styles.slider}></span>
+              </label>
+            </div>
+
+            <button 
+              className={styles.actionBtn} 
+              style={{ marginTop: 24, fontSize: '0.8rem' }}
+              onClick={() => loadSettings()}
+              disabled={loading}
+            >
+              Reload System Settings
+            </button>
+          </div>
         </div>
 
-        {/* --- RIGHT COLUMN: Model & Privacy --- */}
+        {/* --- RIGHT COLUMN --- */}
         <div className={styles.rightColumn}>
           
-          {/* Card 1: Model & Threshold Settings */}
+          {/* Detection Settings */}
           <div className={styles.card}>
-            <h3 className={styles.cardTitle}>Model & Threshold Settings</h3>
-            
+            <h3 className={styles.cardTitle}>Detection Settings</h3>
+
             {/* Model Selection */}
             <div className={styles.row}>
               <span className={styles.labelBold}>Active Model</span>
               <div className={styles.radioGroup}>
-                {["TCN", "GCN", "Hybrid"].map((model) => (
-                  <label key={model} className={styles.radioLabel}>
-                    {model}
+                {['TCN', 'GCN', 'Hybrid'].map((m) => (
+                  <label key={m} className={styles.radioLabel}>
+                    {m}
                     <input 
                       type="radio" 
                       name="model" 
-                      checked={activeModel === model}
-                      onChange={() => selectModel(model)}
+                      checked={activeModel === m}
+                      onChange={() => setActiveModel(m)}
                     />
                     <span className={styles.customRadio}></span>
                   </label>
@@ -333,83 +403,89 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Operating Point Presets */}
+            {/* Presets */}
             <div className={styles.sectionSpace}>
               <span className={styles.labelBold}>Operating Point Presets</span>
-              {opsErr && (
-                <div style={{ margin: "8px 0", color: "#B45309", fontSize: "0.85rem" }}>
-                  Could not load operating points: {opsErr}
-                </div>
-              )}
               <div className={styles.presetButtons}>
-                {["High Safety", "Balanced", "Low Alarms"].map((preset) => (
+                {['High Sensitivity', 'Balanced', 'Low Sensitivity'].map((p) => (
                   <button
-                    key={preset}
-                    className={`${styles.presetBtn} ${activePreset === preset ? styles.activePreset : ''}`}
-                    onClick={() => selectPreset(preset)}
+                    key={p}
+                    className={`${styles.presetBtn} ${activePreset === p ? styles.activePreset : ''}`}
+                    onClick={() => applyPreset(p)}
                   >
-                    {preset}
+                    {p}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Sliders Group */}
+            {/* Sliders */}
             <div className={styles.sliderGroup}>
               
-              {/* Slider 1: Fall Detection Threshold */}
+              {/* Fall Threshold */}
               <div className={styles.sliderRow}>
                 <div className={styles.sliderHeader}>
                   <span>Fall Detection Threshold</span>
                   <span>{fallThreshold}%</span>
                 </div>
-                <input 
-                  type="range" 
-                  min="0" max="100" 
-                  value={fallThreshold}
-                  onChange={(e) => setFallThreshold(Number(e.target.value))}
+                <input
+                  disabled
+                  type="range"
                   className={styles.rangeInput}
-                  style={getSliderStyle(fallThreshold, 100)} 
+                  min={50} max={99}
+                  value={fallThreshold}
+                  style={{ background: fallThrBg }}
+                  onChange={(e) => setFallThreshold(Number(e.target.value))}
+                  onMouseUp={() => safeSavePatch({ fall_threshold: fallThreshold / 100 })}
+                  onTouchEnd={() => safeSavePatch({ fall_threshold: fallThreshold / 100 })}
                 />
               </div>
 
-              {/* Slider 2: Alert Cooldown */}
+              {/* Alert Cooldown */}
               <div className={styles.sliderRow}>
                 <div className={styles.sliderHeader}>
                   <span>Alert Cooldown Period</span>
                   <span>{alertCooldown}s</span>
                 </div>
-                <input 
-                  type="range" 
-                  min="0" max="60" 
+                <input
+                  disabled
+                  type="range"
+                  className={styles.rangeInput}
+                  min={1} max={10}
                   value={alertCooldown}
+                  style={{ background: cooldownBg }}
                   onChange={(e) => setAlertCooldown(Number(e.target.value))}
-                  className={styles.rangeInput} 
-                  style={getSliderStyle(alertCooldown, 60)}
+                  onMouseUp={() => safeSavePatch({ alert_cooldown_sec: alertCooldown })}
+                  onTouchEnd={() => safeSavePatch({ alert_cooldown_sec: alertCooldown })}
                 />
               </div>
 
-              <div style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}>
-                Backend Active Code: {activeModelCode}
-              </div>
-
+              {activeOpId != null && (
+                <div style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}>
+                  Active Op ID: <strong>{activeOpId}</strong>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Card 2: Privacy Settings */}
+          {/* Privacy Settings */}
           <div className={styles.card}>
-            <h3 className={styles.cardTitle}>Privacy & Data Settings</h3>
-            
+            <h3 className={styles.cardTitle}>Privacy & Data</h3>
+
             <div className={styles.privacyItem}>
               <div className={styles.privacyText}>
                 <span className={styles.itemTitle}>Store Event Clips</span>
-                <span className={styles.itemDesc}>Save short segments around detected falls for review</span>
+                <span className={styles.itemDesc}>Save short video segments around detected falls</span>
               </div>
               <label className={styles.switch}>
                 <input 
                   type="checkbox" 
                   checked={storeEventClips}
-                  onChange={() => setStoreEventClips(!storeEventClips)}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setStoreEventClips(v);
+                    safeSavePatch({ store_event_clips: v });
+                  }}
                 />
                 <span className={styles.slider}></span>
               </label>
@@ -417,21 +493,25 @@ export default function Settings() {
 
             <div className={styles.privacyItem}>
               <div className={styles.privacyText}>
-                <span className={styles.itemTitle}>Privacy Mode</span>
-                <span className={styles.itemDesc}>Do not store video, only keep anonymous skeleton data</span>
+                <span className={styles.itemTitle}>Anonymize Data</span>
+                <span className={styles.itemDesc}>Convert video to skeleton data before storing</span>
               </div>
               <label className={styles.switch}>
                 <input 
                   type="checkbox" 
                   checked={privacyMode}
-                  onChange={() => setPrivacyMode(!privacyMode)}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setPrivacyMode(v);
+                    safeSavePatch({ anonymize_skeleton_data: v });
+                  }}
                 />
                 <span className={styles.slider}></span>
               </label>
             </div>
 
             <div className={styles.privacyFooter}>
-              <strong>Privacy by Design:</strong> This system uses skeleton-based detection, which means no raw RGB video is stored long-term. All data is encrypted and stored locally on your device.
+              <strong>Privacy Note:</strong> These settings control how data is persisted on the device.
             </div>
           </div>
 
