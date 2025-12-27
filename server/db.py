@@ -1,33 +1,32 @@
-#!/usr/bin/env python3
-"""
-Simple PyMySQL connection helper.
-
-NOTE: You asked to hardcode credentials. This is okay for local dev,
-but avoid committing real passwords to Git.
-"""
+# server/db.py
 from __future__ import annotations
 
 import contextlib
-import pymysql
+from typing import Generator, Optional
 
-# Hardcoded local dev settings
-DB_HOST = "127.0.0.1"
-DB_PORT = 3306
-DB_USER = "fall_app"
-DB_PASS = "strong_password_here"
-DB_NAME = "elder_fall_monitor"
+import pymysql
+from pymysql.cursors import DictCursor
+
+# Hard-coded DB config (edit as needed)
+DB_HOST: str = "127.0.0.1"
+DB_PORT: int = 3306
+DB_USER: str = "fall_app"
+DB_PASS: str = "strong_password_here"
+DB_NAME: str = "elder_fall_monitor"
+
 
 @contextlib.contextmanager
-def get_conn():
+def get_conn() -> Generator[pymysql.connections.Connection, None, None]:
+    """Yield a PyMySQL connection (DictCursor, autocommit)."""
     conn = pymysql.connect(
         host=DB_HOST,
         port=DB_PORT,
         user=DB_USER,
         password=DB_PASS,
         database=DB_NAME,
-        autocommit=True,
-        cursorclass=pymysql.cursors.DictCursor,
         charset="utf8mb4",
+        cursorclass=DictCursor,
+        autocommit=True,
     )
     try:
         yield conn
