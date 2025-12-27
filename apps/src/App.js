@@ -1,5 +1,5 @@
 import React from "react";
-import { Routes, Route, Link, Navigate, NavLink } from "react-router-dom";
+import {Routes, Route, Link, Navigate, NavLink, useLocation} from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Monitor from "./pages/Monitor";
 import Events from "./pages/Events";
@@ -9,6 +9,9 @@ import Monitor_demo from "./pages/Monitor_demo";
 import styles from "./App.module.css";
 
 function App() {
+  const location = useLocation();
+  const showMonitorDemo = location.pathname === "/monitor-demo";
+
   return (
     <div className={styles.container}>
       <aside className={styles.sideNav}>
@@ -59,11 +62,14 @@ function App() {
       </aside>
 
       <main className={styles.mainContent}>
+        <div style={{ display: showMonitorDemo ? 'block' : 'none' }}>
+          <Monitor_demo isActive={showMonitorDemo} />
+        </div>
         <Routes>
           <Route path="/" element={<Navigate to="/monitor" replace />} />
-          <Route path="/Dashboard" element={<Dashboard />} />
+          <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/monitor" element={<Monitor />} />
-          <Route path="/monitor-demo" element={<Monitor_demo />} />
+          <Route path="/monitor-demo" element={<></>} />
           <Route path="/events" element={<Events />} />
           <Route path="/settings" element={<Settings />} />
           <Route

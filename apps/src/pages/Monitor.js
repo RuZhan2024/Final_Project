@@ -1,26 +1,18 @@
-// src/pages/Monitor.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
+import styles from "./Monitor.module.css";
 
 const { POSE_CONNECTIONS } = mpPose;
 const { drawConnectors, drawLandmarks } = drawingUtils;
 
 // Prefer env var, fallback to localhost
-const API_BASE = (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE)
-  ? process.env.REACT_APP_API_BASE
-  : "http://localhost:8000";
+const API_BASE =
+  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
+    ? process.env.REACT_APP_API_BASE
+    : "http://localhost:8000";
 
-
-const WINDOW_SIZE = 48;
 const NUM_JOINTS = 33;
-
-// If server doesn't provide fps, use these defaults
-const MODEL_TARGET_FPS_FALLBACK = {
-  le2i: 25,
-  urfd: 30,
-  caucafall: 23,
-};
 
 function clamp01(x) {
   if (x < 0) return 0;
@@ -57,155 +49,184 @@ function buildResampledWindow(rawFrames, targetFps, windowSize) {
   return { xy: xyOut, conf: confOut, startTs, endTs };
 }
 
-export default function Monitor() {
-  // Models come from backend (/api/models/summary)
+function normModeFromCode(code) {
+  const c = (code || "").toUpperCase();
+  if (c === "TCN") return "tcn";
+  if (c === "GCN") return "gcn";
+  if (c === "HYBRID") return "dual";
+  return "gcn";
+}
+
+function labelForTriage(triageState) {
+  const t = (triageState || "").toLowerCase();
+  if (t === "fall") return "Fall";
+  if (t === "uncertain") return "Uncertain";
+  return "No fall";
+}
+
+function prettyModelTag(activeModelCode) {
+  const c = (activeModelCode || "").toUpperCase();
+  if (c === "HYBRID") return "HYBRID";
+  if (c === "TCN") return "TCN";
+  if (c === "GCN") return "GCN";
+  return "GCN";
+}
+
+function pickFirstByArch(models, arch) {
+  const a = (arch || "").toLowerCase();
+  const m = (models || []).find((x) => (x?.arch || "").toLowerCase() === a);
+  return m?.id || "";
+}
+
+function pickModelPair(models) {
+  const tcn = pickFirstByArch(models, "tcn");
+  const gcn = pickFirstByArch(models, "gcn");
+  return { tcn, gcn };
+}
+
+function MonitorDemo({ isActive = true } = {}) {
+  // Backend config
+  const [deployW, setDeployW] = useState(48);
+  const [deployS, setDeployS] = useState(12);
+  const [mcCfg, setMcCfg] = useState({ M: 10, M_confirm: 25 });
+  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
+  const [activeModelCode, setActiveModelCode] = useState("GCN");
+
+  // Loaded models
   const [models, setModels] = useState([]);
   const [modelsErr, setModelsErr] = useState(null);
 
-  const [selectedModel, setSelectedModel] = useState("le2i");
+  // Live state
   const [liveRunning, setLiveRunning] = useState(false);
-
-  const [backendOk, setBackendOk] = useState(null); // null/true/false
-  const [pFall, setPFall] = useState(null);
-  const [threshold, setThreshold] = useState(null);
-  const [framesCollected, setFramesCollected] = useState(0);
-  const [frameIndex, setFrameIndex] = useState(0);
-  const [statusText, setStatusText] = useState("SAFE");
-
   const [streamFps, setStreamFps] = useState(null);
-  const [targetFps, setTargetFps] = useState(MODEL_TARGET_FPS_FALLBACK.le2i);
 
+  // Prediction UI
+  const [triageState, setTriageState] = useState("not_fall");
+  const [pFall, setPFall] = useState(null);
+  const [sigma, setSigma] = useState(null);
+
+  // Timeline markers (store indices of non-safe windows in last 50)
+  const [timeline, setTimeline] = useState([]); // array of {i, kind: 'fall'|'uncertain'}
+
+  // Model info
+  const [modelTag, setModelTag] = useState("GCN");
+  const [tauHigh, setTauHigh] = useState(null);
+
+  // Refs for camera + mediapipe
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-
+  const isActiveRef = useRef(isActive);
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
   const poseRef = useRef(null);
   const streamRef = useRef(null);
   const rafRef = useRef(null);
   const liveFlagRef = useRef(false);
 
+  // Frame buffer for windowing
   const rawFramesRef = useRef([]); // [{t,xy,conf}]
   const lastPoseTsRef = useRef(null);
   const fpsDeltasRef = useRef([]);
-
-  const modelIdRef = useRef("le2i");
   const lastSentRef = useRef(0);
 
-  const selectedModelObj = useMemo(
-    () => models.find((m) => m.id === selectedModel) || null,
-    [models, selectedModel]
-  );
+  // Session id for server-side state machine
+  const sessionIdRef = useRef(`monitor-demo-${Math.random().toString(16).slice(2)}`);
 
-  // Load model list from backend (so frontend always matches server)
+  // Mode + chosen models
+  const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
+
+  const chosen = useMemo(() => {
+    if (mode === "dual") return pickModelPair(models);
+    if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn"), gcn: "" };
+    return { tcn: "", gcn: pickFirstByArch(models, "gcn") };
+  }, [mode, models]);
+
+  const chosenSpec = useMemo(() => {
+    if (mode === "tcn") return models.find((m) => m.id === chosen.tcn) || null;
+    if (mode === "gcn") return models.find((m) => m.id === chosen.gcn) || null;
+    // dual: show GCN as primary tag in UI, but keep both
+    return models.find((m) => m.id === chosen.gcn) || models.find((m) => m.id === chosen.tcn) || null;
+  }, [mode, models, chosen]);
+
+  const targetFps = useMemo(() => {
+    const f = chosenSpec?.fps_default;
+    if (typeof f === "number" && Number.isFinite(f) && f > 0) return f;
+    return 30;
+  }, [chosenSpec]);
+
+  // Keep Model Info box in sync
+  useEffect(() => {
+    setModelTag(prettyModelTag(activeModelCode));
+    if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
+  }, [activeModelCode, chosenSpec]);
+
+  // Load settings + models list
   useEffect(() => {
     (async () => {
       try {
+        // settings
+        const rs = await fetch(`${API_BASE}/api/settings`);
+        if (rs.ok) {
+          const s = await rs.json();
+          const W = s?.deploy?.window?.W;
+          const S = s?.deploy?.window?.S;
+          if (typeof W === "number") setDeployW(W);
+          if (typeof S === "number") setDeployS(S);
+          const mc = s?.deploy?.mc;
+          if (mc && typeof mc === "object") setMcCfg({ M: mc.M, M_confirm: mc.M_confirm });
+          const sys = s?.system || {};
+          if (typeof sys?.monitoring_enabled === "boolean") setMonitoringEnabled(sys.monitoring_enabled);
+          if (sys?.active_model_code) setActiveModelCode(sys.active_model_code);
+        }
+
+        // models
         setModelsErr(null);
-        const r = await fetch(`${API_BASE}/api/models/summary`);
-        if (!r.ok) throw new Error(await r.text());
-        const data = await r.json();
+        const rm = await fetch(`${API_BASE}/api/models/summary`);
+        if (!rm.ok) throw new Error(await rm.text());
+        const data = await rm.json();
         const arr = Array.isArray(data?.models) ? data.models : [];
         setModels(arr);
-
-        // Ensure selected model exists
-        if (arr.length > 0 && !arr.some((m) => m.id === selectedModel)) {
-          setSelectedModel(arr[0].id);
-        }
       } catch (e) {
         setModelsErr(String(e?.message || e));
-        // fallback to a safe set that matches your backend payload type
-        setModels([
-          { id: "le2i", label: "TCN trained on LE2I" },
-          { id: "urfd", label: "TCN trained on URFD" },
-          { id: "caucafall", label: "TCN trained on CAUCAFall" },
-        ]);
+        setModels([]);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync refs + target fps
-  useEffect(() => {
-    modelIdRef.current = selectedModel;
-    const fallback = MODEL_TARGET_FPS_FALLBACK[selectedModel] ?? 30;
-    setTargetFps(fallback);
-  }, [selectedModel]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => stopLiveInternal();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function resetState() {
-    setPFall(null);
-    setThreshold(null);
-    setFramesCollected(0);
-    setFrameIndex(0);
-    setStatusText("SAFE");
-    setStreamFps(null);
-
-    rawFramesRef.current = [];
-    lastPoseTsRef.current = null;
-    fpsDeltasRef.current = [];
-  }
-
-  async function pingBackend() {
-    try {
-      const r = await fetch(`${API_BASE}/api/health`);
-      setBackendOk(r.ok);
-      return r.ok;
-    } catch {
-      setBackendOk(false);
-      return false;
-    }
-  }
-
+  // Canvas sizing helper
   function ensureCanvasMatchesVideo() {
     const videoEl = videoRef.current;
     const canvasEl = canvasRef.current;
     if (!videoEl || !canvasEl) return;
 
-    const vw = videoEl.videoWidth || 640;
-    const vh = videoEl.videoHeight || 480;
+    const vw = videoEl.videoWidth || 1280;
+    const vh = videoEl.videoHeight || 720;
 
+    // Only resize when changed (avoid flicker)
     if (canvasEl.width !== vw) canvasEl.width = vw;
     if (canvasEl.height !== vh) canvasEl.height = vh;
   }
 
+  // Start/Stop camera + pose
   async function startLive() {
-    if (liveRunning) return;
+    if (!monitoringEnabled) return;
 
-    resetState();
-    setLiveRunning(true);
-    liveFlagRef.current = true;
-
-    const ok = await pingBackend();
-    if (!ok) {
-      console.error("Backend not reachable at", API_BASE);
-      // Still allow pose drawing even if backend is down
-    }
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
 
     try {
-      const videoEl = videoRef.current;
-      const canvasEl = canvasRef.current;
-      if (!videoEl || !canvasEl) {
-        console.error("Video or canvas ref missing");
-        stopLiveInternal();
-        return;
-      }
-
-      // Ask camera for an ideal FPS near target
-      const tgtFps = MODEL_TARGET_FPS_FALLBACK[modelIdRef.current] ?? 30;
+      liveFlagRef.current = true;
+      setLiveRunning(true);
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, frameRate: { ideal: tgtFps } },
+        video: { width: 640, height: 480, frameRate: { ideal: targetFps } },
         audio: false,
       });
 
       streamRef.current = stream;
       videoEl.srcObject = stream;
 
-      // Wait for metadata so videoWidth/videoHeight are valid
       await new Promise((resolve) => {
         const onLoaded = () => resolve();
         videoEl.onloadedmetadata = onLoaded;
@@ -227,10 +248,7 @@ export default function Monitor() {
 
       // MediaPipe Pose
       const pose = new mpPose.Pose({
-        locateFile: (file) =>
-          // If you get 404s here, pin a version:
-          // `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
-          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
       });
 
       pose.setOptions({
@@ -257,26 +275,22 @@ export default function Monitor() {
 
       loop();
     } catch (err) {
-      console.error("Error starting live monitoring:", err);
-      stopLiveInternal();
+      console.error("Error starting monitor-demo:", err);
+      stopLive();
     }
   }
 
-  function stopLiveInternal() {
+  function stopLive() {
     liveFlagRef.current = false;
     setLiveRunning(false);
 
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
 
-    if (poseRef.current && poseRef.current.close) {
-      try {
-        poseRef.current.close();
-      } catch {
-        // ignore
-      }
+    try {
+      poseRef.current?.close?.();
+    } catch {
+      // ignore
     }
     poseRef.current = null;
 
@@ -285,38 +299,80 @@ export default function Monitor() {
       streamRef.current = null;
     }
 
-    resetState();
+    // Clear buffer
+    rawFramesRef.current = [];
+    lastPoseTsRef.current = null;
+    fpsDeltasRef.current = [];
+    lastSentRef.current = 0;
+
+    // Reset UI
+    setPFall(null);
+    setSigma(null);
+    setTriageState("not_fall");
+    setTimeline([]);
   }
 
+  // Keep video off-screen (we want skeleton-only view)
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v) v.playsInline = true;
+  }, []);
+
+  // Cleanup
+  useEffect(() => {
+    return () => stopLive();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Pose callback
   function handlePoseResults(results) {
     const canvasEl = canvasRef.current;
     if (!canvasEl) return;
 
     const ctx = canvasEl.getContext("2d");
-    if (!ctx) return;
+      const doDraw = isActiveRef.current;
 
-    const w = canvasEl.width;
-    const h = canvasEl.height;
+      const landmarks = results.poseLandmarks;
 
-    // Clear + dark bg
-    ctx.save();
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#020617";
-    ctx.fillRect(0, 0, w, h);
+      // If no pose is detected, keep the pipeline running but don't crash the UI.
+      if (!landmarks || !landmarks.length) {
+        if (doDraw && ctx) {
+          ensureCanvasMatchesVideo();
+          ctx.fillStyle = "#020617";
+          ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.fillStyle = "#94a3b8";
+          ctx.fillText("No pose detected…", 16, 24);
+        }
+        return;
+      }
 
-    const landmarks = results.poseLandmarks;
-    if (!landmarks || !landmarks.length) {
-      ctx.restore();
-      return;
-    }
+      // Draw only when this page is active (so other pages stay responsive)
+      if (doDraw && ctx) {
+        ensureCanvasMatchesVideo();
+        const w = canvasEl.width;
+        const h = canvasEl.height;
 
-    drawConnectors(ctx, landmarks, POSE_CONNECTIONS, { color: "#22c55e", lineWidth: 2 });
-    drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
-    ctx.restore();
+        ctx.fillStyle = "#020617";
+        ctx.fillRect(0, 0, w, h);
 
-    // Build raw frame
+        // Simple skeleton overlay
+        drawConnectors(ctx, landmarks, mpPose.POSE_CONNECTIONS, {
+          color: "#22c55e",
+          lineWidth: 2,
+        });
+        drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
+
+        // Timestamp
+        ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
+      }
+
+      // Build raw frame
     const xyFrame = new Array(NUM_JOINTS);
     const confFrame = new Array(NUM_JOINTS);
+
     for (let i = 0; i < NUM_JOINTS; i++) {
       const lm = landmarks[i];
       if (!lm) {
@@ -330,7 +386,7 @@ export default function Monitor() {
 
     const tNow = performance.now();
 
-    // Estimate FPS from callback timing
+    // Estimate FPS from callback timing (smoothed)
     const last = lastPoseTsRef.current;
     if (typeof last === "number") {
       const dt = tNow - last;
@@ -350,45 +406,55 @@ export default function Monitor() {
     // Push raw
     const raw = rawFramesRef.current;
     raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
-
-    // Keep ~10s max
-    const maxRaw = 600;
+    // Keep ~10s max (enough for windowing)
+    const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
     if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
 
-    // Window readiness
-    const modelId = modelIdRef.current || "le2i";
-    const tgt = MODEL_TARGET_FPS_FALLBACK[modelId] ?? 30;
-    const dtTarget = 1000 / tgt;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - (WINDOW_SIZE - 1) * dtTarget;
+    // Only send once we have a full resampled window
+    maybeSendWindow();
+  }
 
-    const collected = raw[0].t <= startNeed
-      ? WINDOW_SIZE
-      : Math.max(0, Math.min(WINDOW_SIZE, Math.floor((endTs - raw[0].t) / dtTarget) + 1));
-
-    setFramesCollected(collected);
-    setFrameIndex((prev) => prev + 1);
-
-    if (collected === WINDOW_SIZE) maybeSendWindow();
+  function addTimelineMarker(kind) {
+    setTimeline((prev) => {
+      const next = prev.slice(-49); // keep last 49, then add 1
+      next.push({ i: (prev.length ? prev[prev.length - 1].i + 1 : 0), kind });
+      return next;
+    });
   }
 
   async function maybeSendWindow() {
     const now = performance.now();
-    if (now - lastSentRef.current < 500) return; // ~2 req/sec
-    lastSentRef.current = now;
-
-    const modelId = modelIdRef.current || "le2i";
-    const tgtFps = MODEL_TARGET_FPS_FALLBACK[modelId] ?? 30;
+    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000); // stride-based
+    if (now - lastSentRef.current < minGapMs) return;
 
     const raw = rawFramesRef.current;
-    const win = buildResampledWindow(raw, tgtFps, WINDOW_SIZE);
+    const win = buildResampledWindow(raw, targetFps, deployW);
     if (!win) return;
+
+    lastSentRef.current = now;
+
+    // Build payload for server PoseWindowPayload
+    const payload = {
+      session_id: sessionIdRef.current,
+      resident_id: 1,
+      mode: mode,
+      model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
+      model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
+      model_id: mode === "dual" ? null : (mode === "tcn" ? chosen.tcn : chosen.gcn),
+      fps: streamFps || targetFps,
+      timestamp_ms: Date.now(),
+      use_mc: true,
+      // Persist only when monitoring is enabled (and DB configured)
+      persist: Boolean(monitoringEnabled),
+      xy: win.xy,
+      conf: win.conf,
+    };
 
     try {
       const resp = await fetch(`${API_BASE}/api/monitor/predict_window`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId, xy: win.xy, conf: win.conf }),
+        body: JSON.stringify(payload),
       });
 
       if (!resp.ok) {
@@ -397,197 +463,244 @@ export default function Monitor() {
       }
 
       const data = await resp.json();
-      const pf = data.p_fall;
-      const thr = data.threshold;
 
-      setPFall(pf);
-      setThreshold(thr);
-      setStatusText(pf >= thr ? "FALL DETECTED" : "SAFE");
+      const tri = data?.triage_state || data?.triageState || "not_fall";
+      setTriageState(tri);
+
+      // pFall display: use overall mu (single) or max of (tcn,gcn) for dual
+      let mu = null;
+      let sig = null;
+
+      if (mode === "dual") {
+        const mt = data?.models?.tcn;
+        const mg = data?.models?.gcn;
+        const muT = mt?.mu != null ? Number(mt.mu) : null;
+        const muG = mg?.mu != null ? Number(mg.mu) : null;
+        mu = Math.max(muT ?? 0, muG ?? 0);
+        // show sigma if both present (max)
+        const sT = mt?.sigma != null ? Number(mt.sigma) : null;
+        const sG = mg?.sigma != null ? Number(mg.sigma) : null;
+        sig = Math.max(sT ?? 0, sG ?? 0);
+        // threshold (use the "primary" spec if available)
+        if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
+      } else {
+        const mOut = data?.models?.[mode];
+        if (mOut) {
+          mu = mOut?.mu != null ? Number(mOut.mu) : (mOut?.p_det != null ? Number(mOut.p_det) : null);
+          sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
+          if (mOut?.triage?.tau_high != null) setTauHigh(Number(mOut.triage.tau_high));
+        }
+      }
+
+      setPFall(mu);
+      setSigma(sig);
+
+      // timeline markers: mark uncertain/fall
+      const triNorm = (tri || "").toLowerCase();
+      if (triNorm === "fall") addTimelineMarker("fall");
+      else if (triNorm === "uncertain") addTimelineMarker("uncertain");
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window:", err);
     }
   }
 
-  const circleColor = statusText === "FALL DETECTED" ? "#dc2626" : "#16a34a";
-  const displayedTargetFps = targetFps ?? 30;
+  async function resetSession() {
+    try {
+      await fetch(`${API_BASE}/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`, {
+        method: "POST",
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  async function testFall() {
+    // 1) Try backend helper endpoint (if present)
+    try {
+      const r = await fetch(`${API_BASE}/api/events/test_fall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resident_id: 1, model_code: prettyModelTag(activeModelCode) }),
+      });
+      if (r.ok) {
+        addTimelineMarker("fall");
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2) Fallback: record a test notification (if DB exists)
+    try {
+      await fetch(`${API_BASE}/api/notifications/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resident_id: 1,
+          channel: "email",
+          message: "[UI] Test Fall button pressed",
+        }),
+      });
+    } catch {
+      // ignore
+    }
+
+    // 3) UI-only marker
+    addTimelineMarker("fall");
+  }
+
+  const currentPrediction = labelForTriage(triageState);
+  const pText = pFall == null ? "—" : pFall.toFixed(3);
+
+  // markers: translate last 50 markers to positions (0..100%)
+  const markers = useMemo(() => {
+    // We don't know exact index within 50; approximate by spreading over the bar.
+    const last50 = timeline.slice(-50);
+    const n = last50.length;
+    if (n === 0) return [];
+    return last50.map((m, idx) => ({
+      leftPct: ((idx + 1) / (n + 1)) * 100,
+      kind: m.kind,
+    }));
+  }, [timeline]);
 
   return (
-    <div style={{ padding: "1.5rem" }}>
-      <h1 style={{ fontSize: "1.5rem", marginBottom: "0.25rem" }}>
-        Live Monitor
-      </h1>
+    <div className={styles.pageContainer}>
+      <h2 className={styles.pageTitle}>Live Monitor</h2>
 
-      <p style={{ marginBottom: "0.75rem", color: "#4b5563" }}>
-        Webcam → MediaPipe Pose → resample to model FPS → window (T={WINDOW_SIZE}) → FastAPI
-      </p>
+      <div className={styles.content}>
+        {/* LEFT COLUMN (2/3) */}
+        <div className={styles.leftColumn}>
+          <div className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h3>Live Monitoring</h3>
+              <p>Real-time Skeleton tracking and fall detection</p>
+            </div>
 
-      {/* Backend status */}
-      <div style={{ marginBottom: "0.75rem", fontSize: "0.9rem", color: "#4b5563" }}>
-        <strong>Backend:</strong>{" "}
-        {backendOk == null ? "unknown" : backendOk ? "OK" : "NOT REACHABLE"}{" "}
-        <span style={{ color: "#9ca3af" }}>({API_BASE})</span>
-      </div>
+            {/* Video/Skeleton View (skeleton-only canvas) */}
+            <div className={styles.videoPlaceholder}>
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  opacity: 0, // keep hidden (skeleton-only)
+                }}
+              />
+              <canvas
+                ref={canvasRef}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                }}
+              />
+            </div>
 
-      {modelsErr && (
-        <div style={{ marginBottom: "0.75rem", color: "#b45309" }}>
-          Could not load /api/models/summary: {modelsErr}
-        </div>
-      )}
-
-      {/* Controls */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "1rem",
-          marginBottom: "1rem",
-          flexWrap: "wrap",
-        }}
-      >
-        <div>
-          <div style={{ fontSize: "0.8rem", color: "#4b5563" }}>Model:</div>
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={liveRunning}
-            style={{
-              padding: "0.25rem 0.5rem",
-              borderRadius: 9999,
-              border: "1px solid #d1d5db",
-            }}
-          >
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label || m.id}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          onClick={startLive}
-          disabled={liveRunning}
-          style={{
-            padding: "0.5rem 1rem",
-            borderRadius: 9999,
-            border: "none",
-            backgroundColor: liveRunning ? "#9ca3af" : "#2563eb",
-            color: "white",
-            cursor: liveRunning ? "default" : "pointer",
-          }}
-        >
-          {liveRunning ? "Live Running" : "▶ Start live"}
-        </button>
-
-        <button
-          onClick={stopLiveInternal}
-          style={{
-            padding: "0.5rem 1rem",
-            borderRadius: 9999,
-            border: "1px solid #d1d5db",
-            backgroundColor: "white",
-            cursor: "pointer",
-          }}
-        >
-          ⏹ Stop
-        </button>
-
-        <div style={{ fontSize: "0.85rem", color: "#4b5563" }}>
-          <div>
-            <strong>Target FPS:</strong> {displayedTargetFps}
-          </div>
-          <div>
-            <strong>Stream FPS:</strong>{" "}
-            {streamFps != null ? streamFps.toFixed(1) : "-"}
-          </div>
-        </div>
-      </div>
-
-      {/* Status + skeleton */}
-      <div style={{ display: "flex", gap: "2rem", alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div
-          style={{
-            width: 200,
-            height: 200,
-            borderRadius: "9999px",
-            border: `6px solid ${circleColor}`,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>p(fall)</div>
-          <div style={{ fontSize: "1.8rem", fontWeight: 600 }}>
-            {pFall != null ? pFall.toFixed(2) : "-"}
-          </div>
-          <div style={{ marginTop: "0.25rem", fontWeight: 600, color: circleColor, fontSize: "0.9rem", textAlign: "center" }}>
-            {statusText}
-          </div>
-          <div style={{ marginTop: "0.25rem", fontSize: "0.75rem", color: "#6b7280" }}>
-            Model: {selectedModelObj?.label || selectedModel}
+            {/* Prediction Result Box */}
+            <div className={styles.predictionBox}>
+              <div className={styles.predictionItem}>
+                <span className={styles.label}>Current Prediction</span>
+                <span className={styles.value}>{currentPrediction}</span>
+              </div>
+              <div className={styles.predictionItem}>
+                <span className={styles.label}>P (fall)</span>
+                <span className={styles.value}>{pText}</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div style={{ flex: 1, minWidth: 320 }}>
-          <div style={{ marginBottom: "0.25rem", fontSize: "0.9rem", fontWeight: 500 }}>
-            Skeleton preview
+        {/* RIGHT COLUMN (1/3) */}
+        <div className={styles.rightColumn}>
+          {/* Controls Card */}
+          <div className={styles.card}>
+            <h3>Controls</h3>
+            {modelsErr && (
+              <p className={styles.subText} style={{ color: "#B45309" }}>
+                Backend error: {modelsErr}
+              </p>
+            )}
+            <div className={styles.buttonGroup}>
+              {!liveRunning ? (
+                <button
+                  className={styles.btnGray}
+                  onClick={async () => {
+                    await resetSession();
+                    await startLive();
+                  }}
+                  disabled={!monitoringEnabled}
+                  title={!monitoringEnabled ? "Monitoring is disabled in Settings" : "Start"}
+                >
+                  Start
+                </button>
+              ) : (
+                <button className={styles.btnGray} onClick={stopLive}>
+                  Pause
+                </button>
+              )}
+              <button className={styles.btnRed} onClick={testFall}>
+                Test Fall
+              </button>
+            </div>
           </div>
 
-          <canvas
-            ref={canvasRef}
-            width={640}
-            height={480}
-            style={{
-              width: "100%",
-              maxWidth: 640,
-              aspectRatio: "4 / 3",
-              backgroundColor: "#020617",
-              borderRadius: "0.75rem",
-              border: "1px solid #111827",
-            }}
-          />
+          {/* Timeline Card */}
+          <div className={styles.card}>
+            <h3>Event Timeline</h3>
+            <p className={styles.subText}>Last 50 prediction windows</p>
+            <div className={styles.timelineBar}>
+              {markers.map((m, idx) => (
+                <div
+                  key={idx}
+                  className={styles.marker}
+                  style={{
+                    left: `${m.leftPct}%`,
+                    opacity: m.kind === "uncertain" ? 0.5 : 1,
+                  }}
+                  title={m.kind}
+                />
+              ))}
+            </div>
+          </div>
 
-          {/* IMPORTANT: keep video decoding by NOT using display:none */}
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            style={{
-              position: "absolute",
-              left: "-9999px",
-              top: "0",
-              width: 640,
-              height: 480,
-              opacity: 0,
-              pointerEvents: "none",
-            }}
-          />
+          {/* Model Info Card */}
+          <div className={styles.card}>
+            <h3>Model Info</h3>
+            <div className={styles.infoTable}>
+              <div className={styles.infoRow}>
+                <span>Model:</span>
+                <span className={styles.tag}>{modelTag}</span>
+              </div>
+              <div className={styles.infoRow}>
+                <span>Window Size</span>
+                <span>{deployW}</span>
+              </div>
+              <div className={styles.infoRow}>
+                <span>Stride</span>
+                <span>{deployS}</span>
+              </div>
+              <div className={styles.infoRow}>
+                <span>Threshold</span>
+                <span>{tauHigh == null ? "—" : tauHigh.toFixed(2)}</span>
+              </div>
+            </div>
+            {/* Keep extra info out of the design, but useful for debugging */}
+            <p className={styles.subText} style={{ marginTop: 12 }}>
+              Mode: {mode} • FPS: {(streamFps || targetFps).toFixed(1)} • MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
+              {sigma != null ? ` • σ=${sigma.toFixed(3)}` : ""}
+            </p>
+          </div>
         </div>
-      </div>
-
-      {/* Details */}
-      <div
-        style={{
-          marginTop: "1.5rem",
-          padding: "1rem 1.25rem",
-          borderRadius: "0.75rem",
-          border: "1px solid #e5e7eb",
-        }}
-      >
-        <h2 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>
-          Monitoring details
-        </h2>
-        <p style={{ margin: 0 }}>
-          <strong>Collected frames:</strong> {framesCollected}/{WINDOW_SIZE}
-        </p>
-        <p style={{ margin: 0 }}>
-          <strong>Frame index:</strong> {frameIndex}
-        </p>
-        <p style={{ margin: 0 }}>
-          <strong>Decision threshold:</strong> {threshold != null ? threshold.toFixed(3) : "-"}
-        </p>
       </div>
     </div>
   );
 }
+
+export default MonitorDemo;

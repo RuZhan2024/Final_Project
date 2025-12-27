@@ -1,11 +1,14 @@
 # Deployment triage config (defaults)
-# Mode selection is passed via --mode; this file configures thresholds + timing.
+# This file controls:
+# - per-arch triage thresholds (tau_low / tau_high) + EMA smoothing
+# - timing / persistence for "possible" vs "confirmed" alerts
+# - MC-dropout sampling counts
 
 tcn:
   tau_low: 0.05
   tau_high: 0.90
   ema_alpha: 0.20
-  # sigma_max: 0.08   # optional (Option 2 gate, used only when MC sigma is computed)
+  # sigma_max: 0.08  # optional: if set, triage becomes "uncertain" when sigma > sigma_max
 
 gcn:
   tau_low: 0.05
@@ -33,4 +36,4 @@ dual:
 
 mc:
   M: 1
-  M_confirm: 12
+  M_confirm: 8
