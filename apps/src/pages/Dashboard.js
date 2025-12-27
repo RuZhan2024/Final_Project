@@ -66,6 +66,7 @@ function Dashboard() {
       if (!r.ok) throw new Error(await r.text());
       // refresh to ensure UI matches DB
       loadSummary();
+      console.log("Success")
     } catch (e) {
       // revert on error
       setMonitoringEnabled(!next);
@@ -99,7 +100,7 @@ function Dashboard() {
             <span className={styles.statusText}>{statusLabel}</span>
             <button
               className={styles.actionButton}
-              onClick={() => navigate("/monitor-demo")}
+              onClick={() => navigate("/monitor")}
             >
               View Live Feed
             </button>
