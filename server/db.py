@@ -1,39 +1,70 @@
-# server/db.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""server/db.py
+
+MySQL connector used by the FastAPI server.
+
+This module is deliberately *import-safe*:
+- If PyMySQL is not installed, the server can still start; DB endpoints will
+  raise a clear error only when called.
+- Missing DB environment variables also error at call time.
+
+Env vars
+--------
+DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
+"""
+
+from __future__ import annotations
+
 import os
 from contextlib import contextmanager
+from typing import Iterator
 
-import pymysql
-from pymysql.cursors import DictCursor
 
-# Read from env or fall back to defaults from create_db.sql
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", "3306"))
-DB_NAME = os.getenv("DB_NAME", "elder_fall_monitor")
-DB_USER = os.getenv("DB_USER", "fall_app")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "strong_password_here")
+def _require_env(name: str, default: str | None = None) -> str:
+    v = os.getenv(name, default)
+    if v is None or str(v).strip() == "":
+        raise RuntimeError(
+            f"Missing required env var {name}. "
+            "Set DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME or disable DB endpoints."
+        )
+    return str(v)
 
 
 @contextmanager
-def get_conn():
-    """
-    Simple context manager for MySQL connections.
+def get_conn() -> Iterator[object]:
+    """Yield a PyMySQL connection (DictCursor).
 
-    Usage:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                row = cur.fetchone()
+    The caller is responsible for committing when needed.
     """
+    try:
+        import pymysql  # type: ignore
+        from pymysql.cursors import DictCursor  # type: ignore
+    except Exception as e:
+        raise RuntimeError(
+            "PyMySQL is not installed. Install it with: pip install pymysql"
+        ) from e
+
+    host = _require_env("DB_HOST", "127.0.0.1")
+    port = int(_require_env("DB_PORT", "3306"))
+    user = _require_env("DB_USER")
+    password = _require_env("DB_PASS")
+    db = _require_env("DB_NAME")
+
     conn = pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=db,
         cursorclass=DictCursor,
-        autocommit=True,
+        autocommit=False,
     )
     try:
         yield conn
+        conn.commit()
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass

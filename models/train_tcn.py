@@ -299,6 +299,9 @@ def main() -> None:
 
     # feature flags (Makefile-friendly ints)
     ap.add_argument("--center", choices=["pelvis", "none"], default="pelvis")
+    # Deprecated: older Makefiles used --scale (e.g., 'torso').
+    # Scaling is handled inside core/features.py; we accept the flag to avoid breaking runs.
+    ap.add_argument("--scale", default=None, help="(deprecated) kept for Makefile compatibility; ignored")
     ap.add_argument("--use_motion", type=int, default=1)
     ap.add_argument("--use_conf_channel", type=int, default=1)
     ap.add_argument("--motion_scale_by_fps", type=int, default=1)
@@ -306,6 +309,9 @@ def main() -> None:
     ap.add_argument("--use_precomputed_mask", type=int, default=1)
 
     args = ap.parse_args()
+
+    if getattr(args, "scale", None) not in (None, "", "none"):
+        print(f"[warn] --scale={args.scale!r} is deprecated and ignored (scaling is handled in core/features.py)")
 
     cfg = TrainCfg(
         train_dir=args.train_dir,

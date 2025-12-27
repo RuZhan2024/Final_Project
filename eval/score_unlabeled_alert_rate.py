@@ -40,7 +40,7 @@ from torch.utils.data import DataLoader, Dataset
 from core.ckpt import load_ckpt, get_cfg
 from core.features import FeatCfg, read_window_npz, build_tcn_input, build_gcn_input
 from core.models import build_model, pick_device, logits_1d
-from core.alerting import AlertCfg, detect_alert_events
+from core.alerting import AlertCfg, detect_alert_events, classify_states
 
 
 class UnlabeledWindows(Dataset):
@@ -127,6 +127,13 @@ def main() -> None:
     ap.add_argument("--tau_low", type=float, default=0.70)
     ap.add_argument("--cooldown_s", type=float, default=30.0)
 
+    # Optional confirm args (Makefile may pass them). These map to core.alerting.AlertCfg.
+    ap.add_argument("--confirm", type=int, default=0)
+    ap.add_argument("--confirm_s", type=float, default=2.0)
+    ap.add_argument("--confirm_min_lying", type=float, default=0.65)
+    ap.add_argument("--confirm_max_motion", type=float, default=0.08)
+    ap.add_argument("--confirm_require_low", type=int, default=1)
+
     args = ap.parse_args()
 
     device = pick_device()
@@ -173,6 +180,11 @@ def main() -> None:
         tau_high=float(args.tau_high),
         tau_low=float(args.tau_low),
         cooldown_s=float(args.cooldown_s),
+        confirm=bool(int(args.confirm)),
+        confirm_s=float(args.confirm_s),
+        confirm_min_lying=float(args.confirm_min_lying),
+        confirm_max_motion=float(args.confirm_max_motion),
+        confirm_require_low=bool(int(args.confirm_require_low)),
     )
 
     # per-video alerts
@@ -181,6 +193,7 @@ def main() -> None:
 
     total_alerts = 0
     total_dur_s = 0.0
+    total_state = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0, "suspect_time_s": 0.0, "alert_time_s": 0.0}
 
     for v in list(dict.fromkeys(vids)):
         mv = vids_arr == v
@@ -192,27 +205,56 @@ def main() -> None:
         t_v = _times_from_windows(ws_v, we_v, fps_v)
         duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
 
-        _, events = detect_alert_events(p_v, t_v, alert_cfg)
+        st = classify_states(p_v, t_v, alert_cfg)
+        _alert_mask, events = detect_alert_events(p_v, t_v, alert_cfg)
         n = int(len(events))
         fa_hour = float(n / (duration_s / 3600.0)) if duration_s > 0 else float("nan")
         fa_day = float(n / (duration_s / 86400.0)) if duration_s > 0 else float("nan")
+
+        # Approximate time in each state using median step in t_v.
+        dt = float(np.median(np.diff(t_v))) if t_v.size >= 2 else 0.0
+        n_clear = int(np.sum(st["clear"]))
+        n_suspect = int(np.sum(st["suspect"]))
+        n_alert = int(np.sum(st["alert"]))
+        tot = int(t_v.size)
 
         out["per_video"][v] = {
             "n_alert_events": n,
             "duration_s": duration_s,
             "fa_per_hour": fa_hour,
             "fa_per_day": fa_day,
+            "state_counts": {
+                "n_windows": tot,
+                "clear": n_clear,
+                "suspect": n_suspect,
+                "alert": n_alert,
+                "suspect_frac": float(n_suspect / tot) if tot > 0 else float("nan"),
+                "alert_frac": float(n_alert / tot) if tot > 0 else float("nan"),
+                "suspect_time_s": float(n_suspect * dt),
+                "alert_time_s": float(n_alert * dt),
+            },
             "first_3_events": [e.to_dict() for e in events[:3]],
         }
 
         total_alerts += n
         total_dur_s += duration_s
+        total_state["n_windows"] += tot
+        total_state["clear"] += n_clear
+        total_state["suspect"] += n_suspect
+        total_state["alert"] += n_alert
+        total_state["suspect_time_s"] += float(n_suspect * dt)
+        total_state["alert_time_s"] += float(n_alert * dt)
 
     out["total"] = {
         "n_alert_events": int(total_alerts),
         "duration_s": float(total_dur_s),
         "fa_per_hour": float(total_alerts / (total_dur_s / 3600.0)) if total_dur_s > 0 else float("nan"),
         "fa_per_day": float(total_alerts / (total_dur_s / 86400.0)) if total_dur_s > 0 else float("nan"),
+        "state_counts": {
+            **total_state,
+            "suspect_frac": float(total_state["suspect"] / max(1, total_state["n_windows"])),
+            "alert_frac": float(total_state["alert"] / max(1, total_state["n_windows"])),
+        },
     }
 
     os.makedirs(os.path.dirname(args.out_json), exist_ok=True)

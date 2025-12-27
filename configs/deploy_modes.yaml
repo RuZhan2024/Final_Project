@@ -1,0 +1,36 @@
+# Deployment triage config (defaults)
+# Mode selection is passed via --mode; this file configures thresholds + timing.
+
+tcn:
+  tau_low: 0.05
+  tau_high: 0.90
+  ema_alpha: 0.20
+  # sigma_max: 0.08   # optional (Option 2 gate, used only when MC sigma is computed)
+
+gcn:
+  tau_low: 0.05
+  tau_high: 0.90
+  ema_alpha: 0.20
+  # sigma_max: 0.10
+
+single:
+  possible_k: 3
+  possible_T_s: 2.0
+  confirm_T_s: 3.6
+  confirm_k_fall: 2
+  cooldown_possible_s: 15.0
+  cooldown_confirmed_s: 60.0
+
+dual:
+  possible_k: 3
+  possible_T_s: 2.0
+  confirm_T_s: 3.6
+  confirm_k_tcn: 1
+  confirm_k_gcn: 1
+  require_both: true
+  cooldown_possible_s: 15.0
+  cooldown_confirmed_s: 60.0
+
+mc:
+  M: 1
+  M_confirm: 12

@@ -38,6 +38,20 @@ class AlertCfg:
     tau_low: float = 0.70
     cooldown_s: float = 30.0
 
+    # Optional "confirmation" stage.
+    #
+    # If enabled, a k-of-n trigger is treated as a *candidate* alert start.
+    # We then wait up to confirm_s seconds for a confirmation condition.
+    #
+    # In this repo, we don't have RGB or depth at deploy-time; we only have
+    # skeleton windows. So confirmation (if used) should be treated as a
+    # lightweight heuristic.
+    confirm: bool = False
+    confirm_s: float = 2.0
+    confirm_min_lying: float = 0.65
+    confirm_max_motion: float = 0.08
+    confirm_require_low: bool = True
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -51,6 +65,12 @@ class AlertCfg:
             tau_high=float(d.get("tau_high", 0.90)),
             tau_low=float(d.get("tau_low", 0.70)),
             cooldown_s=float(d.get("cooldown_s", 30.0)),
+
+            confirm=bool(d.get("confirm", False)),
+            confirm_s=float(d.get("confirm_s", 2.0)),
+            confirm_min_lying=float(d.get("confirm_min_lying", 0.65)),
+            confirm_max_motion=float(d.get("confirm_max_motion", 0.08)),
+            confirm_require_low=bool(d.get("confirm_require_low", True)),
         )
 
 
@@ -163,8 +183,26 @@ def detect_alert_events(
     probs: Sequence[float],
     times_s: Sequence[float],
     cfg: AlertCfg,
+    *,
+    lying_score: Optional[Sequence[float]] = None,
+    motion_score: Optional[Sequence[float]] = None,
 ) -> Tuple[np.ndarray, List[AlertEvent]]:
-    """Run alert policy on a probability sequence. Return (active_mask, events)."""
+    """Run alert policy on a probability sequence.
+
+    Returns:
+      active_mask: bool array where True indicates "ALERT active".
+      events: list of AlertEvent intervals.
+
+    Two thresholds are used:
+      - tau_high: START threshold (after k-of-n)
+      - tau_low:  END threshold (hysteresis)
+
+    Optional confirm stage:
+      If cfg.confirm is True, an alert only becomes active if a confirmation
+      condition is met within cfg.confirm_s seconds after the k-of-n trigger.
+      If lying_score/motion_score are provided (both optional), we use them as
+      heuristics; otherwise we fall back to a probability-only confirmation.
+    """
     p = np.asarray(probs, dtype=np.float32).reshape(-1)
     t = np.asarray(times_s, dtype=np.float32).reshape(-1)
     if p.size == 0:
@@ -184,6 +222,19 @@ def detect_alert_events(
     in_event = False
     start_i = 0
     peak = 0.0
+
+    # confirmation state
+    pending = False
+    pending_start_i = 0
+    pending_deadline_s = -1e9
+    pending_peak = 0.0
+
+    ls = None
+    ms = None
+    if lying_score is not None:
+        ls = np.asarray(lying_score, dtype=np.float32).reshape(-1)
+    if motion_score is not None:
+        ms = np.asarray(motion_score, dtype=np.float32).reshape(-1)
 
     for i in range(pers.size):
         ti = float(t[i])
@@ -208,11 +259,60 @@ def detect_alert_events(
                 cooldown_until = float(t[end_i]) + float(cfg.cooldown_s)
             continue
 
+        # confirmation pending (candidate alert start)
+        if pending:
+            # We are in the uncertain band: no hard alert yet.
+            # Promote to a real alert if confirm condition satisfied.
+            pending_peak = max(pending_peak, float(ps[i]))
+
+            # If we drop below tau_low, abandon the pending start.
+            if float(ps[i]) < float(cfg.tau_low):
+                pending = False
+                continue
+
+            # Timeout: if we didn't confirm in time, keep it as uncertain (no alert).
+            if float(ti) > float(pending_deadline_s):
+                pending = False
+                continue
+
+            ok_prob = float(ps[i]) >= float(cfg.tau_low)
+            ok_lying = True
+            ok_motion = True
+
+            # If we have heuristics, apply them.
+            if ls is not None:
+                ok_lying = float(ls[i]) >= float(cfg.confirm_min_lying)
+            if ms is not None:
+                ok_motion = float(ms[i]) <= float(cfg.confirm_max_motion)
+
+            if ok_prob and ok_lying and ok_motion:
+                # Promote pending -> event
+                in_event = True
+                pending = False
+                start_i = int(pending_start_i)
+                peak = float(pending_peak)
+                active[i] = True
+            continue
+
         # not in event: can we start?
         if ti < cooldown_until:
             continue
 
         if pers[i]:
+            # Optional "require low": only start after coming from below tau_low.
+            # We only apply this when the confirm stage is actually using extra signals.
+            if bool(cfg.confirm) and (ls is not None or ms is not None) and bool(cfg.confirm_require_low) and i > 0:
+                if float(ps[i - 1]) >= float(cfg.tau_low):
+                    # Stay uncertain; do not start.
+                    continue
+
+            if bool(cfg.confirm) and (ls is not None or ms is not None):
+                pending = True
+                pending_start_i = i
+                pending_deadline_s = float(t[i]) + float(cfg.confirm_s)
+                pending_peak = float(ps[i])
+                continue
+
             in_event = True
             start_i = i
             peak = float(ps[i])
@@ -231,6 +331,58 @@ def detect_alert_events(
         )
 
     return active, events
+
+
+def classify_states(
+    probs: Sequence[float],
+    times_s: Sequence[float],
+    cfg: AlertCfg,
+    *,
+    lying_score: Optional[Sequence[float]] = None,
+    motion_score: Optional[Sequence[float]] = None,
+) -> Dict[str, Any]:
+    """Classify each time step into {clear, suspect, alert}.
+
+    We define:
+      - alert: the alert policy is active (see detect_alert_events)
+      - suspect: not alert, but smoothed prob is in [tau_low, tau_high)
+      - clear: smoothed prob < tau_low
+
+    Returns a dict with masks and the smoothed probabilities.
+    """
+    p = np.asarray(probs, dtype=np.float32).reshape(-1)
+    t = np.asarray(times_s, dtype=np.float32).reshape(-1)
+    if p.size == 0:
+        return {
+            "ps": np.asarray([], dtype=np.float32),
+            "clear": np.asarray([], dtype=bool),
+            "suspect": np.asarray([], dtype=bool),
+            "alert": np.asarray([], dtype=bool),
+        }
+
+    ps = ema_smooth(p, cfg.ema_alpha)
+    alert_mask, _events = detect_alert_events(
+        ps,
+        t,
+        AlertCfg(
+            ema_alpha=0.0,  # already smoothed
+            k=int(cfg.k),
+            n=int(cfg.n),
+            tau_high=float(cfg.tau_high),
+            tau_low=float(cfg.tau_low),
+            cooldown_s=float(cfg.cooldown_s),
+            confirm=bool(cfg.confirm),
+            confirm_s=float(cfg.confirm_s),
+            confirm_min_lying=float(cfg.confirm_min_lying),
+            confirm_max_motion=float(cfg.confirm_max_motion),
+            confirm_require_low=bool(cfg.confirm_require_low),
+        ),
+        lying_score=lying_score,
+        motion_score=motion_score,
+    )
+    suspect = (~alert_mask) & (ps >= float(cfg.tau_low)) & (ps < float(cfg.tau_high))
+    clear = (~alert_mask) & (ps < float(cfg.tau_low))
+    return {"ps": ps, "clear": clear, "suspect": suspect, "alert": alert_mask}
 
 
 # ---------------- event metrics ----------------
@@ -481,6 +633,12 @@ def sweep_alert_policy_from_windows(
             tau_high=float(tau_high),
             tau_low=float(tau_low),
             cooldown_s=float(alert_base.cooldown_s),
+
+            confirm=bool(alert_base.confirm),
+            confirm_s=float(alert_base.confirm_s),
+            confirm_min_lying=float(alert_base.confirm_min_lying),
+            confirm_max_motion=float(alert_base.confirm_max_motion),
+            confirm_require_low=bool(alert_base.confirm_require_low),
         )
 
         gt_total = 0
@@ -539,3 +697,258 @@ def sweep_alert_policy_from_windows(
         "overlap_slack_s": float(overlap_slack_s),
     }
     return out, meta
+
+
+# =========================
+# 3-state triage + mode SMs
+# =========================
+
+TRIAGE_FALL = "fall"
+TRIAGE_NOT_FALL = "not_fall"
+TRIAGE_UNCERTAIN = "uncertain"
+
+EVENT_POSSIBLE = "possible_fall"
+EVENT_CONFIRMED = "fall_detected"
+EVENT_RESOLVED = "resolved"
+
+
+@dataclass
+class TriageCfg:
+    """Two-threshold triage (Option 1) + optional uncertainty gate (Option 2)."""
+    tau_low: float = 0.05
+    tau_high: float = 0.90
+    ema_alpha: float = 0.20  # EMA smoothing on probability/mean
+    sigma_max: Optional[float] = None  # if provided and sigma > sigma_max => UNCERTAIN
+
+
+@dataclass
+class SingleModeCfg:
+    """Temporal logic for a single model (Mode 1 or Mode 2)."""
+    possible_k: int = 3
+    possible_T_s: float = 2.0
+    confirm_T_s: float = 3.6  # keep worst-case confirmed latency ~6s (W=1.6 + possible<=2.4 + confirm<=3.6)
+    confirm_k_fall: int = 2
+    cooldown_possible_s: float = 15.0
+    cooldown_confirmed_s: float = 60.0
+
+
+@dataclass
+class DualModeCfg:
+    """Temporal logic for dual-model fusion (Mode 3)."""
+    possible_k: int = 3
+    possible_T_s: float = 2.0
+    confirm_T_s: float = 3.6
+    confirm_k_tcn: int = 1
+    confirm_k_gcn: int = 1
+    require_both: bool = True
+    cooldown_possible_s: float = 15.0
+    cooldown_confirmed_s: float = 60.0
+
+
+@dataclass
+class TriageEvent:
+    kind: str
+    t_sec: float
+    info: Dict[str, Any]
+
+
+def triage_state(mu: float, tau_low: float, tau_high: float, sigma: Optional[float] = None, sigma_max: Optional[float] = None) -> str:
+    """Return fall / uncertain / not_fall using Option 1 (+ optional Option 2 gate)."""
+    if sigma is not None and sigma_max is not None and float(sigma) > float(sigma_max):
+        return TRIAGE_UNCERTAIN
+    if float(mu) >= float(tau_high):
+        return TRIAGE_FALL
+    if float(mu) <= float(tau_low):
+        return TRIAGE_NOT_FALL
+    return TRIAGE_UNCERTAIN
+
+
+class SingleTriageStateMachine:
+    """State machine for a single model.
+
+    - Normal streaming: triage on EMA-smoothed score.
+    - 'possible_fall' triggers after K suspicious states in a trailing T seconds.
+    - 'fall_detected' triggers if >=confirm_k_fall FALL states within confirm_T_s.
+    """
+
+    def __init__(self, triage_cfg: TriageCfg, mode_cfg: SingleModeCfg):
+        self.triage_cfg = triage_cfg
+        self.mode_cfg = mode_cfg
+        self.reset()
+
+    def reset(self) -> None:
+        self._ema: Optional[float] = None
+        self._state: str = "idle"  # idle|confirm|cooldown_possible|cooldown_confirmed
+        self._t_state0: float = 0.0
+        self._sus_times: List[float] = []
+        self._fall_times: List[float] = []
+        self._cooldown_until: float = -1.0
+
+    def _ema_update(self, x: float) -> float:
+        a = float(self.triage_cfg.ema_alpha)
+        if self._ema is None:
+            self._ema = float(x)
+        else:
+            self._ema = a * float(x) + (1.0 - a) * float(self._ema)
+        return float(self._ema)
+
+    def step(self, t_sec: float, p_or_mu: float, sigma: Optional[float] = None) -> List[TriageEvent]:
+        evs: List[TriageEvent] = []
+        t = float(t_sec)
+
+        mu = self._ema_update(float(p_or_mu))
+        s = triage_state(mu, self.triage_cfg.tau_low, self.triage_cfg.tau_high, sigma=sigma, sigma_max=self.triage_cfg.sigma_max)
+
+        # cooldown handling
+        if t < self._cooldown_until:
+            return evs
+
+        if self._state == "idle":
+            if s != TRIAGE_NOT_FALL:
+                self._sus_times.append(t)
+            # trim
+            T = float(self.mode_cfg.possible_T_s)
+            self._sus_times = [x for x in self._sus_times if (t - x) <= T]
+            if len(self._sus_times) >= int(self.mode_cfg.possible_k):
+                # possible fall
+                evs.append(TriageEvent(EVENT_POSSIBLE, t, {"mu": mu, "sigma": sigma}))
+                self._state = "confirm"
+                self._t_state0 = t
+                self._fall_times = []
+                self._sus_times = []
+            return evs
+
+        if self._state == "confirm":
+            if s == TRIAGE_FALL:
+                self._fall_times.append(t)
+            # trim to confirm window
+            Tc = float(self.mode_cfg.confirm_T_s)
+            self._fall_times = [x for x in self._fall_times if (t - x) <= Tc]
+            if len(self._fall_times) >= int(self.mode_cfg.confirm_k_fall):
+                evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu": mu, "sigma": sigma}))
+                self._state = "idle"
+                self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                self._fall_times = []
+                return evs
+
+            # time out -> resolved
+            if (t - self._t_state0) > Tc:
+                evs.append(TriageEvent(EVENT_RESOLVED, t, {"mu": mu, "sigma": sigma}))
+                self._state = "idle"
+                self._cooldown_until = t + float(self.mode_cfg.cooldown_possible_s)
+                self._fall_times = []
+            return evs
+
+        return evs
+
+
+class DualTriageStateMachine:
+    """Fusion state machine for Mode 3 (TCN + GCN).
+
+    Possible fall triggers if *either* model is suspicious (UNCERTAIN or FALL)
+    for K times within possible_T_s.
+
+    Confirmed fall triggers if:
+      - require_both=True: each model reaches its own confirm_k in the confirm window.
+      - else: either model reaches (confirm_k_tcn) within the confirm window.
+    """
+
+    def __init__(self, triage_tcn: TriageCfg, triage_gcn: TriageCfg, mode_cfg: DualModeCfg):
+        self.triage_tcn = triage_tcn
+        self.triage_gcn = triage_gcn
+        self.mode_cfg = mode_cfg
+        self.reset()
+
+    def reset(self) -> None:
+        self._ema_tcn: Optional[float] = None
+        self._ema_gcn: Optional[float] = None
+        self._state: str = "idle"
+        self._t_state0: float = 0.0
+        self._sus_times: List[float] = []
+        self._fall_tcn: List[float] = []
+        self._fall_gcn: List[float] = []
+        self._cooldown_until: float = -1.0
+
+    def _ema_update(self, which: str, x: float) -> float:
+        a_t = float(self.triage_tcn.ema_alpha)
+        a_g = float(self.triage_gcn.ema_alpha)
+        if which == "tcn":
+            if self._ema_tcn is None:
+                self._ema_tcn = float(x)
+            else:
+                self._ema_tcn = a_t * float(x) + (1.0 - a_t) * float(self._ema_tcn)
+            return float(self._ema_tcn)
+        else:
+            if self._ema_gcn is None:
+                self._ema_gcn = float(x)
+            else:
+                self._ema_gcn = a_g * float(x) + (1.0 - a_g) * float(self._ema_gcn)
+            return float(self._ema_gcn)
+
+    def step(
+        self,
+        t_sec: float,
+        p_tcn: float,
+        p_gcn: float,
+        sigma_tcn: Optional[float] = None,
+        sigma_gcn: Optional[float] = None,
+    ) -> List[TriageEvent]:
+        evs: List[TriageEvent] = []
+        t = float(t_sec)
+
+        if t < self._cooldown_until:
+            return evs
+
+        mu_t = self._ema_update("tcn", float(p_tcn))
+        mu_g = self._ema_update("gcn", float(p_gcn))
+
+        s_t = triage_state(mu_t, self.triage_tcn.tau_low, self.triage_tcn.tau_high, sigma=sigma_tcn, sigma_max=self.triage_tcn.sigma_max)
+        s_g = triage_state(mu_g, self.triage_gcn.tau_low, self.triage_gcn.tau_high, sigma=sigma_gcn, sigma_max=self.triage_gcn.sigma_max)
+
+        suspicious = (s_t != TRIAGE_NOT_FALL) or (s_g != TRIAGE_NOT_FALL)
+
+        if self._state == "idle":
+            if suspicious:
+                self._sus_times.append(t)
+            Tp = float(self.mode_cfg.possible_T_s)
+            self._sus_times = [x for x in self._sus_times if (t - x) <= Tp]
+            if len(self._sus_times) >= int(self.mode_cfg.possible_k):
+                evs.append(TriageEvent(EVENT_POSSIBLE, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
+                self._state = "confirm"
+                self._t_state0 = t
+                self._fall_tcn = []
+                self._fall_gcn = []
+                self._sus_times = []
+            return evs
+
+        if self._state == "confirm":
+            if s_t == TRIAGE_FALL:
+                self._fall_tcn.append(t)
+            if s_g == TRIAGE_FALL:
+                self._fall_gcn.append(t)
+
+            Tc = float(self.mode_cfg.confirm_T_s)
+            self._fall_tcn = [x for x in self._fall_tcn if (t - x) <= Tc]
+            self._fall_gcn = [x for x in self._fall_gcn if (t - x) <= Tc]
+
+            ok_t = len(self._fall_tcn) >= int(self.mode_cfg.confirm_k_tcn)
+            ok_g = len(self._fall_gcn) >= int(self.mode_cfg.confirm_k_gcn)
+
+            confirmed = (ok_t and ok_g) if bool(self.mode_cfg.require_both) else (ok_t or ok_g)
+            if confirmed:
+                evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
+                self._state = "idle"
+                self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                self._fall_tcn = []
+                self._fall_gcn = []
+                return evs
+
+            if (t - self._t_state0) > Tc:
+                evs.append(TriageEvent(EVENT_RESOLVED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
+                self._state = "idle"
+                self._cooldown_until = t + float(self.mode_cfg.cooldown_possible_s)
+                self._fall_tcn = []
+                self._fall_gcn = []
+            return evs
+
+        return evs

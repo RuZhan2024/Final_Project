@@ -221,6 +221,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", choices=["tcn", "gcn"], required=True)
     ap.add_argument("--val_dir", required=True)
+    ap.add_argument("--fa_dir", default="", help="Optional: windows dir used only to estimate FA/24h (long unlabeled/negative streams).")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=256)
@@ -236,8 +237,8 @@ def main() -> int:
     ap.add_argument("--use_precomputed_mask", type=int, default=None)
 
     # Sweep range for tau_high (kept as thr_* names for backwards compat)
-    ap.add_argument("--thr_min", type=float, default=0.01)
-    ap.add_argument("--thr_max", type=float, default=0.95)
+    ap.add_argument("--thr_min", type=float, default=0.001)
+    ap.add_argument("--thr_max", type=float, default=0.999)
     ap.add_argument("--thr_step", type=float, default=0.01)
 
     # Real-time policy (base); tau_high/tau_low are swept/picked per OP
@@ -246,6 +247,14 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=3)
     ap.add_argument("--cooldown_s", type=float, default=30.0)
     ap.add_argument("--tau_low_ratio", type=float, default=0.80, help="tau_low = tau_high * ratio")
+
+    # Optional confirmation stage (accepted because Makefile may pass these).
+    # These are used by core.alerting.AlertCfg when detect_alert_events(...) runs.
+    ap.add_argument("--confirm", type=int, default=0, help="1 => enable confirmation stage")
+    ap.add_argument("--confirm_s", type=float, default=2.0)
+    ap.add_argument("--confirm_min_lying", type=float, default=0.65)
+    ap.add_argument("--confirm_max_motion", type=float, default=0.08)
+    ap.add_argument("--confirm_require_low", type=int, default=1)
 
     # Time mapping + GT/alert overlap definition
     ap.add_argument("--time_mode", choices=["start", "center", "end"], default="center")
@@ -300,6 +309,13 @@ def main() -> int:
 
     probs, y_true, vids, ws, we, fps_list = infer_probs(model, loader, device, arch, two_stream)
 
+    fa_probs = fa_vids = fa_ws = fa_we = fa_fps_list = None
+    if str(args.fa_dir).strip():
+        ds_fa = ValWindows(args.fa_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
+        loader_fa = DataLoader(ds_fa, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
+        fa_probs, _fa_y, fa_vids, fa_ws, fa_we, fa_fps_list = infer_probs(model, loader_fa, device, arch, two_stream)
+        print(f"[info] FA-estimation set: {len(ds_fa)} windows from {args.fa_dir}")
+
     # Sanity: if validation contains no positives, recall is not identifiable; still write ops but warn.
     if int(np.sum(np.asarray(y_true, dtype=np.int64) > 0)) == 0:
         print('[warn] Validation split has 0 positive windows. OP-1/OP-2 based on recall are not meaningful; fix your split/windowing.')
@@ -312,6 +328,11 @@ def main() -> int:
         tau_high=0.5,  # placeholder; swept
         tau_low=0.4,
         cooldown_s=float(args.cooldown_s),
+        confirm=bool(int(args.confirm)),
+        confirm_s=float(args.confirm_s),
+        confirm_min_lying=float(args.confirm_min_lying),
+        confirm_max_motion=float(args.confirm_max_motion),
+        confirm_require_low=bool(int(args.confirm_require_low)),
     )
 
     merge_gap_s = None if float(args.merge_gap_s) <= 0 else float(args.merge_gap_s)
@@ -326,6 +347,11 @@ def main() -> int:
         merge_gap_s=merge_gap_s,
         overlap_slack_s=float(args.overlap_slack_s),
         time_mode=str(args.time_mode),
+        fa_probs=fa_probs,
+        fa_video_ids=fa_vids,
+        fa_w_start=fa_ws,
+        fa_w_end=fa_we,
+        fa_fps=fa_fps_list,
         fps_default=float(fps_default),
     )
 
@@ -340,9 +366,12 @@ def main() -> int:
     i3 = _pick_op3(sweep, max_fa24h=float(args.op3_fa24h))
 
     def _op_at(i: int) -> Dict[str, Any]:
+        th = float(sweep["thr"][i])
+        tl = float(sweep["tau_low"][i])
         return {
             "tau_high": float(sweep["thr"][i]),
             "tau_low": float(sweep["tau_low"][i]),
+            "uncertain_band": {"low": float(tl), "high": float(th)},
             "precision": float(sweep["precision"][i]),
             "recall": float(sweep["recall"][i]),
             "f1": float(sweep["f1"][i]),
@@ -372,11 +401,18 @@ def main() -> int:
         tau_high=float(ops["op2"]["tau_high"]),
         tau_low=float(ops["op2"]["tau_low"]),
         cooldown_s=float(args.cooldown_s),
+        confirm=bool(int(args.confirm)),
+        confirm_s=float(args.confirm_s),
+        confirm_min_lying=float(args.confirm_min_lying),
+        confirm_max_motion=float(args.confirm_max_motion),
+        confirm_require_low=bool(int(args.confirm_require_low)),
     )
 
     out = {
         "arch": arch,
         "ckpt": str(args.ckpt),
+        "val_dir": str(args.val_dir),
+        "fa_dir": str(args.fa_dir) if str(args.fa_dir).strip() else "",
         "feat_cfg": feat_cfg.to_dict(),
         "alert_cfg": alert_cfg.to_dict(),
         "ops": ops,

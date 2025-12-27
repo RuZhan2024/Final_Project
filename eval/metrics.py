@@ -40,7 +40,7 @@ from core.features import FeatCfg, read_window_npz, build_tcn_input, build_gcn_i
 from core.metrics import ap_auc
 from core.models import build_model, pick_device, logits_1d
 from core.yamlio import yaml_load_simple
-from core.alerting import AlertCfg, times_from_windows, event_metrics_from_windows, sweep_alert_policy_from_windows
+from core.alerting import AlertCfg, times_from_windows, event_metrics_from_windows, sweep_alert_policy_from_windows, classify_states
 
 
 @dataclass
@@ -170,6 +170,7 @@ def _aggregate_event_metrics(
     true_alert_total = 0
     false_alert_total = 0
     delays: List[float] = []
+    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0}
 
     # auto merge gap if not provided
     if merge_gap_s is None:
@@ -210,7 +211,28 @@ def _aggregate_event_metrics(
             merge_gap_s=float(merge_gap_s),
             overlap_slack_s=float(overlap_slack_s),
         )
-        per_video[v] = {"event_metrics": em.to_dict(), "detail": detail}
+        st = classify_states(p_v, t_v, alert_cfg)
+        n_windows = int(t_v.size)
+        n_clear = int(np.sum(st["clear"]))
+        n_suspect = int(np.sum(st["suspect"]))
+        n_alert = int(np.sum(st["alert"]))
+        state_totals["n_windows"] += n_windows
+        state_totals["clear"] += n_clear
+        state_totals["suspect"] += n_suspect
+        state_totals["alert"] += n_alert
+
+        per_video[v] = {
+            "event_metrics": em.to_dict(),
+            "detail": detail,
+            "state_counts": {
+                "n_windows": n_windows,
+                "clear": n_clear,
+                "suspect": n_suspect,
+                "alert": n_alert,
+                "suspect_frac": float(n_suspect / n_windows) if n_windows > 0 else float("nan"),
+                "alert_frac": float(n_alert / n_windows) if n_windows > 0 else float("nan"),
+            },
+        }
 
         gt_total += int(em.n_gt_events)
         matched_gt_total += int(em.n_matched_gt)
@@ -243,6 +265,11 @@ def _aggregate_event_metrics(
         "n_false_alerts": int(false_alert_total),
         "total_duration_s": float(total_duration_s),
         "merge_gap_s": float(merge_gap_s),
+        "state_counts": {
+            **state_totals,
+            "suspect_frac": float(state_totals["suspect"] / max(1, state_totals["n_windows"])),
+            "alert_frac": float(state_totals["alert"] / max(1, state_totals["n_windows"])),
+        },
         "per_video": per_video,
     }
 
@@ -252,6 +279,7 @@ def main() -> int:
     # NOTE: For Makefile compatibility we accept both --win_dir (preferred)
     # and the legacy flag name --test_dir (same meaning).
     ap.add_argument("--win_dir", default="", help="e.g. data/processed/le2i/windows_W32_S8/test")
+    ap.add_argument("--fa_dir", default="", help="Optional: windows dir used only to estimate FA/24h (long unlabeled/negative streams).")
     ap.add_argument("--test_dir", dest="win_dir", default="", help=argparse.SUPPRESS)
     # Backward-compat aliases sometimes used by Make targets / notebooks.
     ap.add_argument("--eval_dir", dest="win_dir", default="", help=argparse.SUPPRESS)
@@ -272,8 +300,8 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=256)
 
     # Sweep range for tau_high
-    ap.add_argument("--thr_min", type=float, default=0.05)
-    ap.add_argument("--thr_max", type=float, default=0.95)
+    ap.add_argument("--thr_min", type=float, default=0.001)
+    ap.add_argument("--thr_max", type=float, default=0.999)
     ap.add_argument("--thr_step", type=float, default=0.01)
 
     # Alert policy base (used for sweep if no ops_yaml, or as fallback)
@@ -340,12 +368,20 @@ def main() -> int:
     loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
 
     probs, y_true, vids, ws, we, fps_list = infer_probs(model, loader, device, arch, two_stream)
+    fa_probs = fa_vids = fa_ws = fa_we = fa_fps_list = None
+    if str(args.fa_dir).strip():
+        ds_fa = Windows(args.fa_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
+        loader_fa = DataLoader(ds_fa, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
+        fa_probs, _fa_y, fa_vids, fa_ws, fa_we, fa_fps_list = infer_probs(model, loader_fa, device, arch, two_stream)
+        print(f"[info] FA-estimation set: {len(ds_fa)} windows from {args.fa_dir}")
+
 
     # Base metrics (window-level): AP + ROC-AUC (if available)
     base = {
         "arch": arch,
         "ckpt": str(args.ckpt),
         "win_dir": str(args.win_dir),
+        "fa_dir": str(args.fa_dir) if str(args.fa_dir).strip() else "",
         "n_windows": int(probs.size),
         "feat_cfg": feat_cfg.to_dict(),
     }
@@ -396,6 +432,11 @@ def main() -> int:
         merge_gap_s=merge_gap_s,
         overlap_slack_s=float(args.overlap_slack_s),
         time_mode=str(args.time_mode),
+        fa_probs=fa_probs,
+        fa_video_ids=fa_vids,
+        fa_w_start=fa_ws,
+        fa_w_end=fa_we,
+        fa_fps=fa_fps_list,
         fps_default=float(fps_default),
     )
 
@@ -415,6 +456,11 @@ def main() -> int:
                 tau_high=float(op.get("tau_high", base_cfg.tau_high)),
                 tau_low=float(op.get("tau_low", base_cfg.tau_low)),
                 cooldown_s=float(base_cfg.cooldown_s),
+                confirm=bool(base_cfg.confirm),
+                confirm_s=float(base_cfg.confirm_s),
+                confirm_min_lying=float(base_cfg.confirm_min_lying),
+                confirm_max_motion=float(base_cfg.confirm_max_motion),
+                confirm_require_low=bool(base_cfg.confirm_require_low),
             )
             ev = _aggregate_event_metrics(
                 probs, y_true, vids, ws, we, fps_list,
