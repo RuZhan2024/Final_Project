@@ -24,7 +24,7 @@ function Dashboard() {
   const [latencyMs, setLatencyMs] = useState(null);
   const [apiOnline, setApiOnline] = useState(null); // null/true/false
 
-  const { monitoringOn, toggleMonitoringOn, error: monitoringErr } = useMonitoring();
+  const { monitoringOn, toggleMonitoringOn, error: monitoringErr, settings } = useMonitoring();
 
   async function loadSummary() {
     try {
@@ -59,6 +59,18 @@ function Dashboard() {
   async function toggleMonitoring() {
     await toggleMonitoringOn();
   }
+
+  const activeModelCode = settings?.system?.active_model_code || null;
+
+const modelLabel = (() => {
+  if (!activeModelCode) return modelName; // fallback to dashboard summary
+  const s = String(activeModelCode).toUpperCase();
+  if (s === "HYBRID") return "Hybrid";
+  if (s === "TCN") return "TCN";
+  if (s === "GCN") return "GCN";
+  return activeModelCode;
+})();
+
 
   const statusLabel = status === "alert" ? "Alert" : "Normal";
   const toggleBg = monitoringOn ? "#4F46E5" : "#9CA3AF";
@@ -130,7 +142,7 @@ function Dashboard() {
           <div className={styles.systemBox}>
             <span className={styles.boxLabel}>Model</span>
             <div className={styles.centerContent}>
-              <span className={styles.tag}>{modelName}</span>
+              <span className={styles.tag}>{modelLabel}</span>
             </div>
           </div>
 
