@@ -1,38 +1,38 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import styles from './Settings.module.css';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import styles from "./Settings.module.css";
 
-import { useMonitoring } from '../monitoring/MonitoringContext';
+import { useMonitoring } from "../monitoring/MonitoringContext";
 
 // --- Logic & Helpers (Preserved from your uploaded file) ---
 
 // Keep this consistent with other pages (Monitor-demo uses localhost:8000 by default)
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000";
 
 // Fallback presets (used if the backend doesn't expose /api/operating_points)
 const PRESET_FALL_THR = {
-  'High Sensitivity': 0.75,
-  'Balanced': 0.85,
-  'Low Sensitivity': 0.93,
+  "High Sensitivity": 0.75,
+  Balanced: 0.85,
+  "Low Sensitivity": 0.93,
 };
 
 const PRESET_COOLDOWN = {
-  'High Sensitivity': 2,
-  'Balanced': 3,
-  'Low Sensitivity': 5,
+  "High Sensitivity": 2,
+  Balanced: 3,
+  "Low Sensitivity": 5,
 };
 
 function modelLabelToCode(label) {
-  const v = String(label || '').toLowerCase();
-  if (v.includes('tcn')) return 'TCN';
-  if (v.includes('gcn') && !v.includes('tcn')) return 'GCN';
-  return 'HYBRID';
+  const v = String(label || "").toLowerCase();
+  if (v.includes("tcn")) return "TCN";
+  if (v.includes("gcn") && !v.includes("tcn")) return "GCN";
+  return "HYBRID";
 }
 
 function modelCodeToLabel(code) {
-  const v = String(code || '').toUpperCase();
-  if (v === 'TCN') return 'TCN';
-  if (v === 'GCN') return 'GCN';
-  return 'Hybrid';
+  const v = String(code || "").toUpperCase();
+  if (v === "TCN") return "TCN";
+  if (v === "GCN") return "GCN";
+  return "Hybrid";
 }
 
 function clamp(n, lo, hi) {
@@ -44,30 +44,46 @@ function sliderBg(value, min, max) {
   const v = clamp(Number(value), min, max);
   const pct = ((v - min) / (max - min)) * 100;
   // Using explicit colors to match the UI theme (Blue to Grey)
-  const fill = '#4F46E5'; 
-  const rest = '#E5E7EB';
+  const fill = "#4F46E5";
+  const rest = "#E5E7EB";
   return `linear-gradient(to right, ${fill} 0%, ${fill} ${pct}%, ${rest} ${pct}%, ${rest} 100%)`;
 }
 
 async function apiFetch(path, opts = {}) {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
     ...opts,
   });
 
   let payload = null;
-  const ct = res.headers.get('content-type') || '';
-  if (ct.includes('application/json')) {
-    try { payload = await res.json(); } catch { payload = null; }
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    try {
+      payload = await res.json();
+    } catch {
+      payload = null;
+    }
   } else {
-    try { payload = await res.text(); } catch { payload = null; }
+    try {
+      payload = await res.text();
+    } catch {
+      payload = null;
+    }
   }
 
   if (!res.ok) {
     const detail =
-      (payload && payload.detail && (typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail))) ||
-      (typeof payload === 'string' ? payload : payload ? JSON.stringify(payload) : '') ||
+      (payload &&
+        payload.detail &&
+        (typeof payload.detail === "string"
+          ? payload.detail
+          : JSON.stringify(payload.detail))) ||
+      (typeof payload === "string"
+        ? payload
+        : payload
+        ? JSON.stringify(payload)
+        : "") ||
       `${res.status} ${res.statusText}`;
     throw new Error(detail);
   }
@@ -75,21 +91,28 @@ async function apiFetch(path, opts = {}) {
 }
 
 function pickOpForPreset(ops, presetLabel) {
-  const p = String(presetLabel || '').toLowerCase();
-  const want =
-    p.includes('high') ? 'op-1' :
-    p.includes('low') ? 'op-3' :
-    'op-2';
+  const p = String(presetLabel || "").toLowerCase();
+  const want = p.includes("high")
+    ? "op-1"
+    : p.includes("low")
+    ? "op-3"
+    : "op-2";
 
-  const byCode = ops.find((o) => String(o.op_code || '').toLowerCase() === want);
+  const byCode = ops.find(
+    (o) => String(o.op_code || "").toLowerCase() === want
+  );
   if (byCode) return byCode;
 
-  const byName = ops.find((o) => String(o.name || '').toLowerCase().includes(p.includes('high') ? 'high' : p.includes('low') ? 'low' : 'bal'));
+  const byName = ops.find((o) =>
+    String(o.name || "")
+      .toLowerCase()
+      .includes(p.includes("high") ? "high" : p.includes("low") ? "low" : "bal")
+  );
   if (byName) return byName;
 
   const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
-  if (want === 'op-1') return sorted[0] || null;
-  if (want === 'op-3') return sorted[sorted.length - 1] || null;
+  if (want === "op-1") return sorted[0] || null;
+  if (want === "op-3") return sorted[sorted.length - 1] || null;
   return sorted[Math.floor(sorted.length / 2)] || null;
 }
 
@@ -97,26 +120,28 @@ function presetFromOp(ops, activeOpId) {
   if (!activeOpId) return null;
 
   // Try exact match by id
-  const op = Array.isArray(ops) ? ops.find((o) => Number(o?.id) === Number(activeOpId)) : null;
+  const op = Array.isArray(ops)
+    ? ops.find((o) => Number(o?.id) === Number(activeOpId))
+    : null;
 
-  const code = String(op?.op_code || '').toLowerCase();
-  const name = String(op?.name || '').toLowerCase();
+  const code = String(op?.op_code || "").toLowerCase();
+  const name = String(op?.name || "").toLowerCase();
 
-  const looksHigh = code === 'op-1' || name.includes('high');
-  const looksLow  = code === 'op-3' || name.includes('low');
-  const looksBal  = code === 'op-2' || name.includes('bal');
+  const looksHigh = code === "op-1" || name.includes("high");
+  const looksLow = code === "op-3" || name.includes("low");
+  const looksBal = code === "op-2" || name.includes("bal");
 
-  if (looksHigh) return 'High Sensitivity';
-  if (looksLow)  return 'Low Sensitivity';
-  if (looksBal)  return 'Balanced';
+  if (looksHigh) return "High Sensitivity";
+  if (looksLow) return "Low Sensitivity";
+  if (looksBal) return "Balanced";
 
   // Fallback: rank by id if we have ops but no code/name
   if (Array.isArray(ops) && ops.length > 0) {
     const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
     const idx = sorted.findIndex((x) => Number(x.id) === Number(activeOpId));
-    if (idx === 0) return 'High Sensitivity';
-    if (idx === sorted.length - 1) return 'Low Sensitivity';
-    return 'Balanced';
+    if (idx === 0) return "High Sensitivity";
+    if (idx === sorted.length - 1) return "Low Sensitivity";
+    return "Balanced";
   }
 
   return null;
@@ -128,13 +153,13 @@ export default function Settings() {
   const { updateSettings: updateGlobalSettings } = useMonitoring();
   // UI state
   const [loading, setLoading] = useState(true);
-  const [statusMsg, setStatusMsg] = useState('');
-  const [errorMsg, setErrorMsg] = useState('');
+  const [statusMsg, setStatusMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   // Caregiver
-  const [caregiverName, setCaregiverName] = useState('');
-  const [caregiverEmail, setCaregiverEmail] = useState('');
-  const [caregiverPhone, setCaregiverPhone] = useState('');
+  const [caregiverName, setCaregiverName] = useState("");
+  const [caregiverEmail, setCaregiverEmail] = useState("");
+  const [caregiverPhone, setCaregiverPhone] = useState("");
 
   // System settings
   const [monitoringEnabled, setMonitoringEnabled] = useState(false);
@@ -142,10 +167,10 @@ export default function Settings() {
   const [notifyOnEveryFall, setNotifyOnEveryFall] = useState(true);
 
   // Detection
-  const [activeModel, setActiveModel] = useState('Hybrid');
-  const [activePreset, setActivePreset] = useState('Balanced');
+  const [activeModel, setActiveModel] = useState("Hybrid");
+  const [activePreset, setActivePreset] = useState("Balanced");
   const [fallThreshold, setFallThreshold] = useState(85); // percent
-  const [alertCooldown, setAlertCooldown] = useState(3);  // seconds
+  const [alertCooldown, setAlertCooldown] = useState(3); // seconds
   const [activeOpId, setActiveOpId] = useState(null);
 
   // Privacy
@@ -157,36 +182,42 @@ export default function Settings() {
 
   // Ops
   const [ops, setOps] = useState([]);
-  const [opsErr, setOpsErr] = useState('');
+  const [opsErr, setOpsErr] = useState("");
 
   const savingRef = useRef(false);
+  const modelChangedByUserRef = useRef(false);
   const statusTimerRef = useRef(null);
 
   useEffect(() => {
-  if (!initialised) return;
+    if (!initialised) return;
+    if (activeOpId == null) return;
+    if (!Array.isArray(ops) || ops.length === 0) return;
 
-  const p = presetFromOp(ops, activeOpId);
-  if (p && p !== activePreset) setActivePreset(p);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [ops, activeOpId, initialised]);
+    // IMPORTANT: don't “guess” a preset if the activeOpId doesn't belong to these ops
+    const exists = ops.some((o) => Number(o?.id) === Number(activeOpId));
+    if (!exists) return;
 
+    const p = presetFromOp(ops, activeOpId);
+    if (p && p !== activePreset) setActivePreset(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ops, activeOpId, initialised]);
 
   // Helper to show temporary status messages
   const setStatus = (msg) => {
     setStatusMsg(msg);
     if (statusTimerRef.current) window.clearTimeout(statusTimerRef.current);
-    statusTimerRef.current = window.setTimeout(() => setStatusMsg(''), 2500);
+    statusTimerRef.current = window.setTimeout(() => setStatusMsg(""), 2500);
   };
 
   const safeSavePatch = async (patch) => {
     if (savingRef.current) return;
     savingRef.current = true;
-    setErrorMsg('');
+    setErrorMsg("");
     try {
       // Use the global updater so other pages immediately receive the new settings.
       const ok = await updateGlobalSettings(patch);
-      if (!ok) throw new Error('Failed to save settings');
-      setStatus('Saved');
+      if (!ok) throw new Error("Failed to save settings");
+      setStatus("Saved");
     } catch (e) {
       setErrorMsg(String(e?.message || e));
     } finally {
@@ -196,23 +227,29 @@ export default function Settings() {
 
   const loadSettings = async () => {
     setLoading(true);
-    setErrorMsg('');
+    setErrorMsg("");
     try {
-      const data = await apiFetch('/api/settings', { method: 'GET' });
+      const data = await apiFetch("/api/settings", { method: "GET" });
       const sys = data?.system || data || {};
 
       setMonitoringEnabled(Boolean(sys.monitoring_enabled ?? false));
       setRequireConfirmation(Boolean(sys.require_confirmation ?? false));
       setNotifyOnEveryFall(Boolean(sys.notify_on_every_fall ?? true));
 
-      if (sys.active_model_code) setActiveModel(modelCodeToLabel(sys.active_model_code));
-      if (typeof sys.active_operating_point === 'number') setActiveOpId(sys.active_operating_point);
+      if (sys.active_model_code)
+        setActiveModel(modelCodeToLabel(sys.active_model_code));
+      if (typeof sys.active_operating_point === "number")
+        setActiveOpId(sys.active_operating_point);
 
-      if (typeof sys.fall_threshold === 'number') setFallThreshold(Math.round(sys.fall_threshold * 100));
-      if (typeof sys.alert_cooldown_sec === 'number') setAlertCooldown(sys.alert_cooldown_sec);
+      if (typeof sys.fall_threshold === "number")
+        setFallThreshold(Math.round(sys.fall_threshold * 100));
+      if (typeof sys.alert_cooldown_sec === "number")
+        setAlertCooldown(sys.alert_cooldown_sec);
 
-      if (typeof sys.store_event_clips === 'boolean') setStoreEventClips(sys.store_event_clips);
-      if (typeof sys.anonymize_skeleton_data === 'boolean') setPrivacyMode(sys.anonymize_skeleton_data);
+      if (typeof sys.store_event_clips === "boolean")
+        setStoreEventClips(sys.store_event_clips);
+      if (typeof sys.anonymize_skeleton_data === "boolean")
+        setPrivacyMode(sys.anonymize_skeleton_data);
     } catch (e) {
       setErrorMsg(String(e?.message || e));
     } finally {
@@ -222,15 +259,24 @@ export default function Settings() {
   };
 
   const loadOperatingPoints = async (modelLabel) => {
-    setOpsErr('');
+    setOpsErr("");
     try {
       const model_code = modelLabelToCode(modelLabel);
-      const data = await apiFetch(`/api/operating_points?model_code=${encodeURIComponent(model_code)}`, { method: 'GET' });
-      const list = Array.isArray(data) ? data : Array.isArray(data?.operating_points) ? data.operating_points : [];
+      const data = await apiFetch(
+        `/api/operating_points?model_code=${encodeURIComponent(model_code)}`,
+        { method: "GET" }
+      );
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.operating_points)
+        ? data.operating_points
+        : [];
       setOps(list);
+      return list;
     } catch (e) {
       setOps([]);
-      setOpsErr('Operating points unavailable. Using presets.');
+      setOpsErr("Operating points unavailable. Using presets.");
+      return [];
     }
   };
 
@@ -241,19 +287,65 @@ export default function Settings() {
 
   useEffect(() => {
     if (!initialised) return;
-    loadOperatingPoints(activeModel);
-    safeSavePatch({ active_model_code: modelLabelToCode(activeModel) });
+
+    (async () => {
+      const list = await loadOperatingPoints(activeModel);
+      const modelCode = modelLabelToCode(activeModel);
+
+      // Prefer the currently saved activeOpId if it exists in this model’s ops.
+      let chosenOp = null;
+
+      if (Array.isArray(list) && list.length > 0) {
+        const existing =
+          activeOpId != null
+            ? list.find((o) => Number(o?.id) === Number(activeOpId))
+            : null;
+
+        chosenOp = existing || pickOpForPreset(list, activePreset);
+      }
+
+      const opId = chosenOp?.id != null ? Number(chosenOp.id) : null;
+
+      // Sync UI threshold from OP if available (this aligns with /Monitor)
+      if (
+        chosenOp?.thr_detect != null &&
+        !Number.isNaN(Number(chosenOp.thr_detect))
+      ) {
+        setFallThreshold(Math.round(Number(chosenOp.thr_detect) * 100));
+      }
+
+      // If we switched to a model where the old opId doesn't exist, update UI opId,
+      // but do NOT write to backend unless the user explicitly changed model.
+      if (opId !== activeOpId) setActiveOpId(opId);
+
+      // Only persist when the user clicked a model radio button.
+      if (modelChangedByUserRef.current) {
+        modelChangedByUserRef.current = false;
+        await safeSavePatch({
+          active_model_code: modelCode,
+          active_operating_point: opId,
+        });
+      }
+    })();
+
+    // include dependencies we read
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModel, initialised]);
+  }, [activeModel, initialised, activeOpId, activePreset]);
 
   // Derived gradients for sliders
-  const fallThrBg = useMemo(() => sliderBg(fallThreshold, 50, 99), [fallThreshold]);
-  const cooldownBg = useMemo(() => sliderBg(alertCooldown, 1, 10), [alertCooldown]);
+  const fallThrBg = useMemo(
+    () => sliderBg(fallThreshold, 50, 99),
+    [fallThreshold]
+  );
+  const cooldownBg = useMemo(
+    () => sliderBg(alertCooldown, 1, 10),
+    [alertCooldown]
+  );
 
   const applyPreset = async (presetLabel) => {
     setActivePreset(presetLabel);
 
-    const thr = PRESET_FALL_THR[presetLabel] ?? PRESET_FALL_THR.Balanced;
+    let thr = PRESET_FALL_THR[presetLabel] ?? PRESET_FALL_THR.Balanced;
     const cd = PRESET_COOLDOWN[presetLabel] ?? PRESET_COOLDOWN.Balanced;
     setFallThreshold(Math.round(thr * 100));
     setAlertCooldown(cd);
@@ -265,23 +357,32 @@ export default function Settings() {
         opId = Number(op.id);
         setActiveOpId(opId);
       }
-    }
 
+      if (op?.thr_detect != null && !Number.isNaN(Number(op.thr_detect))) {
+        thr = Number(op.thr_detect); // align with /Monitor
+      }
+    }
+    setFallThreshold(Math.round(thr * 100));
+    setAlertCooldown(cd);
     await safeSavePatch({
-      active_operating_point: opId ?? undefined,
+      active_operating_point: opId ?? null,
       fall_threshold: thr,
       alert_cooldown_sec: cd,
     });
   };
 
   const saveContact = async () => {
-    setErrorMsg('');
+    setErrorMsg("");
     try {
-      await apiFetch('/api/caregivers', {
-        method: 'POST',
-        body: JSON.stringify({ name: caregiverName, email: caregiverEmail, phone: caregiverPhone }),
+      await apiFetch("/api/caregivers", {
+        method: "POST",
+        body: JSON.stringify({
+          name: caregiverName,
+          email: caregiverEmail,
+          phone: caregiverPhone,
+        }),
       });
-      setStatus('Caregiver saved');
+      setStatus("Caregiver saved");
     } catch (e) {
       setErrorMsg(`Save failed: ${String(e?.message || e)}`);
     }
@@ -314,15 +415,12 @@ export default function Settings() {
       </div>
 
       <div className={styles.contentGrid}>
-        
         {/* --- LEFT COLUMN --- */}
         <div className={styles.leftColumn}>
-          
           {/* Caregiver Information */}
           <div className={styles.card}>
             <h3 className={styles.cardTitle}>Caregiver Information</h3>
             <div className={styles.formGroup}>
-              
               <div className={styles.inputWrapper}>
                 <label>Name</label>
                 <input
@@ -365,12 +463,12 @@ export default function Settings() {
           {/* System & Monitoring */}
           <div className={styles.card}>
             <h3 className={styles.cardTitle}>Monitoring System</h3>
-            
+
             <div className={styles.toggleRow}>
               <span>Monitoring Enabled</span>
               <label className={styles.switch}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={monitoringEnabled}
                   onChange={(e) => {
                     const v = e.target.checked;
@@ -385,8 +483,8 @@ export default function Settings() {
             <div className={styles.toggleRow}>
               <span>Notify on Every Fall</span>
               <label className={styles.switch}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={notifyOnEveryFall}
                   onChange={(e) => {
                     const v = e.target.checked;
@@ -401,8 +499,8 @@ export default function Settings() {
             <div className={styles.toggleRow}>
               <span>Require Confirmation</span>
               <label className={styles.switch}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={requireConfirmation}
                   onChange={(e) => {
                     const v = e.target.checked;
@@ -414,9 +512,9 @@ export default function Settings() {
               </label>
             </div>
 
-            <button 
-              className={styles.actionBtn} 
-              style={{ marginTop: 24, fontSize: '0.8rem' }}
+            <button
+              className={styles.actionBtn}
+              style={{ marginTop: 24, fontSize: "0.8rem" }}
               onClick={() => loadSettings()}
               disabled={loading}
             >
@@ -427,7 +525,6 @@ export default function Settings() {
 
         {/* --- RIGHT COLUMN --- */}
         <div className={styles.rightColumn}>
-          
           {/* Detection Settings */}
           <div className={styles.card}>
             <h3 className={styles.cardTitle}>Detection Settings</h3>
@@ -436,14 +533,17 @@ export default function Settings() {
             <div className={styles.row}>
               <span className={styles.labelBold}>Active Model</span>
               <div className={styles.radioGroup}>
-                {['TCN', 'GCN', 'Hybrid'].map((m) => (
+                {["TCN", "GCN", "Hybrid"].map((m) => (
                   <label key={m} className={styles.radioLabel}>
                     {m}
-                    <input 
-                      type="radio" 
-                      name="model" 
+                    <input
+                      type="radio"
+                      name="model"
                       checked={activeModel === m}
-                      onChange={() => setActiveModel(m)}
+                      onChange={() => {
+                        modelChangedByUserRef.current = true;
+                        setActiveModel(m);
+                      }}
                     />
                     <span className={styles.customRadio}></span>
                   </label>
@@ -455,21 +555,24 @@ export default function Settings() {
             <div className={styles.sectionSpace}>
               <span className={styles.labelBold}>Operating Point Presets</span>
               <div className={styles.presetButtons}>
-                {['High Sensitivity', 'Balanced', 'Low Sensitivity'].map((p) => (
-                  <button
-                    key={p}
-                    className={`${styles.presetBtn} ${activePreset === p ? styles.activePreset : ''}`}
-                    onClick={() => applyPreset(p)}
-                  >
-                    {p}
-                  </button>
-                ))}
+                {["High Sensitivity", "Balanced", "Low Sensitivity"].map(
+                  (p) => (
+                    <button
+                      key={p}
+                      className={`${styles.presetBtn} ${
+                        activePreset === p ? styles.activePreset : ""
+                      }`}
+                      onClick={() => applyPreset(p)}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
               </div>
             </div>
 
             {/* Sliders */}
             <div className={styles.sliderGroup}>
-              
               {/* Fall Threshold */}
               <div className={styles.sliderRow}>
                 <div className={styles.sliderHeader}>
@@ -480,12 +583,17 @@ export default function Settings() {
                   disabled
                   type="range"
                   className={styles.rangeInput}
-                  min={50} max={99}
+                  min={50}
+                  max={99}
                   value={fallThreshold}
                   style={{ background: fallThrBg }}
                   onChange={(e) => setFallThreshold(Number(e.target.value))}
-                  onMouseUp={() => safeSavePatch({ fall_threshold: fallThreshold / 100 })}
-                  onTouchEnd={() => safeSavePatch({ fall_threshold: fallThreshold / 100 })}
+                  onMouseUp={() =>
+                    safeSavePatch({ fall_threshold: fallThreshold / 100 })
+                  }
+                  onTouchEnd={() =>
+                    safeSavePatch({ fall_threshold: fallThreshold / 100 })
+                  }
                 />
               </div>
 
@@ -499,17 +607,24 @@ export default function Settings() {
                   disabled
                   type="range"
                   className={styles.rangeInput}
-                  min={1} max={10}
+                  min={1}
+                  max={10}
                   value={alertCooldown}
                   style={{ background: cooldownBg }}
                   onChange={(e) => setAlertCooldown(Number(e.target.value))}
-                  onMouseUp={() => safeSavePatch({ alert_cooldown_sec: alertCooldown })}
-                  onTouchEnd={() => safeSavePatch({ alert_cooldown_sec: alertCooldown })}
+                  onMouseUp={() =>
+                    safeSavePatch({ alert_cooldown_sec: alertCooldown })
+                  }
+                  onTouchEnd={() =>
+                    safeSavePatch({ alert_cooldown_sec: alertCooldown })
+                  }
                 />
               </div>
 
               {activeOpId != null && (
-                <div style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}>
+                <div
+                  style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}
+                >
                   Active Op ID: <strong>{activeOpId}</strong>
                 </div>
               )}
@@ -523,11 +638,13 @@ export default function Settings() {
             <div className={styles.privacyItem}>
               <div className={styles.privacyText}>
                 <span className={styles.itemTitle}>Store Event Clips</span>
-                <span className={styles.itemDesc}>Save short video segments around detected falls</span>
+                <span className={styles.itemDesc}>
+                  Save short video segments around detected falls
+                </span>
               </div>
               <label className={styles.switch}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={storeEventClips}
                   onChange={(e) => {
                     const v = e.target.checked;
@@ -542,11 +659,13 @@ export default function Settings() {
             <div className={styles.privacyItem}>
               <div className={styles.privacyText}>
                 <span className={styles.itemTitle}>Anonymize Data</span>
-                <span className={styles.itemDesc}>Convert video to skeleton data before storing</span>
+                <span className={styles.itemDesc}>
+                  Convert video to skeleton data before storing
+                </span>
               </div>
               <label className={styles.switch}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={privacyMode}
                   onChange={(e) => {
                     const v = e.target.checked;
@@ -559,10 +678,10 @@ export default function Settings() {
             </div>
 
             <div className={styles.privacyFooter}>
-              <strong>Privacy Note:</strong> These settings control how data is persisted on the device.
+              <strong>Privacy Note:</strong> These settings control how data is
+              persisted on the device.
             </div>
           </div>
-
         </div>
       </div>
     </div>

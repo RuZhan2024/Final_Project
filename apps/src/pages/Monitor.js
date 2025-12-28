@@ -92,6 +92,8 @@ function MonitorDemo({ isActive = true } = {}) {
   const [deployS, setDeployS] = useState(12);
   const [mcCfg, setMcCfg] = useState({ M: 10, M_confirm: 25 });
   const [activeModelCode, setActiveModelCode] = useState("GCN");
+  const MAX_PROC_FPS = 30;
+  const lastProcMsRef = useRef(0);
 
   // Global monitoring (persisted via /api/settings)
   const {
@@ -468,6 +470,10 @@ function MonitorDemo({ isActive = true } = {}) {
 
   // Pose callback
   function handlePoseResults(results) {
+    // Option A: cap pose processing rate to MAX_PROC_FPS
+    const nowMs = performance.now();
+    if (nowMs - lastProcMsRef.current < 1000 / MAX_PROC_FPS) return;
+    lastProcMsRef.current = nowMs;
     const canvasEl = canvasRef.current;
     if (!canvasEl) return;
 
@@ -565,32 +571,59 @@ function MonitorDemo({ isActive = true } = {}) {
     });
   }
 
-  async function maybeSendWindow() {
+    async function maybeSendWindow() {
     const now = performance.now();
-    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000); // stride-based
+    // Stride is defined in frames at the *target/model* FPS (e.g., S=12 at 30 FPS => ~0.4s).
+    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     if (now - lastSentRef.current < minGapMs) return;
 
     const raw = rawFramesRef.current;
-    const win = buildResampledWindow(raw, targetFps, deployW);
-    if (!win) return;
+    if (!raw || raw.length < 2) return;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const endTs = raw[raw.length - 1].t;
+    const startNeed = endTs - needMs;
+
+    // Wait until we have enough history to cover the full window duration.
+    if (raw[0].t > startNeed) return;
+
+    // Include one frame before startNeed for interpolation on the server.
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
+    const startIdx = Math.max(0, i0 - 1);
+    const slice = raw.slice(startIdx);
 
     lastSentRef.current = now;
 
-    // Build payload for server PoseWindowPayload
+    // Best-practice: send *raw* frames + timestamps; server resamples to target_fps/target_T.
     const payload = {
       session_id: sessionIdRef.current,
       resident_id: 1,
       mode: mode,
       model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
       model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
-      model_id: mode === "dual" ? null : (mode === "tcn" ? chosen.tcn : chosen.gcn),
-      fps: streamFps || targetFps,
+      model_id: mode === "dual" ? null : mode === "tcn" ? chosen.tcn : chosen.gcn,
+
+      // The model expects this FPS after resampling.
+      fps: targetFps,
+      target_fps: targetFps,
+      target_T: deployW,
+
+      // Useful for debugging / dashboards (does NOT affect inference)
+      capture_fps: streamFps || fpsEstimateRef.current || null,
+
       timestamp_ms: Date.now(),
       use_mc: true,
-      // Persist only when monitoring is enabled (and DB configured)
       persist: Boolean(monitoringOn),
-      xy: win.xy,
-      conf: win.conf,
+
+      // Raw pose samples (variable FPS)
+      raw_t_ms: slice.map((fr) => fr.t),
+      raw_xy: slice.map((fr) => fr.xy),
+      raw_conf: slice.map((fr) => fr.conf),
+
+      // Optional (helps server align the window end exactly)
+      window_end_t_ms: endTs,
     };
 
     try {
@@ -629,7 +662,7 @@ function MonitorDemo({ isActive = true } = {}) {
       } else {
         const mOut = data?.models?.[mode];
         if (mOut) {
-          mu = mOut?.mu != null ? Number(mOut.mu) : (mOut?.p_det != null ? Number(mOut.p_det) : null);
+          mu = mOut?.mu != null ? Number(mOut.mu) : mOut?.p_det != null ? Number(mOut.p_det) : null;
           sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
           if (mOut?.triage?.tau_high != null) setTauHigh(Number(mOut.triage.tau_high));
         }
@@ -706,6 +739,23 @@ function MonitorDemo({ isActive = true } = {}) {
       kind: m.kind,
     }));
   }, [timeline]);
+
+  // Display both FPS numbers:
+  // - Capture FPS: the actual MediaPipe callback rate (variable)
+  // - Model FPS: the FPS the server resamples to before inference (fixed, from model spec)
+  const captureFpsText = useMemo(() => {
+    const v = streamFps;
+    if (v == null) return "—";
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return n.toFixed(1);
+  }, [streamFps]);
+
+  const modelFpsText = useMemo(() => {
+    const n = Number(targetFps);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return n.toFixed(1);
+  }, [targetFps]);
 
   return (
     <div className={styles.pageContainer}>
@@ -848,7 +898,7 @@ function MonitorDemo({ isActive = true } = {}) {
             </div>
             {/* Keep extra info out of the design, but useful for debugging */}
             <p className={styles.subText} style={{ marginTop: 12 }}>
-              Mode: {mode} • FPS: {(streamFps || targetFps).toFixed(1)} • MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
+              Mode: {mode} • Capture FPS: {captureFpsText} • Model FPS: {modelFpsText} • MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
               {sigma != null ? ` • σ=${sigma.toFixed(3)}` : ""}
             </p>
           </div>

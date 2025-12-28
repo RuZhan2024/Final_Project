@@ -1050,6 +1050,171 @@ def dashboard_summary():
         summary["system"]["error"] = str(e)
         return summary
 
+
+def _as_float_list(xs: Any) -> List[float]:
+    if not isinstance(xs, list):
+        return []
+    out: List[float] = []
+    for v in xs:
+        try:
+            out.append(float(v))
+        except Exception:
+            continue
+    return out
+
+
+def _resample_pose_window(
+    *,
+    raw_t_ms: Any,
+    raw_xy: Any,
+    raw_conf: Any = None,
+    target_fps: float = 30.0,
+    target_T: int = 48,
+    window_end_t_ms: Optional[float] = None,
+) -> Tuple[List[Any], List[Any], float, float, Optional[float]]:
+    """Resample variable-FPS pose frames to a fixed FPS + fixed length window.
+
+    Inputs (raw_*):
+      - raw_t_ms: list of timestamps in milliseconds (monotonic, from performance.now() is OK)
+      - raw_xy:  list length N; each frame is [J,2]
+      - raw_conf:list length N; each frame is [J] (optional)
+    Output:
+      - xy_out:  list length target_T; each is [J,2]
+      - conf_out:list length target_T; each is [J]
+      - start_t_ms, end_t_ms: window alignment
+      - capture_fps estimate (if timestamps valid)
+    """
+    # Validate
+    if not isinstance(raw_t_ms, list) or not isinstance(raw_xy, list) or len(raw_t_ms) != len(raw_xy) or len(raw_xy) < 1:
+        return [], [], 0.0, 0.0, None
+
+    # Conf optional
+    if isinstance(raw_conf, list) and len(raw_conf) == len(raw_xy):
+        use_conf = True
+    else:
+        use_conf = False
+        raw_conf = [None] * len(raw_xy)
+
+    # Coerce timestamps + enforce strict monotonic increasing
+    t: List[float] = []
+    xy: List[Any] = []
+    conf: List[Any] = []
+    last_t: Optional[float] = None
+    for ti, xyi, ci in zip(raw_t_ms, raw_xy, raw_conf):
+        try:
+            tf = float(ti)
+        except Exception:
+            continue
+        if last_t is not None and tf <= last_t:
+            # drop non-increasing samples (common when clocks jitter)
+            continue
+        if not isinstance(xyi, list):
+            continue
+        t.append(tf)
+        xy.append(xyi)
+        conf.append(ci if use_conf else None)
+        last_t = tf
+
+    if len(t) < 1:
+        return [], [], 0.0, 0.0, None
+
+    # Capture FPS estimate (based on raw timestamps)
+    cap_fps: Optional[float] = None
+    if len(t) >= 2:
+        dt_s = (t[-1] - t[0]) / 1000.0
+        if dt_s > 1e-6:
+            cap_fps = (len(t) - 1) / dt_s
+
+    # Target timeline
+    target_fps = float(target_fps) if target_fps and float(target_fps) > 0 else 30.0
+    target_T = int(target_T) if target_T and int(target_T) > 1 else 48
+    dt_ms = 1000.0 / target_fps
+
+    end_t_ms = float(window_end_t_ms) if window_end_t_ms is not None else t[-1]
+    start_t_ms = end_t_ms - (target_T - 1) * dt_ms
+
+    # Pointer for bracket search
+    j = 0
+    xy_out: List[Any] = []
+    conf_out: List[Any] = []
+
+    # Helper: linear interpolation on nested lists ([J,2] or [J])
+    def lerp(a: float, b: float, alpha: float) -> float:
+        return a + (b - a) * alpha
+
+    def interp_frame(frame0: Any, frame1: Any, alpha: float, is_xy: bool) -> Any:
+        # frame0 and frame1 are lists; keep shape and fallback safely
+        if not isinstance(frame0, list):
+            return frame1
+        if not isinstance(frame1, list):
+            return frame0
+        out = []
+        if is_xy:
+            # [J,2]
+            n = min(len(frame0), len(frame1))
+            for k in range(n):
+                p0 = frame0[k] if isinstance(frame0[k], list) and len(frame0[k]) >= 2 else [0.0, 0.0]
+                p1 = frame1[k] if isinstance(frame1[k], list) and len(frame1[k]) >= 2 else [0.0, 0.0]
+                try:
+                    x0, y0 = float(p0[0]), float(p0[1])
+                    x1, y1 = float(p1[0]), float(p1[1])
+                except Exception:
+                    x0 = y0 = x1 = y1 = 0.0
+                out.append([lerp(x0, x1, alpha), lerp(y0, y1, alpha)])
+            # If lengths differ, append remaining from the longer frame
+            if len(frame0) > n:
+                out.extend(frame0[n:])
+            elif len(frame1) > n:
+                out.extend(frame1[n:])
+            return out
+        else:
+            # [J]
+            n = min(len(frame0), len(frame1))
+            for k in range(n):
+                try:
+                    v0 = float(frame0[k])
+                except Exception:
+                    v0 = 0.0
+                try:
+                    v1 = float(frame1[k])
+                except Exception:
+                    v1 = v0
+                out.append(lerp(v0, v1, alpha))
+            if len(frame0) > n:
+                out.extend(frame0[n:])
+            elif len(frame1) > n:
+                out.extend(frame1[n:])
+            return out
+
+    for k in range(target_T):
+        tw = start_t_ms + k * dt_ms
+
+        if tw <= t[0]:
+            xy_out.append(xy[0])
+            conf_out.append(conf[0] if use_conf and isinstance(conf[0], list) else [1.0] * (len(xy[0]) if isinstance(xy[0], list) else 0))
+            continue
+        if tw >= t[-1]:
+            xy_out.append(xy[-1])
+            conf_out.append(conf[-1] if use_conf and isinstance(conf[-1], list) else [1.0] * (len(xy[-1]) if isinstance(xy[-1], list) else 0))
+            continue
+
+        while j + 1 < len(t) and t[j + 1] < tw:
+            j += 1
+
+        t0, t1 = t[j], t[j + 1]
+        alpha = 0.0 if t1 <= t0 else (tw - t0) / (t1 - t0)
+
+        xy_out.append(interp_frame(xy[j], xy[j + 1], alpha, True))
+
+        if use_conf and isinstance(conf[j], list) and isinstance(conf[j + 1], list):
+            conf_out.append(interp_frame(conf[j], conf[j + 1], alpha, False))
+        else:
+            # If no conf provided, keep all 1s.
+            conf_out.append([1.0] * (len(xy_out[-1]) if isinstance(xy_out[-1], list) else 0))
+
+    return xy_out, conf_out, start_t_ms, end_t_ms, cap_fps
+
+
 @app.post("/api/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
     """Reset transient in-memory state for a monitor session.
@@ -1068,9 +1233,37 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     global LAST_PRED_LATENCY_MS
     t0 = time.time()
 
-    xy = payload.get("xy") or []
     mode = str(payload.get("mode") or "hybrid").lower()
     spec_id = payload.get("spec_id", None)
+
+    # Best-practice: accept variable-FPS inputs (raw_* + timestamps) and resample here.
+    target_fps = payload.get("target_fps") or payload.get("fps") or 30
+    target_T = payload.get("target_T") or 48
+    raw_xy = payload.get("raw_xy")
+    raw_conf = payload.get("raw_conf")
+    raw_t_ms = payload.get("raw_t_ms")
+    window_end_t_ms = payload.get("window_end_t_ms", None)
+
+    xy: List[Any] = []
+    conf: List[Any] = []
+    resample_start_ms = 0.0
+    resample_end_ms = 0.0
+    cap_fps_est: Optional[float] = None
+
+    if raw_xy is not None and raw_t_ms is not None:
+        xy, conf, resample_start_ms, resample_end_ms, cap_fps_est = _resample_pose_window(
+            raw_t_ms=raw_t_ms,
+            raw_xy=raw_xy,
+            raw_conf=raw_conf,
+            target_fps=float(target_fps) if target_fps is not None else 30.0,
+            target_T=int(target_T) if target_T is not None else 48,
+            window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
+        )
+
+    # Backward-compatible fallback: accept already-resampled windows
+    if not xy:
+        xy = payload.get("xy") or []
+        conf = payload.get("conf") or []
 
     def motion_prob(xy_arr: Any) -> float:
         try:
@@ -1116,12 +1309,19 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         with get_conn() as conn:
             if _table_exists(conn, "operating_points"):
                 op_id = spec_id
-                if op_id is None and _table_exists(conn, "system_settings") and _col_exists(conn, "system_settings", "active_operating_point_id"):
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT active_operating_point_id FROM system_settings WHERE id=1 LIMIT 1")
-                        r = cur.fetchone() or {}
-                        if isinstance(r, dict):
-                            op_id = r.get("active_operating_point_id")
+                if op_id is None and _table_exists(conn, "system_settings"):
+                    # Support both legacy and current column names
+                    col = None
+                    if _col_exists(conn, "system_settings", "active_operating_point"):
+                        col = "active_operating_point"
+                    elif _col_exists(conn, "system_settings", "active_operating_point_id"):
+                        col = "active_operating_point_id"
+                    if col:
+                        with conn.cursor() as cur:
+                            cur.execute(f"SELECT {col} AS op_id FROM system_settings WHERE id=1 LIMIT 1")
+                            r = cur.fetchone() or {}
+                            if isinstance(r, dict):
+                                op_id = r.get("op_id")
                 if op_id is not None:
                     with conn.cursor() as cur:
                         cur.execute("SELECT tau_low, tau_high FROM operating_points WHERE id=%s LIMIT 1", (op_id,))
@@ -1156,5 +1356,5 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
     LAST_PRED_LATENCY_MS = int((time.time() - t0) * 1000)
 
-    return {"triage_state": triage_state, "models": models_out, "latency_ms": LAST_PRED_LATENCY_MS}
+    return {"triage_state": triage_state, "models": models_out, "latency_ms": LAST_PRED_LATENCY_MS, "capture_fps_est": cap_fps_est, "target_fps": target_fps, "target_T": target_T}
 
