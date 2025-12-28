@@ -128,6 +128,20 @@ function MonitorDemo({ isActive = true } = {}) {
   const rawFramesRef = useRef([]); // [{t,xy,conf}]
   const lastPoseTsRef = useRef(null);
   const fpsDeltasRef = useRef([]);
+  const fpsEstimateRef = useRef(null);
+
+  // Throttled UI update for stream FPS (avoid React re-render every frame)
+  useEffect(() => {
+    if (!liveRunning) {
+      setStreamFps(null);
+      return;
+    }
+    const id = setInterval(() => {
+      const v = fpsEstimateRef.current;
+      setStreamFps(v == null ? null : v);
+    }, 500);
+    return () => clearInterval(id);
+  }, [liveRunning]);
   const lastSentRef = useRef(0);
 
   // Session id for server-side state machine

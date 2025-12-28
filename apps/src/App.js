@@ -10,6 +10,7 @@ import styles from "./App.module.css";
 
 function App() {
   const location = useLocation();
+  const showMonitor = location.pathname === "/monitor";
   const showMonitorDemo = location.pathname === "/monitor-demo";
 
   return (
@@ -62,13 +63,16 @@ function App() {
       </aside>
 
       <main className={styles.mainContent}>
+        <div style={{ display: showMonitor ? 'block' : 'none' }}>
+          <Monitor isActive={showMonitor} />
+        </div>
         <div style={{ display: showMonitorDemo ? 'block' : 'none' }}>
           <Monitor_demo isActive={showMonitorDemo} />
         </div>
         <Routes>
           <Route path="/" element={<Navigate to="/monitor" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/monitor" element={<Monitor />} />
+          <Route path="/monitor" element={<></>} />
           <Route path="/monitor-demo" element={<></>} />
           <Route path="/events" element={<Events />} />
           <Route path="/settings" element={<Settings />} />

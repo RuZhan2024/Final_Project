@@ -1,34 +1,72 @@
-# server/db.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""server/db.py
+
+MySQL connector used by the FastAPI server.
+
+This module is deliberately *import-safe*:
+- If PyMySQL is not installed, the server can still start; DB endpoints will
+  raise a clear error only when called.
+- Missing DB environment variables also error at call time.
+
+Env vars
+--------
+DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
+"""
+
 from __future__ import annotations
 
-import contextlib
-from typing import Generator, Optional
-
-import pymysql
-from pymysql.cursors import DictCursor
-
-# Hard-coded DB config (edit as needed)
-DB_HOST: str = "127.0.0.1"
-DB_PORT: int = 3306
-DB_USER: str = "fall_app"
-DB_PASS: str = "strong_password_here"
-DB_NAME: str = "elder_fall_monitor"
+import os
+from contextlib import contextmanager
+from typing import Iterator
 
 
-@contextlib.contextmanager
-def get_conn() -> Generator[pymysql.connections.Connection, None, None]:
-    """Yield a PyMySQL connection (DictCursor, autocommit)."""
+def _require_env(name: str, default: str | None = None) -> str:
+    v = os.getenv(name, default)
+    if v is None or str(v).strip() == "":
+        raise RuntimeError(
+            f"Missing required env var {name}. "
+            "Set DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME or disable DB endpoints."
+        )
+    return str(v)
+
+
+@contextmanager
+def get_conn() -> Iterator[object]:
+    """Yield a PyMySQL connection (DictCursor).
+
+    The caller is responsible for committing when needed.
+    """
+    try:
+        import pymysql  # type: ignore
+        from pymysql.cursors import DictCursor  # type: ignore
+    except Exception as e:
+        raise RuntimeError(
+            "PyMySQL is not installed. Install it with: pip install pymysql"
+        ) from e
+
+    # Allow env override, but fall back to defaults so local dev works
+    # without exporting variables every time.
+    host = _require_env("DB_HOST", "127.0.0.1")
+    port = int(_require_env("DB_PORT", "3306"))
+    user = _require_env("DB_USER", "fall_app")
+    password = _require_env("DB_PASS", "strong_password_here")
+    db = _require_env("DB_NAME", "elder_fall_monitor")
+
     conn = pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        charset="utf8mb4",
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=db,
         cursorclass=DictCursor,
-        autocommit=True,
+        autocommit=False,
     )
     try:
         yield conn
+        conn.commit()
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
