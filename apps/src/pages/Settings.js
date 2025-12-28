@@ -93,6 +93,35 @@ function pickOpForPreset(ops, presetLabel) {
   return sorted[Math.floor(sorted.length / 2)] || null;
 }
 
+function presetFromOp(ops, activeOpId) {
+  if (!activeOpId) return null;
+
+  // Try exact match by id
+  const op = Array.isArray(ops) ? ops.find((o) => Number(o?.id) === Number(activeOpId)) : null;
+
+  const code = String(op?.op_code || '').toLowerCase();
+  const name = String(op?.name || '').toLowerCase();
+
+  const looksHigh = code === 'op-1' || name.includes('high');
+  const looksLow  = code === 'op-3' || name.includes('low');
+  const looksBal  = code === 'op-2' || name.includes('bal');
+
+  if (looksHigh) return 'High Sensitivity';
+  if (looksLow)  return 'Low Sensitivity';
+  if (looksBal)  return 'Balanced';
+
+  // Fallback: rank by id if we have ops but no code/name
+  if (Array.isArray(ops) && ops.length > 0) {
+    const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
+    const idx = sorted.findIndex((x) => Number(x.id) === Number(activeOpId));
+    if (idx === 0) return 'High Sensitivity';
+    if (idx === sorted.length - 1) return 'Low Sensitivity';
+    return 'Balanced';
+  }
+
+  return null;
+}
+
 // --- Component ---
 
 export default function Settings() {
@@ -132,6 +161,15 @@ export default function Settings() {
 
   const savingRef = useRef(false);
   const statusTimerRef = useRef(null);
+
+  useEffect(() => {
+  if (!initialised) return;
+
+  const p = presetFromOp(ops, activeOpId);
+  if (p && p !== activePreset) setActivePreset(p);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [ops, activeOpId, initialised]);
+
 
   // Helper to show temporary status messages
   const setStatus = (msg) => {
