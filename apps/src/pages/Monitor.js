@@ -3,6 +3,8 @@ import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 import styles from "./Monitor.module.css";
 
+import { useMonitoring } from "../monitoring/MonitoringContext";
+
 const { POSE_CONNECTIONS } = mpPose;
 const { drawConnectors, drawLandmarks } = drawingUtils;
 
@@ -89,8 +91,20 @@ function MonitorDemo({ isActive = true } = {}) {
   const [deployW, setDeployW] = useState(48);
   const [deployS, setDeployS] = useState(12);
   const [mcCfg, setMcCfg] = useState({ M: 10, M_confirm: 25 });
-  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
   const [activeModelCode, setActiveModelCode] = useState("GCN");
+
+  // Global monitoring (persisted via /api/settings)
+  const {
+    monitoringOn,
+    setMonitoringOn,
+    registerController,
+    error: monitoringErr,
+    settings: settingsPayload,
+    loaded: settingsLoaded,
+    apiBase: apiBaseFromCtx,
+  } = useMonitoring();
+
+  const apiBase = apiBaseFromCtx || API_BASE;
 
   // Loaded models
   const [models, setModels] = useState([]);
@@ -111,41 +125,29 @@ function MonitorDemo({ isActive = true } = {}) {
   // Model info
   const [modelTag, setModelTag] = useState("GCN");
   const [tauHigh, setTauHigh] = useState(null);
+  // Thresholds (from DB operating point / settings)
+  const [fallThreshold, setFallThreshold] = useState(null);
+  const [opThrDetect, setOpThrDetect] = useState(null);
+  const [opThrLow, setOpThrLow] = useState(null);
+  const [opThrHigh, setOpThrHigh] = useState(null);
+  const [opCode, setOpCode] = useState(null);
 
   // Refs for camera + mediapipe
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const isActiveRef = useRef(isActive);
   useEffect(() => {
-    isActiveRef.current = isActive;
+    isActiveRef.current = Boolean(isActive);
   }, [isActive]);
   const poseRef = useRef(null);
   const streamRef = useRef(null);
   const rafRef = useRef(null);
   const liveFlagRef = useRef(false);
 
-  // Frame buffer for windowing
-  const rawFramesRef = useRef([]); // [{t,xy,conf}]
-  const lastPoseTsRef = useRef(null);
-  const fpsDeltasRef = useRef([]);
-  const fpsEstimateRef = useRef(null);
+  // Throttle MediaPipe inference so the UI stays responsive while monitoring runs in background.
+  const lastInferTsRef = useRef(0);
+  const inferFpsRef = useRef(15);
 
-  // Throttled UI update for stream FPS (avoid React re-render every frame)
-  useEffect(() => {
-    if (!liveRunning) {
-      setStreamFps(null);
-      return;
-    }
-    const id = setInterval(() => {
-      const v = fpsEstimateRef.current;
-      setStreamFps(v == null ? null : v);
-    }, 500);
-    return () => clearInterval(id);
-  }, [liveRunning]);
-  const lastSentRef = useRef(0);
-
-  // Session id for server-side state machine
-  const sessionIdRef = useRef(`monitor-demo-${Math.random().toString(16).slice(2)}`);
 
   // Mode + chosen models
   const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
@@ -169,34 +171,137 @@ function MonitorDemo({ isActive = true } = {}) {
     return 30;
   }, [chosenSpec]);
 
+  useEffect(() => {
+    // When not on the /Monitor page, keep monitoring running but reduce load so navigation stays smooth.
+    // Keep this conservative so React routing remains snappy while the pipeline runs.
+    const fgFps = Math.min(12, Math.max(5, Number(targetFps) || 12));
+    const bgFps = Math.min(5, fgFps);
+    inferFpsRef.current = isActiveRef.current ? fgFps : bgFps;
+
+    // Lower MediaPipe complexity when the page is not visible.
+    try {
+      if (poseRef.current && poseRef.current.setOptions) {
+        poseRef.current.setOptions({ modelComplexity: isActiveRef.current ? 1 : 0 });
+      }
+    } catch {
+      // ignore
+    }
+  }, [targetFps, isActive]);
+
+  // Expose start/stop to the app-level toggle (so Dashboard can turn monitoring on/off)
+  const startLiveFnRef = useRef(null);
+  const stopLiveFnRef = useRef(null);
+
+  // Frame buffer for windowing
+  const rawFramesRef = useRef([]); // [{t,xy,conf}]
+  const lastPoseTsRef = useRef(null);
+  const fpsDeltasRef = useRef([]);
+  const fpsEstimateRef = useRef(null);
+
+  // Throttled UI update for stream FPS (avoid React re-render every frame)
+  useEffect(() => {
+    if (!liveRunning) {
+      setStreamFps(null);
+      return;
+    }
+    const id = setInterval(() => {
+      const v = fpsEstimateRef.current;
+      setStreamFps(v == null ? null : v);
+    }, 500);
+    return () => clearInterval(id);
+  }, [liveRunning]);
+  const lastSentRef = useRef(0);
+
+  // Session id for server-side state machine
+  const sessionIdRef = useRef(`monitor-demo-${Math.random().toString(16).slice(2)}`);
   // Keep Model Info box in sync
   useEffect(() => {
     setModelTag(prettyModelTag(activeModelCode));
     if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
   }, [activeModelCode, chosenSpec]);
 
-  // Load settings + models list
+  // Apply global settings so this page follows changes made on /Settings.
+  useEffect(() => {
+    if (!settingsLoaded || !settingsPayload) return;
+    const s = settingsPayload;
+
+    const W = s?.deploy?.window?.W;
+    const S = s?.deploy?.window?.S;
+    if (typeof W === "number") setDeployW(W);
+    if (typeof S === "number") setDeployS(S);
+
+    const mc = s?.deploy?.mc;
+    if (mc && typeof mc === "object") {
+      setMcCfg({ M: mc.M, M_confirm: mc.M_confirm });
+    }
+
+    const sys = s?.system || {};
+    if (sys?.active_model_code) setActiveModelCode(sys.active_model_code);
+    if (typeof sys?.fall_threshold === "number") setFallThreshold(Number(sys.fall_threshold));
+
+    // Load thresholds from the active operating point (preferred when DB schema is v2).
+    let cancelled = false;
+    (async () => {
+      try {
+        const opId = sys?.active_operating_point;
+        const codeRaw = String(sys?.active_model_code || "GCN").toUpperCase();
+        const tryCodes = codeRaw === "HYBRID" ? ["HYBRID", "GCN"] : [codeRaw];
+        let picked = null;
+        for (const code of tryCodes) {
+          const rop = await fetch(
+            `${apiBase}/api/operating_points?model_code=${encodeURIComponent(code)}`
+          );
+          if (!rop.ok) continue;
+          const opData = await rop.json();
+          const ops = Array.isArray(opData?.operating_points)
+            ? opData.operating_points
+            : Array.isArray(opData)
+              ? opData
+              : [];
+          const byId = opId != null ? ops.find((o) => Number(o.id) === Number(opId)) : null;
+          picked =
+            byId ||
+            ops.find((o) => String(o.code || o.op_code || "").toUpperCase() === "OP-2") ||
+            ops[0] ||
+            null;
+          if (picked) break;
+        }
+        if (!picked || cancelled) return;
+
+        setOpCode(picked.code || picked.op_code || null);
+        const det = picked.thr_detect != null ? Number(picked.thr_detect) : null;
+        const low =
+          picked.thr_low_conf != null
+            ? Number(picked.thr_low_conf)
+            : picked.threshold_low != null
+              ? Number(picked.threshold_low)
+              : null;
+        const high =
+          picked.thr_high_conf != null
+            ? Number(picked.thr_high_conf)
+            : picked.threshold_high != null
+              ? Number(picked.threshold_high)
+              : null;
+
+        setOpThrDetect(det);
+        setOpThrLow(low);
+        setOpThrHigh(high);
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsLoaded, settingsPayload, apiBase]);
+
+  // Load models list
   useEffect(() => {
     (async () => {
       try {
-        // settings
-        const rs = await fetch(`${API_BASE}/api/settings`);
-        if (rs.ok) {
-          const s = await rs.json();
-          const W = s?.deploy?.window?.W;
-          const S = s?.deploy?.window?.S;
-          if (typeof W === "number") setDeployW(W);
-          if (typeof S === "number") setDeployS(S);
-          const mc = s?.deploy?.mc;
-          if (mc && typeof mc === "object") setMcCfg({ M: mc.M, M_confirm: mc.M_confirm });
-          const sys = s?.system || {};
-          if (typeof sys?.monitoring_enabled === "boolean") setMonitoringEnabled(sys.monitoring_enabled);
-          if (sys?.active_model_code) setActiveModelCode(sys.active_model_code);
-        }
-
-        // models
         setModelsErr(null);
-        const rm = await fetch(`${API_BASE}/api/models/summary`);
+        const rm = await fetch(`${apiBase}/api/models/summary`);
         if (!rm.ok) throw new Error(await rm.text());
         const data = await rm.json();
         const arr = Array.isArray(data?.models) ? data.models : [];
@@ -224,10 +329,8 @@ function MonitorDemo({ isActive = true } = {}) {
 
   // Start/Stop camera + pose
   async function startLive() {
-    if (!monitoringEnabled) return;
-
     const videoEl = videoRef.current;
-    if (!videoEl) return;
+    if (!videoEl) return false;
 
     try {
       liveFlagRef.current = true;
@@ -254,6 +357,7 @@ function MonitorDemo({ isActive = true } = {}) {
         const track = stream.getVideoTracks()[0];
         const settings = track?.getSettings?.();
         if (settings && typeof settings.frameRate === "number") {
+          fpsEstimateRef.current = settings.frameRate;
           setStreamFps(settings.frameRate);
         }
       } catch {
@@ -266,7 +370,9 @@ function MonitorDemo({ isActive = true } = {}) {
       });
 
       pose.setOptions({
-        modelComplexity: 1,
+        // Use the lightest model by default. When /Monitor is the active page,
+        // the effect above may bump complexity up if needed.
+        modelComplexity: 0,
         smoothLandmarks: true,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -277,20 +383,28 @@ function MonitorDemo({ isActive = true } = {}) {
 
       const loop = async () => {
         if (!liveFlagRef.current) return;
-        if (videoEl.readyState >= 2 && poseRef.current) {
-          try {
-            await poseRef.current.send({ image: videoEl });
-          } catch (err) {
-            console.error("pose.send error", err);
+        const now = performance.now();
+        const target = Math.max(1, Number(inferFpsRef.current) || 15);
+        const minIntervalMs = 1000 / target;
+        if (now - lastInferTsRef.current >= minIntervalMs) {
+          lastInferTsRef.current = now;
+          if (videoEl.readyState >= 2 && poseRef.current) {
+            try {
+              await poseRef.current.send({ image: videoEl });
+            } catch (err) {
+              console.error("pose.send error", err);
+            }
           }
         }
         rafRef.current = requestAnimationFrame(loop);
       };
 
       loop();
+      return true;
     } catch (err) {
       console.error("Error starting monitor-demo:", err);
       stopLive();
+      return false;
     }
   }
 
@@ -325,6 +439,20 @@ function MonitorDemo({ isActive = true } = {}) {
     setTriageState("not_fall");
     setTimeline([]);
   }
+
+  // Keep controller refs up-to-date, then register with the app-level toggle.
+  useEffect(() => {
+    startLiveFnRef.current = startLive;
+    stopLiveFnRef.current = stopLive;
+  });
+
+  useEffect(() => {
+    registerController({
+      start: () => startLiveFnRef.current && startLiveFnRef.current(),
+      stop: () => stopLiveFnRef.current && stopLiveFnRef.current(),
+    });
+    return () => registerController(null);
+  }, [registerController]);
 
   // Keep video off-screen (we want skeleton-only view)
   useEffect(() => {
@@ -411,7 +539,8 @@ function MonitorDemo({ isActive = true } = {}) {
         const meanDt = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
         const estFps = meanDt > 0 ? 1000 / meanDt : null;
         if (estFps && Number.isFinite(estFps)) {
-          setStreamFps((prev) => (prev == null ? estFps : prev * 0.8 + estFps * 0.2));
+          const prev = fpsEstimateRef.current;
+          fpsEstimateRef.current = prev == null ? estFps : prev * 0.8 + estFps * 0.2;
         }
       }
     }
@@ -459,13 +588,13 @@ function MonitorDemo({ isActive = true } = {}) {
       timestamp_ms: Date.now(),
       use_mc: true,
       // Persist only when monitoring is enabled (and DB configured)
-      persist: Boolean(monitoringEnabled),
+      persist: Boolean(monitoringOn),
       xy: win.xy,
       conf: win.conf,
     };
 
     try {
-      const resp = await fetch(`${API_BASE}/api/monitor/predict_window`, {
+      const resp = await fetch(`${apiBase}/api/monitor/predict_window`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -520,7 +649,7 @@ function MonitorDemo({ isActive = true } = {}) {
 
   async function resetSession() {
     try {
-      await fetch(`${API_BASE}/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`, {
+      await fetch(`${apiBase}/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`, {
         method: "POST",
       });
     } catch {
@@ -531,7 +660,7 @@ function MonitorDemo({ isActive = true } = {}) {
   async function testFall() {
     // 1) Try backend helper endpoint (if present)
     try {
-      const r = await fetch(`${API_BASE}/api/events/test_fall`, {
+      const r = await fetch(`${apiBase}/api/events/test_fall`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resident_id: 1, model_code: prettyModelTag(activeModelCode) }),
@@ -546,7 +675,7 @@ function MonitorDemo({ isActive = true } = {}) {
 
     // 2) Fallback: record a test notification (if DB exists)
     try {
-      await fetch(`${API_BASE}/api/notifications/test`, {
+      await fetch(`${apiBase}/api/notifications/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -641,22 +770,27 @@ function MonitorDemo({ isActive = true } = {}) {
                 Backend error: {modelsErr}
               </p>
             )}
+            {monitoringErr && (
+              <p className={styles.subText} style={{ color: "#B45309" }}>
+                Settings error: {monitoringErr}
+              </p>
+            )}
             <div className={styles.buttonGroup}>
-              {!liveRunning ? (
+              {!monitoringOn ? (
                 <button
                   className={styles.btnGray}
-                  onClick={async () => {
-                    await resetSession();
-                    await startLive();
+                  onClick={() => {
+                    // Don't await here: we want getUserMedia to run under a user gesture.
+                    resetSession();
+                    setMonitoringOn(true);
                   }}
-                  disabled={!monitoringEnabled}
-                  title={!monitoringEnabled ? "Monitoring is disabled in Settings" : "Start"}
+                  title="Start"
                 >
                   Start
                 </button>
               ) : (
-                <button className={styles.btnGray} onClick={stopLive}>
-                  Pause
+                <button className={styles.btnGray} onClick={() => setMonitoringOn(false)}>
+                  Stop
                 </button>
               )}
               <button className={styles.btnRed} onClick={testFall}>
@@ -702,7 +836,14 @@ function MonitorDemo({ isActive = true } = {}) {
               </div>
               <div className={styles.infoRow}>
                 <span>Threshold</span>
-                <span>{tauHigh == null ? "—" : tauHigh.toFixed(2)}</span>
+                <span>
+                  {(() => {
+                    const v = opThrDetect ?? opThrHigh ?? fallThreshold ?? tauHigh;
+                    if (v == null) return "—";
+                    const tag = opCode ? ` (${opCode})` : "";
+                    return `${Number(v).toFixed(2)}${tag}`;
+                  })()}
+                </span>
               </div>
             </div>
             {/* Keep extra info out of the design, but useful for debugging */}

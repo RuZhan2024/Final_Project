@@ -52,13 +52,17 @@ CREATE TABLE operating_points (
 CREATE TABLE system_settings (
   id INT AUTO_INCREMENT PRIMARY KEY,
   resident_id INT NOT NULL,
-  monitoring_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  monitoring_enabled TINYINT(1) NOT NULL DEFAULT 0,
   api_online TINYINT(1) NOT NULL DEFAULT 1,
   last_latency_ms INT NULL,
   active_model_code VARCHAR(16) NOT NULL DEFAULT 'GCN',
   active_operating_point INT NULL,
   alert_cooldown_sec INT NOT NULL DEFAULT 3,
   notify_on_every_fall TINYINT(1) NOT NULL DEFAULT 1,
+  fall_threshold DECIMAL(6,4) NULL DEFAULT 0.8500,
+  require_confirmation TINYINT(1) NOT NULL DEFAULT 0,
+  store_event_clips TINYINT(1) NOT NULL DEFAULT 0,
+  anonymize_skeleton_data TINYINT(1) NOT NULL DEFAULT 1,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_settings_resident FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
   CONSTRAINT fk_settings_op FOREIGN KEY (active_operating_point) REFERENCES operating_points(id) ON DELETE SET NULL

@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Settings.module.css';
 
+import { useMonitoring } from '../monitoring/MonitoringContext';
+
 // --- Logic & Helpers (Preserved from your uploaded file) ---
 
 // Keep this consistent with other pages (Monitor-demo uses localhost:8000 by default)
@@ -94,6 +96,7 @@ function pickOpForPreset(ops, presetLabel) {
 // --- Component ---
 
 export default function Settings() {
+  const { updateSettings: updateGlobalSettings } = useMonitoring();
   // UI state
   const [loading, setLoading] = useState(true);
   const [statusMsg, setStatusMsg] = useState('');
@@ -105,7 +108,7 @@ export default function Settings() {
   const [caregiverPhone, setCaregiverPhone] = useState('');
 
   // System settings
-  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
+  const [monitoringEnabled, setMonitoringEnabled] = useState(false);
   const [requireConfirmation, setRequireConfirmation] = useState(false);
   const [notifyOnEveryFall, setNotifyOnEveryFall] = useState(true);
 
@@ -119,6 +122,9 @@ export default function Settings() {
   // Privacy
   const [storeEventClips, setStoreEventClips] = useState(false);
   const [privacyMode, setPrivacyMode] = useState(true);
+
+  // Prevent auto-saving defaults before the initial GET /api/settings completes.
+  const [initialised, setInitialised] = useState(false);
 
   // Ops
   const [ops, setOps] = useState([]);
@@ -139,7 +145,9 @@ export default function Settings() {
     savingRef.current = true;
     setErrorMsg('');
     try {
-      await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+      // Use the global updater so other pages immediately receive the new settings.
+      const ok = await updateGlobalSettings(patch);
+      if (!ok) throw new Error('Failed to save settings');
       setStatus('Saved');
     } catch (e) {
       setErrorMsg(String(e?.message || e));
@@ -155,7 +163,7 @@ export default function Settings() {
       const data = await apiFetch('/api/settings', { method: 'GET' });
       const sys = data?.system || data || {};
 
-      setMonitoringEnabled(Boolean(sys.monitoring_enabled ?? true));
+      setMonitoringEnabled(Boolean(sys.monitoring_enabled ?? false));
       setRequireConfirmation(Boolean(sys.require_confirmation ?? false));
       setNotifyOnEveryFall(Boolean(sys.notify_on_every_fall ?? true));
 
@@ -171,6 +179,7 @@ export default function Settings() {
       setErrorMsg(String(e?.message || e));
     } finally {
       setLoading(false);
+      setInitialised(true);
     }
   };
 
@@ -193,10 +202,11 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
+    if (!initialised) return;
     loadOperatingPoints(activeModel);
     safeSavePatch({ active_model_code: modelLabelToCode(activeModel) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModel]);
+  }, [activeModel, initialised]);
 
   // Derived gradients for sliders
   const fallThrBg = useMemo(() => sliderBg(fallThreshold, 50, 99), [fallThreshold]);

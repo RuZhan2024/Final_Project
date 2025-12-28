@@ -177,6 +177,40 @@ def _col_exists(conn, table_name: str, col_name: str) -> bool:
         return cur.fetchone() is not None
 
 
+def _ensure_system_settings_schema(conn) -> None:
+    """Best-effort dev-time migration for optional settings columns.
+
+    The frontend expects some settings fields (e.g., fall_threshold, privacy toggles).
+    Older DBs may not have these columns yet. We try to add them if possible.
+    """
+    try:
+        if not _table_exists(conn, "system_settings"):
+            return
+
+        wanted: Dict[str, str] = {
+            # Keep this nullable so legacy rows don't break.
+            "fall_threshold": "DECIMAL(6,4) NULL",
+            "require_confirmation": "TINYINT(1) NOT NULL DEFAULT 0",
+            "store_event_clips": "TINYINT(1) NOT NULL DEFAULT 0",
+            "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
+        }
+
+        alters: List[str] = []
+        for col, ddl in wanted.items():
+            if not _col_exists(conn, "system_settings", col):
+                alters.append(f"ADD COLUMN `{col}` {ddl}")
+
+        if alters:
+            with conn.cursor() as cur:
+                cur.execute(f"ALTER TABLE `system_settings` {', '.join(alters)}")
+            conn.commit()
+            # Invalidate cache
+            _COL_CACHE.pop("system_settings", None)
+    except Exception:
+        # If the DB user doesn't have ALTER privileges, just skip.
+        return
+
+
 def _safe_get(d: Dict[str, Any], key: str, default: Any = None) -> Any:
     if not isinstance(d, dict):
         return default
@@ -304,6 +338,7 @@ def operating_points(model_code: str = Query(..., description="TCN | GCN | HYBRI
         raise HTTPException(status_code=400, detail="model_code must be one of: TCN, GCN, HYBRID")
 
     with get_conn() as conn:
+        _ensure_system_settings_schema(conn)
         variants = _detect_variants(conn)
         with conn.cursor() as cur:
             if variants["ops"] == "v2":
@@ -386,11 +421,14 @@ def operating_points(model_code: str = Query(..., description="TCN | GCN | HYBRI
 def get_settings(resident_id: int = Query(1, description="Resident id")):
     """Return UI settings (nested + legacy flat fields)."""
     with get_conn() as conn:
+        _ensure_system_settings_schema(conn)
         variants = _detect_variants(conn)
 
         # Defaults (safe even if DB has minimal schema)
         system: Dict[str, Any] = {
-            "monitoring_enabled": True,
+            # Runtime monitoring (camera) cannot be reliably auto-started after a reload.
+            # Default to off; the frontend can still show a separate "enabled" preference.
+            "monitoring_enabled": False,
             "active_model_code": "HYBRID",
             "active_operating_point": None,
             "camera_source": "webcam",
@@ -412,7 +450,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                 cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
                 row = cur.fetchone() or {}
             system.update({
-                "monitoring_enabled": bool(_safe_get(row, "monitoring_enabled", 1)),
+                "monitoring_enabled": bool(_safe_get(row, "monitoring_enabled", 0)),
                 "active_model_code": _safe_get(row, "active_model_code", "HYBRID"),
                 "active_operating_point": _safe_get(row, "active_operating_point", None),
                 "fall_threshold": float(_safe_get(row, "fall_threshold", 0.85) or 0.85),
@@ -435,7 +473,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                 sys_row = cur.fetchone() or {}
 
                 if isinstance(sys_row, dict) and "monitoring_enabled" in sys_row:
-                    system["monitoring_enabled"] = bool(sys_row.get("monitoring_enabled", 1))
+                    system["monitoring_enabled"] = bool(sys_row.get("monitoring_enabled", 0))
 
                 if isinstance(sys_row, dict) and sys_row.get("camera_source"):
                     system["camera_source"] = sys_row.get("camera_source")
@@ -457,6 +495,28 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                 if isinstance(sys_row, dict):
                     system["active_operating_point"] = sys_row.get("active_operating_point_id") or sys_row.get("active_operating_point")
 
+                # If we have an active operating point, prefer its thresholds.
+                # This gives you persistence for fall_threshold even if an older schema
+                # doesn't store it directly in system_settings.
+                try:
+                    op_id = system.get("active_operating_point")
+                    if op_id and _table_exists(conn, "operating_points") and _col_exists(conn, "operating_points", "thr_detect"):
+                        cur.execute(
+                            "SELECT thr_detect, thr_low_conf, thr_high_conf FROM operating_points WHERE id=%s LIMIT 1",
+                            (int(op_id),),
+                        )
+                        op_row = cur.fetchone() or {}
+                        if isinstance(op_row, dict):
+                            if op_row.get("thr_detect") is not None:
+                                system["fall_threshold"] = float(op_row.get("thr_detect"))
+                            # Expose these too; the frontend may display them.
+                            if op_row.get("thr_low_conf") is not None:
+                                system["thr_low_conf"] = float(op_row.get("thr_low_conf"))
+                            if op_row.get("thr_high_conf") is not None:
+                                system["thr_high_conf"] = float(op_row.get("thr_high_conf"))
+                except Exception:
+                    pass
+
                 # optional columns if present
                 for col, setter in [
                     ("p_fall_threshold", lambda v: system.__setitem__("fall_threshold", float(v))),
@@ -477,6 +537,28 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                             setter(sys_row[col])
                         except Exception:
                             pass
+
+                # If we don't store a dedicated fall_threshold column in system_settings,
+                # derive it from the active operating point's thr_detect.
+                try:
+                    op_id = system.get("active_operating_point")
+                    has_ft = bool(sys_row.get("fall_threshold") is not None or sys_row.get("p_fall_threshold") is not None)
+                    if (not has_ft) and op_id and _table_exists(conn, "operating_points"):
+                        cur.execute(
+                            "SELECT thr_detect, thr_low_conf, thr_high_conf FROM operating_points WHERE id=%s LIMIT 1",
+                            (op_id,),
+                        )
+                        op = cur.fetchone() or {}
+                        if isinstance(op, dict):
+                            if op.get("thr_detect") is not None:
+                                system["fall_threshold"] = float(op["thr_detect"])
+                            # Optional extras (frontend can use if present)
+                            if op.get("thr_low_conf") is not None:
+                                system["thr_low_conf"] = float(op["thr_low_conf"])
+                            if op.get("thr_high_conf") is not None:
+                                system["thr_high_conf"] = float(op["thr_high_conf"])
+                except Exception:
+                    pass
 
         return {
             "system": system,
@@ -639,6 +721,29 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
             with conn.cursor() as cur:
                 cur.execute(sql, tuple(vals))
             conn.commit()
+
+        # Keep operating point threshold in sync when the UI adjusts the main threshold.
+        if payload.fall_threshold is not None and _table_exists(conn, "operating_points") and _col_exists(conn, "operating_points", "thr_detect"):
+            try:
+                op_id = payload.active_operating_point
+                if op_id is None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT active_operating_point_id, active_operating_point FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                            (rid,),
+                        )
+                        srow = cur.fetchone() or {}
+                        if isinstance(srow, dict):
+                            op_id = srow.get("active_operating_point_id") or srow.get("active_operating_point")
+                if op_id is not None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE operating_points SET thr_detect=%s, updated_at=NOW() WHERE id=%s",
+                            (float(payload.fall_threshold), int(op_id)),
+                        )
+                    conn.commit()
+            except Exception:
+                pass
 
         return {"ok": True}
 

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import styles from "./Dashboard.module.css";
 
+import { useMonitoring } from "../monitoring/MonitoringContext";
+
 // Prefer env var, fallback to localhost
 const API_BASE =
   typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
@@ -19,9 +21,10 @@ function Dashboard() {
   const [falseAlarms, setFalseAlarms] = useState(0);
 
   const [modelName, setModelName] = useState("—");
-  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
   const [latencyMs, setLatencyMs] = useState(null);
   const [apiOnline, setApiOnline] = useState(null); // null/true/false
+
+  const { monitoringOn, toggleMonitoringOn, error: monitoringErr } = useMonitoring();
 
   async function loadSummary() {
     try {
@@ -35,7 +38,6 @@ function Dashboard() {
       setFalseAlarms(Number(data?.today?.false_alarms ?? 0));
 
       setModelName(data?.system?.model_name || "—");
-      setMonitoringEnabled(Boolean(data?.system?.monitoring_enabled ?? true));
       setLatencyMs(
         data?.system?.last_latency_ms == null ? null : Number(data.system.last_latency_ms)
       );
@@ -55,28 +57,12 @@ function Dashboard() {
   }, []);
 
   async function toggleMonitoring() {
-    const next = !monitoringEnabled;
-    setMonitoringEnabled(next); // optimistic
-    try {
-      const r = await fetch(`${API_BASE}/api/settings`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ monitoring_enabled: next }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      // refresh to ensure UI matches DB
-      loadSummary();
-      console.log("Success")
-    } catch (e) {
-      // revert on error
-      setMonitoringEnabled(!next);
-      console.error("Failed to update monitoring_enabled:", e);
-    }
+    await toggleMonitoringOn();
   }
 
   const statusLabel = status === "alert" ? "Alert" : "Normal";
-  const toggleBg = monitoringEnabled ? "#4F46E5" : "#9CA3AF";
-  const knobStyle = monitoringEnabled
+  const toggleBg = monitoringOn ? "#4F46E5" : "#9CA3AF";
+  const knobStyle = monitoringOn
     ? { right: 3, left: "auto" }
     : { left: 3, right: "auto" };
 
@@ -130,6 +116,12 @@ function Dashboard() {
         {err && (
           <div style={{ marginBottom: 12, color: "#B45309" }}>
             Backend error: {err}
+          </div>
+        )}
+
+        {monitoringErr && (
+          <div style={{ marginBottom: 12, color: "#B45309" }}>
+            Settings error: {monitoringErr}
           </div>
         )}
 
