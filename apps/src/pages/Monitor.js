@@ -115,9 +115,13 @@ function Monitor({ isActive = true } = {}) {
 
   const apiBase = apiBaseFromCtx || API_BASE;
 
-  // Loaded models
+  // Deploy specs (source of truth for available models)
   const [models, setModels] = useState([]);
   const [modelsErr, setModelsErr] = useState(null);
+
+  // Optional: dashboard summary (/api/summary alias)
+  const [apiSummary, setApiSummary] = useState(null);
+  const [summaryErr, setSummaryErr] = useState(null);
 
   // Live state
   const [liveRunning, setLiveRunning] = useState(false);
@@ -178,10 +182,12 @@ function Monitor({ isActive = true } = {}) {
   }, [mode, models, chosen]);
 
   const targetFps = useMemo(() => {
-    const f = chosenSpec?.fps_default;
-    if (typeof f === "number" && Number.isFinite(f) && f > 0) return f;
-    return 30;
-  }, [chosenSpec]);
+    // Keep client-side timing aligned with the backend's expected FPS per dataset.
+    const ds = String(activeDatasetCode || "").toLowerCase();
+    const byDs = { le2i: 25, urfd: 30, caucafall: 23, muvim: 30 };
+    const f = byDs[ds];
+    return typeof f === "number" && Number.isFinite(f) && f > 0 ? f : 30;
+  }, [activeDatasetCode]);
 
   useEffect(() => {
     // When not on the /Monitor page, keep monitoring running but reduce load so navigation stays smooth.
@@ -330,22 +336,61 @@ function Monitor({ isActive = true } = {}) {
     };
   }, [settingsLoaded, settingsPayload, apiBase]);
 
-  // Load models list
+  // Load deploy specs (what's actually available in the repo)
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         setModelsErr(null);
-        const rm = await fetch(`${apiBase}/api/models/summary`);
+        const rm = await fetch(`${apiBase}/api/spec`);
         if (!rm.ok) throw new Error(await rm.text());
         const data = await rm.json();
         const arr = Array.isArray(data?.models) ? data.models : [];
-        setModels(arr);
+
+        // Normalise to the shape this page expects.
+        const norm = arr.map((m) => {
+          const id = m?.id || m?.key || m?.spec_key || "";
+          // Convenience: expose OP-2 tau in a predictable place.
+          const op2 = m?.ops?.["OP-2"] || m?.ops?.op2 || null;
+          const tau_low = op2?.tau_low != null ? Number(op2.tau_low) : null;
+          const tau_high = op2?.tau_high != null ? Number(op2.tau_high) : null;
+          return { ...m, id, tau_low, tau_high };
+        });
+
+        if (!cancelled) setModels(norm);
       } catch (e) {
-        setModelsErr(String(e?.message || e));
-        setModels([]);
+        if (!cancelled) {
+          setModelsErr(String(e?.message || e));
+          setModels([]);
+        }
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
+  // Load a lightweight server summary (optional, for displaying API health/latency)
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        setSummaryErr(null);
+        const r = await fetch(`${apiBase}/api/summary`);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (!cancelled) setApiSummary(data);
+      } catch (e) {
+        if (!cancelled) setSummaryErr(String(e?.message || e));
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [apiBase]);
 
   // Canvas sizing helper
   function ensureCanvasMatchesVideo() {
@@ -634,7 +679,7 @@ function Monitor({ isActive = true } = {}) {
       resident_id: 1,
       mode: mode,
       dataset_code: activeDatasetCode,
-      op_code: opCode,
+      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
       model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
       model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
       model_id: mode === "dual" ? null : mode === "tcn" ? chosen.tcn : chosen.gcn,
@@ -863,6 +908,16 @@ function Monitor({ isActive = true } = {}) {
             {monitoringErr && (
               <p className={styles.subText} style={{ color: "#B45309" }}>
                 Settings error: {monitoringErr}
+              </p>
+            )}
+            {summaryErr && (
+              <p className={styles.subText} style={{ color: "#B45309" }}>
+                Summary error: {summaryErr}
+              </p>
+            )}
+            {!summaryErr && apiSummary?.system && (
+              <p className={styles.subText}>
+                API: {apiSummary.system.api_online ? "Online" : "Offline"} • Last latency: {apiSummary.system.last_latency_ms ?? "—"} ms
               </p>
             )}
             <div className={styles.buttonGroup}>

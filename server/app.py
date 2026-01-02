@@ -289,12 +289,25 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
     mc = (model_code or "HYBRID").upper().strip()
     oc = _norm_op_code(op_code)
 
+    def _get_attr_or_key(obj: Any, name: str, default: Any = None) -> Any:
+        """Support both DeploySpec objects (preferred) and legacy dict-like specs."""
+        if obj is None:
+            return default
+        try:
+            if hasattr(obj, name):
+                return getattr(obj, name)
+        except Exception:
+            pass
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return default
+
     def pack(spec_key: str) -> Optional[Dict[str, Any]]:
         s = specs.get(spec_key)
-        if not isinstance(s, dict):
+        if s is None:
             return None
-        alert_cfg = dict(s.get("alert_cfg") or {})
-        ops = dict(s.get("ops") or {})
+        alert_cfg = dict(_get_attr_or_key(s, "alert_cfg", {}) or {})
+        ops = dict(_get_attr_or_key(s, "ops", {}) or {})
         op = dict(ops.get(oc) or ops.get("OP-2") or {})
         return {"spec_key": spec_key, "alert_cfg": alert_cfg, "op": op}
 
@@ -544,6 +557,15 @@ def deploy_specs() -> Dict[str, Any]:
     out.sort(key=lambda d: (d.get("dataset_code") or "", d.get("arch") or ""))
     models.sort(key=lambda d: (d.get("dataset_code") or "", d.get("arch") or ""))
     return {"specs": out, "models": models, "datasets": sorted(datasets)}
+
+
+@app.get("/api/spec")
+def api_spec() -> Dict[str, Any]:
+    """Alias for /api/deploy/specs.
+
+    Some UI code refers to a shorter `/api/spec` endpoint.
+    """
+    return deploy_specs()
 
 
 # -----------------------------
@@ -1235,8 +1257,12 @@ def test_fall() -> Dict[str, Any]:
 # Dashboard summary
 # -----------------------------
 @app.get("/api/dashboard/summary")
-def dashboard_summary():
-    """Summary used by /Dashboard. Never returns 500."""
+def dashboard_summary(resident_id: Optional[int] = None):
+    """Summary used by /Dashboard. Never returns 500.
+
+    Note: some earlier versions of this endpoint referenced undefined variables
+    (resident_id/system). Keep this handler defensive so UI pages never break.
+    """
     global LAST_PRED_LATENCY_MS
 
     summary = {
@@ -1252,16 +1278,17 @@ def dashboard_summary():
 
     try:
         with get_conn() as conn:
+            rid = resident_id if resident_id and _resident_exists(conn, int(resident_id)) else _one_resident_id(conn)
             # settings / model
             if _table_exists(conn, "system_settings"):
                 with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1", (resident_id,))
+                    cur.execute("SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1", (rid,))
                     sys_row = cur.fetchone() or {}
                     if isinstance(sys_row, dict) and "monitoring_enabled" in sys_row:
                         summary["system"]["monitoring_enabled"] = bool(sys_row.get("monitoring_enabled", 1))
                     # Prefer direct active_model_code if present (some schemas store code instead of id)
                     if isinstance(sys_row, dict) and sys_row.get("active_model_code"):
-                        system["active_model_code"] = sys_row.get("active_model_code") or system["active_model_code"]
+                        summary["system"]["model_name"] = str(sys_row.get("active_model_code") or summary["system"]["model_name"])
 
                     active_model_id = sys_row.get("active_model_id") if isinstance(sys_row, dict) else None
                     if active_model_id and _table_exists(conn, "models"):
@@ -1271,7 +1298,7 @@ def dashboard_summary():
                             summary["system"]["model_name"] = mrow.get("name") or mrow.get("model_code") or mrow.get("code") or summary["system"]["model_name"]
             elif _table_exists(conn, "settings") and _col_exists(conn, "settings", "monitoring_enabled"):
                 with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (1,))
+                    cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (rid,))
                     row = cur.fetchone() or {}
                     if isinstance(row, dict):
                         summary["system"]["monitoring_enabled"] = bool(row.get("monitoring_enabled", 1))
@@ -1324,6 +1351,12 @@ def dashboard_summary():
         summary["system"]["api_online"] = False
         summary["system"]["error"] = str(e)
         return summary
+
+
+@app.get("/api/summary")
+def api_summary(resident_id: Optional[int] = None):
+    """Alias for /api/dashboard/summary (for Monitor UI)."""
+    return dashboard_summary(resident_id=resident_id)
 
 
 def _as_float_list(xs: Any) -> List[float]:
