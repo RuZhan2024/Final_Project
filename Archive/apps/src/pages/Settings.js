@@ -116,11 +116,34 @@ function pickOpForPreset(ops, presetLabel) {
   return sorted[Math.floor(sorted.length / 2)] || null;
 }
 
-function presetFromOpCode(opCode) {
-  const c = String(opCode || "").toLowerCase();
-  if (c === "op-1") return "High Sensitivity";
-  if (c === "op-3") return "Low Sensitivity";
-  if (c === "op-2") return "Balanced";
+function presetFromOp(ops, activeOpId) {
+  if (!activeOpId) return null;
+
+  // Try exact match by id
+  const op = Array.isArray(ops)
+    ? ops.find((o) => Number(o?.id) === Number(activeOpId))
+    : null;
+
+  const code = String(op?.op_code || "").toLowerCase();
+  const name = String(op?.name || "").toLowerCase();
+
+  const looksHigh = code === "op-1" || name.includes("high");
+  const looksLow = code === "op-3" || name.includes("low");
+  const looksBal = code === "op-2" || name.includes("bal");
+
+  if (looksHigh) return "High Sensitivity";
+  if (looksLow) return "Low Sensitivity";
+  if (looksBal) return "Balanced";
+
+  // Fallback: rank by id if we have ops but no code/name
+  if (Array.isArray(ops) && ops.length > 0) {
+    const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
+    const idx = sorted.findIndex((x) => Number(x.id) === Number(activeOpId));
+    if (idx === 0) return "High Sensitivity";
+    if (idx === sorted.length - 1) return "Low Sensitivity";
+    return "Balanced";
+  }
+
   return null;
 }
 
@@ -152,7 +175,7 @@ export default function Settings() {
   const [activePreset, setActivePreset] = useState("Balanced");
   const [fallThreshold, setFallThreshold] = useState(85); // percent
   const [alertCooldown, setAlertCooldown] = useState(3); // seconds
-  const [activeOpCode, setActiveOpCode] = useState("OP-2");
+  const [activeOpId, setActiveOpId] = useState(null);
 
   // Privacy
   const [storeEventClips, setStoreEventClips] = useState(false);
@@ -171,10 +194,17 @@ export default function Settings() {
 
   useEffect(() => {
     if (!initialised) return;
-    const p = presetFromOpCode(activeOpCode);
+    if (activeOpId == null) return;
+    if (!Array.isArray(ops) || ops.length === 0) return;
+
+    // IMPORTANT: don't “guess” a preset if the activeOpId doesn't belong to these ops
+    const exists = ops.some((o) => Number(o?.id) === Number(activeOpId));
+    if (!exists) return;
+
+    const p = presetFromOp(ops, activeOpId);
     if (p && p !== activePreset) setActivePreset(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeOpCode, initialised]);
+  }, [ops, activeOpId, initialised]);
 
   // Helper to show temporary status messages
   const setStatus = (msg) => {
@@ -215,14 +245,13 @@ export default function Settings() {
 
       if (sys.active_model_code)
         setActiveModel(modelCodeToLabel(sys.active_model_code));
-      const opCode = (sys.active_op_code || sys.deploy_params?.ui?.op_code || sys.deployParams?.ui?.op_code || "OP-2").toString().toUpperCase();
-      setActiveOpCode(opCode);
+      if (typeof sys.active_operating_point === "number")
+        setActiveOpId(sys.active_operating_point);
 
-      const ui = (sys.deploy_params?.ui || sys.deployParams?.ui || null);
-      const tauHigh = ui?.tau_high ?? sys.fall_threshold ?? 0.85;
-      const cooldownS = ui?.cooldown_s ?? sys.alert_cooldown_sec ?? 3;
-      setFallThreshold(Math.round(Number(tauHigh) * 1000) / 10);
-      setAlertCooldown(Math.round(Number(cooldownS)));
+      if (typeof sys.fall_threshold === "number")
+        setFallThreshold(Math.round(sys.fall_threshold * 100));
+      if (typeof sys.alert_cooldown_sec === "number")
+        setAlertCooldown(sys.alert_cooldown_sec);
 
       if (typeof sys.store_event_clips === "boolean")
         setStoreEventClips(sys.store_event_clips);
@@ -239,78 +268,16 @@ export default function Settings() {
   const loadOperatingPoints = async (modelLabel) => {
     setOpsErr("");
     try {
-      const model_code = modelLabelToCode(modelLabel); // TCN / GCN / HYBRID
-      const ds = String(activeDatasetCode || "muvim").toLowerCase();
-      const specData = await apiFetch(`/api/deploy/specs`, { method: "GET" });
-      const models = Array.isArray(specData?.models) ? specData.models : [];
-      const byKey = new Map(models.map((m) => [String(m.key || ""), m]));
-
-      const tcn = byKey.get(`${ds}_tcn`);
-      const gcn = byKey.get(`${ds}_gcn`);
-
-      const mkList = (spec) => {
-        if (!spec) return [];
-        const alert_cfg = spec.alert_cfg || {};
-        const cooldown_seconds = Number(alert_cfg.cooldown_s ?? 0);
-        const ops = spec.ops || {};
-        return Object.keys(ops).map((code) => {
-          const op = ops[code] || {};
-          const tauLow = Number(op.tau_low ?? 0);
-          const tauHigh = Number(op.tau_high ?? 0.85);
-          return {
-            id: code, // stable string id
-            op_code: String(code).toLowerCase(), // "op-1"
-            name:
-              String(code).toUpperCase() === "OP-1"
-                ? "OP-1 (High recall)"
-                : String(code).toUpperCase() === "OP-3"
-                ? "OP-3 (Low alarm)"
-                : "OP-2 (Balanced)",
-            thr_low_conf: tauLow,
-            thr_high_conf: tauHigh,
-            thr_detect: tauHigh, // UI uses this as "Fall Threshold"
-            cooldown_seconds,
-          };
-        });
-      };
-
-      let list = [];
-      if (model_code === "TCN") list = mkList(tcn);
-      else if (model_code === "GCN") list = mkList(gcn);
-      else {
-        // HYBRID: synthesize a single op list that matches the AND-style UI summary
-        const lt = mkList(tcn);
-        const lg = mkList(gcn);
-        const mapT = new Map(lt.map((o) => [o.op_code, o]));
-        const mapG = new Map(lg.map((o) => [o.op_code, o]));
-        const codes = Array.from(new Set([...mapT.keys(), ...mapG.keys()]));
-        list = codes.map((c) => {
-          const a = mapT.get(c);
-          const b = mapG.get(c);
-          const tauLow = Math.min(Number(a?.thr_low_conf ?? 0), Number(b?.thr_low_conf ?? 0));
-          const tauHigh = Math.min(Number(a?.thr_high_conf ?? 0.85), Number(b?.thr_high_conf ?? 0.85));
-          const cooldown_seconds = Math.max(Number(a?.cooldown_seconds ?? 0), Number(b?.cooldown_seconds ?? 0));
-          return {
-            id: c.toUpperCase(),
-            op_code: c,
-            name:
-              c === "op-1"
-                ? "OP-1 (High recall)"
-                : c === "op-3"
-                ? "OP-3 (Low alarm)"
-                : "OP-2 (Balanced)",
-            thr_low_conf: tauLow,
-            thr_high_conf: tauHigh,
-            thr_detect: tauHigh,
-            cooldown_seconds,
-          };
-        });
-      }
-
-      // Normalize sort order OP-1, OP-2, OP-3
-      const order = { "op-1": 1, "op-2": 2, "op-3": 3 };
-      list.sort((a, b) => (order[a.op_code] || 99) - (order[b.op_code] || 99));
-
+      const model_code = modelLabelToCode(modelLabel);
+      const data = await apiFetch(
+        `/api/operating_points?model_code=${encodeURIComponent(model_code)}`,
+        { method: "GET" }
+      );
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.operating_points)
+        ? data.operating_points
+        : [];
       setOps(list);
       return list;
     } catch (e) {
@@ -330,67 +297,86 @@ export default function Settings() {
 
     (async () => {
       const list = await loadOperatingPoints(activeModel);
-      if (!Array.isArray(list) || list.length === 0) return;
+      const modelCode = modelLabelToCode(activeModel);
 
-      const want = String(activeOpCode || "").toLowerCase() || "op-2";
-      const chosenOp =
-        list.find((o) => String(o?.op_code || "").toLowerCase() === want) ||
-        pickOpForPreset(list, activePreset);
+      // Prefer the currently saved activeOpId if it exists in this model’s ops.
+      let chosenOp = null;
 
-      if (chosenOp?.thr_detect != null && !Number.isNaN(Number(chosenOp.thr_detect))) {
-        setFallThreshold(Math.round(Number(chosenOp.thr_detect) * 1000) / 10);
+      if (Array.isArray(list) && list.length > 0) {
+        const existing =
+          activeOpId != null
+            ? list.find((o) => Number(o?.id) === Number(activeOpId))
+            : null;
+
+        chosenOp = existing || pickOpForPreset(list, activePreset);
       }
-      if (chosenOp?.cooldown_seconds != null && !Number.isNaN(Number(chosenOp.cooldown_seconds))) {
-        setAlertCooldown(Math.round(Number(chosenOp.cooldown_seconds)));
+
+      const opId = chosenOp?.id != null ? Number(chosenOp.id) : null;
+
+      // Sync UI threshold from OP if available (this aligns with /Monitor)
+      if (
+        chosenOp?.thr_detect != null &&
+        !Number.isNaN(Number(chosenOp.thr_detect))
+      ) {
+        setFallThreshold(Math.round(Number(chosenOp.thr_detect) * 100));
+      }
+
+      // If we switched to a model where the old opId doesn't exist, update UI opId,
+      // but do NOT write to backend unless the user explicitly changed model.
+      if (opId !== activeOpId) setActiveOpId(opId);
+
+      // Only persist when the user clicked a model radio button.
+      if (modelChangedByUserRef.current) {
+        modelChangedByUserRef.current = false;
+        await safeSavePatch({
+          active_model_code: modelCode,
+          active_operating_point: opId,
+        });
       }
     })();
 
+    // include dependencies we read
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModel, activeDatasetCode, activeOpCode, initialised]);
+  }, [activeModel, initialised, activeOpId, activePreset]);
 
   // Derived gradients for sliders
   const fallThrBg = useMemo(
-    () => sliderBg(fallThreshold, 0, 100),
+    () => sliderBg(fallThreshold, 50, 99),
     [fallThreshold]
   );
   const cooldownBg = useMemo(
-    () => sliderBg(alertCooldown, 0, 60),
+    () => sliderBg(alertCooldown, 1, 10),
     [alertCooldown]
   );
 
   const applyPreset = async (presetLabel) => {
     setActivePreset(presetLabel);
 
-    // Prefer YAML-derived operating points (configs/ops/*.yaml) when available.
-    const list = Array.isArray(ops) ? ops : [];
-    const chosenOp = list.length > 0 ? pickOpForPreset(list, presetLabel) : null;
+    let thr = PRESET_FALL_THR[presetLabel] ?? PRESET_FALL_THR.Balanced;
+    const cd = PRESET_COOLDOWN[presetLabel] ?? PRESET_COOLDOWN.Balanced;
+    setFallThreshold(Math.round(thr * 100));
+    setAlertCooldown(cd);
 
-    const opCodeLower = String(chosenOp?.op_code || "op-2").toLowerCase();
-    const opCodeUpper = opCodeLower.toUpperCase();
-    setActiveOpCode(opCodeUpper);
+    let opId = null;
+    if (Array.isArray(ops) && ops.length > 0) {
+      const op = pickOpForPreset(ops, presetLabel);
+      if (op?.id != null) {
+        opId = Number(op.id);
+        setActiveOpId(opId);
+      }
 
-    const thr =
-      chosenOp?.thr_detect != null && !Number.isNaN(Number(chosenOp.thr_detect))
-        ? Number(chosenOp.thr_detect)
-        : PRESET_FALL_THR[presetLabel] ?? PRESET_FALL_THR.Balanced;
-
-    const cd =
-      chosenOp?.cooldown_seconds != null && !Number.isNaN(Number(chosenOp.cooldown_seconds))
-        ? Number(chosenOp.cooldown_seconds)
-        : PRESET_COOLDOWN[presetLabel] ?? PRESET_COOLDOWN.Balanced;
-
-    setFallThreshold(Math.round(thr * 1000) / 10);
-    setAlertCooldown(Math.round(cd));
-
+      if (op?.thr_detect != null && !Number.isNaN(Number(op.thr_detect))) {
+        thr = Number(op.thr_detect); // align with /Monitor
+      }
+    }
+    setFallThreshold(Math.round(thr * 100));
+    setAlertCooldown(cd);
     await safeSavePatch({
-      // YAML is authoritative: store selected OP code so backend uses configs/ops/*.yaml
-      active_op_code: opCodeUpper,
-      // Keep legacy fields in sync (for backward compat / UI only)
+      active_operating_point: opId ?? null,
       fall_threshold: thr,
       alert_cooldown_sec: cd,
     });
   };
-
 
   const saveContact = async () => {
     setErrorMsg("");
@@ -607,8 +593,6 @@ export default function Settings() {
                       onChange={() => {
                         modelChangedByUserRef.current = true;
                         setActiveModel(m);
-                        // Persist selection so backend resolves per-dataset/model OP params
-                        safeSavePatch({ active_model_code: modelLabelToCode(m) });
                       }}
                     />
                     <span className={styles.customRadio}></span>
@@ -646,13 +630,20 @@ export default function Settings() {
                   <span>{fallThreshold}%</span>
                 </div>
                 <input
+                  disabled
                   type="range"
                   className={styles.rangeInput}
-                  min={0}
-                  max={100}
+                  min={50}
+                  max={99}
                   value={fallThreshold}
                   style={{ background: fallThrBg }}
-                  disabled
+                  onChange={(e) => setFallThreshold(Number(e.target.value))}
+                  onMouseUp={() =>
+                    safeSavePatch({ fall_threshold: fallThreshold / 100 })
+                  }
+                  onTouchEnd={() =>
+                    safeSavePatch({ fall_threshold: fallThreshold / 100 })
+                  }
                 />
               </div>
 
@@ -663,21 +654,28 @@ export default function Settings() {
                   <span>{alertCooldown}s</span>
                 </div>
                 <input
+                  disabled
                   type="range"
                   className={styles.rangeInput}
-                  min={0}
-                  max={60}
+                  min={1}
+                  max={10}
                   value={alertCooldown}
                   style={{ background: cooldownBg }}
-                  disabled
+                  onChange={(e) => setAlertCooldown(Number(e.target.value))}
+                  onMouseUp={() =>
+                    safeSavePatch({ alert_cooldown_sec: alertCooldown })
+                  }
+                  onTouchEnd={() =>
+                    safeSavePatch({ alert_cooldown_sec: alertCooldown })
+                  }
                 />
               </div>
 
-              {activeOpCode != null && (
+              {activeOpId != null && (
                 <div
                   style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}
                 >
-                  Active Op ID: <strong>{activeOpCode}</strong>
+                  Active Op ID: <strong>{activeOpId}</strong>
                 </div>
               )}
             </div>

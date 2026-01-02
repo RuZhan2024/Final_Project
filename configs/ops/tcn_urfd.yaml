@@ -1,0 +1,75 @@
+arch: "tcn"
+ckpt: "outputs/urfd_tcn_W48S12/best.pt"
+val_dir: "data/processed/urfd/windows_W48_S12/val"
+fa_dir: ""
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.059999994933605194
+  tau_low: 0.046799996048212056
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 2.0
+  confirm_min_lying: 0.65
+  confirm_max_motion: 0.08
+  confirm_require_low: true
+ops:
+  op1:
+    tau_high: 0.059999994933605194
+    tau_low: 0.046799996048212056
+    uncertain_band:
+      low: 0.046799996048212056
+      high: 0.059999994933605194
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 0.3999999165534973
+    median_delay_s: 0.3999999165534973
+    hits_boundary: false
+  op2:
+    tau_high: 0.059999994933605194
+    tau_low: 0.046799996048212056
+    uncertain_band:
+      low: 0.046799996048212056
+      high: 0.059999994933605194
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 0.3999999165534973
+    median_delay_s: 0.3999999165534973
+    hits_boundary: false
+  op3:
+    tau_high: 0.059999994933605194
+    tau_low: 0.046799996048212056
+    uncertain_band:
+      low: 0.046799996048212056
+      high: 0.059999994933605194
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 0.3999999165534973
+    median_delay_s: 0.3999999165534973
+    hits_boundary: false
+sweep_meta:
+  n_videos: 23
+  total_duration_s: 138.0
+  n_fa_videos: 0
+  total_duration_s_fa: 0.0
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[47]"

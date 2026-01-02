@@ -183,7 +183,7 @@ def _predict_mu_sigma(
                 logits = logits_1d(model(xb))
         return _sigmoid(logits).detach().float()
 
-    mu, sigma = mc_predict_mu_sigma(model, forward_fn, M=int(M), return_samples=False)
+    mu, sigma, _ = mc_predict_mu_sigma(model, forward_fn, M=int(M), return_samples=False)
     mu_f = float(mu.detach().cpu().numpy().reshape(-1)[0])
     sigma_f = float(sigma.detach().cpu().numpy().reshape(-1)[0])
     return mu_f, sigma_f

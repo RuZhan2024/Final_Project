@@ -51,7 +51,7 @@ export DB_PASS=your_password
 ```
 
 ### Run
-
+source .venv/bin/activate
 ```bash
 # Preferred:
 uvicorn server.app:app --reload --port 8000

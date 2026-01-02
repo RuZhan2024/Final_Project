@@ -1,0 +1,210 @@
+/* src/pages/Dashboard.module.css */
+
+/* --- Global Layout --- */
+.container {
+  padding: 32px;
+  background-color: #F3F4F6; /* FallGuard Light Grey */
+  min-height: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.pageTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #111827; /* Dark Slate */
+  margin: 0;
+}
+
+/* --- Card Styles --- */
+.card, .fullWidthCard {
+  background-color: #FFFFFF;
+  border-radius: 12px;
+  padding: 24px;
+  /* Refined Shadow & Border */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); 
+  border: 1px solid #E5E7EB; 
+}
+
+.cardTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #111827;
+  margin-top: 0;
+  margin-bottom: 24px;
+}
+
+/* --- Top Row Layout --- */
+.topRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* Two equal columns */
+  gap: 24px;
+}
+
+/* --- Resident Status Specifics --- */
+.residentContent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 10px 0;
+}
+
+/* Refined "Normal" Status Badge */
+.statusText {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #059669;           /* Emerald Green Text */
+  background-color: #ECFDF5; /* Light Green Background */
+  padding: 8px 32px;
+  border-radius: 99px;      /* Pill shape */
+  border: 1px solid #D1FAE5;
+}
+
+.actionButton {
+  background-color: #4F46E5; /* FallGuard Indigo */
+  color: white;
+  border: none;
+  padding: 12px 32px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;              /* Matches the full width look in designs */
+  transition: background-color 0.2s;
+}
+
+.actionButton:hover {
+  background-color: #4338CA; /* Darker Indigo on hover */
+}
+
+/* --- Summary Specifics --- */
+.summaryGrid {
+  display: flex;
+  gap: 20px;
+}
+
+.summaryBox {
+  flex: 1;
+  border: 1px solid #E5E7EB; /* Subtle Border */
+  background-color: #F9FAFB; /* Very light grey fill */
+  border-radius: 8px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.bigNumber {
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.label {
+  font-size: 0.9rem;
+  color: #6B7280; /* Muted Grey */
+  font-weight: 500;
+}
+
+/* --- System Status (Bottom Row) --- */
+.systemGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+
+.systemBox {
+  border: 1px solid #E5E7EB;
+  border-radius: 8px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100px;
+  background-color: #FFFFFF;
+}
+
+.boxLabel {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #4B5563;
+  margin-bottom: 12px;
+}
+
+.centerContent {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* Centers content horizontally */
+}
+
+/* Specific Element Styling inside System Box */
+.tag {
+  background-color: #F3F4F6;
+  padding: 4px 16px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.9rem;
+  border: 1px solid #E5E7EB;
+}
+
+.valueText {
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #111827;
+}
+
+/* Toggle Switch Styling */
+.toggleSwitch {
+  width: 48px;
+  height: 26px;
+  background-color: #4F46E5; /* Indigo ON state */
+  border-radius: 14px;
+  position: relative;
+  cursor: pointer;
+}
+
+.toggleKnob {
+  width: 20px;
+  height: 20px;
+  background-color: white;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+/* Status Dot */
+.statusIndicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #065F46; /* Dark Green Text */
+  font-size: 0.95rem;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  background-color: #10B981; /* Emerald Dot */
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px #D1FAE5; /* Subtle glow ring */
+}
+
+/* --- Responsive Layout --- */
+@media (max-width: 900px) {
+  .topRow {
+    grid-template-columns: 1fr;
+  }
+  .systemGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

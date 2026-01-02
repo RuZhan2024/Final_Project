@@ -1,0 +1,161 @@
+/* --- Page Layout --- */
+.pageContainer {
+  padding: 20px;
+  background-color: #f4f6f8; /* Light grey background from image */
+  min-height: auto;
+}
+
+.pageTitle {
+  margin-bottom: 20px;
+  color: #333;
+}
+
+.content {
+  display: flex;
+  gap: 24px; /* Space between Left and Right columns */
+  align-items: flex-start; /* Aligns cards to top */
+}
+
+/* --- Columns (The 2/3 vs 1/3 Logic) --- */
+.leftColumn {
+  flex: 2 1 0; /* 2/3 width */
+  min-width: 0;
+}
+
+.rightColumn {
+  flex: 1 1 0; /* 1/3 width */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px; /* Space between the 3 cards on the right */
+}
+
+/* --- Shared Card Styles --- */
+.card {
+  background-color: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); /* Subtle shadow */
+  border: 1px solid #e0e0e0;
+}
+
+.card h3 {
+  margin: 0 0 8px 0;
+  font-size: 1.25rem;
+  color: #222;
+}
+
+.card p, .subText {
+  color: #888;
+  font-size: 0.9rem;
+  margin: 0 0 16px 0;
+}
+
+/* --- Left Column Specifics --- */
+.videoPlaceholder {
+  width: 100%;
+  aspect-ratio: 16 / 9; /* Standard video ratio */
+  background-color: #f9f9f9;
+  border: 1px solid #ccc;
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.videoPlaceholder svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.predictionBox {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.predictionItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.value {
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: #333;
+}
+
+/* --- Right Column Controls --- */
+.buttonGroup {
+  display: flex;
+  gap: 12px;
+}
+
+.buttonGroup button {
+  flex: 1; /* Make buttons equal width */
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.btnGray {
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+.btnRed {
+  background-color: #d32f2f; /* Standard Error Red */
+  color: white;
+}
+
+/* --- Right Column Timeline --- */
+.timelineBar {
+  width: 100%;
+  height: 40px;
+  background-color: #a2e800; /* Bright Green */
+  border-radius: 20px; /* Pill shape */
+  position: relative;
+  overflow: hidden;
+}
+
+.marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: #d32f2f; /* Red lines */
+}
+
+/* --- Right Column Model Info --- */
+.infoTable {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.infoRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.95rem;
+  color: #444;
+}
+
+.tag {
+  background-color: #e0e0e0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: bold;
+}

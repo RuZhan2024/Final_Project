@@ -1,0 +1,75 @@
+arch: "gcn"
+ckpt: "outputs/muvim_gcn_W48S12/best.pt"
+val_dir: "data/processed/muvim/windows_W48_S12/val"
+fa_dir: ""
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.4899999797344208
+  tau_low: 0.38219998419284823
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 2.0
+  confirm_min_lying: 0.65
+  confirm_max_motion: 0.08
+  confirm_require_low: true
+ops:
+  op1:
+    tau_high: 0.3799999952316284
+    tau_low: 0.29639999628067015
+    uncertain_band:
+      low: 0.29639999628067015
+      high: 0.3799999952316284
+    precision: 0.9294117647058824
+    recall: 0.9587628865979382
+    f1: 0.9438591983556013
+    fa24h: 73.2575886043751
+    fa_per_hour: 3.0523995251822957
+    mean_delay_s: 0.8329115396813501
+    median_delay_s: 0.8000011444091797
+    hits_boundary: false
+  op2:
+    tau_high: 0.4899999797344208
+    tau_low: 0.38219998419284823
+    uncertain_band:
+      low: 0.38219998419284823
+      high: 0.4899999797344208
+    precision: 0.9518072289156626
+    recall: 0.9381443298969072
+    f1: 0.9449263932702417
+    fa24h: 48.83839240291673
+    fa_per_hour: 2.034933016788197
+    mean_delay_s: 1.1037974538682382
+    median_delay_s: 1.2000007629394531
+    hits_boundary: false
+  op3:
+    tau_high: 0.5799999833106995
+    tau_low: 0.45239998698234557
+    uncertain_band:
+      low: 0.45239998698234557
+      high: 0.5799999833106995
+    precision: 1.0
+    recall: 0.7835051546391752
+    f1: 0.8786127167630058
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 1.358209197200946
+    median_delay_s: 1.5999984741210938
+    hits_boundary: false
+sweep_meta:
+  n_videos: 110
+  total_duration_s: 7076.400000000001
+  n_fa_videos: 0
+  total_duration_s_fa: 0.0
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[94, 73, 72, 71, 69, 68, 67, 66, 64, 63, 62, 59, 58, 57, 54, 53, 48, 45, 42]"

@@ -74,24 +74,19 @@ function prettyModelTag(activeModelCode) {
   return "GCN";
 }
 
-function pickFirstByArch(models, arch, datasetCode) {
+function pickFirstByArch(models, arch) {
   const a = (arch || "").toLowerCase();
-  const d = (datasetCode || "").toLowerCase();
-  const m = (models || []).find((x) => {
-    const xa = (x?.arch || "").toLowerCase();
-    const xd = (x?.dataset_code || x?.dataset || "").toLowerCase();
-    return xa === a && (!d || xd === d);
-  });
+  const m = (models || []).find((x) => (x?.arch || "").toLowerCase() === a);
   return m?.id || "";
 }
 
-function pickModelPair(models, datasetCode) {
-  const tcn = pickFirstByArch(models, "tcn", datasetCode);
-  const gcn = pickFirstByArch(models, "gcn", datasetCode);
+function pickModelPair(models) {
+  const tcn = pickFirstByArch(models, "tcn");
+  const gcn = pickFirstByArch(models, "gcn");
   return { tcn, gcn };
 }
 
-function Monitor({ isActive = true } = {}) {
+function MonitorDemo({ isActive = true } = {}) {
   // Backend config
   const [deployW, setDeployW] = useState(48);
   const [deployS, setDeployS] = useState(12);
@@ -136,15 +131,12 @@ function Monitor({ isActive = true } = {}) {
   const [tauHigh, setTauHigh] = useState(null);
   // Thresholds (from DB operating point / settings)
   const [fallThreshold, setFallThreshold] = useState(null);
+  const [opThrDetect, setOpThrDetect] = useState(null);
   const [opThrLow, setOpThrLow] = useState(null);
   const [opThrHigh, setOpThrHigh] = useState(null);
   const [opCode, setOpCode] = useState(null);
 
-  
-  const [opK, setOpK] = useState(null);
-  const [opN, setOpN] = useState(null);
-  const [opCooldownS, setOpCooldownS] = useState(null);
-// Refs for camera + mediapipe
+  // Refs for camera + mediapipe
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const isActiveRef = useRef(isActive);
@@ -165,10 +157,10 @@ function Monitor({ isActive = true } = {}) {
   const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
 
   const chosen = useMemo(() => {
-    if (mode === "dual") return pickModelPair(models, activeDatasetCode);
-    if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
-    return { tcn: "", gcn: pickFirstByArch(models, "gcn", activeDatasetCode) };
-  }, [mode, models, activeDatasetCode]);
+    if (mode === "dual") return pickModelPair(models);
+    if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn"), gcn: "" };
+    return { tcn: "", gcn: pickFirstByArch(models, "gcn") };
+  }, [mode, models]);
 
   const chosenSpec = useMemo(() => {
     if (mode === "tcn") return models.find((m) => m.id === chosen.tcn) || null;
@@ -225,14 +217,12 @@ function Monitor({ isActive = true } = {}) {
   const lastSentRef = useRef(0);
 
   // Session id for server-side state machine
-  const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
+  const sessionIdRef = useRef(`monitor-demo-${Math.random().toString(16).slice(2)}`);
   // Keep Model Info box in sync
   useEffect(() => {
     setModelTag(prettyModelTag(activeModelCode));
-    // Prefer resolved OP values (from /api/settings derived from configs/ops/*.yaml)
-    if (opThrHigh != null) setTauHigh(Number(opThrHigh));
-    else if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
-  }, [activeModelCode, chosenSpec, opThrHigh]);
+    if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
+  }, [activeModelCode, chosenSpec]);
 
   // Apply global settings so this page follows changes made on /Settings.
   useEffect(() => {
@@ -255,28 +245,7 @@ function Monitor({ isActive = true } = {}) {
     if (sys?.mc_enabled != null) setMcEnabled(Boolean(sys.mc_enabled));
     if (typeof sys?.fall_threshold === "number") setFallThreshold(Number(sys.fall_threshold));
 
-    // Prefer YAML-derived deploy params for thresholds/cooldown/etc.
-    const ui = sys?.deploy_params?.ui || sys?.deploy_params || {};
-    const uiTauH = ui?.tau_high;
-    const uiTauL = ui?.tau_low;
-      const uiK = ui?.k ?? ui?.confirm ?? ui?.confirm_k ?? null;
-      const uiN = ui?.n ?? ui?.confirm_n ?? null;
-      const uiCooldownS = ui?.cooldown_s ?? ui?.cooldownSec ?? ui?.cooldown_sec ?? null;
-    const uiOp = ui?.op_code;
-    if (uiOp) setOpCode(uiOp);
-    if (uiTauH != null) {
-      const th = Number(uiTauH);
-      setOpThrHigh(th);
-      if (!(typeof sys?.fall_threshold === "number")) setFallThreshold(th);
-    }
-    if (uiTauL != null) setOpThrLow(Number(uiTauL));
-
-    setOpK(uiK != null ? Number(uiK) : null);
-    setOpN(uiN != null ? Number(uiN) : null);
-    setOpCooldownS(uiCooldownS != null ? Number(uiCooldownS) : null);
-
-    // Fallback: load thresholds from DB operating points (legacy installs)
-    if (uiTauH != null || uiTauL != null) return;
+    // Load thresholds from the active operating point (preferred when DB schema is v2).
     let cancelled = false;
     (async () => {
       try {
@@ -306,6 +275,7 @@ function Monitor({ isActive = true } = {}) {
         if (!picked || cancelled) return;
 
         setOpCode(picked.code || picked.op_code || null);
+        const det = picked.thr_detect != null ? Number(picked.thr_detect) : null;
         const low =
           picked.thr_low_conf != null
             ? Number(picked.thr_low_conf)
@@ -318,6 +288,8 @@ function Monitor({ isActive = true } = {}) {
             : picked.threshold_high != null
               ? Number(picked.threshold_high)
               : null;
+
+        setOpThrDetect(det);
         setOpThrLow(low);
         setOpThrHigh(high);
       } catch {
@@ -436,7 +408,7 @@ function Monitor({ isActive = true } = {}) {
       loop();
       return true;
     } catch (err) {
-      console.error("Error starting monitor:", err);
+      console.error("Error starting monitor-demo:", err);
       stopLive();
       return false;
     }
@@ -925,27 +897,15 @@ function Monitor({ isActive = true } = {}) {
                 <span>{deployS}</span>
               </div>
               <div className={styles.infoRow}>
-                <span>τ_low</span>
-                <span>{opThrLow != null ? Number(opThrLow).toFixed(2) : "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>τ_high</span>
+                <span>Threshold</span>
                 <span>
                   {(() => {
-                    const v = opThrHigh ?? fallThreshold ?? tauHigh;
+                    const v = opThrDetect ?? opThrHigh ?? fallThreshold ?? tauHigh;
                     if (v == null) return "—";
                     const tag = opCode ? ` (${opCode})` : "";
                     return `${Number(v).toFixed(2)}${tag}`;
                   })()}
                 </span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Confirm (k/n)</span>
-                <span>{opK != null && opN != null ? `${opK}/${opN}` : "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Cooldown (s)</span>
-                <span>{opCooldownS != null ? opCooldownS : "—"}</span>
               </div>
             </div>
             {/* Keep extra info out of the design, but useful for debugging */}
@@ -960,4 +920,4 @@ function Monitor({ isActive = true } = {}) {
   );
 }
 
-export default Monitor;
+export default MonitorDemo;

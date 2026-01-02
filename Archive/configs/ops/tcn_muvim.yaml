@@ -1,0 +1,75 @@
+arch: "tcn"
+ckpt: "outputs/muvim_tcn_W48S12/best.pt"
+val_dir: "data/processed/muvim/windows_W48_S12/val"
+fa_dir: ""
+feat_cfg:
+  center: "pelvis"
+  use_motion: true
+  use_conf_channel: true
+  motion_scale_by_fps: true
+  conf_gate: 0.2
+  use_precomputed_mask: true
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.44999998807907104
+  tau_low: 0.3509999907016754
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 2.0
+  confirm_min_lying: 0.65
+  confirm_max_motion: 0.08
+  confirm_require_low: true
+ops:
+  op1:
+    tau_high: 0.44999998807907104
+    tau_low: 0.3509999907016754
+    uncertain_band:
+      low: 0.3509999907016754
+      high: 0.44999998807907104
+    precision: 0.9879518072289156
+    recall: 0.9896907216494846
+    f1: 0.9888204999371939
+    fa24h: 12.209598100729183
+    fa_per_hour: 0.5087332541970493
+    mean_delay_s: 1.014634248687
+    median_delay_s: 1.1999969482421875
+    hits_boundary: false
+  op2:
+    tau_high: 0.44999998807907104
+    tau_low: 0.3509999907016754
+    uncertain_band:
+      low: 0.3509999907016754
+      high: 0.44999998807907104
+    precision: 0.9879518072289156
+    recall: 0.9896907216494846
+    f1: 0.9888204999371939
+    fa24h: 12.209598100729183
+    fa_per_hour: 0.5087332541970493
+    mean_delay_s: 1.014634248687
+    median_delay_s: 1.1999969482421875
+    hits_boundary: false
+  op3:
+    tau_high: 0.5399999618530273
+    tau_low: 0.4211999702453613
+    uncertain_band:
+      low: 0.4211999702453613
+      high: 0.5399999618530273
+    precision: 1.0
+    recall: 0.9175257731958762
+    f1: 0.956989247311828
+    fa24h: 0.0
+    fa_per_hour: 0.0
+    mean_delay_s: 1.3350648756151076
+    median_delay_s: 1.5999984741210938
+    hits_boundary: false
+sweep_meta:
+  n_videos: 110
+  total_duration_s: 7076.400000000001
+  n_fa_videos: 0
+  total_duration_s_fa: 0.0
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+pareto_idx: "[94, 74, 73, 72, 71, 69, 66, 65, 58, 57, 56, 55, 53, 49, 48, 47, 28]"

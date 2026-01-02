@@ -16,8 +16,6 @@ from pydantic import BaseModel, Field, ConfigDict
 from server.deploy_runtime import get_specs as _get_deploy_specs
 from server.deploy_runtime import predict_spec as _predict_spec
 from server.deploy_runtime import fuse_hybrid as _fuse_hybrid
-from server.online_alert import OnlineAlertTracker
-
 
 # Support running as package (uvicorn server.app:app) or from cwd (uvicorn app:app)
 
@@ -78,11 +76,6 @@ class SettingsUpdatePayload(BaseModel):
     active_dataset_code: Optional[str] = Field(
         default=None,
         description="le2i | urfd | caucafall | muvim",
-    )
-    # YAML operating point code (frontend uses OP-1/OP-2/OP-3)
-    active_op_code: Optional[str] = Field(
-        default=None,
-        description="OP-1 | OP-2 | OP-3",
     )
     mc_enabled: Optional[bool] = Field(default=None, description="Enable MC Dropout at inference")
     mc_M: Optional[int] = Field(default=None, description="MC samples for live inference")
@@ -216,8 +209,6 @@ def _ensure_system_settings_schema(conn) -> None:
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
             # Dataset selection (4 dataset trained checkpoints)
             "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'muvim'",
-            # Selected operating point code for YAML-based configs
-            "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
             # MC Dropout controls
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
             "mc_M": "INT NOT NULL DEFAULT 10",
@@ -256,107 +247,6 @@ def _detect_variants(conn) -> Dict[str, str]:
     events_v = "v2" if "event_time" in events_cols else "v1"
     ops_v = "v2" if "model_id" in ops_cols else "v1"
     return {"settings": settings_v, "events": events_v, "ops": ops_v}
-# -----------------------------
-# Deploy ops (YAML) helpers
-# -----------------------------
-def _norm_op_code(op_code: Optional[str]) -> str:
-    s = (op_code or "").strip().upper().replace("_", "-")
-    if s in {"OP1", "OP-1", "HIGH", "OP-01"}:
-        return "OP-1"
-    if s in {"OP2", "OP-2", "BALANCED", "OP-02"}:
-        return "OP-2"
-    if s in {"OP3", "OP-3", "LOW", "OP-03"}:
-        return "OP-3"
-    return "OP-2"
-
-
-def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str) -> Dict[str, Any]:
-    """Return YAML-derived params for Settings/Monitor UI.
-
-    We use configs/ops/*.yaml via server.deploy_runtime.get_specs(), which exposes:
-      - alert_cfg (EMA + k-of-n + cooldown)
-      - ops[OP-*] (tau_low/tau_high + estimates)
-
-    Returns:
-      {
-        "ui": {"tau_low":..., "tau_high":..., "cooldown_s":..., "ema_alpha":..., "k":..., "n":...},
-        "tcn": {"spec_key":..., "alert_cfg":..., "op":...} | None,
-        "gcn": {...} | None,
-      }
-    """
-    specs = _get_deploy_specs()
-    ds = (dataset_code or "muvim").lower().strip()
-    mc = (model_code or "HYBRID").upper().strip()
-    oc = _norm_op_code(op_code)
-
-    def pack(spec_key: str) -> Optional[Dict[str, Any]]:
-        s = specs.get(spec_key)
-        if not isinstance(s, dict):
-            return None
-        alert_cfg = dict(s.get("alert_cfg") or {})
-        ops = dict(s.get("ops") or {})
-        op = dict(ops.get(oc) or ops.get("OP-2") or {})
-        return {"spec_key": spec_key, "alert_cfg": alert_cfg, "op": op}
-
-    tcn = pack(f"{ds}_tcn")
-    gcn = pack(f"{ds}_gcn")
-
-    def _tau(p: Optional[Dict[str, Any]], k: str, default: float) -> float:
-        try:
-            if p and isinstance(p.get("op"), dict) and p["op"].get(k) is not None:
-                return float(p["op"][k])
-        except Exception:
-            pass
-        return float(default)
-
-    def _acfg(p: Optional[Dict[str, Any]], k: str, default: float) -> float:
-        try:
-            if p and isinstance(p.get("alert_cfg"), dict) and p["alert_cfg"].get(k) is not None:
-                return float(p["alert_cfg"][k])
-        except Exception:
-            pass
-        return float(default)
-
-    # UI summary (single set of numbers the Settings page can show)
-    if mc == "TCN":
-        tau_low = _tau(tcn, "tau_low", 0.0)
-        tau_high = _tau(tcn, "tau_high", 0.85)
-        cooldown_s = _acfg(tcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(tcn, "ema_alpha", 0.0)
-        k = int(_acfg(tcn, "k", 2))
-        n = int(_acfg(tcn, "n", 3))
-    elif mc == "GCN":
-        tau_low = _tau(gcn, "tau_low", 0.0)
-        tau_high = _tau(gcn, "tau_high", 0.85)
-        cooldown_s = _acfg(gcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(gcn, "ema_alpha", 0.0)
-        k = int(_acfg(gcn, "k", 2))
-        n = int(_acfg(gcn, "n", 3))
-    else:
-        # HYBRID: reflect AND-style display (min mu) => show stricter boundary and safer cooldown
-        tau_low = min(_tau(tcn, "tau_low", 0.0), _tau(gcn, "tau_low", 0.0))
-        tau_high = min(_tau(tcn, "tau_high", 0.85), _tau(gcn, "tau_high", 0.85))
-        cooldown_s = max(_acfg(tcn, "cooldown_s", 3.0), _acfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = max(_acfg(tcn, "ema_alpha", 0.0), _acfg(gcn, "ema_alpha", 0.0))
-        k = int(max(_acfg(tcn, "k", 2), _acfg(gcn, "k", 2)))
-        n = int(max(_acfg(tcn, "n", 3), _acfg(gcn, "n", 3)))
-
-    return {
-        "ui": {
-            "op_code": oc,
-            "tau_low": float(tau_low),
-            "tau_high": float(tau_high),
-            "cooldown_s": float(cooldown_s),
-            "ema_alpha": float(ema_alpha),
-            "k": int(k),
-            "n": int(n),
-        },
-        "tcn": tcn if mc in {"TCN", "HYBRID"} else None,
-        "gcn": gcn if mc in {"GCN", "HYBRID"} else None,
-    }
-
-
-
 
 
 # -----------------------------
@@ -440,55 +330,14 @@ def health() -> Dict[str, Any]:
 # -----------------------------
 @app.get("/api/models/summary")
 def models_summary() -> Dict[str, Any]:
-    """Return deployable model specs.
-
-    The frontend needs dataset-aware models (4 datasets × 2 arch).
-    DB table `models` in early versions only contains generic rows and is
-    not suitable for deployment selection.
-
-    We keep `db_models` in the payload for backwards compatibility.
-    """
-    # Deploy specs discovered from repo artifacts.
-    specs = _get_deploy_specs()
-    models = []
-    for key, s in specs.items():
-        fps_default = None
+    with get_conn() as conn:
         try:
-            fps_default = float((s.data_cfg or {}).get("fps_default")) if getattr(s, "data_cfg", None) else None
-        except Exception:
-            fps_default = None
-
-        # Provide convenient defaults for UI (OP-2 is the default operating point).
-        op2 = (s.ops or {}).get("OP-2") or (s.ops or {}).get("op2") or {}
-        models.append(
-            {
-                "id": str(key),
-                "spec_key": str(key),
-                "dataset_code": str(getattr(s, "dataset", "")),
-                "arch": str(getattr(s, "arch", "")),
-                "name": f"{getattr(s, 'dataset', '')} {getattr(s, 'arch', '')}".strip(),
-                "fps_default": fps_default,
-                "ckpt": str(getattr(s, "ckpt", "")),
-                "ops": (s.ops or {}),
-                "alert_cfg": (getattr(s, "alert_cfg", None) or {}),
-                "tau_low": op2.get("tau_low"),
-                "tau_high": op2.get("tau_high"),
-            }
-        )
-
-    models.sort(key=lambda d: (d.get("dataset_code") or "", d.get("arch") or ""))
-
-    # Also return raw DB models (if present) for any legacy UI pages.
-    db_rows = []
-    try:
-        with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM models ORDER BY id ASC")
-                db_rows = cur.fetchall() or []
-    except Exception:
-        db_rows = []
-
-    return {"models": models, "db_models": _jsonable(db_rows)}
+                rows = cur.fetchall() or []
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to query models: {e}")
+    return {"models": _jsonable(rows)}
 
 
 # -----------------------------
@@ -502,48 +351,19 @@ def deploy_specs() -> Dict[str, Any]:
     (trained best.pt + JSON reports with fitted operating points).
     """
     specs = _get_deploy_specs()
-
-    # Legacy list shape (kept for backward compatibility)
     out = []
     datasets = set()
-
-    # Settings.js expects a `models` list where each entry has at least:
-    #   - key
-    #   - dataset_code
-    #   - arch
-    #   - alert_cfg
-    #   - ops
-    models = []
-
     for key, s in specs.items():
-        ds = getattr(s, "dataset", "")
-        datasets.add(ds)
-
-        out.append(
-            {
-                "spec_key": key,
-                "dataset_code": ds,
-                "arch": s.arch,
-                "ckpt": str(s.ckpt),
-                "ops": s.ops,
-            }
-        )
-
-        models.append(
-            {
-                "key": key,
-                "spec_key": key,
-                "dataset_code": ds,
-                "arch": s.arch,
-                "ckpt": str(s.ckpt),
-                "alert_cfg": dict(getattr(s, "alert_cfg", {}) or {}),
-                "ops": s.ops,
-            }
-        )
-
-    out.sort(key=lambda d: (d.get("dataset_code") or "", d.get("arch") or ""))
-    models.sort(key=lambda d: (d.get("dataset_code") or "", d.get("arch") or ""))
-    return {"specs": out, "models": models, "datasets": sorted(datasets)}
+        datasets.add(s.dataset_code)
+        out.append({
+            "spec_key": key,
+            "dataset_code": s.dataset_code,
+            "arch": s.arch,
+            "ckpt": str(s.ckpt),
+            "ops": s.ops,
+        })
+    out.sort(key=lambda d: (d["dataset_code"], d["arch"]))
+    return {"specs": out, "datasets": sorted(datasets)}
 
 
 # -----------------------------
@@ -666,8 +486,6 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
             "notify_on_every_fall": True,
             # New: dataset selection (default to your primary dataset)
             "active_dataset_code": "muvim",
-            # New: YAML operating point code (OP-1/2/3)
-            "active_op_code": "OP-2",
             # New: MC dropout controls
             "mc_enabled": True,
         }
@@ -685,7 +503,6 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                 "monitoring_enabled": bool(_safe_get(row, "monitoring_enabled", 0)),
                 "active_model_code": _safe_get(row, "active_model_code", "HYBRID"),
                 "active_operating_point": _safe_get(row, "active_operating_point", None),
-                "active_op_code": _safe_get(row, "active_op_code", "OP-2"),
                 "fall_threshold": float(_safe_get(row, "fall_threshold", 0.85) or 0.85),
                 "alert_cooldown_sec": int(_safe_get(row, "alert_cooldown_sec", 3) or 3),
                 "store_event_clips": bool(_safe_get(row, "store_event_clips", 0)),
@@ -765,7 +582,6 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                     ("mc_M", lambda v: deploy["mc"].__setitem__("M", int(v))),
                     ("mc_M_confirm", lambda v: deploy["mc"].__setitem__("M_confirm", int(v))),
                     ("active_dataset_code", lambda v: system.__setitem__("active_dataset_code", str(v).lower())),
-                    ("active_op_code", lambda v: system.__setitem__("active_op_code", str(v).upper())),
                     ("mc_enabled", lambda v: system.__setitem__("mc_enabled", bool(int(v)) if str(v).isdigit() else bool(v))),
                 ]:
                     if isinstance(sys_row, dict) and col in sys_row and sys_row.get(col) is not None:
@@ -796,24 +612,6 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
                 except Exception:
                     pass
 
-        # --- Override UI threshold/cooldown with YAML real params (configs/ops/*.yaml) ---
-        try:
-            system.setdefault("active_op_code", "OP-2")
-            dp = _derive_ops_params_from_yaml(
-                dataset_code=str(system.get("active_dataset_code") or "muvim"),
-                model_code=str(system.get("active_model_code") or "HYBRID"),
-                op_code=str(system.get("active_op_code") or "OP-2"),
-            )
-            system["deploy_params"] = dp
-            ui = dp.get("ui") or {}
-            # These are the real params used by OnlineAlertTracker in /api/monitor/predict_window
-            system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.85)))
-            system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
-            system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-2")))
-            system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
-        except Exception:
-            pass
-
         return {
             "system": system,
             "deploy": deploy,
@@ -825,7 +623,6 @@ def get_settings(resident_id: int = Query(1, description="Resident id")):
             "monitoring_enabled": system["monitoring_enabled"],
             "active_model_code": system["active_model_code"],
             "active_operating_point": system["active_operating_point"],
-            "active_op_code": system.get("active_op_code"),
             "fall_threshold": system["fall_threshold"],
             "alert_cooldown_sec": system["alert_cooldown_sec"],
         }
@@ -892,10 +689,6 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
                 sets.append("active_operating_point=%s")
                 vals.append(payload.active_operating_point)
 
-            if payload.active_op_code is not None and _col_exists(conn, "settings", "active_op_code"):
-                sets.append("active_op_code=%s")
-                vals.append(str(payload.active_op_code).upper())
-
             if sets:
                 sql = "UPDATE settings SET " + ", ".join(sets) + ", updated_at=NOW() WHERE resident_id=%s"
                 vals.append(rid)
@@ -944,9 +737,6 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
         # Dataset selection + MC Dropout controls
         if payload.active_dataset_code is not None:
             add("active_dataset_code", "active_dataset_code=%s", (payload.active_dataset_code or "").lower())
-
-        if payload.active_op_code is not None and _col_exists(conn, "system_settings", "active_op_code"):
-            add("active_op_code", "active_op_code=%s", str(payload.active_op_code).upper())
 
         if payload.mc_enabled is not None:
             add("mc_enabled", "mc_enabled=%s", 1 if payload.mc_enabled else 0)
@@ -1588,10 +1378,6 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
                 if sys_row.get("active_model_code"):
                     active_model_code = str(sys_row.get("active_model_code") or active_model_code)
 
-                # Prefer YAML operating point code if stored
-                if (not op_code) and sys_row.get("active_op_code"):
-                    op_code = str(sys_row.get("active_op_code") or "").upper().strip()
-
                 # derive op_code from active operating point id if present
                 op_id = None
                 for k in ("active_operating_point", "active_operating_point_id"):
@@ -1644,25 +1430,6 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not xy:
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
 
-    # Timestamp used by online alerting (prefer capture-provided times, fallback to wall-clock)
-    try:
-        if window_end_t_ms is not None:
-            _now_ms = float(window_end_t_ms)
-        elif raw_t_ms is not None and len(raw_t_ms) > 0:
-            _now_ms = float(raw_t_ms[-1])
-        else:
-            _now_ms = time.time() * 1000.0
-    except Exception:
-        _now_ms = time.time() * 1000.0
-    _t_s = float(_now_ms) / 1000.0
-
-    # Per-session online alert trackers
-    st = _SESSION_STATE.setdefault(session_id, {})
-    st_trackers = st.setdefault("trackers", {})
-    st_trackers_cfg = st.setdefault("trackers_cfg", {})
-    started_tcn = False
-    started_gcn = False
-
     # -------------
     # Inference
     # -------------
@@ -1671,8 +1438,8 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     def spec_key_for(arch: str) -> str:
         return f"{dataset_code}_{arch}".lower()
 
-    tcn_key = str(payload.get("model_tcn") or spec_key_for("tcn")).lower()
-    gcn_key = str(payload.get("model_gcn") or spec_key_for("gcn")).lower()
+    tcn_key = spec_key_for("tcn")
+    gcn_key = spec_key_for("gcn")
     if tcn_key not in specs or gcn_key not in specs:
         raise HTTPException(status_code=404, detail=f"No deploy specs found for dataset '{dataset_code}'.")
 
@@ -1683,7 +1450,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if mode in {"tcn", "dual"}:
         out_tcn = _predict_spec(
             spec_key=tcn_key,
-            joints_xy=xy,
+            xy=xy,
             conf=conf,
             fps=float(expected_fps),
             target_T=target_T,
@@ -1691,34 +1458,13 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             use_mc=bool(use_mc),
             mc_M=int(mc_M),
         )
-        # Online alerting (real params from configs/ops/*.yaml via alert_cfg)
-        cfg_tcn = out_tcn.get("alert_cfg") or {}
-        trk = st_trackers.get(tcn_key)
-        if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
-            trk = OnlineAlertTracker(cfg_tcn)
-            st_trackers[tcn_key] = trk
-            st_trackers_cfg[tcn_key] = cfg_tcn
-        r = trk.step(p=float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0)), t_s=_t_s)
-        out_tcn["triage"] = {
-            "state": r.triage_state,
-            "ps": r.ps,
-            "p_in": r.p_in,
-            "tau_low": float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0))),
-            "tau_high": float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0))),
-            "ema_alpha": float(cfg_tcn.get("ema_alpha", 0.0)),
-            "k": int(cfg_tcn.get("k", 2)),
-            "n": int(cfg_tcn.get("n", 3)),
-            "cooldown_s": float(cfg_tcn.get("cooldown_s", 0.0)),
-            "cooldown_remaining_s": r.cooldown_remaining_s,
-        }
         models_out["tcn"] = out_tcn
-        tri_tcn = r.triage_state
-        started_tcn = bool(r.started_event)
+        tri_tcn = out_tcn.get("triage", {}).get("state")
 
     if mode in {"gcn", "dual"}:
         out_gcn = _predict_spec(
             spec_key=gcn_key,
-            joints_xy=xy,
+            xy=xy,
             conf=conf,
             fps=float(expected_fps),
             target_T=target_T,
@@ -1727,29 +1473,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             mc_M=int(mc_M),
         )
         models_out["gcn"] = out_gcn
-
-        # Online alerting (real params from configs/ops/*.yaml via alert_cfg)
-        cfg_gcn = out_gcn.get("alert_cfg") or {}
-        trk = st_trackers.get(gcn_key)
-        if trk is None or st_trackers_cfg.get(gcn_key) != cfg_gcn:
-            trk = OnlineAlertTracker(cfg_gcn)
-            st_trackers[gcn_key] = trk
-            st_trackers_cfg[gcn_key] = cfg_gcn
-        res = trk.step(p=float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0), t_s=_t_s)
-        out_gcn["triage"] = {
-            "state": res.triage_state,
-            "ps": res.ps,
-            "p_in": res.p_in,
-            "tau_low": float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0))),
-            "tau_high": float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0))),
-            "ema_alpha": float(cfg_gcn.get("ema_alpha", 0.0)),
-            "k": int(cfg_gcn.get("k", 2)),
-            "n": int(cfg_gcn.get("n", 3)),
-            "cooldown_s": float(cfg_gcn.get("cooldown_s", 0.0)),
-            "cooldown_remaining_s": res.cooldown_remaining_s,
-        }
-        started_gcn = bool(res.started_event)
-        tri_gcn = res.triage_state
+        tri_gcn = out_gcn.get("triage", {}).get("state")
 
     # Top-level triage decision
     if mode == "tcn":
@@ -1759,7 +1483,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         triage_state = tri_gcn or "not_fall"
         p_display = float(models_out.get("gcn", {}).get("mu", 0.0))
     else:
-        triage_state = _fuse_hybrid(tri_tcn=str(tri_tcn or "not_fall"), tri_gcn=str(tri_gcn or "not_fall"))
+        triage_state = _fuse_hybrid(str(tri_tcn), str(tri_gcn))
         mu_t = float(models_out.get("tcn", {}).get("mu", 0.0))
         mu_g = float(models_out.get("gcn", {}).get("mu", 0.0))
         sig_t = float(models_out.get("tcn", {}).get("sigma", 0.0))
@@ -1773,56 +1497,46 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         p_display = float(min(mu_t, mu_g))
 
     # -------------
-    # Optional event persistence (records only when an alert STARTS)
+    # Optional event persistence w/ cooldown
     # -------------
     saved_event_id = None
-
-    # Remove internal started flags from response (we keep them only to drive DB logging)
-    started_tcn = bool(models_out.get("tcn", {}).pop("_started_event", False))
-    started_gcn = bool(models_out.get("gcn", {}).pop("_started_event", False))
-
-    started_event = False
-    if mode == "tcn":
-        started_event = started_tcn
-    elif mode == "gcn":
-        started_event = started_gcn
-    else:
-        prev_hyb = str(st.get("last_hybrid_state") or "not_fall")
-        started_event = (triage_state == "fall") and (prev_hyb != "fall")
-        st["last_hybrid_state"] = triage_state
-
-    if persist and started_event and triage_state == "fall":
-        meta = {
-            "dataset": dataset_code,
-            "mode": mode,
-            "op_code": op_code,
-            "use_mc": bool(use_mc),
-            "mc_M": int(mc_M),
-            "expected_fps": expected_fps,
-            "capture_fps_est": cap_fps_est,
-            "models": models_out,
-        }
-        try:
-            with get_conn() as conn:
-                if _table_exists(conn, "events"):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                            (
-                                resident_id,
-                                "fall",
-                                "high",
-                                active_model_code,
-                                None,
-                                float(p_display),
-                                json.dumps(meta),
-                            ),
-                        )
-                        saved_event_id = cur.lastrowid
-                    conn.commit()
-        except Exception:
-            pass
+    if persist and triage_state in {"fall", "uncertain"}:
+        now = time.time()
+        st = _SESSION_STATE.setdefault(session_id, {})
+        last_ts = float(st.get("last_event_ts") or 0.0)
+        if now - last_ts >= float(cooldown_sec):
+            st["last_event_ts"] = now
+            meta = {
+                "dataset": dataset_code,
+                "mode": mode,
+                "op_code": op_code,
+                "use_mc": bool(use_mc),
+                "mc_M": int(mc_M),
+                "expected_fps": expected_fps,
+                "capture_fps_est": cap_fps_est,
+                "models": models_out,
+            }
+            try:
+                with get_conn() as conn:
+                    if _table_exists(conn, "events"):
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                (
+                                    resident_id,
+                                    triage_state,
+                                    "high" if triage_state == "fall" else "medium",
+                                    active_model_code,
+                                    None,
+                                    float(p_display),
+                                    json.dumps(meta),
+                                ),
+                            )
+                            saved_event_id = cur.lastrowid
+                        conn.commit()
+            except Exception:
+                pass
 
     LAST_PRED_LATENCY_MS = int((time.time() - t0) * 1000)
 
