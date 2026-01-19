@@ -18,7 +18,7 @@
   border-right: 1px solid #E5E7EB;
   display: flex;
   flex-direction: column;
-  padding: 24px 0;
+  padding-top: 10px;
 }
 
 /* 3. Logo Area */
@@ -33,6 +33,7 @@
   width: 100%;
   height: auto;            /* Maintain aspect ratio */
   display: block;
+  margin-left: -20px;
 }
 
 /* 4. Navigation List */

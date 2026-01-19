@@ -486,7 +486,7 @@ export default function Settings() {
             <h3 className={styles.cardTitle}>Monitoring System</h3>
 
             <div className={styles.toggleRow}>
-              <span>Monitoring Enabled</span>
+              <span>Notify with Message</span>
               <label className={styles.switch}>
                 <input
                   type="checkbox"
@@ -502,7 +502,7 @@ export default function Settings() {
             </div>
 
             <div className={styles.toggleRow}>
-              <span>Notify on Every Fall</span>
+              <span>Notify with Call</span>
               <label className={styles.switch}>
                 <input
                   type="checkbox"
@@ -517,7 +517,7 @@ export default function Settings() {
               </label>
             </div>
 
-            <div className={styles.toggleRow}>
+            {/* <div className={styles.toggleRow}>
               <span>Require Confirmation</span>
               <label className={styles.switch}>
                 <input
@@ -531,7 +531,7 @@ export default function Settings() {
                 />
                 <span className={styles.slider}></span>
               </label>
-            </div>
+            </div> */}
 
             <button
               className={styles.actionBtn}
@@ -551,7 +551,7 @@ export default function Settings() {
             <h3 className={styles.cardTitle}>Detection Settings</h3>
 
             {/* Dataset Selection */}
-            <div className={styles.row}>
+            {/* <div className={styles.row}>
               <span className={styles.labelBold}>Dataset</span>
               <div className={styles.radioGroup}>
                 {[
@@ -574,7 +574,7 @@ export default function Settings() {
                   </label>
                 ))}
               </div>
-            </div>
+            </div> */}
 
             {/* MC Dropout Toggle */}
             <div className={styles.toggleRow}>
@@ -685,55 +685,36 @@ export default function Settings() {
 
           {/* Privacy Settings */}
           <div className={styles.card}>
-            <h3 className={styles.cardTitle}>Privacy & Data</h3>
+  <h3 className={styles.cardTitle}>Privacy & Data Persistence</h3>
 
-            <div className={styles.privacyItem}>
-              <div className={styles.privacyText}>
-                <span className={styles.itemTitle}>Store Event Clips</span>
-                <span className={styles.itemDesc}>
-                  Save short video segments around detected falls
-                </span>
-              </div>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={storeEventClips}
-                  onChange={(e) => {
-                    const v = e.target.checked;
-                    setStoreEventClips(v);
-                    safeSavePatch({ store_event_clips: v });
-                  }}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
+  <div className={styles.privacyItem}>
+    <div className={styles.privacyText}>
+      {/* Updated Title and Description for Event Clips */}
+      <span className={styles.itemTitle}>Skeleton-Only Event Persistence</span>
+      <span className={styles.itemDesc}>
+        Save detected falls as lightweight coordinate sequences (JSON) instead of video files.
+      </span>
+    </div>
+    <label className={styles.switch}>
+      <input
+        type="checkbox"
+        checked={storeEventClips}
+        onChange={(e) => {
+          const v = e.target.checked;
+          setStoreEventClips(v);
+          safeSavePatch({ store_event_clips: v });
+        }}
+      />
+      <span className={styles.slider}></span>
+    </label>
+  </div>
 
-            <div className={styles.privacyItem}>
-              <div className={styles.privacyText}>
-                <span className={styles.itemTitle}>Anonymize Data</span>
-                <span className={styles.itemDesc}>
-                  Convert video to skeleton data before storing
-                </span>
-              </div>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={privacyMode}
-                  onChange={(e) => {
-                    const v = e.target.checked;
-                    setPrivacyMode(v);
-                    safeSavePatch({ anonymize_skeleton_data: v });
-                  }}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
+ 
 
-            <div className={styles.privacyFooter}>
-              <strong>Privacy Note:</strong> These settings control how data is
-              persisted on the device.
-            </div>
-          </div>
+  <div className={styles.privacyFooter}>
+    <strong>Privacy Note:</strong> These settings ensure that no identifiable video footage is ever written to the device storage.
+  </div>
+</div>
         </div>
       </div>
     </div>
