@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-MUVIM labels + fall spans builder (rewrite).
+labels/make_muvim_labels.py
 
-Reads
------
-- Pose NPZs under --npz_dir (default: data/interim/muvim/pose_npz)
-- Optional ZED_RGB.csv under --zed_csv, providing frame-level fall intervals.
+MUVIM labels + optional fall spans builder.
 
-Writes
+Inputs
 ------
-- --out_labels : JSON mapping {stem: "adl"|"fall"}
-- --out_spans  : JSON mapping {stem: [[start, stop], ...]} with half-open spans [start, stop)
+- Pose NPZ files under --npz_dir (canonical stems for pipeline keys)
+- Optional ZED_RGB.csv with columns: Video, Start, Stop
 
-Key improvements vs legacy script
----------------------------------
-1) More robust video-id extraction from stems/paths.
-2) Optional clamping of spans to each pose sequence length (prevents out-of-range spans).
-3) Optional frame_stride mapping if pose was extracted with frame skipping.
+Outputs
+-------
+- out_labels JSON: {stem: 0/1}   (0=adl, 1=fall)
+- out_spans  JSON: {stem: [[start, end_excl], ...]}  (pose-frame index units)
 
-CSV assumptions
----------------
-ZED_RGB.csv must contain columns: Video, Start, Stop (case-sensitive in the CSV header).
-We treat [Start, Stop) as half-open by default. If your CSV uses inclusive Stop, pass --stop_inclusive.
-
-Span conventions
+Key design goals
 ----------------
-- Spans are half-open [start, stop) in pose-frame index units.
-- If you extracted every k-th frame, set --frame_stride=k to map raw frame -> pose frame.
+1) Use NPZ stems as canonical keys (what downstream code will read).
+2) Make span mapping robust:
+   - optional padding
+   - optional stride mapping
+   - optional clamping to NPZ sequence length
+3) Always use end-exclusive spans.
 """
 
 from __future__ import annotations
@@ -41,58 +37,83 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
+
+# Regex helpers to infer / match IDs
 _FALL_RE = re.compile(r"(?:^|[^a-z0-9])fall\s*0*([0-9]+)", re.IGNORECASE)
 _NONFALL_RE = re.compile(r"(?:^|[^a-z0-9])non\s*fall\s*0*([0-9]+)", re.IGNORECASE)
 _VIDEO_RE = re.compile(r"(?:^|[^a-z0-9])video\s*0*([0-9]+)", re.IGNORECASE)
 
+
 def list_npz_files(npz_dir: str) -> List[str]:
+    """Return all NPZ files under a directory (recursive), sorted."""
     return sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
 
-def infer_label_from_path(p: str) -> str:
-    """Infer fall/adl from conventional folder or stem prefixes."""
+
+def infer_label_from_path(p: str) -> int:
+    """
+    Infer label from file/folder naming conventions.
+    Returns:
+      1 for fall, 0 for ADL/non-fall
+
+    NonFall must win over Fall (because "NonFall10" contains "Fall").
+    """
     s = pathlib.Path(p).stem.lower()
     parent = pathlib.Path(p).parent.name.lower()
 
-    # Nonfall must win over fall
     if s.startswith("nonfall") or parent.startswith("nonfall") or _NONFALL_RE.search(s):
-        return "adl"
+        return 0
     if s.startswith("fall") or parent.startswith("fall") or _FALL_RE.search(s):
-        return "fall"
-    return "adl"
+        return 1
+    return 0
+
 
 def extract_video_id(stem_or_path: str) -> Optional[int]:
     """
-    Extract numeric video id used by ZED_RGB.csv.
-    Accept 'Fall10', 'Video10' patterns; avoid matching 'NonFall10' as fall.
+    Extract numeric Video id used by ZED_RGB.csv.
+
+    We accept:
+      Fall10 / Video10 / ... video__10 ...
+    but we avoid wrongly extracting from NonFall.
     """
     s = str(stem_or_path)
-    m = _NONFALL_RE.search(s)
-    if m:
+    if _NONFALL_RE.search(s):
         return None
+
     m = _FALL_RE.search(s)
     if m:
         try:
             return int(m.group(1))
         except Exception:
             return None
+
     m = _VIDEO_RE.search(s)
     if m:
         try:
             return int(m.group(1))
         except Exception:
             return None
+
     return None
 
+
 def load_spans_from_csv(csv_path: str) -> Dict[int, List[List[int]]]:
+    """
+    Read ZED_RGB.csv: columns must include Video, Start, Stop.
+    Returns:
+      {video_id: [[start, stop_excl], ...]}  (still in RAW frame indices)
+    """
     spans_by_vid: Dict[int, List[List[int]]] = defaultdict(list)
+
     with open(csv_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        if reader.fieldnames is None:
+        if not reader.fieldnames:
             raise SystemExit(f"[ERR] {csv_path} has no header row")
+
         required = {"Video", "Start", "Stop"}
         missing = required - set(reader.fieldnames)
         if missing:
             raise SystemExit(f"[ERR] {csv_path} missing columns: {sorted(missing)}")
+
         for row in reader:
             try:
                 vid = int(row["Video"])
@@ -100,17 +121,23 @@ def load_spans_from_csv(csv_path: str) -> Dict[int, List[List[int]]]:
                 e = int(float(row["Stop"]))
             except Exception:
                 continue
-            if s < 0:
-                s = 0
+
+            s = max(0, s)
             if e <= s:
                 continue
+
+            # Keep raw for now; we will apply inclusive/stride/pad later
             spans_by_vid[vid].append([s, e])
 
+    # sort each list
     for vid in spans_by_vid:
         spans_by_vid[vid].sort(key=lambda x: (x[0], x[1]))
+
     return dict(spans_by_vid)
 
+
 def merge_spans(spans: List[List[int]]) -> List[List[int]]:
+    """Merge overlaps/adjacent spans (end-exclusive)."""
     spans = sorted(spans, key=lambda x: (x[0], x[1]))
     out: List[List[int]] = []
     for s, e in spans:
@@ -120,68 +147,94 @@ def merge_spans(spans: List[List[int]]) -> List[List[int]]:
             out[-1][1] = max(out[-1][1], e)
     return out
 
-def apply_pad_stride_clamp(
-    spans: List[List[int]],
-    *,
-    pad_pre: int,
-    pad_post: int,
-    frame_stride: int,
-    stop_inclusive: bool,
-    clamp_len: Optional[int],
-) -> List[List[int]]:
-    stride = max(1, int(frame_stride))
-    out: List[List[int]] = []
-    for s, e in spans:
-        if stop_inclusive:
-            e = e + 1
-        s2 = max(0, int(s) - int(pad_pre))
-        e2 = int(e) + int(pad_post)
-        # map to pose frame index
-        s2 = s2 // stride
-        e2 = e2 // stride
-        if clamp_len is not None:
-            s2 = max(0, min(s2, clamp_len))
-            e2 = max(0, min(e2, clamp_len))
-        if e2 > s2:
-            out.append([s2, e2])
-    return merge_spans(out)
 
 def seq_len_from_npz(path: str) -> Optional[int]:
+    """
+    Read sequence length (T) from pose NPZ.
+    Supports both keys:
+      - xy
+      - joints
+    """
     try:
         import numpy as np
         with np.load(path, allow_pickle=False) as z:
             if "xy" in z:
                 return int(z["xy"].shape[0])
+            if "joints" in z:
+                return int(z["joints"].shape[0])
     except Exception:
         return None
     return None
 
-def main():
+
+def map_span_raw_to_pose(
+    s_raw: int,
+    e_raw: int,
+    *,
+    stop_inclusive: bool,
+    frame_stride: int,
+    pad_pre: int,
+    pad_post: int,
+    clamp_len: Optional[int],
+) -> Optional[List[int]]:
+    """
+    Convert raw span -> pose span.
+
+    Steps:
+    1) If stop_inclusive: make it exclusive by +1
+    2) Apply padding (pre/post) in raw-frame units
+    3) Convert raw->pose indices using stride:
+         s_pose = floor(s_raw / k)
+         e_pose = ceil(e_raw_excl / k) = (e_raw_excl + k - 1) // k
+    4) Clamp to [0, clamp_len] if clamp_len provided
+    """
+    k = max(1, int(frame_stride))
+
+    s = max(0, int(s_raw) - int(pad_pre))
+    e_excl = int(e_raw) + (1 if stop_inclusive else 0)
+    e_excl = e_excl + int(pad_post)
+
+    if e_excl <= s:
+        return None
+
+    s_pose = s // k
+    e_pose = (e_excl + k - 1) // k  # ceil
+
+    if clamp_len is not None:
+        s_pose = max(0, min(s_pose, clamp_len))
+        e_pose = max(0, min(e_pose, clamp_len))
+
+    if e_pose <= s_pose:
+        return None
+    return [int(s_pose), int(e_pose)]
+
+
+def main() -> int:
     ap = argparse.ArgumentParser(description="Build MUVIM labels and optional fall spans from ZED_RGB.csv.")
     ap.add_argument("--npz_dir", default="data/interim/muvim/pose_npz")
     ap.add_argument("--out_labels", default="configs/labels/muvim.json")
     ap.add_argument("--out_spans", default="configs/labels/muvim_spans.json")
+
     ap.add_argument("--zed_csv", default=None, help="Path to ZED_RGB.csv. If omitted, spans are not written.")
-    ap.add_argument("--pad_pre", type=int, default=0)
-    ap.add_argument("--pad_post", type=int, default=0)
-    ap.add_argument("--frame_stride", type=int, default=1)
-    ap.add_argument("--stop_inclusive", action="store_true",
-                    help="Treat Stop column as inclusive (convert to exclusive by +1).")
-    ap.add_argument("--clamp_to_npz_len", action="store_true")
+    ap.add_argument("--pad_pre", type=int, default=0, help="Pad span start by this many raw frames.")
+    ap.add_argument("--pad_post", type=int, default=0, help="Pad span end by this many raw frames.")
+    ap.add_argument("--frame_stride", type=int, default=1, help="If pose extraction used every k-th raw frame, set k here.")
+    ap.add_argument("--stop_inclusive", action="store_true", help="Treat Stop as inclusive (convert to exclusive by +1).")
+    ap.add_argument("--clamp_to_npz_len", action="store_true", help="Clamp spans to each NPZ sequence length (best-effort).")
+    ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     files = list_npz_files(args.npz_dir)
     if not files:
         raise SystemExit(f"[ERR] No npz under {args.npz_dir}")
 
-    stems: List[str] = []
-    labels: Dict[str, str] = {}
-
+    # 1) Default labels from path conventions
+    labels: Dict[str, int] = {}
     for p in files:
         stem = pathlib.Path(p).stem
-        stems.append(stem)
         labels[stem] = infer_label_from_path(p)
 
+    # 2) Optional spans from CSV
     spans_out: Dict[str, List[List[int]]] = {}
     if args.zed_csv:
         spans_by_vid = load_spans_from_csv(args.zed_csv)
@@ -189,42 +242,54 @@ def main():
         matched = 0
         for p in files:
             stem = pathlib.Path(p).stem
+
+            # Find video id for this pose sequence
             vid = extract_video_id(stem) or extract_video_id(p)
-            if vid is None:
-                continue
-            if vid not in spans_by_vid:
+            if vid is None or vid not in spans_by_vid:
                 continue
 
             clamp_len = seq_len_from_npz(p) if args.clamp_to_npz_len else None
-            sps = apply_pad_stride_clamp(
-                spans_by_vid[vid],
-                pad_pre=args.pad_pre,
-                pad_post=args.pad_post,
-                frame_stride=args.frame_stride,
-                stop_inclusive=args.stop_inclusive,
-                clamp_len=clamp_len,
-            )
-            if sps:
-                spans_out[stem] = sps
-                labels[stem] = "fall"
+
+            pose_spans: List[List[int]] = []
+            for s_raw, e_raw in spans_by_vid[vid]:
+                sp = map_span_raw_to_pose(
+                    s_raw,
+                    e_raw,
+                    stop_inclusive=bool(args.stop_inclusive),
+                    frame_stride=int(args.frame_stride),
+                    pad_pre=int(args.pad_pre),
+                    pad_post=int(args.pad_post),
+                    clamp_len=clamp_len,
+                )
+                if sp:
+                    pose_spans.append(sp)
+
+            pose_spans = merge_spans(pose_spans)
+            if pose_spans:
+                spans_out[stem] = pose_spans
+                labels[stem] = 1  # if spans exist, this must be a fall clip
                 matched += 1
 
-        print(f"[info] loaded spans for {len(spans_by_vid)} video IDs from {args.zed_csv}")
+        print(f"[info] loaded spans for {len(spans_by_vid)} Video IDs from {args.zed_csv}")
         print(f"[info] matched spans to {matched} pose sequences (out of {len(files)})")
 
+    # 3) Write outputs
     os.makedirs(os.path.dirname(args.out_labels) or ".", exist_ok=True)
     with open(args.out_labels, "w", encoding="utf-8") as f:
-        json.dump(labels, f, indent=2)
+        json.dump(labels, f, indent=2, sort_keys=True)
 
-    fall_n = sum(1 for v in labels.values() if v == "fall")
-    adl_n = sum(1 for v in labels.values() if v == "adl")
-    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)}, fall={fall_n}, adl={adl_n})")
+    fall_n = sum(1 for v in labels.values() if v == 1)
+    adl_n = sum(1 for v in labels.values() if v == 0)
+    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)} fall={fall_n} adl={adl_n})")
 
     if args.zed_csv:
         os.makedirs(os.path.dirname(args.out_spans) or ".", exist_ok=True)
         with open(args.out_spans, "w", encoding="utf-8") as f:
-            json.dump(spans_out, f, indent=2)
-        print(f"[OK] wrote spans  → {args.out_spans}  (videos_with_spans={len(spans_out)})")
+            json.dump(spans_out, f, indent=2, sort_keys=True)
+        print(f"[OK] wrote spans  → {args.out_spans} (videos_with_spans={len(spans_out)})")
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

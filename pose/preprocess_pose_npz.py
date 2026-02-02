@@ -39,6 +39,7 @@ Notes
 """
 
 from __future__ import annotations
+import os
 
 import argparse
 import json
@@ -46,6 +47,35 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
+
+# Allow running as a script from repo root (so `from core.*` works)
+import os as _os
+import sys as _sys
+
+def _atomic_save_npz(out_path: 'Path', **arrays) -> None:
+    """Atomically write a .npz file.
+
+    NOTE: NumPy appends '.npz' if the filename does not already end with it.
+    If you use a temp file like 'clip.npz.tmp', NumPy will actually create
+    'clip.npz.tmp.npz', and then a rename from 'clip.npz.tmp' will fail.
+
+    So the temp file MUST end with '.npz' (we use '<stem>.tmp.npz').
+    """
+
+    tmp_path = out_path.with_suffix('.tmp.npz')  # e.g. 'clip.tmp.npz'
+    try:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    except Exception:
+        pass
+    np.savez_compressed(tmp_path, **arrays)
+    os.replace(tmp_path, out_path)
+
+_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
+
+from core.preprocess import OneEuroCfg, PreprocessCfg, resample_to_fps, one_euro_filter_xy, normalize_xy, make_mask
 
 # MediaPipe Pose landmark indices used for normalisation / rotation
 L_SHO, R_SHO = 11, 12
@@ -459,61 +489,90 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
             xy, conf, conf_thr=args.conf_thr, max_gap=args.max_gap, fill_conf=args.fill_conf
         )
 
-    # 3) smooth
-    if args.smooth_k > 1:
+    # Get source FPS (from extractor), then resample to deploy FPS (target_fps) if requested.
+    fps_src = float(extras.get("fps", args.fps_default))
+    fps_tgt = float(args.target_fps) if float(args.target_fps) > 0 else float(fps_src)
+
+    if fps_tgt > 0 and abs(fps_tgt - fps_src) > 1e-6:
+        xy, conf = resample_to_fps(xy, conf, fps_src=fps_src, fps_tgt=fps_tgt)
+
+    # Smoothing: prefer One-Euro (deployment-consistent). If disabled, fall back to WMA.
+    # One-Euro expects finite values; fill NaNs with 0 and let mask/conf handle validity.
+    if bool(int(args.one_euro)):
+        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        oe = OneEuroCfg(
+            min_cutoff=float(args.one_euro_min_cutoff),
+            beta=float(args.one_euro_beta),
+            d_cutoff=float(args.one_euro_d_cutoff),
+        )
+        xy = one_euro_filter_xy(xy, fps=float(fps_tgt if fps_tgt > 0 else fps_src), cfg=oe)
+    elif args.smooth_k > 1:
         xy = smooth_weighted_moving_average(xy, conf, conf_thr=args.conf_thr, k=args.smooth_k)
 
-    # 4) normalise + optional rotation
-    xy, norm_meta = normalize_body_centric(
-        xy,
-        conf,
-        conf_thr=args.conf_thr,
-        mode=args.normalize,
-        pelvis_fill=args.pelvis_fill,
-        rotate=args.rotate,
-    )
+    # Normalisation (shared with deployment): pelvis-center + torso scale, optional shoulder rotation.
+    do_norm = str(args.normalize).lower() != "none"
+    if do_norm:
+        xy = normalize_xy(xy, rotate_shoulders=(str(args.rotate).lower() == "shoulders"))
 
-    # 5) masks / frame quality
-    joint_mask, frame_mask, valid_ratio = compute_masks(xy, conf, conf_thr=args.conf_thr)
+    # Masks / frame quality
+    joint_mask = make_mask(xy, conf, conf_gate=float(args.conf_thr))
+    valid_ratio = np.mean(joint_mask.astype(np.float32), axis=1).astype(np.float32)
+    frame_mask = (valid_ratio >= float(args.min_valid_ratio)).astype(np.uint8)
 
     if args.invalidate_bad_frames:
-        xy, conf, frame_mask = invalidate_bad_frames(
-            xy, conf, joint_mask, frame_mask, valid_ratio, min_valid_ratio=args.min_valid_ratio
-        )
+        bad = frame_mask == 0
+        if np.any(bad):
+            xy = xy.copy(); conf = conf.copy(); joint_mask = joint_mask.copy()
+            xy[bad] = 0.0
+            conf[bad] = 0.0
+            joint_mask[bad] = 0
 
-    # Final: replace NaNs with 0 for safe downstream IO
+    # Final safety
     xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     conf = np.nan_to_num(conf, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Summary for reproducibility
+    # Summary for reproducibility (compatible with older 'preprocess' consumer)
     preprocess_meta = dict(
-        conf_thr=float(args.conf_thr),
+        schema="proc_npz_v1",
+        conf_gate=float(args.conf_thr),
+        target_fps=float(fps_tgt),
+        fps_src=float(fps_src),
+        one_euro=bool(int(args.one_euro)),
+        one_euro_min_cutoff=float(args.one_euro_min_cutoff),
+        one_euro_beta=float(args.one_euro_beta),
+        one_euro_d_cutoff=float(args.one_euro_d_cutoff),
         smooth_k=int(args.smooth_k),
         max_gap=int(args.max_gap),
         fill_conf=str(args.fill_conf),
         normalize=str(args.normalize),
         rotate=str(args.rotate),
-        pelvis_fill=str(args.pelvis_fill),
         min_valid_ratio=float(args.min_valid_ratio),
         invalidate_bad_frames=bool(args.invalidate_bad_frames),
         frames=int(xy.shape[0]),
         joints=int(xy.shape[1]),
         filled_points=int(filled_mask.sum()),
-        valid_ratio_mean=float(np.nanmean(valid_ratio)) if valid_ratio.size else 0.0,
-        valid_ratio_min=float(np.nanmin(valid_ratio)) if valid_ratio.size else 0.0,
-        **{k: v for k, v in norm_meta.items() if k != "conf_thr"},
+        valid_ratio_mean=float(np.mean(valid_ratio)) if valid_ratio.size else 0.0,
+        valid_ratio_min=float(np.min(valid_ratio)) if valid_ratio.size else 0.0,
     )
 
-    np.savez_compressed(
+    # Ensure y exists
+    if "y" not in extras:
+        extras["y"] = np.int8(-1)
+    extras["fps_src"] = np.float32(fps_src)
+    extras["fps"] = np.float32(fps_tgt)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _atomic_save_npz(
         out_path,
-        xy=xy,
+        joints=xy,
+        xy=xy,  # legacy
         conf=conf,
         mask=joint_mask.astype(np.uint8),
         frame_mask=frame_mask.astype(np.uint8),
         valid_ratio=valid_ratio.astype(np.float32),
         preprocess=json.dumps(preprocess_meta),
+        meta=json.dumps({"schema": "proc_npz_v1", "cfg": PreprocessCfg(target_fps=fps_tgt, conf_gate=float(args.conf_thr), normalize=do_norm, rotate_shoulders=(str(args.rotate).lower()=="shoulders"), one_euro=bool(int(args.one_euro)), one_euro_cfg=OneEuroCfg(float(args.one_euro_min_cutoff), float(args.one_euro_beta), float(args.one_euro_d_cutoff))).to_dict()}, ensure_ascii=False),
         **extras,
     )
     return True
@@ -528,6 +587,14 @@ def parse_args():
     ap.add_argument("--out_dir", required=True, help="Where to write cleaned pose NPZ files.")
     ap.add_argument("--recursive", action="store_true", help="Recurse into subfolders.")
     ap.add_argument("--skip_existing", action="store_true", help="Skip writing if output already exists.")
+
+    # Deploy-consistency upgrades
+    ap.add_argument("--fps_default", type=float, default=30.0, help="Fallback source FPS if missing in NPZ (default 30).")
+    ap.add_argument("--target_fps", type=float, default=30.0, help="Resample to this FPS before windowing (deploy FPS). Set 0 to disable.")
+    ap.add_argument("--one_euro", type=int, default=1, help="1 => apply One-Euro smoothing (recommended). 0 => disable.")
+    ap.add_argument("--one_euro_min_cutoff", type=float, default=1.0)
+    ap.add_argument("--one_euro_beta", type=float, default=0.0)
+    ap.add_argument("--one_euro_d_cutoff", type=float, default=1.0)
 
     ap.add_argument("--conf_thr", type=float, default=0.2, help="Confidence threshold for 'valid' joints.")
     ap.add_argument("--smooth_k", type=int, default=5, help="Weighted moving-average window size (odd preferred).")

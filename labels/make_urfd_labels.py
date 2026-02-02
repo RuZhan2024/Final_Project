@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-URFD labels (+ optional fall spans) builder (rewrite).
+labels/make_urfd_labels.py
 
-Goal
-----
-Produce:
-  - labels JSON: stem -> "fall"/"adl"
-  - spans JSON (optional): stem -> [[start, stop], ...] (half-open)
+Build UR_Fall sequence-level labels + fall spans for the skeleton pipeline.
 
-Why spans (optional)?
---------------------
-If you can derive fall spans from per-frame annotations, window labeling by overlap
-is much more accurate than "whole clip is fall". If your per-frame .txt files
-do NOT encode fall-vs-adl classes (e.g., only 'person' bounding boxes), then this
-script will still produce labels but spans will likely be empty.
+UR_Fall raw format (Roboflow YOLO export)
+-----------------------------------------
+- raw_root/{train,valid,test}/...*.txt  (YOLO per-frame labels)
+- Optional raw_root/data.yaml defines class names.
 
-Inputs
-------
-- --npz_dir : cleaned pose sequences (default: data/interim/urfd/pose_npz)
+Your pipeline needs:
+- labels keyed by pose sequence stem in npz_dir
+- spans in sequence-index space [start, end_excl)
 
-Optional per-frame annotation support:
-- --ann_glob : pattern with "{stem}" placeholder pointing to per-frame .txt files for that stem,
-               e.g. 'data/raw/UR_Fall_clips/{stem}/*.txt'
-- --fall_class_id : YOLO class id indicating FALL (only if your txts encode action classes)
+This script:
+1) Reads pose stems from --npz_dir (canonical keys).
+2) Extracts the clip key (e.g., 'fall-03-cam1-rgb') from each stem.
+3) Scans raw YOLO labels to build a boolean "fall frame" flag list per clip.
+4) Applies optional gap-fill to smooth noisy detections.
+5) Extracts fall runs (spans).
+6) Optionally maps raw frame index -> pose index via --frame_stride.
+7) Optionally clamps spans to NPZ length.
 
-Span extraction rule
---------------------
-A frame is considered "fall" if ANY line in its txt has class_id == fall_class_id,
-or the file contains a token 'fall' (but not 'nonfall'/'nofall').
-We then convert consecutive fall frames into spans [start, stop) with optional gap filling.
-
-Outputs
--------
-- --out_labels (default: configs/labels/urfd.json)
-- --out_spans  (default: configs/labels/urfd_spans.json) if --ann_glob is provided
+Outputs:
+- out_labels JSON: {stem: 0/1}
+- out_spans  JSON: {stem: [[start, end_excl], ...]}  (only for positives)
 """
 
 from __future__ import annotations
@@ -42,222 +34,347 @@ import argparse
 import glob
 import json
 import os
-import pathlib
 import re
-from typing import Dict, List, Optional
-import numpy as np
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 
-def read_npz_src(npz_path: str) -> str:
-    """Read embedded 'src' field from a cleaned pose npz if present."""
-    try:
-        with np.load(npz_path, allow_pickle=True) as z:
-            if "src" in z.files:
-                v = z["src"]
-                # np arrays can store bytes/object; normalize to str
-                if isinstance(v, (bytes, bytearray)):
-                    return v.decode("utf-8", errors="ignore")
-                if hasattr(v, "item"):
-                    try:
-                        return str(v.item())
-                    except Exception:
-                        return str(v)
-                return str(v)
-    except Exception:
-        return ""
-    return ""
+# Match clip identifiers present in UR_Fall exports and in your sequence stems
+CLIP_RE = re.compile(r"(?:adl|fall)-\d+-cam\d+-rgb", re.IGNORECASE)
 
-def list_npz_files(npz_dir: str) -> List[str]:
-    return sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
 
-def tokenise(s: str) -> List[str]:
-    return [t for t in re.split(r"[^A-Za-z0-9]+", s.lower()) if t]
+def _ensure_dir_for_file(path: str) -> None:
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
-def infer_label_from_path(npz_path: str) -> str:
+
+def _parse_frame_idx_from_stem(stem: str) -> Optional[int]:
     """
-    Robust label inference:
-      - if tokens contain nonfall/nofall/adl -> adl
-      - elif tokens contain fall -> fall
-      - else -> adl
+    Raw frame label stems often look like:
+      adl-01-cam0-rgb-091_png
+    or:
+      fall-03-cam1-rgb-012_jpg
+
+    We extract the integer right before '_png/_jpg/_jpeg'.
     """
-    p = pathlib.Path(npz_path)
-    toks = set()
-    for part in p.parts:
-        toks.update(tokenise(part))
-    toks.update(tokenise(p.stem))
+    m = re.search(r"-(\d+)_(?:png|jpg|jpeg)$", stem, flags=re.IGNORECASE)
+    return int(m.group(1)) if m else None
 
-    if any(t in toks for t in ("nonfall", "nofall", "adl", "normal")):
-        return "adl"
-    if "fall" in toks:
-        return "fall"
-    return "adl"
 
-def expand_ann_glob(ann_glob: str, stem: str) -> List[str]:
-    pattern = ann_glob.format(stem=stem)
-    return sorted(glob.glob(pattern, recursive=True))
+def _clipkey_from_frame_stem(stem: str) -> str:
+    """Remove trailing '-NNN_png' and normalize to lowercase."""
+    return re.sub(r"-\d+_(?:png|jpg|jpeg)$", "", stem, flags=re.IGNORECASE).lower()
 
-def parse_frame_is_fall(txt_path: str, fall_class_id: int) -> Optional[bool]:
+
+def _clipkey_from_seq_stem(seq_stem: str) -> Optional[str]:
     """
-    Return True if frame labeled fall, False otherwise, None if unreadable.
-    Supports:
-      - literal tokens 'fall' / 'nofall' / 'nonfall'
-      - YOLO numeric class id as first token per line
+    Pose stem formats seen:
+      - adl__adl-02-cam0-rgb__bf15e056
+      - adl-02-cam0-rgb__6a478ea8
+
+    We regex-search for the clip key.
+    """
+    m = CLIP_RE.search(seq_stem)
+    return m.group(0).lower() if m else None
+
+
+def _is_fall_frame(txt_path: str, fall_class_id: int) -> bool:
+    """
+    Frame is considered 'fall' if ANY line in YOLO txt has class id == fall_class_id.
+
+    YOLO line format:
+      <class> <x> <y> <w> <h>
+    We only need the first integer.
     """
     try:
-        content = pathlib.Path(txt_path).read_text(encoding="utf-8", errors="ignore").strip()
+        with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # parse the first token as int class id
+                tok = line.split()[0]
+                try:
+                    cid = int(tok)
+                except Exception:
+                    continue
+                if cid == fall_class_id:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+
+def _gap_fill(flags: List[bool], gap_fill: int) -> List[bool]:
+    """
+    Fill short False gaps inside True segments.
+
+    Example:
+      True True False True True  with gap_fill>=1 becomes all True.
+    """
+    if gap_fill <= 0 or not flags:
+        return flags
+    flags = flags[:]  # copy
+    i = 0
+    while i < len(flags):
+        if flags[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(flags) and not flags[j]:
+            j += 1
+        gap = j - i
+        if i > 0 and j < len(flags) and flags[i - 1] and flags[j] and gap <= gap_fill:
+            for t in range(i, j):
+                flags[t] = True
+        i = j
+    return flags
+
+
+def _runs_from_flags(flags: List[bool], min_run: int) -> List[List[int]]:
+    """
+    Convert a boolean list to contiguous True runs:
+      flags: [False, True, True, False] -> [[1, 3]]
+
+    Runs are returned as [start, end_excl].
+    """
+    runs: List[List[int]] = []
+    start: Optional[int] = None
+    for t, b in enumerate(flags):
+        if b and start is None:
+            start = t
+        elif (not b) and start is not None:
+            end = t
+            if end - start >= min_run:
+                runs.append([start, end])
+            start = None
+    if start is not None:
+        end = len(flags)
+        if end - start >= min_run:
+            runs.append([start, end])
+    return runs
+
+
+def _infer_fall_class_id_from_data_yaml(raw_root: str) -> Optional[int]:
+    """
+    Try to infer fall class id from data.yaml if present.
+    Expected YAML structure:
+      names: ['fall', 'person', ...]
+    Class id is the index in the list.
+    """
+    path = os.path.join(raw_root, "data.yaml")
+    if not os.path.exists(path):
+        return None
+    try:
+        import yaml  # type: ignore
     except Exception:
         return None
 
-    if not content:
-        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = yaml.safe_load(f)
+        names = d.get("names")
+        if isinstance(names, list):
+            for i, n in enumerate(names):
+                if str(n).strip().lower() == "fall":
+                    return int(i)
+    except Exception:
+        return None
+    return None
 
-    low = content.lower()
-    if "nofall" in low or "nonfall" in low:
-        return False
-    if re.search(r"\bfall\b", low):
-        return True
 
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split()
-        if not parts:
-            continue
-        try:
-            cid = int(float(parts[0]))
-        except Exception:
-            continue
-        if cid == int(fall_class_id):
-            return True
-    return False
+def seq_len_from_npz(npz_path: str) -> Optional[int]:
+    """Read length from pose NPZ (xy or joints)."""
+    try:
+        import numpy as np
+        with np.load(npz_path, allow_pickle=False) as z:
+            if "xy" in z:
+                return int(z["xy"].shape[0])
+            if "joints" in z:
+                return int(z["joints"].shape[0])
+    except Exception:
+        return None
+    return None
 
-def bool_runs_to_spans(flags: List[bool], min_run: int, gap_fill: int) -> List[List[int]]:
-    if not flags:
-        return []
 
-    # fill short gaps inside fall segments
-    if gap_fill > 0:
-        filled = flags[:]
-        i = 0
-        n = len(filled)
-        while i < n:
-            if filled[i]:
-                i += 1
-                continue
-            j = i
-            while j < n and not filled[j]:
-                j += 1
-            gap_len = j - i
-            left_true = (i - 1 >= 0 and filled[i - 1])
-            right_true = (j < n and filled[j])
-            if left_true and right_true and gap_len <= gap_fill:
-                for k in range(i, j):
-                    filled[k] = True
-            i = j
-        flags = filled
+def map_runs_with_stride_and_clamp(
+    runs: List[List[int]],
+    *,
+    frame_stride: int,
+    clamp_len: Optional[int],
+) -> List[List[int]]:
+    """
+    Map raw-frame runs -> pose-frame runs.
 
-    spans: List[List[int]] = []
-    i = 0
-    n = len(flags)
-    while i < n:
-        if not flags[i]:
-            i += 1
-            continue
-        start = i
-        j = i
-        while j < n and flags[j]:
-            j += 1
-        stop = j
-        if (stop - start) >= max(1, int(min_run)):
-            spans.append([start, stop])
-        i = stop
-    return spans
+    For end-exclusive spans [s, e_excl):
+      s_pose = floor(s / k)
+      e_pose = ceil(e_excl / k) = (e_excl + k - 1)//k
+    """
+    k = max(1, int(frame_stride))
+    out: List[List[int]] = []
+    for s, e in runs:
+        s_pose = int(s) // k
+        e_pose = (int(e) + k - 1) // k
+        if clamp_len is not None:
+            s_pose = max(0, min(s_pose, clamp_len))
+            e_pose = max(0, min(e_pose, clamp_len))
+        if e_pose > s_pose:
+            out.append([s_pose, e_pose])
 
-def main():
+    # merge overlaps just in case
+    out.sort(key=lambda x: (x[0], x[1]))
+    merged: List[List[int]] = []
+    for s, e in out:
+        if not merged or s > merged[-1][1]:
+            merged.append([s, e])
+        else:
+            merged[-1][1] = max(merged[-1][1], e)
+    return merged
+
+
+def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--npz_dir", default="data/interim/urfd/pose_npz")
+    ap.add_argument("--raw_root", required=True, help="Roboflow UR_Fall root (contains train/valid/test)")
+    ap.add_argument("--npz_dir", required=True, help="Pose sequence NPZ dir (canonical stems). NOT windows dir.")
     ap.add_argument("--out_labels", default="configs/labels/urfd.json")
     ap.add_argument("--out_spans", default="configs/labels/urfd_spans.json")
-    ap.add_argument("--ann_glob", default=None,
-                    help="Per-frame annotation glob with {stem} placeholder. NOTE: DO NOT point this at YOLO bbox .txt files.")
-    ap.add_argument("--use_per_frame_action_txt", type=int, default=0,
-                    help="Set to 1 only if your per-frame .txt truly encodes FALL/ADL action class IDs (NOT bboxes).")
-    ap.add_argument("--fall_class_id", type=int, default=0)
-    ap.add_argument("--min_run", type=int, default=3)
-    ap.add_argument("--gap_fill", type=int, default=1)
-    ap.add_argument("--print_stats", action="store_true")
+
+    ap.add_argument("--min_run", type=int, default=2, help="Minimum run length (frames) for a fall span.")
+    ap.add_argument("--gap_fill", type=int, default=2, help="Fill short detection gaps up to this many frames.")
+    ap.add_argument(
+        "--fall_class_id",
+        type=int,
+        default=-1,
+        help="Override fall class id (0-based). If -1, infer from data.yaml or fallback to 0.",
+    )
+
+    ap.add_argument(
+        "--frame_stride",
+        type=int,
+        default=1,
+        help="If pose extraction used every k-th raw frame, set k here (default: 1).",
+    )
+    ap.add_argument(
+        "--clamp_to_npz_len",
+        action="store_true",
+        help="Clamp spans to pose NPZ length (best-effort).",
+    )
+    ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    if args.ann_glob and int(args.use_per_frame_action_txt) != 1:
-        print("[warn] URFD: ignoring --ann_glob because --use_per_frame_action_txt=0. "
-              "This is the SAFE default (YOLO bbox .txt are not fall spans).")
+    raw_root = args.raw_root
+    npz_dir = args.npz_dir
 
-    files = list_npz_files(args.npz_dir)
-    if not files:
-        raise SystemExit(f"[ERR] No npz under {args.npz_dir}")
+    # Determine fall class id
+    fall_id = int(args.fall_class_id)
+    if fall_id < 0:
+        fall_id = _infer_fall_class_id_from_data_yaml(raw_root) or 0
 
-    labels: Dict[str, str] = {}
-    spans_out: Dict[str, List[List[int]]] = {}
-    suspicious_ann = 0
+    # 1) Pose stems (canonical keys)
+    pose_npzs = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
+    stems = [os.path.splitext(os.path.basename(p))[0] for p in pose_npzs]
+    if not stems:
+        raise SystemExit(f"[ERR] No pose NPZ files found in {npz_dir}")
 
-    for p in files:
-        stem = pathlib.Path(p).stem
-        src = read_npz_src(str(p))
-        lab = infer_label_from_path(src or str(p))
+    if args.verbose:
+        print(f"[info] pose_npz files: {len(stems)}  dir={npz_dir}")
+        print(f"[info] fall_class_id={fall_id}")
 
-        if int(args.use_per_frame_action_txt) == 1 and args.ann_glob:
-            txts = expand_ann_glob(args.ann_glob, stem)
-            if txts:
-                flags: List[bool] = []
-                for t in txts:
-                    is_fall = parse_frame_is_fall(t, args.fall_class_id)
-                    flags.append(bool(is_fall))  # None -> False
+    # 2) Build clipkey -> ordered list of frame label paths from raw YOLO labels
+    clip_frames: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
 
-                # Guard: URFD per-frame *.txt are often person bounding boxes (YOLO), not action labels.
-                # If almost every frame is flagged as fall, span-derivation is almost certainly wrong.
-                if len(flags) >= 20:
-                    fall_ratio = float(sum(flags)) / float(len(flags))
-                    if fall_ratio >= 0.95:
-                        suspicious_ann += 1
-                        txts = []
+    for split in ["train", "valid", "test", "val"]:
+        d = os.path.join(raw_root, split)
+        if not os.path.isdir(d):
+            continue
 
-                if txts:
-                    spans = bool_runs_to_spans(flags, min_run=args.min_run, gap_fill=args.gap_fill)
-                    if spans:
-                        spans_out[stem] = spans
-                        lab = "fall"
+        # Roboflow sometimes puts txt directly in split dir, sometimes in split/labels/
+        patterns = [os.path.join(d, "*.txt"), os.path.join(d, "labels", "*.txt")]
+        for pat in patterns:
+            for p in glob.glob(pat):
+                stem = os.path.splitext(os.path.basename(p))[0]
+                idx = _parse_frame_idx_from_stem(stem)
+                if idx is None:
+                    continue
+                ck = _clipkey_from_frame_stem(stem)
+                clip_frames[ck].append((idx, p))
 
-        labels[stem] = lab
+    # Sort each clip by frame index
+    for ck in list(clip_frames.keys()):
+        clip_frames[ck].sort(key=lambda x: x[0])
 
-    os.makedirs(os.path.dirname(args.out_labels) or ".", exist_ok=True)
-    with open(args.out_labels, "w", encoding="utf-8") as f:
-        json.dump(labels, f, indent=2)
+    if args.verbose:
+        print(f"[info] raw clipkeys discovered: {len(clip_frames)}")
 
-    fall_n = sum(1 for v in labels.values() if v == "fall")
-    adl_n = sum(1 for v in labels.values() if v == "adl")
-    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)}, fall={fall_n}, adl={adl_n})")
+    # 3) Compute fall runs per clipkey (still in raw-frame index space)
+    clip_runs_raw: Dict[str, List[List[int]]] = {}
+    for ck, items in clip_frames.items():
+        flags = [_is_fall_frame(p, fall_id) for _, p in items]
+        flags = _gap_fill(flags, int(args.gap_fill))
+        clip_runs_raw[ck] = _runs_from_flags(flags, int(args.min_run))
 
-    if int(args.use_per_frame_action_txt) == 1 and args.ann_glob:
-        os.makedirs(os.path.dirname(args.out_spans) or ".", exist_ok=True)
-        with open(args.out_spans, "w", encoding="utf-8") as f:
-            json.dump(spans_out, f, indent=2)
-        print(f"[OK] wrote spans  → {args.out_spans}  (videos_with_spans={len(spans_out)})")
+    # 4) Emit labels/spans keyed by pose stem
+    labels: Dict[str, int] = {}
+    spans: Dict[str, List[List[int]]] = {}
+    missing_clipkey = 0
+    fall_total = 0
 
-        if args.print_stats and spans_out:
-            lens = [e - s for sps in spans_out.values() for s, e in sps]
-            nsp = [len(sps) for sps in spans_out.values()]
-            print(f"[stats] spans/videos: min={min(nsp)}, median={sorted(nsp)[len(nsp)//2]}, max={max(nsp)}")
-            print(f"[stats] span length (frames): min={min(lens)}, median={sorted(lens)[len(lens)//2]}, max={max(lens)}")
+    for npz_path, stem in zip(pose_npzs, stems):
+        ck = _clipkey_from_seq_stem(stem)
+        if ck is None:
+            missing_clipkey += 1
+            labels[stem] = 1 if "fall-" in stem.lower() else 0
+            continue
 
-        if not spans_out:
-            print("[warn] no spans were derived; this can happen if per-frame txt files do not encode fall-vs-adl classes.")
+        # URFD naming: 'fall-*' is positive, 'adl-*' is negative
+        y = 1 if ck.startswith("fall-") else 0
+        labels[stem] = y
 
-        if suspicious_ann:
-            print(
-                f"[warn] skipped span-derivation for {suspicious_ann} videos because per-frame txts looked like bounding boxes (almost all frames flagged as fall).\n"
-                "       If you truly have per-frame action labels, set --fall_class_id correctly or disable this guard by editing make_urfd_labels.py."
+        if y == 1:
+            fall_total += 1
+            runs_raw = clip_runs_raw.get(ck, [])
+
+            # Map to pose indices + optional clamp
+            clamp_len = seq_len_from_npz(npz_path) if args.clamp_to_npz_len else None
+            runs_pose = map_runs_with_stride_and_clamp(
+                runs_raw,
+                frame_stride=int(args.frame_stride),
+                clamp_len=clamp_len,
             )
 
+            if runs_pose:
+                spans[stem] = runs_pose
+            else:
+                # fallback: full length if we can infer it
+                n_raw = len(clip_frames.get(ck, []))
+                if n_raw > 0:
+                    # map full range with stride
+                    full_pose = map_runs_with_stride_and_clamp(
+                        [[0, n_raw]],
+                        frame_stride=int(args.frame_stride),
+                        clamp_len=clamp_len,
+                    )
+                    if full_pose:
+                        spans[stem] = full_pose
+
+    # Write outputs
+    _ensure_dir_for_file(args.out_labels)
+    _ensure_dir_for_file(args.out_spans)
+
+    with open(args.out_labels, "w", encoding="utf-8") as f:
+        json.dump(labels, f, indent=2, sort_keys=True)
+
+    with open(args.out_spans, "w", encoding="utf-8") as f:
+        json.dump(spans, f, indent=2, sort_keys=True)
+
+    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)} fall={fall_total})")
+    print(f"[OK] wrote spans  → {args.out_spans}  (videos_with_spans={len(spans)})")
+    if missing_clipkey:
+        print(f"[warn] {missing_clipkey} stems did not match clip key pattern like adl-01-cam0-rgb / fall-02-cam1-rgb")
+
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

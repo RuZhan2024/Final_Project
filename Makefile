@@ -1,1800 +1,904 @@
-# -----------------------------------------
-# Makefile — Fall Detection v2 (clean)
-# Datasets: LE2i, UR_Fall, CAUCAFall, MUVIM
-# Flow: extract -> preprocess -> labels -> splits -> windows -> train -> fit_ops -> eval
-# -----------------------------------------
+# ------------------------------------------------------------
+# Makefile — Skeleton-only Fall Detection (ML + Eval + Deploy-sim)
+# ------------------------------------------------------------
+#
+# This Makefile orchestrates your OFFLINE pipeline:
+#   raw videos/frames
+#     -> pose_npz_raw        (pose extraction)
+#     -> pose_npz            (preprocess: resample + One-Euro + masks)
+#     -> labels/spans.json   (dataset labeling)
+#     -> splits              (train/val/test lists)
+#     -> windows_W*_S*       (window NPZ for training/eval)
+#     -> train (TCN/GCN)
+#     -> calibrate temperature
+#     -> fit operating points (OP-1/2/3)
+#     -> eval / replay / mining
+#
+# Optional utilities included:
+#   - LE2i unlabeled window generation (FA-only stream)
+#   - score FA/day on unlabeled LE2i windows
+#   - deploy simulation runner (deploy/run_modes.py)
+#
+# ------------------------------------------------------------
 
 SHELL := /bin/bash
-
 .DEFAULT_GOAL := help
 
-# -------------------------
-# Python / venv
-# -------------------------
-PY   := python3
-VENV := source ".venv/bin/activate"
-
-# Ensure repo root is on Python import path (so `import core` works)
-PYTHONPATH := $(CURDIR)
-export PYTHONPATH
-
-RUN  := $(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY)
-# -------------------------
-# Global knobs
-# -------------------------
-SPLIT_SEED ?= 33724876
-TRAIN_FRAC ?= 0.80
-VAL_FRAC   ?= 0.10
-TEST_FRAC  ?= 0.10
-
-# Windows (default: W48 S12)
-WIN_W ?= 48
-WIN_S ?= 12
-
-# Pose preprocess knobs
-CONF_THR   ?= 0.20
-SMOOTH_K   ?= 5
-MAX_GAP    ?= 4
-NORM_MODE  ?= torso
-PELVIS_FILL?= nearest
-
-# Common train knobs
-EPOCHS ?= 100
-# -------------------------
-# GCN training knobs
-# -------------------------
-OUT_TAG ?=
-LR_GCN ?= $(LR)
-EPOCHS_GCN ?= $(EPOCHS)
-BATCH_GCN ?= $(BATCH)
-
-GCN_PATIENCE ?= 12
-GCN_GCN_HIDDEN ?= 96
-GCN_TCN_HIDDEN ?= 192
-GCN_DROPOUT ?= 0.35
-GCN_USE_SE ?= 1
-GCN_TWO_STREAM ?= 1
-GCN_FUSE ?= concat
-
-MASK_JOINT_P ?= 0.15
-MASK_FRAME_P ?= 0.10
-GCN_POS_WEIGHT ?= auto
-GCN_BALANCED_SAMPLER ?= 0
-
-GCN_WEIGHT_DECAY ?= 1e-4
-GCN_MONITOR ?= f1
-GCN_LABEL_SMOOTHING ?= 0.0
-GCN_NUM_WORKERS ?= 0
-
-
-# Threshold sweep (used inside train_gcn.py for val metric selection)
-GCN_THR_MIN ?= 0.01
-GCN_THR_MAX ?= 0.95
-GCN_THR_STEP ?= 0.05
-GCN_MIN_EPOCHS ?= 5
-
-# Dataset-specific overrides (keep defaults for most, stabilise MUVIM)
-LR_GCN_LE2I ?= $(LR_GCN)
-LR_GCN_URFD ?= $(LR_GCN)
-LR_GCN_CAUC ?= $(LR_GCN)
-LR_GCN_MUVIM ?= 3e-4
-
-GCN_MONITOR_LE2I ?= $(GCN_MONITOR)
-GCN_MONITOR_URFD ?= $(GCN_MONITOR)
-GCN_MONITOR_CAUC ?= $(GCN_MONITOR)
-GCN_MONITOR_MUVIM ?= ap
-
-GCN_THR_STEP_MUVIM ?= 0.01
-GCN_DROPOUT_MUVIM ?= 0.20
-MASK_JOINT_P_MUVIM ?= 0.05
-MASK_FRAME_P_MUVIM ?= 0.02
-GCN_POS_WEIGHT_MUVIM ?= none
-GCN_BALANCED_SAMPLER_MUVIM ?= 1
-GCN_BALANCED_SAMPLER_FLAG_MUVIM = $(if $(filter 1,$(GCN_BALANCED_SAMPLER_MUVIM)),--balanced_sampler,)
-
-BATCH  ?= 128
-LR     ?= 1e-3
+# Prevent Make from deleting intermediate results when a command fails.
+.SECONDARY:
+.DELETE_ON_ERROR:
 
 # -------------------------
-# Training knobs (new trainers)
+# Python runner
 # -------------------------
-TCN_HIDDEN ?= 128
-TCN_DROPOUT ?= 0.30
-TCN_NUM_BLOCKS ?= 4
-TCN_KERNEL ?= 3
-TCN_PATIENCE ?= 12
-TCN_GRAD_CLIP ?= 1.0
-TCN_POS_WEIGHT ?= auto
-TCN_BALANCED_SAMPLER ?= 0
-TCN_MASK_JOINT_P ?= 0.15
-TCN_MASK_FRAME_P ?= 0.10
-TCN_MONITOR ?= f1
+PY ?= python3
+VENV_ACT ?= .venv/bin/activate
 
-# Dataset overrides (stabilise LE2i/MUVIM)
-LR_TCN_LE2I ?= $(LR)
-LR_TCN_URFD ?= $(LR)
-LR_TCN_CAUC ?= $(LR)
-LR_TCN_MUVIM ?= 3e-4
-
-TCN_MONITOR_LE2I ?= ap
-TCN_MONITOR_URFD ?= f1
-TCN_MONITOR_CAUC ?= f1
-TCN_MONITOR_MUVIM ?= ap
-
-TCN_DROPOUT_MUVIM ?= 0.20
-TCN_MASK_JOINT_P_MUVIM ?= 0.05
-TCN_MASK_FRAME_P_MUVIM ?= 0.03
-TCN_POS_WEIGHT_MUVIM ?= none
-TCN_BALANCED_SAMPLER_MUVIM ?= 1
-
-GCN_GRAD_CLIP ?= 1.0
-
-# Alert policy defaults (real-time)
-ALERT_EMA_ALPHA ?= 0.20
-ALERT_K ?= 2
-ALERT_N ?= 3
-ALERT_TAU_HIGH ?= 0.90
-ALERT_TAU_LOW ?= 0.70
-ALERT_COOLDOWN_S ?= 30
-ALERT_CONFIRM ?= 1
-ALERT_CONFIRM_S ?= 2.0
-ALERT_CONFIRM_MIN_LYING ?= 0.65
-ALERT_CONFIRM_MAX_MOTION ?= 0.08
-ALERT_CONFIRM_REQUIRE_LOW ?= 1
-
-# --- fit_ops threshold sweep (tau_high is FITTED on val; tau_low = tau_low_ratio * tau_high) ---
-FIT_THR_MIN ?= 0.01
-FIT_THR_MAX ?= 0.95
-FIT_THR_STEP ?= 0.01
-# Hysteresis ratio used by fit_ops.py to derive tau_low from tau_high:
-#   tau_low = tau_high * FIT_TAU_LOW_RATIO
-# Supervisor-friendly default: if tau_high≈0.90 then tau_low≈0.70.
-FIT_TAU_LOW_RATIO ?= 0.78
-
-# Event grouping + matching (seconds)
-FIT_TIME_MODE ?= center  # start|center|end mapping from window index → time
-FIT_MERGE_GAP_S ?= 1.0  # merge predicted alert events if gap <= this
-FIT_OVERLAP_SLACK_S ?= 0.5  # slack when matching predicted alerts to GT falls
-
-# OP selection targets (tune per dataset if needed)
-FIT_OP1_RECALL ?= 0.95  # High Safety: pick first OP with recall >= this (if possible)
-FIT_OP3_FA24H ?= 1.0  # Low Alarms: pick first OP with FA/24h <= this (if possible)
-
-# fit_ops composed flags
-FITOPS_POLICY_FLAGS = --ema_alpha "$(ALERT_EMA_ALPHA)" --k "$(ALERT_K)" --n "$(ALERT_N)" --cooldown_s "$(ALERT_COOLDOWN_S)" --tau_low_ratio "$(FIT_TAU_LOW_RATIO)" --confirm "$(ALERT_CONFIRM)" --confirm_s "$(ALERT_CONFIRM_S)" --confirm_min_lying "$(ALERT_CONFIRM_MIN_LYING)" --confirm_max_motion "$(ALERT_CONFIRM_MAX_MOTION)" --confirm_require_low "$(ALERT_CONFIRM_REQUIRE_LOW)"
-FITOPS_SWEEP_FLAGS  = --thr_min "$(FIT_THR_MIN)" --thr_max "$(FIT_THR_MAX)" --thr_step "$(FIT_THR_STEP)" --time_mode "$(strip $(FIT_TIME_MODE))" --merge_gap_s "$(strip $(FIT_MERGE_GAP_S))" --overlap_slack_s "$(strip $(FIT_OVERLAP_SLACK_S))" --op1_recall "$(strip $(FIT_OP1_RECALL))" --op3_fa24h "$(strip $(FIT_OP3_FA24H))"
-
-# --- metrics.py sweep (for FA/hour vs Recall curves) ---
-METR_THR_MIN ?= 0.001
-METR_THR_MAX ?= 0.95
-METR_THR_STEP ?= 0.01
-METRICS_SWEEP_FLAGS = --thr_min "$(METR_THR_MIN)" --thr_max "$(METR_THR_MAX)" --thr_step "$(METR_THR_STEP)"
-
-# --- plotting mode (FULL by default; set PLOT_PARETO=1 for frontier only) ---
-PLOT_PARETO ?= 0
-PLOT_PARETO_FLAG = $(if $(filter 1 yes true,$(strip $(PLOT_PARETO))),--plot_pareto,)
-
-
+# RUN will activate venv if present and ensure imports work from repo root.
+ifneq ("$(wildcard $(VENV_ACT))","")
+RUN := source "$(VENV_ACT)" && PYTHONPATH="$(CURDIR)" $(PY) -u
+else
+RUN := PYTHONPATH="$(CURDIR)" $(PY) -u
+endif
 
 # -------------------------
-# Project dirs
+# Datasets supported in this repo
+# -------------------------
+DATASETS := le2i urfd caucafall muvim
+
+# -------------------------
+# Top-level paths
 # -------------------------
 RAW_DIR    := data/raw
 INTERIM    := data/interim
 PROCESSED  := data/processed
 OUT_DIR    := outputs
 CFG_DIR    := configs
+
 LABELS_DIR := $(CFG_DIR)/labels
 SPLITS_DIR := $(CFG_DIR)/splits
 OPS_DIR    := $(CFG_DIR)/ops
-REPORTS_DIR := $(OUT_DIR)/reports
-FIG_DIR     := $(OUT_DIR)/figures
+
+CAL_DIR    := $(OUT_DIR)/calibration
+MET_DIR    := $(OUT_DIR)/metrics
+MINED_DIR  := $(OUT_DIR)/mined
+PLOTS_DIR  := $(OUT_DIR)/plots
+
+# Selected operating point when a script supports it (op1/op2/op3)
+OP ?= op2
 
 # -------------------------
-# Raw dataset locations
+# Raw dataset roots (override if your paths differ)
 # -------------------------
-RAW_LE2I  := $(RAW_DIR)/LE2i
-RAW_URFD  := $(RAW_DIR)/UR_Fall_clips
-RAW_CAUC  := $(RAW_DIR)/CAUCAFall
-RAW_MUVIM := $(RAW_DIR)/MUVIM
+RAW_le2i      := $(RAW_DIR)/LE2i
+RAW_urfd      := $(RAW_DIR)/UR_Fall
+RAW_caucafall := $(RAW_DIR)/CAUCAFall
+RAW_muvim     := $(RAW_DIR)/MUVIM
 
-# -------------------------
-# FPS defaults
-# -------------------------
-FPS_LE2I  ?= 25
-FPS_URFD  ?= 30
-FPS_CAUC  ?= 23
-FPS_MUVIM ?= 30
+# Source FPS defaults (used only when metadata is missing)
+FPS_le2i      ?= 25
+FPS_urfd      ?= 30
+FPS_caucafall ?= 23
+FPS_muvim     ?= 30
 
 # -------------------------
-# Interim pose dirs
+# Preprocess knobs (pose_npz_raw -> pose_npz)
 # -------------------------
-POSE_LE2I_RAW  := $(INTERIM)/le2i/pose_npz_raw
-POSE_LE2I      := $(INTERIM)/le2i/pose_npz
+# Confidence gating threshold when constructing masks.
+PREPROC_CONF_THR ?= 0.20
 
-POSE_URFD_RAW  := $(INTERIM)/urfd/pose_npz_raw
-POSE_URFD      := $(INTERIM)/urfd/pose_npz
+# Target deploy FPS (your "single time base").
+PREPROC_TARGET_FPS ?= 30
 
-POSE_CAUC_RAW  := $(INTERIM)/caucafall/pose_npz_raw
-POSE_CAUC      := $(INTERIM)/caucafall/pose_npz
+# One-Euro smoothing settings
+PREPROC_ONE_EURO ?= 1
+PREPROC_ONE_EURO_MIN_CUTOFF ?= 1.0
+PREPROC_ONE_EURO_BETA ?= 0.0
+PREPROC_ONE_EURO_D_CUTOFF ?= 1.0
 
-POSE_MUVIM_RAW := $(INTERIM)/muvim/pose_npz_raw
-POSE_MUVIM     := $(INTERIM)/muvim/pose_npz
-
-# -------------------------
-# Labels / spans
-# -------------------------
-LABELS_LE2I := $(LABELS_DIR)/le2i.json
-SPANS_LE2I  := $(LABELS_DIR)/le2i_spans.json
-
-LABELS_URFD := $(LABELS_DIR)/urfd.json
-SPANS_URFD  := $(LABELS_DIR)/urfd_spans.json
-
-LABELS_CAUC := $(LABELS_DIR)/caucafall.json
-SPANS_CAUC  := $(LABELS_DIR)/caucafall_spans.json
-
-LABELS_MUVIM := $(LABELS_DIR)/muvim.json
-SPANS_MUVIM  := $(LABELS_DIR)/muvim_spans.json
-
-# MUVIM CSV (you showed this)
-MUVIM_ZED_CSV ?= $(RAW_MUVIM)/ZED_RGB/ZED_RGB.csv
+# Legacy smoothing (kept for backwards compatibility; usually keep 1 when One-Euro is enabled)
+PREPROC_SMOOTH_K ?= 1
+PREPROC_MAX_GAP  ?= 4
 
 # -------------------------
-# Splits files
+# Window builder knobs (pose_npz -> windows)
 # -------------------------
-SPLIT_LE2I_TRAIN := $(SPLITS_DIR)/le2i_train.txt
-SPLIT_LE2I_VAL   := $(SPLITS_DIR)/le2i_val.txt
-SPLIT_LE2I_TEST  := $(SPLITS_DIR)/le2i_test.txt
+WIN_W ?= 48
+WIN_S ?= 12
 
-SPLIT_URFD_TRAIN := $(SPLITS_DIR)/urfd_train.txt
-SPLIT_URFD_VAL   := $(SPLITS_DIR)/urfd_val.txt
-SPLIT_URFD_TEST  := $(SPLITS_DIR)/urfd_test.txt
-
-SPLIT_CAUC_TRAIN := $(SPLITS_DIR)/caucafall_train.txt
-SPLIT_CAUC_VAL   := $(SPLITS_DIR)/caucafall_val.txt
-SPLIT_CAUC_TEST  := $(SPLITS_DIR)/caucafall_test.txt
-
-SPLIT_MUVIM_TRAIN := $(SPLITS_DIR)/muvim_train.txt
-SPLIT_MUVIM_VAL   := $(SPLITS_DIR)/muvim_val.txt
-SPLIT_MUVIM_TEST  := $(SPLITS_DIR)/muvim_test.txt
+# Extra arguments for windows/make_windows.py
+# Keep this as a single variable so you can override it in one place.
+WIN_EXTRA ?= --strategy balanced --min_overlap_frames 1 --pos_per_span 80 --neg_ratio 3.0 \
+            --max_neg_per_video 250 --max_windows_per_video_no_spans 120 --min_valid_frac 0.0 \
+            --skip_existing --write_manifest
 
 # -------------------------
-# Windows output dirs
+# Unlabeled window pipeline knobs (LE2i only; optional)
 # -------------------------
-WIN_LE2I  := $(PROCESSED)/le2i/windows_W$(WIN_W)_S$(WIN_S)
-WIN_URFD  := $(PROCESSED)/urfd/windows_W$(WIN_W)_S$(WIN_S)
-WIN_CAUC  := $(PROCESSED)/caucafall/windows_W$(WIN_W)_S$(WIN_S)
-WIN_MUVIM := $(PROCESSED)/muvim/windows_W$(WIN_W)_S$(WIN_S)
+# Scene keywords used by labels/make_unlabeled_test_list.py (case-insensitive match).
+LE2I_UNLABELED_SCENES ?= Office "Lecture room"
+UNLAB_SUBSET ?= test_unlabeled
 
-# Extra window knobs (override at call time if needed)
-WIN_EXTRA ?= --strategy balanced --min_overlap_frames 1 --pos_per_span 20 --neg_ratio 2.0 --max_neg_per_video 250 --max_windows_per_video_no_spans 120 --min_valid_frac 0.0
-
-# -------------------------
-# Model outputs
-# -------------------------
-OUT_TCN_LE2I  := $(OUT_DIR)/le2i_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_URFD  := $(OUT_DIR)/urfd_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_CAUC  := $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_MUVIM := $(OUT_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S)
-
-OUT_GCN_LE2I  := $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_URFD  := $(OUT_DIR)/urfd_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_CAUC  := $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_MUVIM := $(OUT_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S)
-# Checkpoint paths
-CKPT_TCN_LE2I  := $(OUT_TCN_LE2I)/best.pt
-CKPT_TCN_URFD  := $(OUT_TCN_URFD)/best.pt
-CKPT_TCN_CAUC  := $(OUT_TCN_CAUC)/best.pt
-CKPT_TCN_MUVIM := $(OUT_TCN_MUVIM)/best.pt
-CKPT_GCN_LE2I  := $(OUT_GCN_LE2I)/best.pt
-CKPT_GCN_URFD  := $(OUT_GCN_URFD)/best.pt
-CKPT_GCN_CAUC  := $(OUT_GCN_CAUC)/best.pt
-CKPT_GCN_MUVIM := $(OUT_GCN_MUVIM)/best.pt
-
-# Ops yaml outputs
-OPS_TCN_LE2I  := $(OPS_DIR)/tcn_le2i.yaml
-OPS_TCN_URFD  := $(OPS_DIR)/tcn_urfd.yaml
-OPS_TCN_CAUC  := $(OPS_DIR)/tcn_caucafall.yaml
-OPS_TCN_MUVIM := $(OPS_DIR)/tcn_muvim.yaml
-
-OPS_GCN_LE2I  := $(OPS_DIR)/gcn_le2i.yaml
-OPS_GCN_URFD  := $(OPS_DIR)/gcn_urfd.yaml
-OPS_GCN_CAUC  := $(OPS_DIR)/gcn_caucafall.yaml
-OPS_GCN_MUVIM := $(OPS_DIR)/gcn_muvim.yaml
-
-FEAT_CENTER ?= pelvis
-FEAT_SCALE ?= torso
-CENTER ?= $(FEAT_CENTER)
-SCALE ?= $(FEAT_SCALE)
-USE_MOTION ?= 1
-USE_CONF_CHANNEL ?= 1
-MOTION_SCALE_BY_FPS ?= 1
-CONF_GATE ?= 0.20
-USE_PRECOMPUTED_MASK ?= 1
-
-PREPROC_ARGS = \
-  --center "$(CENTER)" \
-  --use_motion "$(USE_MOTION)" \
-  --use_conf_channel "$(USE_CONF_CHANNEL)" \
-  --motion_scale_by_fps "$(MOTION_SCALE_BY_FPS)" \
-  --conf_gate "$(CONF_GATE)" \
-  --use_precomputed_mask "$(USE_PRECOMPUTED_MASK)"
-
+UNLAB_MAX_WINDOWS_PER_VIDEO ?= 400
+UNLAB_CONF_GATE ?= 0.20
+UNLAB_MIN_VALID_FRAC ?= 0.00
+UNLAB_MIN_AVG_CONF ?= 0.00
+UNLAB_USE_PRECOMPUTED_MASK ?= 1
 
 # -------------------------
+# Training knobs
+# -------------------------
+FORCE ?= 0               # FORCE=1 reruns even if outputs exist
+SPLIT_SEED ?= 33724876
+
+EPOCHS_TCN ?= 200
+BATCH_TCN  ?= 64
+LR_TCN     ?= 0.0005
+PATIENCE_TCN ?= 25
+
+EPOCHS_GCN ?= 200
+BATCH_GCN  ?= 64
+LR_GCN     ?= 0.0005
+PATIENCE_GCN ?= 30
+MIN_EPOCHS_GCN ?= 20
+
+# ReduceLROnPlateau knobs
+LR_PLATEAU_PATIENCE ?= 5
+LR_PLATEAU_FACTOR   ?= 0.5
+LR_PLATEAU_MIN_LR   ?= 1e-6
+
+# Training objective
+MONITOR ?= ap # ap | f1
+LOSS ?= bce # bce | focal
+FOCAL_ALPHA ?= 0.25
+FOCAL_GAMMA ?= 2.0
+
+# Use balanced sampler? (flag only)
+BALANCED_SAMPLER ?= 1
+BALANCED_SAMPLER_FLAG := $(if $(filter 1 true yes,$(BALANCED_SAMPLER)),--balanced_sampler,)
+
+# EMA for more stable validation
+EMA_DECAY  ?= 0.999
+PREFER_EMA ?= 1
+
+# Augmentation knobs
+MASK_JOINT_P ?= 0.15
+MASK_FRAME_P ?= 0.10
+AUG_HFLIP_P ?= 0.50
+AUG_JITTER_STD ?= 0.008
+AUG_JITTER_CONF_SCALED ?= 1
+AUG_OCC_P ?= 0.30
+AUG_OCC_MIN ?= 3
+AUG_OCC_MAX ?= 10
+AUG_TIME_SHIFT ?= 1
+
+# -------------------------
+# Alert policy knobs for fit_ops (deployment-style)
+# -------------------------
+CONFIRM ?= 1
+QUALITY_ADAPT ?= 1
+QUALITY_MIN   ?= 0.25
+QUALITY_BOOST ?= 0.15
+
+# Override temperature manually when fitting ops (optional)
+# Example: make fit-ops-tcn-le2i TEMP=1.2
+TEMP ?=
+
+# Fit-ops FA estimation
+#   auto: use $(WIN_ds)/$(UNLAB_SUBSET) if present
+#   none: don't pass --fa_dir
+#   <path>: explicit folder
+FITOPS_FA ?= auto
+
+# Mining knobs
+HARDNEG_SPLIT ?= val
+NEARMISS_SPLIT ?= val
+HARDNEG_MULT ?= 5
+
+# Deploy-sim knobs
+DEPLOY_CFG ?= $(CFG_DIR)/deploy_modes.yaml
+DEPLOY_SPLIT ?= $(UNLAB_SUBSET)   # prefer unlabeled if available; falls back to test
+DEPLOY_TIME_MODE ?= center
+
+# ============================================================
+# Derived per-dataset paths
+# ============================================================
+POSE_RAW_le2i      := $(INTERIM)/le2i/pose_npz_raw
+POSE_RAW_urfd      := $(INTERIM)/urfd/pose_npz_raw
+POSE_RAW_caucafall := $(INTERIM)/caucafall/pose_npz_raw
+POSE_RAW_muvim     := $(INTERIM)/muvim/pose_npz_raw
+
+POSE_le2i      := $(INTERIM)/le2i/pose_npz
+POSE_urfd      := $(INTERIM)/urfd/pose_npz
+POSE_caucafall := $(INTERIM)/caucafall/pose_npz
+POSE_muvim     := $(INTERIM)/muvim/pose_npz
+
+LABELS_le2i      := $(LABELS_DIR)/le2i.json
+LABELS_urfd      := $(LABELS_DIR)/urfd.json
+LABELS_caucafall := $(LABELS_DIR)/caucafall.json
+LABELS_muvim     := $(LABELS_DIR)/muvim.json
+
+SPANS_le2i      := $(LABELS_DIR)/le2i_spans.json
+SPANS_urfd      := $(LABELS_DIR)/urfd_spans.json
+SPANS_caucafall := $(LABELS_DIR)/caucafall_spans.json
+SPANS_muvim     := $(LABELS_DIR)/muvim_spans.json
+
+SPLIT_TRAIN_le2i      := $(SPLITS_DIR)/le2i_train.txt
+SPLIT_TRAIN_urfd      := $(SPLITS_DIR)/urfd_train.txt
+SPLIT_TRAIN_caucafall := $(SPLITS_DIR)/caucafall_train.txt
+SPLIT_TRAIN_muvim     := $(SPLITS_DIR)/muvim_train.txt
+
+SPLIT_VAL_le2i      := $(SPLITS_DIR)/le2i_val.txt
+SPLIT_VAL_urfd      := $(SPLITS_DIR)/urfd_val.txt
+SPLIT_VAL_caucafall := $(SPLITS_DIR)/caucafall_val.txt
+SPLIT_VAL_muvim     := $(SPLITS_DIR)/muvim_val.txt
+
+SPLIT_TEST_le2i      := $(SPLITS_DIR)/le2i_test.txt
+SPLIT_TEST_urfd      := $(SPLITS_DIR)/urfd_test.txt
+SPLIT_TEST_caucafall := $(SPLITS_DIR)/caucafall_test.txt
+SPLIT_TEST_muvim     := $(SPLITS_DIR)/muvim_test.txt
+
+# Optional: list of stems used to build unlabeled windows (LE2i helper)
+SPLIT_UNLABELED_le2i := $(SPLITS_DIR)/le2i_unlabeled.txt
+
+WIN_le2i      := $(PROCESSED)/le2i/windows_W$(WIN_W)_S$(WIN_S)
+WIN_urfd      := $(PROCESSED)/urfd/windows_W$(WIN_W)_S$(WIN_S)
+WIN_caucafall := $(PROCESSED)/caucafall/windows_W$(WIN_W)_S$(WIN_S)
+WIN_muvim     := $(PROCESSED)/muvim/windows_W$(WIN_W)_S$(WIN_S)
+
+OUT_TCN_le2i      := $(OUT_DIR)/le2i_tcn_W$(WIN_W)S$(WIN_S)
+OUT_TCN_urfd      := $(OUT_DIR)/urfd_tcn_W$(WIN_W)S$(WIN_S)
+OUT_TCN_caucafall := $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)
+OUT_TCN_muvim     := $(OUT_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S)
+
+OUT_GCN_le2i      := $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)
+OUT_GCN_urfd      := $(OUT_DIR)/urfd_gcn_W$(WIN_W)S$(WIN_S)
+OUT_GCN_caucafall := $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)
+OUT_GCN_muvim     := $(OUT_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S)
+
+CKPT_TCN_le2i      := $(OUT_TCN_le2i)/best.pt
+CKPT_TCN_urfd      := $(OUT_TCN_urfd)/best.pt
+CKPT_TCN_caucafall := $(OUT_TCN_caucafall)/best.pt
+CKPT_TCN_muvim     := $(OUT_TCN_muvim)/best.pt
+
+CKPT_GCN_le2i      := $(OUT_GCN_le2i)/best.pt
+CKPT_GCN_urfd      := $(OUT_GCN_urfd)/best.pt
+CKPT_GCN_caucafall := $(OUT_GCN_caucafall)/best.pt
+CKPT_GCN_muvim     := $(OUT_GCN_muvim)/best.pt
+
+CAL_TCN_le2i      := $(CAL_DIR)/tcn_le2i.yaml
+CAL_TCN_urfd      := $(CAL_DIR)/tcn_urfd.yaml
+CAL_TCN_caucafall := $(CAL_DIR)/tcn_caucafall.yaml
+CAL_TCN_muvim     := $(CAL_DIR)/tcn_muvim.yaml
+
+CAL_GCN_le2i      := $(CAL_DIR)/gcn_le2i.yaml
+CAL_GCN_urfd      := $(CAL_DIR)/gcn_urfd.yaml
+CAL_GCN_caucafall := $(CAL_DIR)/gcn_caucafall.yaml
+CAL_GCN_muvim     := $(CAL_DIR)/gcn_muvim.yaml
+
+OPS_TCN_le2i      := $(OPS_DIR)/tcn_le2i.yaml
+OPS_TCN_urfd      := $(OPS_DIR)/tcn_urfd.yaml
+OPS_TCN_caucafall := $(OPS_DIR)/tcn_caucafall.yaml
+OPS_TCN_muvim     := $(OPS_DIR)/tcn_muvim.yaml
+
+OPS_GCN_le2i      := $(OPS_DIR)/gcn_le2i.yaml
+OPS_GCN_urfd      := $(OPS_DIR)/gcn_urfd.yaml
+OPS_GCN_caucafall := $(OPS_DIR)/gcn_caucafall.yaml
+OPS_GCN_muvim     := $(OPS_DIR)/gcn_muvim.yaml
+
+# ============================================================
 # Help
-# -------------------------
+# ============================================================
 .PHONY: help
 help:
+	@echo "Core pipeline (per dataset):"
+	@echo "  make extract-<ds>            # pose from videos (ds: $(DATASETS))"
+	@echo "  make extract-img-urfd        # pose from image sequences (URFD) [optional]"
+	@echo "  make extract-img-caucafall   # pose from image sequences (CAUCAFall) [optional]"
+	@echo "  make preprocess-<ds>         # resample + One-Euro + masks"
+	@echo "  make labels-<ds>             # labels.json + spans.json"
+	@echo "  make splits-<ds>             # train/val/test lists"
+	@echo "  make windows-<ds>            # build windows_W*_S*"
+	@echo "  make check-windows-<ds>      # quick schema checks"
 	@echo ""
-	@echo "Fall Detection v2 — Make targets"
+	@echo "Training + eval:"
+	@echo "  make train-tcn-<ds> | train-gcn-<ds>"
+	@echo "  make calibrate-tcn-<ds> | calibrate-gcn-<ds>"
+	@echo "  make fit-ops-tcn-<ds> | fit-ops-gcn-<ds>"
+	@echo "  make eval-tcn-<ds> | eval-gcn-<ds>"
+	@echo "  make replay-tcn-<ds> | replay-gcn-<ds>"
 	@echo ""
-	@echo "Preprocess pipelines:"
-	@echo "  make pipeline-le2i | pipeline-urfd | pipeline-caucafall | pipeline-muvim"
-	@echo "  make pipeline-le2i-noextract   (skip extract, reuse pose_npz_raw)"
+	@echo "Unlabeled (FA-only) + deploy-sim (optional):"
+	@echo "  make unlabeled-le2i          # create $(UNLAB_SUBSET) windows for LE2i"
+	@echo "  make score-unlabeled-tcn-le2i | score-unlabeled-gcn-le2i"
+	@echo "  make deploy-tcn-<ds> | deploy-gcn-<ds> | deploy-dual-<ds>"
 	@echo ""
-	@echo "Sanity checks:"
-	@echo "  make check-windows-<ds>        (ds: le2i urfd caucafall muvim)"
-	@echo "  make check-windows            (all datasets)"
+	@echo "Mining + finetune:"
+	@echo "  make mine-nearmiss-tcn-<ds> | mine-nearmiss-gcn-<ds>"
+	@echo "  make mine-hardneg-tcn-<ds>  | mine-hardneg-gcn-<ds>"
+	@echo "  make finetune-hardneg-tcn-<ds> | finetune-hardneg-gcn-<ds>"
 	@echo ""
-	@echo "Train:"
-	@echo "  make train-tcn-<ds> | train-gcn-<ds>          (ds: le2i urfd caucafall muvim)"
-	@echo "  make pipeline-all              (TCN: train+fit-ops+eval+plot for all datasets)"
-	@echo "  make pipeline-all-gcn          (GCN: train+fit-ops+eval+plot for all datasets)"
+	@echo "Plots:"
+	@echo "  make plot-ops-tcn-<ds> | plot-ops-gcn-<ds>"
 	@echo ""
-	@echo "Thresholds + evaluation:"
-	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds>"
-	@echo "  make eval-<ds>    | eval-<ds>-gcn"
-	@echo "  make plot-<ds>    | plot-<ds>-gcn"
-	@echo "  make eval-all | plot-all | eval-all-gcn | plot-all-gcn"
+	@echo "Meta:"
+	@echo "  make pipeline-<ds>           # extract->preprocess->labels->splits->windows"
+	@echo "  make workflow-tcn-<ds>       # windows->train->calibrate->fit-ops->eval"
+	@echo "  make workflow-gcn-<ds>"
 	@echo ""
 	@echo "Common overrides:"
-	@echo "  make WIN_W=48 WIN_S=12 pipeline-le2i"
-	@echo "  make EPOCHS=80 BATCH=128 LR=1e-3 train-gcn-muvim"
-	@echo ""
-# -------------------------
-# Extract pose
-# -------------------------
+	@echo "  WIN_W=48 WIN_S=12  LOSS=focal  EMA_DECAY=0.999  QUALITY_ADAPT=1 CONFIRM=1"
+	@echo "  FORCE=1 (rerun even if outputs exist)"
+	@echo "  FITOPS_FA=auto|none|<path> (use unlabeled windows for FA in fit_ops)"
+
+# ============================================================
+# Pose extraction
+# ============================================================
 .PHONY: extract-le2i extract-urfd extract-caucafall extract-muvim
 
 extract-le2i:
-	@mkdir -p "$(POSE_LE2I_RAW)"
+	@mkdir -p "$(POSE_RAW_le2i)"
 	$(RUN) pose/extract_2d.py \
-	  --videos_glob "$(RAW_LE2I)/**/Videos/*.avi" "$(RAW_LE2I)/**/*.avi" "$(RAW_LE2I)/**/Videos/*.mp4" "$(RAW_LE2I)/**/*.mp4" \
-	  --out_dir "$(POSE_LE2I_RAW)" \
-	  --fps_default "$(FPS_LE2I)" \
-	  --skip_existing || true
+	  --videos_glob "$(RAW_le2i)/**/Videos/*.avi" "$(RAW_le2i)/**/*.avi" "$(RAW_le2i)/**/Videos/*.mp4" "$(RAW_le2i)/**/*.mp4" \
+	  --out_dir "$(POSE_RAW_le2i)" --fps_default "$(FPS_le2i)" --skip_existing || true
 
 extract-urfd:
-	@mkdir -p "$(POSE_URFD_RAW)"
-	$(RUN) pose/extract_2d_from_images.py \
-	  --images_glob "$(RAW_URFD)/*/*.jpg" "$(RAW_URFD)/*/*.png" \
-	  --sequence_id_depth 1 \
-	  --out_dir "$(POSE_URFD_RAW)" \
-	  --dataset urfd \
-	  --fps "$(FPS_URFD)" \
-	  --skip_existing
+	@mkdir -p "$(POSE_RAW_urfd)"
+	$(RUN) pose/extract_2d.py \
+	  --videos_glob "$(RAW_urfd)/**/*.avi" "$(RAW_urfd)/**/*.mp4" \
+	  --out_dir "$(POSE_RAW_urfd)" --fps_default "$(FPS_urfd)" --skip_existing || true
 
 extract-caucafall:
-	@mkdir -p "$(POSE_CAUC_RAW)"
-	$(RUN) pose/extract_2d_from_images.py \
-	  --images_glob "$(RAW_CAUC)/**/*.jpg" "$(RAW_CAUC)/**/*.png" \
-	  --sequence_id_depth 2 \
-	  --out_dir "$(POSE_CAUC_RAW)" \
-	  --dataset caucafall \
-	  --fps "$(FPS_CAUC)" \
-	  --skip_existing
+	@mkdir -p "$(POSE_RAW_caucafall)"
+	$(RUN) pose/extract_2d.py \
+	  --videos_glob "$(RAW_caucafall)/**/*.avi" "$(RAW_caucafall)/**/*.mp4" \
+	  --out_dir "$(POSE_RAW_caucafall)" --fps_default "$(FPS_caucafall)" --skip_existing || true
 
 extract-muvim:
-	@echo "[info] MUVIM extraction depends on your raw layout."
-	@echo "       If you already have pose_npz_raw or pose_npz, you can run preprocess-muvim."
+	@mkdir -p "$(POSE_RAW_muvim)"
+	$(RUN) pose/extract_2d.py \
+	  --videos_glob "$(RAW_muvim)/**/*.avi" "$(RAW_muvim)/**/*.mp4" \
+	  --out_dir "$(POSE_RAW_muvim)" --fps_default "$(FPS_muvim)" --skip_existing || true
 
-# -------------------------
-# Preprocess (clean/gate/smooth/normalize)
-# -------------------------
-.PHONY: preprocess-le2i preprocess-urfd preprocess-caucafall preprocess-muvim
-.PHONY: preprocess-le2i-only preprocess-urfd-only preprocess-caucafall-only preprocess-muvim-only
+# Alternative extractors for image-sequence datasets (optional)
+.PHONY: extract-img-urfd extract-img-caucafall
 
-preprocess-le2i: extract-le2i preprocess-le2i-only
-preprocess-le2i-only:
-	@mkdir -p "$(POSE_LE2I)"
+extract-img-urfd:
+	@mkdir -p "$(POSE_RAW_urfd)"
+	$(RUN) pose/extract_2d_from_images.py \
+	  --dataset_code urfd \
+	  --images_glob "$(RAW_urfd)/**/*.*" \
+	  --out_dir "$(POSE_RAW_urfd)" --fps_default "$(FPS_urfd)" --skip_existing || true
+
+extract-img-caucafall:
+	@mkdir -p "$(POSE_RAW_caucafall)"
+	$(RUN) pose/extract_2d_from_images.py \
+	  --dataset_code caucafall \
+	  --images_glob "$(RAW_caucafall)/**/*.*" \
+	  --out_dir "$(POSE_RAW_caucafall)" --fps_default "$(FPS_caucafall)" --skip_existing || true
+
+# ============================================================
+# Preprocess (pose_npz_raw -> pose_npz)
+# ============================================================
+.PHONY: preprocess-% preprocess-only-%
+
+preprocess-%: extract-%
+	$(MAKE) preprocess-only-$*
+
+preprocess-only-%:
+	@mkdir -p "$(POSE_$*)" "$(POSE_RAW_$*)"
+	@if [ ! -d "$(POSE_RAW_$*)" ]; then echo "[err] missing pose raw dir: $(POSE_RAW_$*)"; exit 2; fi
 	$(RUN) pose/preprocess_pose_npz.py \
-	  --in_dir  "$(POSE_LE2I_RAW)" \
-	  --out_dir "$(POSE_LE2I)" \
-	  --recursive --skip_existing \
-	  --conf_thr "$(CONF_THR)" --smooth_k "$(SMOOTH_K)" --max_gap "$(MAX_GAP)" \
-	  --normalize "$(NORM_MODE)" --pelvis_fill "$(PELVIS_FILL)"
+	  --in_dir "$(POSE_RAW_$*)" --out_dir "$(POSE_$*)" \
+	  --fps_default "$(FPS_$*)" \
+	  --target_fps "$(PREPROC_TARGET_FPS)" \
+	  --one_euro "$(PREPROC_ONE_EURO)" \
+	  --one_euro_min_cutoff "$(PREPROC_ONE_EURO_MIN_CUTOFF)" \
+	  --one_euro_beta "$(PREPROC_ONE_EURO_BETA)" \
+	  --one_euro_d_cutoff "$(PREPROC_ONE_EURO_D_CUTOFF)" \
+	  --conf_thr "$(PREPROC_CONF_THR)" \
+	  --smooth_k "$(PREPROC_SMOOTH_K)" \
+	  --max_gap "$(PREPROC_MAX_GAP)" \
+	  --skip_existing
 
-preprocess-urfd: extract-urfd preprocess-urfd-only
-preprocess-urfd-only:
-	@mkdir -p "$(POSE_URFD)"
-	$(RUN) pose/preprocess_pose_npz.py \
-	  --in_dir  "$(POSE_URFD_RAW)" \
-	  --out_dir "$(POSE_URFD)" \
-	  --recursive --skip_existing \
-	  --conf_thr "$(CONF_THR)" --smooth_k "$(SMOOTH_K)" --max_gap "$(MAX_GAP)" \
-	  --normalize "$(NORM_MODE)" --pelvis_fill "$(PELVIS_FILL)"
+# ============================================================
+# Labels (pose_npz -> labels.json/spans.json)
+# ============================================================
+URFD_MIN_RUN ?= 2
+URFD_GAP_FILL ?= 2
 
-preprocess-caucafall: extract-caucafall preprocess-caucafall-only
-preprocess-caucafall-only:
-	@mkdir -p "$(POSE_CAUC)"
-	$(RUN) pose/preprocess_pose_npz.py \
-	  --in_dir  "$(POSE_CAUC_RAW)" \
-	  --out_dir "$(POSE_CAUC)" \
-	  --recursive --skip_existing \
-	  --conf_thr "$(CONF_THR)" --smooth_k "$(SMOOTH_K)" --max_gap "$(MAX_GAP)" \
-	  --normalize "$(NORM_MODE)" --pelvis_fill "$(PELVIS_FILL)"
+CAUC_MIN_RUN ?= 2
+CAUC_GAP_FILL ?= 2
 
-preprocess-muvim: extract-muvim preprocess-muvim-only
-preprocess-muvim-only:
-	@mkdir -p "$(POSE_MUVIM)"
-	@if [ -d "$(POSE_MUVIM_RAW)" ] && [ "$$(ls -A "$(POSE_MUVIM_RAW)" 2>/dev/null | wc -l)" -gt 0 ]; then \
-	  $(RUN) pose/preprocess_pose_npz.py \
-	    --in_dir  "$(POSE_MUVIM_RAW)" \
-	    --out_dir "$(POSE_MUVIM)" \
-	    --recursive --skip_existing \
-	    --conf_thr "$(CONF_THR)" --smooth_k "$(SMOOTH_K)" --max_gap "$(MAX_GAP)" \
-	    --normalize "$(NORM_MODE)" --pelvis_fill "$(PELVIS_FILL)"; \
-	else \
-	  echo "[info] no pose_npz_raw for muvim; if you already have pose_npz, skip preprocess."; \
-	fi
-
-# -------------------------
-# Labels (+ spans where supported)
-# -------------------------
-# CAUCAFall annotation support (optional):
-# If you want to try frame-level class -> spans, set:
-#   URFD_ANN_GLOB ?=
-URFD_FALL_CLASS_ID ?= 1
-URFD_MIN_RUN ?= 3
-URFD_GAP_FILL ?= 1
-
-#   CAUCA_FALL_CLASS_ID=0 or 1  (depends on dataset class mapping)
-CAUCA_ANN_GLOB ?= data/raw/caucafall/**/*.txt
-CAUCA_FALL_CLASS_ID ?= 0
-
-# Per-frame action txt parsing (URFD/CAUCA) safety switch
-USE_PER_FRAME_ACTION_TXT ?= 0
-
-CAUCA_MIN_RUN ?= 3
-CAUCA_GAP_FILL ?= 2
+MUVIM_ZED_CSV ?= $(RAW_muvim)/ZED_RGB/ZED_RGB.csv
 
 .PHONY: labels-le2i labels-urfd labels-caucafall labels-muvim
 
-labels-le2i: preprocess-le2i-only
+labels-le2i: preprocess-only-le2i
 	@mkdir -p "$(LABELS_DIR)"
 	$(RUN) labels/make_le2i_labels.py \
-	  --npz_dir "$(POSE_LE2I)" \
-	  --raw_root "$(RAW_LE2I)" \
-	  --out_labels "$(LABELS_LE2I)" \
-	  --out_spans  "$(SPANS_LE2I)"
+	  --npz_dir "$(POSE_le2i)" --raw_root "$(RAW_le2i)" \
+	  --out_labels "$(LABELS_le2i)" --out_spans "$(SPANS_le2i)"
 
-labels-urfd: preprocess-urfd-only
+labels-urfd: preprocess-only-urfd
 	@mkdir -p "$(LABELS_DIR)"
-	@ANN=""; \
-	if [ -n "$(URFD_ANN_GLOB)" ]; then \
-	  ANN="--ann_glob \"$(URFD_ANN_GLOB)\" --use_per_frame_action_txt $(USE_PER_FRAME_ACTION_TXT) --fall_class_id $(URFD_FALL_CLASS_ID) --min_run $(URFD_MIN_RUN) --gap_fill $(URFD_GAP_FILL)"; \
-	fi; \
-	eval "$(RUN) labels/make_urfd_labels.py --npz_dir \"$(POSE_URFD)\" --out_labels \"$(LABELS_URFD)\" --out_spans \"$(SPANS_URFD)\" $$ANN"
+	$(RUN) labels/make_urfd_labels.py \
+	  --raw_root "$(RAW_urfd)" --npz_dir "$(POSE_urfd)" \
+	  --out_labels "$(LABELS_urfd)" --out_spans "$(SPANS_urfd)" \
+	  --min_run "$(URFD_MIN_RUN)" --gap_fill "$(URFD_GAP_FILL)"
 
-labels-caucafall: preprocess-caucafall-only
+labels-caucafall: preprocess-only-caucafall
 	@mkdir -p "$(LABELS_DIR)"
-	@ANN=""; \
-	if [ -n "$(CAUCA_ANN_GLOB)" ]; then \
-	  ANN="--ann_glob \"$(CAUCA_ANN_GLOB)\" --use_per_frame_action_txt $(USE_PER_FRAME_ACTION_TXT) --fall_class_id $(CAUCA_FALL_CLASS_ID) --min_run $(CAUCA_MIN_RUN) --gap_fill $(CAUCA_GAP_FILL)"; \
-	fi; \
-	eval "$(RUN) labels/make_caucafall_labels.py --npz_dir \"$(POSE_CAUC)\" --out_labels \"$(LABELS_CAUC)\" --out_spans \"$(SPANS_CAUC)\" $$ANN"
+	$(RUN) labels/make_caucafall_labels_from_frames.py \
+	  --raw_root "$(RAW_caucafall)" --npz_dir "$(POSE_caucafall)" \
+	  --out_labels "$(LABELS_caucafall)" --out_spans "$(SPANS_caucafall)" \
+	  --min_run "$(CAUC_MIN_RUN)" --gap_fill "$(CAUC_GAP_FILL)"
 
-labels-muvim: preprocess-muvim-only
+labels-muvim: preprocess-only-muvim
 	@mkdir -p "$(LABELS_DIR)"
 	$(RUN) labels/make_muvim_labels.py \
-	  --npz_dir "$(POSE_MUVIM)" \
-	  --zed_csv "$(MUVIM_ZED_CSV)" \
-	  --out_labels "$(LABELS_MUVIM)" \
-	  --out_spans  "$(SPANS_MUVIM)"
+	  --npz_dir "$(POSE_muvim)" --zed_csv "$(MUVIM_ZED_CSV)" \
+	  --out_labels "$(LABELS_muvim)" --out_spans "$(SPANS_muvim)"
 
-# -------------------------
-# Splits
-# -------------------------
-.PHONY: splits-le2i splits-urfd splits-caucafall splits-muvim
+# ============================================================
+# Splits (labels.json -> train/val/test lists)
+# ============================================================
+.PHONY: splits-%
 
-splits-le2i: labels-le2i
+splits-%: labels-%
 	@mkdir -p "$(SPLITS_DIR)"
 	$(RUN) split/make_splits.py \
-	  --labels_json "$(LABELS_LE2I)" \
-	  --out_dir "$(SPLITS_DIR)" \
-	  --prefix le2i \
-	  --train "$(TRAIN_FRAC)" --val "$(VAL_FRAC)" --test "$(TEST_FRAC)" \
+	  --labels_json "$(LABELS_$*)" \
+	  --out_dir "$(SPLITS_DIR)" --prefix "$*" \
 	  --seed "$(SPLIT_SEED)"
 
-splits-urfd: labels-urfd
+# ============================================================
+# Windows (pose_npz + splits -> windows folder)
+# ============================================================
+.PHONY: windows-% check-windows-%
+
+windows-%: splits-%
+	@mkdir -p "$(WIN_$*)"
+	@SP=""; \
+	if [ -f "$(SPANS_$*)" ] && [ "$$(wc -c < "$(SPANS_$*)")" -gt 5 ]; then SP="--spans_json \"$(SPANS_$*)\""; fi; \
+	eval "$(RUN) windows/make_windows.py \
+	  --npz_dir \"$(POSE_$*)\" \
+	  --labels_json \"$(LABELS_$*)\" $$SP \
+	  --out_dir \"$(WIN_$*)\" \
+	  --W \"$(WIN_W)\" --stride \"$(WIN_S)\" \
+	  --fps_default \"$(FPS_$*)\" \
+	  --train_list \"$(SPLIT_TRAIN_$*)\" \
+	  --val_list \"$(SPLIT_VAL_$*)\" \
+	  --test_list \"$(SPLIT_TEST_$*)\" \
+	  $(WIN_EXTRA)"
+
+check-windows-%:
+	@if [ ! -d "$(WIN_$*)" ]; then echo "[err] missing windows: $(WIN_$*) (run make windows-$*)"; exit 2; fi
+	$(RUN) windows/check_windows.py --root "$(WIN_$*)"
+
+# ============================================================
+# Unlabeled windows (LE2i only; optional)
+# ============================================================
+.PHONY: unlabeled-le2i unlabeled-list-le2i windows-unlabeled-le2i
+
+# 1) Pick stems by scene keywords
+unlabeled-list-le2i: preprocess-only-le2i
 	@mkdir -p "$(SPLITS_DIR)"
-	$(RUN) split/make_splits.py \
-	  --labels_json "$(LABELS_URFD)" \
-	  --out_dir "$(SPLITS_DIR)" \
-	  --prefix urfd \
-	  --train "$(TRAIN_FRAC)" --val "$(VAL_FRAC)" --test "$(TEST_FRAC)" \
-	  --seed "$(SPLIT_SEED)"
-
-splits-caucafall: labels-caucafall
-	@mkdir -p "$(SPLITS_DIR)"
-	$(RUN) split/make_splits.py \
-	  --labels_json "$(LABELS_CAUC)" \
-	  --out_dir "$(SPLITS_DIR)" \
-	  --prefix caucafall \
-	  --train "$(TRAIN_FRAC)" --val "$(VAL_FRAC)" --test "$(TEST_FRAC)" \
-	  --seed "$(SPLIT_SEED)"
-
-splits-muvim: labels-muvim
-	@mkdir -p "$(SPLITS_DIR)"
-	$(RUN) split/make_splits.py \
-	  --labels_json "$(LABELS_MUVIM)" \
-	  --out_dir "$(SPLITS_DIR)" \
-	  --prefix muvim \
-	  --train "$(TRAIN_FRAC)" --val "$(VAL_FRAC)" --test "$(TEST_FRAC)" \
-	  --seed "$(SPLIT_SEED)"
-
-# -------------------------
-# Windows
-# -------------------------
-.PHONY: windows-le2i windows-urfd windows-caucafall windows-muvim
-
-windows-le2i: splits-le2i
-	@mkdir -p "$(WIN_LE2I)"
-	$(RUN) windows/make_windows.py \
-	  --npz_dir "$(POSE_LE2I)" \
-	  --labels_json "$(LABELS_LE2I)" \
-	  --spans_json  "$(SPANS_LE2I)" \
-	  --out_dir "$(WIN_LE2I)" \
-	  --W "$(WIN_W)" --stride "$(WIN_S)" --fps_default "$(FPS_LE2I)" \
-	  --train_list "$(SPLIT_LE2I_TRAIN)" --val_list "$(SPLIT_LE2I_VAL)" --test_list "$(SPLIT_LE2I_TEST)" \
-	  $(WIN_EXTRA)
-
-windows-urfd: splits-urfd
-	@mkdir -p "$(WIN_URFD)"
-	$(RUN) windows/make_windows.py \
-	  --npz_dir "$(POSE_URFD)" \
-	  --labels_json "$(LABELS_URFD)" \
-	  --out_dir "$(WIN_URFD)" \
-	  --W "$(WIN_W)" --stride "$(WIN_S)" --fps_default "$(FPS_URFD)" \
-	  --train_list "$(SPLIT_URFD_TRAIN)" --val_list "$(SPLIT_URFD_VAL)" --test_list "$(SPLIT_URFD_TEST)" \
-	  $(WIN_EXTRA)
-
-windows-caucafall: splits-caucafall
-	@mkdir -p "$(WIN_CAUC)"
-	@SP=""; if [ -f "$(SPANS_CAUC)" ] && [ "$$(wc -c < "$(SPANS_CAUC)")" -gt 5 ]; then SP="--spans_json \"$(SPANS_CAUC)\""; fi; \
-	eval "$(RUN) windows/make_windows.py --npz_dir \"$(POSE_CAUC)\" --labels_json \"$(LABELS_CAUC)\" $$SP --out_dir \"$(WIN_CAUC)\" --W \"$(WIN_W)\" --stride \"$(WIN_S)\" --fps_default \"$(FPS_CAUC)\" --train_list \"$(SPLIT_CAUC_TRAIN)\" --val_list \"$(SPLIT_CAUC_VAL)\" --test_list \"$(SPLIT_CAUC_TEST)\" $(WIN_EXTRA)"
-
-windows-muvim: splits-muvim
-	@mkdir -p "$(WIN_MUVIM)"
-	$(RUN) windows/make_windows.py \
-	  --npz_dir "$(POSE_MUVIM)" \
-	  --labels_json "$(LABELS_MUVIM)" \
-	  --spans_json  "$(SPANS_MUVIM)" \
-	  --out_dir "$(WIN_MUVIM)" \
-	  --W "$(WIN_W)" --stride "$(WIN_S)" --fps_default "$(FPS_MUVIM)" \
-	  --train_list "$(SPLIT_MUVIM_TRAIN)" --val_list "$(SPLIT_MUVIM_VAL)" --test_list "$(SPLIT_MUVIM_TEST)" \
-	  $(WIN_EXTRA)
-
-
-
-# -------------------------
-# Check windows (sanity checks)
-# -------------------------
-.PHONY: check-windows check-windows-le2i check-windows-urfd check-windows-caucafall check-windows-muvim
-
-check-windows: check-windows-le2i check-windows-urfd check-windows-caucafall check-windows-muvim
-
-check-windows-le2i:
-	$(RUN) windows/check_windows.py --root "$(WIN_LE2I)"
-
-check-windows-urfd:
-	$(RUN) windows/check_windows.py --root "$(WIN_URFD)"
-
-check-windows-caucafall:
-	$(RUN) windows/check_windows.py --root "$(WIN_CAUC)"
-
-check-windows-muvim:
-	$(RUN) windows/check_windows.py --root "$(WIN_MUVIM)"
-
-# -------------------------
-# Pipeline (with extract)
-# -------------------------
-.PHONY: pipeline-le2i pipeline-urfd pipeline-caucafall pipeline-muvim
-pipeline-le2i: preprocess-le2i windows-le2i
-pipeline-urfd: preprocess-urfd windows-urfd
-pipeline-caucafall: preprocess-caucafall windows-caucafall
-pipeline-muvim: preprocess-muvim windows-muvim
-
-# -------------------------
-# Pipeline (NO extract)
-# -------------------------
-.PHONY: pipeline-le2i-noextract pipeline-urfd-noextract pipeline-caucafall-noextract pipeline-muvim-noextract
-
-pipeline-le2i-noextract: preprocess-le2i-only windows-le2i
-
-pipeline-urfd-noextract: preprocess-urfd-only windows-urfd
-
-pipeline-caucafall-noextract: preprocess-caucafall-only windows-caucafall
-
-pipeline-muvim-noextract: preprocess-muvim-only windows-muvim
-
-# -------------------------
-# Train
-# -------------------------
-.PHONY: train-tcn-le2i train-tcn-urfd train-tcn-caucafall train-tcn-muvim
-.PHONY: train-gcn-le2i train-gcn-urfd train-gcn-caucafall train-gcn-muvim
-
-train-tcn-le2i:
-	# [check] train-tcn-le2i
-	if [ ! -d "$(WIN_LE2I)/train" ] || [ ! -d "$(WIN_LE2I)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_LE2I)"; \
-	  echo "      Run: make windows-le2i   (or pipeline-le2i-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_tcn.py --train_dir "$(WIN_LE2I)/train" --val_dir "$(WIN_LE2I)/val" \
-	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(LR_TCN_LE2I)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_LE2I)" \
-	  $(TCN_BASE_FLAGS) \
-	  --monitor "$(TCN_MONITOR_LE2I)" \
-	  --dropout "$(TCN_DROPOUT)" \
-	  --mask_joint_p "$(TCN_MASK_JOINT_P)" --mask_frame_p "$(TCN_MASK_FRAME_P)" \
-	  --pos_weight "$(TCN_POS_WEIGHT)" $(TCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_TCN_LE2I)$(OUT_TAG)"
-
-train-tcn-urfd:
-	# [check] train-tcn-urfd
-	if [ ! -d "$(WIN_URFD)/train" ] || [ ! -d "$(WIN_URFD)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_URFD)"; \
-	  echo "      Run: make windows-urfd   (or pipeline-urfd-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_tcn.py --train_dir "$(WIN_URFD)/train" --val_dir "$(WIN_URFD)/val" \
-	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(LR_TCN_URFD)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_URFD)" \
-	  $(TCN_BASE_FLAGS) \
-	  --monitor "$(TCN_MONITOR_URFD)" \
-	  --dropout "$(TCN_DROPOUT)" \
-	  --mask_joint_p "$(TCN_MASK_JOINT_P)" --mask_frame_p "$(TCN_MASK_FRAME_P)" \
-	  --pos_weight "$(TCN_POS_WEIGHT)" $(TCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_TCN_URFD)$(OUT_TAG)"
-
-train-tcn-caucafall:
-	# [check] train-tcn-caucafall
-	if [ ! -d "$(WIN_CAUC)/train" ] || [ ! -d "$(WIN_CAUC)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_CAUC)"; \
-	  echo "      Run: make windows-caucafall   (or pipeline-caucafall-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_tcn.py --train_dir "$(WIN_CAUC)/train" --val_dir "$(WIN_CAUC)/val" \
-	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(LR_TCN_CAUC)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_CAUC)" \
-	  $(TCN_BASE_FLAGS) \
-	  --monitor "$(TCN_MONITOR_CAUC)" \
-	  --dropout "$(TCN_DROPOUT)" \
-	  --mask_joint_p "$(TCN_MASK_JOINT_P)" --mask_frame_p "$(TCN_MASK_FRAME_P)" \
-	  --pos_weight "$(TCN_POS_WEIGHT)" $(TCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_TCN_CAUC)$(OUT_TAG)"
-
-train-tcn-muvim:
-	# [check] train-tcn-muvim
-	if [ ! -d "$(WIN_MUVIM)/train" ] || [ ! -d "$(WIN_MUVIM)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_MUVIM)"; \
-	  echo "      Run: make windows-muvim   (or pipeline-muvim-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_tcn.py --train_dir "$(WIN_MUVIM)/train" --val_dir "$(WIN_MUVIM)/val" \
-	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(LR_TCN_MUVIM)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_MUVIM)" \
-	  $(TCN_BASE_FLAGS) \
-	  --monitor "$(TCN_MONITOR_MUVIM)" \
-	  --dropout "$(TCN_DROPOUT_MUVIM)" \
-	  --mask_joint_p "$(TCN_MASK_JOINT_P_MUVIM)" --mask_frame_p "$(TCN_MASK_FRAME_P_MUVIM)" \
-	  --pos_weight "$(TCN_POS_WEIGHT_MUVIM)" $(TCN_BALANCED_SAMPLER_FLAG_MUVIM) \
-	  --save_dir "$(OUT_TCN_MUVIM)$(OUT_TAG)"
-
-train-gcn-le2i:
-	# [check] train-gcn-le2i
-	if [ ! -d "$(WIN_LE2I)/train" ] || [ ! -d "$(WIN_LE2I)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_LE2I)"; \
-	  echo "      Run: make windows-le2i   (or pipeline-le2i-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_gcn.py --train_dir "$(WIN_LE2I)/train" --val_dir "$(WIN_LE2I)/val" \
-	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(LR_GCN_LE2I)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_LE2I)" \
-	  $(GCN_MODEL_FLAGS) \
-	  --monitor "$(GCN_MONITOR_LE2I)" \
-	  --dropout "$(GCN_DROPOUT)" \
-	  --pos_weight "$(GCN_POS_WEIGHT)" $(GCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_GCN_LE2I)$(OUT_TAG)"
-
-train-gcn-urfd:
-	# [check] train-gcn-urfd
-	if [ ! -d "$(WIN_URFD)/train" ] || [ ! -d "$(WIN_URFD)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_URFD)"; \
-	  echo "      Run: make windows-urfd   (or pipeline-urfd-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_gcn.py --train_dir "$(WIN_URFD)/train" --val_dir "$(WIN_URFD)/val" \
-	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(LR_GCN_URFD)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_URFD)" \
-	  $(GCN_MODEL_FLAGS) \
-	  --monitor "$(GCN_MONITOR_URFD)" \
-	  --dropout "$(GCN_DROPOUT)" \
-	  --pos_weight "$(GCN_POS_WEIGHT)" $(GCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_GCN_URFD)$(OUT_TAG)"
-
-train-gcn-caucafall:
-	# [check] train-gcn-caucafall
-	if [ ! -d "$(WIN_CAUC)/train" ] || [ ! -d "$(WIN_CAUC)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_CAUC)"; \
-	  echo "      Run: make windows-caucafall   (or pipeline-caucafall-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_gcn.py --train_dir "$(WIN_CAUC)/train" --val_dir "$(WIN_CAUC)/val" \
-	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(LR_GCN_CAUC)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_CAUC)" \
-	  $(GCN_MODEL_FLAGS) \
-	  --monitor "$(GCN_MONITOR_CAUC)" \
-	  --dropout "$(GCN_DROPOUT)" \
-	  --pos_weight "$(GCN_POS_WEIGHT)" $(GCN_BALANCED_SAMPLER_FLAG) \
-	  --save_dir "$(OUT_GCN_CAUC)$(OUT_TAG)"
-
-train-gcn-muvim:
-	# [check] train-gcn-muvim
-	if [ ! -d "$(WIN_MUVIM)/train" ] || [ ! -d "$(WIN_MUVIM)/val" ]; then \
-	  echo "[err] windows missing under: $(WIN_MUVIM)"; \
-	  echo "      Run: make windows-muvim   (or pipeline-muvim-noextract)"; \
-	  exit 2; \
-	fi
-	$(RUN) models/train_gcn.py --train_dir "$(WIN_MUVIM)/train" --val_dir "$(WIN_MUVIM)/val" \
-	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(LR_GCN_MUVIM)" --seed "$(SPLIT_SEED)" \
-	  --fps_default "$(FPS_MUVIM)" \
-	  $(GCN_MODEL_FLAGS) \
-	  --monitor "$(GCN_MONITOR_MUVIM)" \
-	  --dropout "$(GCN_DROPOUT_MUVIM)" \
-	  --pos_weight "$(GCN_POS_WEIGHT_MUVIM)" $(GCN_BALANCED_SAMPLER_FLAG_MUVIM) \
-	  --save_dir "$(OUT_GCN_MUVIM)$(OUT_TAG)"
-
-
-pipeline-all-gcn: train-gcn-le2i train-gcn-urfd train-gcn-caucafall train-gcn-muvim eval-all-gcn plot-all-gcn
-
-pipeline-all-gcn-noextract:
-	$(MAKE) pipeline-le2i-noextract
-	$(MAKE) pipeline-urfd-noextract
-	$(MAKE) pipeline-caucafall-noextract
-	$(MAKE) pipeline-muvim-noextract
-# -------------------------
-# Feature config (shared) — training only
-# (Saved into checkpoint bundle; eval scripts load from ckpt.)
-# -------------------------
-CENTER ?= $(FEAT_CENTER)
-FEAT_USE_MOTION ?= 1
-FEAT_USE_CONF_CHANNEL ?= 1
-FEAT_MOTION_SCALE_BY_FPS ?= 1
-FEAT_CONF_GATE ?= 0.20
-FEAT_USE_PRECOMPUTED_MASK ?= 1
-
-FEAT_FLAGS = \
-  --center "$(CENTER)" \
-  --use_motion "$(FEAT_USE_MOTION)" \
-  --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" \
-  --motion_scale_by_fps "$(FEAT_MOTION_SCALE_BY_FPS)" \
-  --conf_gate "$(FEAT_CONF_GATE)" \
-  --use_precomputed_mask "$(FEAT_USE_PRECOMPUTED_MASK)"
-
-# TCN flags
-TCN_BALANCED_SAMPLER_FLAG = $(if $(filter 1,$(TCN_BALANCED_SAMPLER)),--balanced_sampler,)
-TCN_BALANCED_SAMPLER_FLAG_MUVIM = $(if $(filter 1,$(TCN_BALANCED_SAMPLER_MUVIM)),--balanced_sampler,)
-TCN_BASE_FLAGS = \
-  $(FEAT_FLAGS) \
-  --hidden "$(TCN_HIDDEN)" --num_blocks "$(TCN_NUM_BLOCKS)" --kernel "$(TCN_KERNEL)" \
-  --grad_clip "$(TCN_GRAD_CLIP)" --patience "$(TCN_PATIENCE)"
-
-# GCN flags
-GCN_BALANCED_SAMPLER_FLAG = $(if $(filter 1,$(GCN_BALANCED_SAMPLER)),--balanced_sampler,)
-GCN_TWO_STREAM_FLAG = $(if $(filter 1,$(GCN_TWO_STREAM)),--two_stream,)
-GCN_MODEL_FLAGS = \
-  $(FEAT_FLAGS) \
-  --gcn_hidden "$(GCN_GCN_HIDDEN)" --tcn_hidden "$(GCN_TCN_HIDDEN)" \
-  --use_se "$(GCN_USE_SE)" \
-  $(GCN_TWO_STREAM_FLAG) --fuse "$(GCN_FUSE)" \
-  --grad_clip "$(GCN_GRAD_CLIP)" --patience "$(GCN_PATIENCE)"
-
-
-# ----------------------
-# Fit OPs (TCN)
-# ----------------------
-# ----------------------
-# Runtime feature flags (must match training)
-# ----------------------
-CENTER ?= $(FEAT_CENTER)
-# If your TCN was trained without motion/conf, keep these at 0.
-TCN_USE_MOTION ?= $(FEAT_USE_MOTION)
-TCN_USE_CONF_CHANNEL ?= $(FEAT_USE_CONF_CHANNEL)
-TCN_MOTION_SCALE_BY_FPS ?= $(FEAT_MOTION_SCALE_BY_FPS)
-TCN_CONF_GATE ?= $(FEAT_CONF_GATE)
-TCN_USE_PRECOMPUTED_MASK ?= $(FEAT_USE_PRECOMPUTED_MASK)
-# Your current GCN training command uses these as 1.
-GCN_USE_MOTION ?= $(FEAT_USE_MOTION)
-GCN_USE_CONF_CHANNEL ?= $(FEAT_USE_CONF_CHANNEL)
-GCN_MOTION_SCALE_BY_FPS ?= $(FEAT_MOTION_SCALE_BY_FPS)
-GCN_CONF_GATE ?= $(FEAT_CONF_GATE)
-GCN_USE_PRECOMPUTED_MASK ?= $(FEAT_USE_PRECOMPUTED_MASK)
-FIT_FLAGS_TCN = --center "$(CENTER)" --use_motion "$(TCN_USE_MOTION)" --use_conf_channel "$(TCN_USE_CONF_CHANNEL)" --motion_scale_by_fps "$(TCN_MOTION_SCALE_BY_FPS)" --conf_gate "$(TCN_CONF_GATE)" --use_precomputed_mask "$(TCN_USE_PRECOMPUTED_MASK)"
-FIT_FLAGS_GCN = --center "$(CENTER)" --use_motion "$(GCN_USE_MOTION)" --use_conf_channel "$(GCN_USE_CONF_CHANNEL)" --motion_scale_by_fps "$(GCN_MOTION_SCALE_BY_FPS)" --conf_gate "$(GCN_CONF_GATE)" --use_precomputed_mask "$(GCN_USE_PRECOMPUTED_MASK)"
-
-# Training flags for GCN (kept consistent with fit/eval feature flags)
-GCN_BALANCED_SAMPLER_FLAG = $(if $(filter 1,$(GCN_BALANCED_SAMPLER)),--balanced_sampler,)
-TRAIN_FLAGS_GCN = $(FIT_FLAGS_GCN) \
-  --patience "$(GCN_PATIENCE)" \
-  --gcn_hidden "$(GCN_GCN_HIDDEN)" --tcn_hidden "$(GCN_TCN_HIDDEN)" \
-  --dropout "$(GCN_DROPOUT)" --use_se "$(GCN_USE_SE)" \
-  --two_stream "$(GCN_TWO_STREAM)" --fuse "$(GCN_FUSE)" \
-  --mask_joint_p "$(MASK_JOINT_P)" --mask_frame_p "$(MASK_FRAME_P)" \
-  --pos_weight "$(GCN_POS_WEIGHT)" $(GCN_BALANCED_SAMPLER_FLAG) \
-  --weight_decay "$(GCN_WEIGHT_DECAY)" \
-  --label_smoothing "$(GCN_LABEL_SMOOTHING)" --num_workers "$(GCN_NUM_WORKERS)"
-
-EVAL_FLAGS_TCN = $(FIT_FLAGS_TCN)
-EVAL_FLAGS_GCN = $(FIT_FLAGS_GCN)
-
-# ----------------------
-# Fit OPs (TCN)
-# ----------------------
-.PHONY: fit-ops-le2i fit-ops-urfd fit-ops-caucafall fit-ops-muvim
-.PHONY: fit-ops-tcn-le2i fit-ops-tcn-urfd fit-ops-tcn-caucafall fit-ops-tcn-muvim
-fit-ops-tcn-le2i:      fit-ops-le2i
-fit-ops-tcn-urfd:      fit-ops-urfd
-fit-ops-tcn-caucafall: fit-ops-caucafall
-fit-ops-tcn-muvim:     fit-ops-muvim
-
-fit-ops-le2i:
-	# [check] fit-ops-le2i
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_LE2I)/val" --ckpt "$(CKPT_TCN_LE2I)" --out "$(OPS_TCN_LE2I)" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-urfd:
-	# [check] fit-ops-urfd
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_URFD)/val" --ckpt "$(CKPT_TCN_URFD)" --out "$(OPS_TCN_URFD)" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-caucafall:
-	# [check] fit-ops-caucafall
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_CAUC)/val" --ckpt "$(CKPT_TCN_CAUC)" --out "$(OPS_TCN_CAUC)" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-muvim:
-	# [check] fit-ops-muvim
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_MUVIM)/val" --ckpt "$(CKPT_TCN_MUVIM)" --out "$(OPS_TCN_MUVIM)" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-.PHONY: fit-ops-gcn-le2i fit-ops-gcn-urfd fit-ops-gcn-caucafall fit-ops-gcn-muvim
-
-fit-ops-gcn-le2i:
-	# [check] fit-ops-gcn-le2i
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_LE2I)/val" --ckpt "$(CKPT_GCN_LE2I)" --out "$(OPS_GCN_LE2I)" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-gcn-urfd:
-	# [check] fit-ops-gcn-urfd
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_URFD)/val" --ckpt "$(CKPT_GCN_URFD)" --out "$(OPS_GCN_URFD)" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-gcn-caucafall:
-	# [check] fit-ops-gcn-caucafall
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_CAUC)/val" --ckpt "$(CKPT_GCN_CAUC)" --out "$(OPS_GCN_CAUC)" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-fit-ops-gcn-muvim:
-	# [check] fit-ops-gcn-muvim
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_MUVIM)/val" --ckpt "$(CKPT_GCN_MUVIM)" --out "$(OPS_GCN_MUVIM)" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-.PHONY: eval-le2i eval-urfd eval-caucafall eval-muvim eval-le2i-on-urfd
-
-eval-le2i: fit-ops-le2i
-eval-le2i-tcn: eval-le2i
-
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_LE2I)/test" --ckpt "$(CKPT_TCN_LE2I)" \
-	  --ops_yaml "$(OPS_TCN_LE2I)" --out_json "$(REPORTS_DIR)/le2i_tcn.json" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-urfd: fit-ops-urfd
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" --ckpt "$(CKPT_TCN_URFD)" \
-	  --ops_yaml "$(OPS_TCN_URFD)" --out_json "$(REPORTS_DIR)/urfd_tcn.json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-caucafall: fit-ops-caucafall
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_CAUC)/test" --ckpt "$(CKPT_TCN_CAUC)" \
-	  --ops_yaml "$(OPS_TCN_CAUC)" --out_json "$(REPORTS_DIR)/caucafall_tcn.json" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-muvim: fit-ops-muvim
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_MUVIM)/test" --ckpt "$(CKPT_TCN_MUVIM)" \
-	  --ops_yaml "$(OPS_TCN_MUVIM)" --out_json "$(REPORTS_DIR)/muvim_tcn.json" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-le2i-on-urfd: fit-ops-le2i
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" --ckpt "$(CKPT_TCN_LE2I)" \
-	  --ops_yaml "$(OPS_TCN_LE2I)" --out_json "$(REPORTS_DIR)/le2i_on_urfd_tcn.json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-
-# -------------------------
-# Cross-dataset evaluation (GCN): MUVIM-trained checkpoint evaluated on other datasets
-# Notes:
-#   - We fit ops (thresholds / policy) on the TARGET dataset val split.
-#   - Then we evaluate on the TARGET dataset test split using the SAME MUVIM checkpoint.
-#   - This measures cross-dataset generalisation + how much re-calibration helps.
-# -------------------------
-.PHONY: fit-ops-muvim-gcn-on-le2i eval-muvim-gcn-on-le2i
-.PHONY: fit-ops-muvim-gcn-on-urfd eval-muvim-gcn-on-urfd
-.PHONY: fit-ops-muvim-gcn-on-caucafall eval-muvim-gcn-on-caucafall
-.PHONY: cross-muvim-gcn
-
-fit-ops-muvim-gcn-on-le2i:
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_LE2I)/val" --ckpt "$(CKPT_GCN_MUVIM)" --out "$(OPS_DIR)/gcn_muvim_on_le2i.yaml" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-muvim-gcn-on-le2i: fit-ops-muvim-gcn-on-le2i
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_LE2I)/test" --ckpt "$(CKPT_GCN_MUVIM)" \
-	  --ops_yaml "$(OPS_DIR)/gcn_muvim_on_le2i.yaml" --out_json "$(REPORTS_DIR)/muvim_gcn_on_le2i.json" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-fit-ops-muvim-gcn-on-urfd:
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_URFD)/val" --ckpt "$(CKPT_GCN_MUVIM)" --out "$(OPS_DIR)/gcn_muvim_on_urfd.yaml" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-muvim-gcn-on-urfd: fit-ops-muvim-gcn-on-urfd
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" --ckpt "$(CKPT_GCN_MUVIM)" \
-	  --ops_yaml "$(OPS_DIR)/gcn_muvim_on_urfd.yaml" --out_json "$(REPORTS_DIR)/muvim_gcn_on_urfd.json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-fit-ops-muvim-gcn-on-caucafall:
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_CAUC)/val" --ckpt "$(CKPT_GCN_MUVIM)" --out "$(OPS_DIR)/gcn_muvim_on_caucafall.yaml" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-muvim-gcn-on-caucafall: fit-ops-muvim-gcn-on-caucafall
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_CAUC)/test" --ckpt "$(CKPT_GCN_MUVIM)" \
-	  --ops_yaml "$(OPS_DIR)/gcn_muvim_on_caucafall.yaml" --out_json "$(REPORTS_DIR)/muvim_gcn_on_caucafall.json" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-cross-muvim-gcn: eval-muvim-gcn-on-le2i eval-muvim-gcn-on-urfd eval-muvim-gcn-on-caucafall
-	@echo "[ok] cross-muvim-gcn done (reports in $(REPORTS_DIR))"
-
-.PHONY: eval-le2i-gcn eval-urfd-gcn eval-caucafall-gcn eval-muvim-gcn
-
-eval-le2i-gcn: fit-ops-gcn-le2i
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_LE2I)/test" --ckpt "$(CKPT_GCN_LE2I)" \
-	  --ops_yaml "$(OPS_GCN_LE2I)" --out_json "$(REPORTS_DIR)/le2i_gcn.json" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-urfd-gcn: fit-ops-gcn-urfd
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" --ckpt "$(CKPT_GCN_URFD)" \
-	  --ops_yaml "$(OPS_GCN_URFD)" --out_json "$(REPORTS_DIR)/urfd_gcn.json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-caucafall-gcn: fit-ops-gcn-caucafall
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_CAUC)/test" --ckpt "$(CKPT_GCN_CAUC)" \
-	  --ops_yaml "$(OPS_GCN_CAUC)" --out_json "$(REPORTS_DIR)/caucafall_gcn.json" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-eval-muvim-gcn: fit-ops-gcn-muvim
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_MUVIM)/test" --ckpt "$(CKPT_GCN_MUVIM)" \
-	  --ops_yaml "$(OPS_GCN_MUVIM)" --out_json "$(REPORTS_DIR)/muvim_gcn.json" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-le2i: eval-le2i
-plot-le2i-tcn: plot-le2i
-
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/le2i_tcn.json" --title "LE2i (TCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/le2i_tcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-urfd: eval-urfd
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/urfd_tcn.json" --title "URFD (TCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/urfd_tcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-caucafall: eval-caucafall
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/caucafall_tcn.json" --title "CAUCAFall (TCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/caucafall_tcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-muvim: eval-muvim
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/muvim_tcn.json" --title "MUVIM (TCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/muvim_tcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-le2i-on-urfd: eval-le2i-on-urfd
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/le2i_on_urfd_tcn.json" --title "LE2i model on URFD (TCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/le2i_on_urfd_tcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-.PHONY: plot-le2i-gcn plot-urfd-gcn plot-caucafall-gcn plot-muvim-gcn
-
-plot-le2i-gcn: eval-le2i-gcn
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/le2i_gcn.json" --title "LE2i (GCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/le2i_gcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-urfd-gcn: eval-urfd-gcn
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/urfd_gcn.json" --title "URFD (GCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/urfd_gcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-caucafall-gcn: eval-caucafall-gcn
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/caucafall_gcn.json" --title "CAUCAFall (GCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/caucafall_gcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-plot-muvim-gcn: eval-muvim-gcn
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/muvim_gcn.json" --title "MUVIM (GCN) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/muvim_gcn_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-.PHONY: eval-all plot-all eval-all-gcn plot-all-gcn pipeline-all pipeline-all-gcn
-
-eval-all: eval-le2i eval-urfd eval-caucafall eval-muvim
-plot-all: plot-le2i plot-urfd plot-caucafall plot-muvim
-eval-all-gcn: eval-le2i-gcn eval-urfd-gcn eval-caucafall-gcn eval-muvim-gcn
-plot-all-gcn: plot-le2i-gcn plot-urfd-gcn plot-caucafall-gcn plot-muvim-gcn
-
-
-# If you want a single pipeline (no re-extract unless needed by dependencies):
-pipeline-all: train-tcn-le2i train-tcn-urfd train-tcn-caucafall train-tcn-muvim eval-all plot-all
-
-
-
-# make train-gcn-muvim OUT_TAG=_lr3e4 LR_GCN=3e-4
-# make train-gcn-muvim OUT_TAG=_drop025 GCN_DROPOUT=0.25
-# make train-gcn-muvim OUT_TAG=_mask0803 MASK_JOINT_P=0.08 MASK_FRAME_P=0.03
-# make train-gcn-muvim LR_GCN=5e-4 POS_WEIGHT_GCN=none BALANCED_SAMPLER_GCN=1 MASK_JOINT_P=0.10 MASK_FRAME_P=0.05
-
-
-
-# -------------------------
-# Hard-negative mining (HNM)
-
-# Force re-run targets even if outputs exist (set FORCE=1)
-FORCE ?= 0
-
-# -------------------------
-# Mine the top-scoring negative windows (likely future false alarms) and fine-tune briefly.
-#
-# Default mining source: VAL negatives (y==0 or y<0) to avoid needing an unlabeled pipeline.
-# If you have long ADL-only clips windowed into e.g. .../unlabeled, just set:
-#   HNM_SRC_LE2I=$(WIN_LE2I)/unlabeled   (and similarly for others)
-
-HNM_DIR ?= outputs/hardneg
-HNM_TOPK ?= 100       # start smaller; increase only if needed
-HNM_MAX_PER_CLIP ?= 10
-HNM_MIN_P ?= 0.45      # good default (lower to 0.10 if mining returns too few)
-HNM_BATCH ?= 256        # keep
-HNM_MULT ?= 1           # reduce (5 is usually too strong)
-HNM_EPOCHS ?= 2        # reduce (8 can over-correct)
-HNM_LR ?= 1e-4          # keep
-HNM_PATIENCE ?= 2       # optional: lower because epochs is small
-# Optional: stricter mining threshold for MUVIM-GCN (baseline is usually strong)
-HNM_MIN_P_MUVIM_GCN ?= 0.50
-HNM_TAG ?= _hnm
-
-HNM_SRC_LE2I ?= $(WIN_LE2I_UNLAB)
-HNM_SRC_URFD ?= $(WIN_URFD)/train
-HNM_SRC_CAUC ?= $(WIN_CAUC)/train
-HNM_SRC_MUVIM ?= $(WIN_MUVIM)/train
-
-
-# HNM list files include W/S to avoid stale reuse across runs
-HNM_LIST_LE2I_TCN := $(HNM_DIR)/le2i_tcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_LE2I_GCN := $(HNM_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_URFD_TCN := $(HNM_DIR)/urfd_tcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_URFD_GCN := $(HNM_DIR)/urfd_gcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_CAUC_TCN := $(HNM_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_CAUC_GCN := $(HNM_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_MUVIM_TCN := $(HNM_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S).txt
-HNM_LIST_MUVIM_GCN := $(HNM_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S).txt
-
-# HNM checkpoint paths
-CKPT_TCN_LE2I_HNM := $(OUT_TCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_GCN_LE2I_HNM := $(OUT_GCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_TCN_URFD_HNM := $(OUT_TCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_GCN_URFD_HNM := $(OUT_GCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_TCN_CAUC_HNM := $(OUT_TCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_GCN_CAUC_HNM := $(OUT_GCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_TCN_MUVIM_HNM := $(OUT_TCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt
-CKPT_GCN_MUVIM_HNM := $(OUT_GCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt
-
-
-
-
-# ---- LE2i ----
-mine-hardneg-tcn-le2i:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_TCN_LE2I)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_TCN_LE2I)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_LE2I_TCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_LE2I_TCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_TCN_LE2I)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_LE2I)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_LE2I_TCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-tcn-le2i: mine-hardneg-tcn-le2i
-	@if [ -f "$(CKPT_TCN_LE2I_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_TCN_LE2I_HNM)"; \
-	else \
-	  $(RUN) models/train_tcn.py --train_dir "$(WIN_LE2I)/train" --val_dir "$(WIN_LE2I)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_TCN_LE2I)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_LE2I_TCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_TCN_LE2I)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-mine-hardneg-gcn-le2i:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_GCN_LE2I)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_GCN_LE2I)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_LE2I_GCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_LE2I_GCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_GCN_LE2I)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_LE2I)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_LE2I_GCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-gcn-le2i: mine-hardneg-gcn-le2i
-	@if [ -f "$(CKPT_GCN_LE2I_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_GCN_LE2I_HNM)"; \
-	else \
-	  $(RUN) models/train_gcn.py --train_dir "$(WIN_LE2I)/train" --val_dir "$(WIN_LE2I)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_GCN_LE2I)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_LE2I_GCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_GCN_LE2I)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-hnm-le2i: finetune-tcn-le2i finetune-gcn-le2i
-	@echo "[ok] LE2i HNM done"
-
-# ---- URFD ----
-mine-hardneg-tcn-urfd:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_TCN_URFD)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_TCN_URFD)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_URFD_TCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_URFD_TCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_TCN_URFD)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_URFD)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_URFD_TCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-tcn-urfd: mine-hardneg-tcn-urfd
-	@if [ -f "$(CKPT_TCN_URFD_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_TCN_URFD_HNM)"; \
-	else \
-	  $(RUN) models/train_tcn.py --train_dir "$(WIN_URFD)/train" --val_dir "$(WIN_URFD)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_TCN_URFD)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_URFD_TCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_TCN_URFD)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-mine-hardneg-gcn-urfd:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_GCN_URFD)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_GCN_URFD)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_URFD_GCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_URFD_GCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_GCN_URFD)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_URFD)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_URFD_GCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-gcn-urfd: mine-hardneg-gcn-urfd
-	@if [ -f "$(CKPT_GCN_URFD_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_GCN_URFD_HNM)"; \
-	else \
-	  $(RUN) models/train_gcn.py --train_dir "$(WIN_URFD)/train" --val_dir "$(WIN_URFD)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_GCN_URFD)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_URFD_GCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_GCN_URFD)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-hnm-urfd: finetune-tcn-urfd finetune-gcn-urfd
-	@echo "[ok] URFD HNM done"
-
-# ---- CAUCAFall ----
-mine-hardneg-tcn-caucafall:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_TCN_CAUC)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_TCN_CAUC)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_CAUC_TCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_CAUC_TCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_TCN_CAUC)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_CAUC)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_CAUC_TCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-tcn-caucafall: mine-hardneg-tcn-caucafall
-	@if [ -f "$(CKPT_TCN_CAUC_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_TCN_CAUC_HNM)"; \
-	else \
-	  $(RUN) models/train_tcn.py --train_dir "$(WIN_CAUC)/train" --val_dir "$(WIN_CAUC)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_TCN_CAUC)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_CAUC_TCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_TCN_CAUC)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-mine-hardneg-gcn-caucafall:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_GCN_CAUC)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_GCN_CAUC)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_CAUC_GCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_CAUC_GCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_GCN_CAUC)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_CAUC)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_CAUC_GCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-gcn-caucafall: mine-hardneg-gcn-caucafall
-	@if [ -f "$(CKPT_GCN_CAUC_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_GCN_CAUC_HNM)"; \
-	else \
-	  $(RUN) models/train_gcn.py --train_dir "$(WIN_CAUC)/train" --val_dir "$(WIN_CAUC)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_GCN_CAUC)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_CAUC_GCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_GCN_CAUC)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-hnm-caucafall: finetune-tcn-caucafall finetune-gcn-caucafall
-	@echo "[ok] CAUCAFall HNM done"
-
-# ---- MUVIM ----
-mine-hardneg-tcn-muvim:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_TCN_MUVIM)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_TCN_MUVIM)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_MUVIM_TCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_MUVIM_TCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_TCN_MUVIM)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_MUVIM)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_MUVIM_TCN)" \
-	    --min_p $(strip $(HNM_MIN_P)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-tcn-muvim: mine-hardneg-tcn-muvim
-	@if [ -f "$(CKPT_TCN_MUVIM_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_TCN_MUVIM_HNM)"; \
-	else \
-	  $(RUN) models/train_tcn.py --train_dir "$(WIN_MUVIM)/train" --val_dir "$(WIN_MUVIM)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_TCN_MUVIM)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_MUVIM_TCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_TCN_MUVIM)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-mine-hardneg-gcn-muvim:
-	@mkdir -p "$(HNM_DIR)"
-	@if [ ! -f "$(OUT_GCN_MUVIM)$(OUT_TAG)/best.pt" ]; then \
-	  echo "[err] missing checkpoint: $(OUT_GCN_MUVIM)$(OUT_TAG)/best.pt"; \
-	  echo "      Run the baseline training first."; \
-	  exit 2; \
-	fi
-	@if [ -f "$(HNM_LIST_MUVIM_GCN)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] hardneg list exists: $(HNM_LIST_MUVIM_GCN)"; \
-	else \
-	  $(RUN) eval/mine_hard_negatives.py \
-	    --ckpt "$(OUT_GCN_MUVIM)$(OUT_TAG)/best.pt" \
-	    --windows_dir "$(HNM_SRC_MUVIM)" \
-	    --neg_only 1 \
-	    --out_txt "$(HNM_LIST_MUVIM_GCN)" \
-	    --min_p $(strip $(HNM_MIN_P_MUVIM_GCN)) --top_k $(strip $(HNM_TOPK)) --max_per_clip $(strip $(HNM_MAX_PER_CLIP)) --batch $(strip $(HNM_BATCH)); \
-	fi
-
-
-finetune-gcn-muvim: mine-hardneg-gcn-muvim
-	@if [ -f "$(CKPT_GCN_MUVIM_HNM)" ] && [ "$(FORCE)" != "1" ]; then \
-	  echo "[skip] HNM checkpoint exists: $(CKPT_GCN_MUVIM_HNM)"; \
-	else \
-	  $(RUN) models/train_gcn.py --train_dir "$(WIN_MUVIM)/train" --val_dir "$(WIN_MUVIM)/val" \
-	    --epochs $(strip $(HNM_EPOCHS)) --batch "$(BATCH)" --lr $(strip $(HNM_LR)) --seed "$(SPLIT_SEED)" --patience $(strip $(HNM_PATIENCE)) \
-	    --resume "$(OUT_GCN_MUVIM)$(OUT_TAG)/best.pt" \
-	    --hard_neg_list "$(HNM_LIST_MUVIM_GCN)" --hard_neg_mult $(strip $(HNM_MULT)) \
-	    --save_dir "$(OUT_GCN_MUVIM)$(OUT_TAG)$(HNM_TAG)"; \
-	fi
-
-
-hnm-muvim: finetune-tcn-muvim finetune-gcn-muvim
-	@echo "[ok] MUVIM HNM done"
-
-hnm-all: hnm-le2i hnm-urfd hnm-caucafall hnm-muvim
-	@echo "[ok] HNM all datasets done"
-
-
-
-# -------------------------
-# HNM: fit/eval/plot convenience targets (keeps baseline reports intact)
-# -------------------------
-
-# ---- LE2i ----
-fit-ops-le2i-hnm: finetune-tcn-le2i
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_LE2I)/val" \
-	  --ckpt "$(OUT_TCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/tcn_le2i$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-le2i-hnm: fit-ops-le2i-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_LE2I)/test" \
-	  --ckpt "$(OUT_TCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/tcn_le2i$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/le2i_tcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-le2i-hnm: eval-le2i-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/le2i_tcn$(HNM_TAG).json" --title "LE2i (TCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/le2i_tcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-fit-ops-gcn-le2i-hnm: finetune-gcn-le2i
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_LE2I)/val" \
-	  --ckpt "$(OUT_GCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/gcn_le2i$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-le2i-gcn-hnm: fit-ops-gcn-le2i-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_LE2I)/test" \
-	  --ckpt "$(OUT_GCN_LE2I)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/gcn_le2i$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/le2i_gcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_LE2I)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-le2i-gcn-hnm: eval-le2i-gcn-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/le2i_gcn$(HNM_TAG).json" --title "LE2i (GCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/le2i_gcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-# ---- URFD ----
-fit-ops-urfd-hnm: finetune-tcn-urfd
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_URFD)/val" \
-	  --ckpt "$(OUT_TCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/tcn_urfd$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-urfd-hnm: fit-ops-urfd-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" \
-	  --ckpt "$(OUT_TCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/tcn_urfd$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/urfd_tcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-urfd-hnm: eval-urfd-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/urfd_tcn$(HNM_TAG).json" --title "URFD (TCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/urfd_tcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-fit-ops-gcn-urfd-hnm: finetune-gcn-urfd
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_URFD)/val" \
-	  --ckpt "$(OUT_GCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/gcn_urfd$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-urfd-gcn-hnm: fit-ops-gcn-urfd-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_URFD)/test" \
-	  --ckpt "$(OUT_GCN_URFD)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/gcn_urfd$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/urfd_gcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_URFD)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-urfd-gcn-hnm: eval-urfd-gcn-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/urfd_gcn$(HNM_TAG).json" --title "URFD (GCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/urfd_gcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-# ---- CAUCAFall ----
-fit-ops-caucafall-hnm: finetune-tcn-caucafall
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_CAUC)/val" \
-	  --ckpt "$(OUT_TCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/tcn_caucafall$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-caucafall-hnm: fit-ops-caucafall-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_CAUC)/test" \
-	  --ckpt "$(OUT_TCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/tcn_caucafall$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/caucafall_tcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-caucafall-hnm: eval-caucafall-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/caucafall_tcn$(HNM_TAG).json" --title "CAUCAFall (TCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/caucafall_tcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-fit-ops-gcn-caucafall-hnm: finetune-gcn-caucafall
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_CAUC)/val" \
-	  --ckpt "$(OUT_GCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/gcn_caucafall$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-caucafall-gcn-hnm: fit-ops-gcn-caucafall-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_CAUC)/test" \
-	  --ckpt "$(OUT_GCN_CAUC)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/gcn_caucafall$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/caucafall_gcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_CAUC)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-caucafall-gcn-hnm: eval-caucafall-gcn-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/caucafall_gcn$(HNM_TAG).json" --title "CAUCAFall (GCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/caucafall_gcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-# ---- MUVIM ----
-fit-ops-muvim-hnm: finetune-tcn-muvim
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch tcn --val_dir "$(WIN_MUVIM)/val" \
-	  --ckpt "$(OUT_TCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/tcn_muvim$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-muvim-hnm: fit-ops-muvim-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_MUVIM)/test" \
-	  --ckpt "$(OUT_TCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/tcn_muvim$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/muvim_tcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-muvim-hnm: eval-muvim-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/muvim_tcn$(HNM_TAG).json" --title "MUVIM (TCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/muvim_tcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-fit-ops-gcn-muvim-hnm: finetune-gcn-muvim
-	@mkdir -p "$(OPS_DIR)"
-	$(RUN) eval/fit_ops.py --arch gcn --val_dir "$(WIN_MUVIM)/val" \
-	  --ckpt "$(OUT_GCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --out  "$(OPS_DIR)/gcn_muvim$(HNM_TAG).yaml" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(FITOPS_POLICY_FLAGS) \
-	  $(FITOPS_SWEEP_FLAGS)
-
-eval-muvim-gcn-hnm: fit-ops-gcn-muvim-hnm
-	@mkdir -p "$(REPORTS_DIR)"
-	$(RUN) eval/metrics.py --test_dir "$(WIN_MUVIM)/test" \
-	  --ckpt "$(OUT_GCN_MUVIM)$(OUT_TAG)$(HNM_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/gcn_muvim$(HNM_TAG).yaml" \
-	  --out_json "$(REPORTS_DIR)/muvim_gcn$(HNM_TAG).json" \
-	  --pose_npz_dir "$(POSE_MUVIM)" --stride_frames_hint "$(WIN_S)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-plot-muvim-gcn-hnm: eval-muvim-gcn-hnm
-	@mkdir -p "$(FIG_DIR)"
-	$(RUN) eval/plot_fa_recall.py --reports "$(REPORTS_DIR)/muvim_gcn$(HNM_TAG).json" --title "MUVIM (GCN+HNM) — FA/24h vs Recall" --x fa24h \
-	  --out_fig "$(FIG_DIR)/muvim_gcn$(HNM_TAG)_fa_recall_W$(WIN_W)_S$(WIN_S).png" --xlog $(PLOT_PARETO_FLAG)
-
-hnm-report-all: plot-le2i-hnm plot-le2i-gcn-hnm plot-urfd-hnm plot-urfd-gcn-hnm plot-caucafall-hnm plot-caucafall-gcn-hnm plot-muvim-hnm plot-muvim-gcn-hnm
-	@echo "[ok] HNM fit/eval/plot done for all"
-
-
-# -------------------------
-# Unlabeled windows (LE2i) + scoring (FA/hour) + HNM source
-# -------------------------
-
-# -------------------------
-# Unlabeled windows (LE2i) + scoring (FA/hour) + HNM source
-# -------------------------
-# LE2i has Office/Lecture clips without fall labels. We window them into:
-#   $(WIN_LE2I)/test_unlabeled
-#
-# You provide a stems list (one NPZ stem per line) that exists under $(POSE_LE2I).
-# Example helper:
-#   find $(POSE_LE2I) -name '*.npz' -print | sed 's#.*/##; s/\.npz$$//' > configs/unlabeled/le2i_unlabeled_stems.txt
-
-LE2I_UNLABELED_STEMS ?= configs/unlabeled/le2i_unlabeled_stems.txt
-UNLAB_SUBSET ?= test_unlabeled
-WIN_LE2I_UNLAB := $(WIN_LE2I)/$(UNLAB_SUBSET)
-
-UNLAB_MAX_WINDOWS_PER_VIDEO ?= 800
-UNLAB_MIN_VALID_FRAC ?= 0.00
-UNLAB_MIN_AVG_CONF ?= 0.00
-UNLAB_SKIP_EXISTING ?= 1
-
-UNLAB_MASK_FLAG :=
-ifeq ($(USE_PRECOMPUTED_MASK),1)
-UNLAB_MASK_FLAG := --use_precomputed_mask
-endif
-
-UNLAB_SKIP_FLAG :=
-ifeq ($(UNLAB_SKIP_EXISTING),1)
-UNLAB_SKIP_FLAG := --skip_existing
-endif
-
-.PHONY: le2i-unlabeled-list windows-le2i-unlabeled score-unlabeled-le2i-tcn score-unlabeled-le2i-gcn
-
-
-.PHONY: le2i-unlabeled-list
-
-# Auto-generate a default unlabeled stems list if missing.
-# This list is intended to contain ADL-only / negative streams (e.g., office/lecture clips).
-# By default we include:
-#   - stems with label==0 (ADL) from configs/labels/le2i.json (if available)
-#   - stems present under $(POSE_LE2I) but missing from le2i.json (unannotated sequences)
-# You should edit configs/unlabeled/le2i_unlabeled_stems.txt to point to your true long ADL streams.
-le2i-unlabeled-list:
-	@mkdir -p "$(dir $(LE2I_UNLABELED_STEMS))"
-	@if [ -f "$(LE2I_UNLABELED_STEMS)" ]; then \
-		echo "[ok] unlabeled stems file exists: $(LE2I_UNLABELED_STEMS)"; \
-	else \
-		$(VENV) && PYTHONPATH="$(PWD)" $(PY) -c "import json; from pathlib import Path; pose_dir=Path('$(POSE_LE2I)'); labels_path=Path('configs/labels/le2i.json'); out_path=Path('$(LE2I_UNLABELED_STEMS)'); out_path.parent.mkdir(parents=True, exist_ok=True); all_stems=sorted(p.stem for p in pose_dir.glob('*.npz')); labels=json.loads(labels_path.read_text(encoding='utf-8')) if labels_path.exists() else {}; adl=[s for s,v in labels.items() if ((isinstance(v,(int,float)) and int(v)==0) or (isinstance(v,str) and v.strip().lower() in ('0','adl','nonfall','normal','no_fall','nofall')) )]; unl=[s for s in all_stems if s not in labels]; cand=adl+unl; pref=[s for s in cand if ('office' in s.lower() or 'lecture' in s.lower())]; rest=[s for s in cand if s not in pref]; final=list(dict.fromkeys(pref+rest)); out_path.write_text('\n'.join(final)+('\n' if final else ''), encoding='utf-8'); print(f'[gen] wrote unlabeled stems: {len(final)} -> {out_path}'); import sys; sys.exit(1 if not final else 0)"; \
-	fi
-
-windows-le2i-unlabeled: preprocess-le2i-only le2i-unlabeled-list
-	@mkdir -p "configs/unlabeled"
-	@if [ ! -f "$(LE2I_UNLABELED_STEMS)" ]; then \
-	  echo "[err] missing stems file: $(LE2I_UNLABELED_STEMS)"; \
-	  echo "      Create it (one stem per line; stems must exist under $(POSE_LE2I))."; \
-	  exit 2; \
-	fi
-	@mkdir -p "$(WIN_LE2I)"
+	$(RUN) labels/make_unlabeled_test_list.py \
+	  --npz_dir "$(POSE_le2i)" \
+	  --out "$(SPLIT_UNLABELED_le2i)" \
+	  --scenes $(LE2I_UNLABELED_SCENES)
+
+# 2) Build unlabeled windows from the stems list
+windows-unlabeled-le2i: unlabeled-list-le2i
+	@mkdir -p "$(WIN_le2i)/$(UNLAB_SUBSET)"
+	@MASKFLAG=""; if [ "$(UNLAB_USE_PRECOMPUTED_MASK)" = "1" ]; then MASKFLAG="--use_precomputed_mask"; fi; \
 	$(RUN) windows/make_unlabeled_windows.py \
-	  --npz_dir "$(POSE_LE2I)" \
-	  --stems_txt "$(LE2I_UNLABELED_STEMS)" \
-	  --out_dir "$(WIN_LE2I)" --subset "$(UNLAB_SUBSET)" \
-	  --W "$(WIN_W)" --stride "$(WIN_S)" --fps_default "$(FPS_LE2I)" \
-	  --conf_gate "$(CONF_GATE)" --min_valid_frac "$(UNLAB_MIN_VALID_FRAC)" --min_avg_conf "$(UNLAB_MIN_AVG_CONF)" \
+	  --npz_dir "$(POSE_le2i)" \
+	  --stems_txt "$(SPLIT_UNLABELED_le2i)" \
+	  --out_dir "$(WIN_le2i)" \
+	  --subset "$(UNLAB_SUBSET)" \
+	  --W "$(WIN_W)" --stride "$(WIN_S)" \
+	  --fps_default "$(FPS_le2i)" \
+	  --seed "$(SPLIT_SEED)" \
 	  --max_windows_per_video "$(UNLAB_MAX_WINDOWS_PER_VIDEO)" \
-	  $(UNLAB_MASK_FLAG) \
-	  $(UNLAB_SKIP_FLAG)
+	  $$MASKFLAG \
+	  --conf_gate "$(UNLAB_CONF_GATE)" \
+	  --min_valid_frac "$(UNLAB_MIN_VALID_FRAC)" \
+	  --min_avg_conf "$(UNLAB_MIN_AVG_CONF)" \
+	  --skip_existing
 
-# Score unlabeled windows using the real-time alert policy (EMA + k-of-n + hysteresis + cooldown).
-# This estimates "false alerts per hour/day" on long negative streams.
-score-unlabeled-le2i-tcn: windows-le2i-unlabeled
-	@mkdir -p "$(REPORTS_DIR)"
-	@if [ ! -f "$(CKPT_TCN_LE2I)" ]; then \
-	  echo "[err] missing checkpoint: $(CKPT_TCN_LE2I)"; \
-	  echo "      Run: make train-tcn-le2i (or set CKPT_TCN_LE2I=...)"; \
-	  exit 2; \
-	fi
+unlabeled-le2i: windows-unlabeled-le2i
+	@:
+
+# ============================================================
+# Training
+# ============================================================
+define TRAIN_COMMON_FLAGS
+--monitor "$(strip $(MONITOR))" $(BALANCED_SAMPLER_FLAG) \
+--loss "$(strip $(LOSS))" --focal_alpha "$(FOCAL_ALPHA)" --focal_gamma "$(FOCAL_GAMMA)" \
+--ema_decay "$(EMA_DECAY)" \
+--mask_joint_p "$(MASK_JOINT_P)" --mask_frame_p "$(MASK_FRAME_P)" \
+--aug_hflip_p "$(AUG_HFLIP_P)" --aug_jitter_std "$(AUG_JITTER_STD)" --aug_jitter_conf_scaled "$(AUG_JITTER_CONF_SCALED)" \
+--aug_occ_p "$(AUG_OCC_P)" --aug_occ_min_len "$(AUG_OCC_MIN)" --aug_occ_max_len "$(AUG_OCC_MAX)" \
+--aug_time_shift "$(AUG_TIME_SHIFT)"
+endef
+
+.PHONY: train-tcn-% train-gcn-%
+
+train-tcn-%: windows-%
+	@mkdir -p "$(OUT_TCN_$*)"
+	@if [ -f "$(CKPT_TCN_$*)" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $(CKPT_TCN_$*) exists (FORCE=1 to retrain)"; exit 0; fi
+	$(RUN) models/train_tcn.py \
+	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
+	  --epochs "$(EPOCHS_TCN)" --patience "$(PATIENCE_TCN)" \
+	  --batch "$(BATCH_TCN)" --lr "$(LR_TCN)" \
+	  --seed "$(SPLIT_SEED)" \
+	  --lr_plateau_patience "$(LR_PLATEAU_PATIENCE)" \
+	  --lr_plateau_factor "$(LR_PLATEAU_FACTOR)" \
+	  --lr_plateau_min_lr "$(LR_PLATEAU_MIN_LR)" \
+	  --fps_default "$(FPS_$*)" \
+	  --save_dir "$(OUT_TCN_$*)" \
+	  $(TRAIN_COMMON_FLAGS)
+
+train-gcn-%: windows-%
+	@mkdir -p "$(OUT_GCN_$*)"
+	@if [ -f "$(CKPT_GCN_$*)" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $(CKPT_GCN_$*) exists (FORCE=1 to retrain)"; exit 0; fi
+	$(RUN) models/train_gcn.py \
+	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
+	  --epochs "$(EPOCHS_GCN)" --patience "$(PATIENCE_GCN)" --min_epochs "$(MIN_EPOCHS_GCN)" \
+	  --batch "$(BATCH_GCN)" --lr "$(LR_GCN)" \
+	  --seed "$(SPLIT_SEED)" \
+	  --lr_plateau_patience "$(LR_PLATEAU_PATIENCE)" \
+	  --lr_plateau_factor "$(LR_PLATEAU_FACTOR)" \
+	  --lr_plateau_min_lr "$(LR_PLATEAU_MIN_LR)" \
+	  --fps_default "$(FPS_$*)" \
+	  --save_dir "$(OUT_GCN_$*)" \
+	  $(TRAIN_COMMON_FLAGS)
+
+# ============================================================
+# Temperature calibration
+# ============================================================
+.PHONY: calibrate-tcn-% calibrate-gcn-%
+
+calibrate-tcn-%: train-tcn-%
+	@mkdir -p "$(CAL_DIR)"
+	$(RUN) eval/calibrate_temperature.py \
+	  --arch tcn \
+	  --val_dir "$(WIN_$*)/val" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out_yaml "$(CAL_TCN_$*)" \
+	  --prefer_ema "$(PREFER_EMA)"
+
+calibrate-gcn-%: train-gcn-%
+	@mkdir -p "$(CAL_DIR)"
+	$(RUN) eval/calibrate_temperature.py \
+	  --arch gcn \
+	  --val_dir "$(WIN_$*)/val" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out_yaml "$(CAL_GCN_$*)" \
+	  --prefer_ema "$(PREFER_EMA)"
+
+# ============================================================
+# Fit operating points (OP-1/2/3)
+# ============================================================
+.PHONY: fit-ops-tcn-% fit-ops-gcn-%
+
+fit-ops-tcn-%: calibrate-tcn-%
+	@mkdir -p "$(OPS_DIR)"
+	@TFLAG=""; if [ -n "$(TEMP)" ]; then TFLAG="--temperature $(TEMP)"; fi; \
+	FAFLAG=""; \
+	if [ "$(FITOPS_FA)" = "auto" ]; then \
+	  if [ -d "$(WIN_$*)/$(UNLAB_SUBSET)" ]; then FAFLAG="--fa_dir \"$(WIN_$*)/$(UNLAB_SUBSET)\""; fi; \
+	elif [ "$(FITOPS_FA)" = "none" ]; then \
+	  FAFLAG=""; \
+	else \
+	  FAFLAG="--fa_dir \"$(FITOPS_FA)\""; \
+	fi; \
+	$(RUN) eval/fit_ops.py \
+	  --arch tcn \
+	  --val_dir "$(WIN_$*)/val" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out "$(OPS_TCN_$*)" \
+	  --deploy_fps "$(PREPROC_TARGET_FPS)" --deploy_w "$(WIN_W)" --deploy_s "$(WIN_S)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_$*)" $$TFLAG $$FAFLAG \
+	  --confirm "$(CONFIRM)" \
+	  --quality_adapt "$(QUALITY_ADAPT)" --quality_min "$(QUALITY_MIN)" --quality_boost "$(QUALITY_BOOST)"
+
+fit-ops-gcn-%: calibrate-gcn-%
+	@mkdir -p "$(OPS_DIR)"
+	@TFLAG=""; if [ -n "$(TEMP)" ]; then TFLAG="--temperature $(TEMP)"; fi; \
+	FAFLAG=""; \
+	if [ "$(FITOPS_FA)" = "auto" ]; then \
+	  if [ -d "$(WIN_$*)/$(UNLAB_SUBSET)" ]; then FAFLAG="--fa_dir \"$(WIN_$*)/$(UNLAB_SUBSET)\""; fi; \
+	elif [ "$(FITOPS_FA)" = "none" ]; then \
+	  FAFLAG=""; \
+	else \
+	  FAFLAG="--fa_dir \"$(FITOPS_FA)\""; \
+	fi; \
+	$(RUN) eval/fit_ops.py \
+	  --arch gcn \
+	  --val_dir "$(WIN_$*)/val" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out "$(OPS_GCN_$*)" \
+	  --deploy_fps "$(PREPROC_TARGET_FPS)" --deploy_w "$(WIN_W)" --deploy_s "$(WIN_S)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_$*)" $$TFLAG $$FAFLAG \
+	  --confirm "$(CONFIRM)" \
+	  --quality_adapt "$(QUALITY_ADAPT)" --quality_min "$(QUALITY_MIN)" --quality_boost "$(QUALITY_BOOST)"
+
+# ============================================================
+# Evaluation
+# ============================================================
+.PHONY: eval-tcn-% eval-gcn-% replay-tcn-% replay-gcn-%
+
+eval-tcn-%: fit-ops-tcn-%
+	@mkdir -p "$(MET_DIR)"
+	$(RUN) eval/metrics.py \
+	  --arch tcn \
+	  --windows_dir "$(WIN_$*)/test" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out_json "$(MET_DIR)/tcn_$*.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_$*)" \
+	  --ops_yaml "$(OPS_TCN_$*)"
+
+eval-gcn-%: fit-ops-gcn-%
+	@mkdir -p "$(MET_DIR)"
+	$(RUN) eval/metrics.py \
+	  --arch gcn \
+	  --windows_dir "$(WIN_$*)/test" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out_json "$(MET_DIR)/gcn_$*.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_$*)" \
+	  --ops_yaml "$(OPS_GCN_$*)"
+
+replay-tcn-%: fit-ops-tcn-%
+	@mkdir -p "$(MET_DIR)"
+	$(RUN) eval/replay_eval.py \
+	  --arch tcn \
+	  --windows_dir "$(WIN_$*)/test" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out_json "$(MET_DIR)/replay_tcn_$*.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_$*)" \
+	  --ops_yaml "$(OPS_TCN_$*)"
+
+replay-gcn-%: fit-ops-gcn-%
+	@mkdir -p "$(MET_DIR)"
+	$(RUN) eval/replay_eval.py \
+	  --arch gcn \
+	  --windows_dir "$(WIN_$*)/test" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out_json "$(MET_DIR)/replay_gcn_$*.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_$*)" \
+	  --ops_yaml "$(OPS_GCN_$*)"
+
+# Unlabeled FA scoring (LE2i only)
+# --------------------------------
+# LE2i is the only dataset in this repo with a built-in helper for selecting
+# "unlabeled test scenes" (Office/Lecture room). These windows are useful for:
+#   - estimating FA/day on long normal-life footage
+#   - providing a realistic FA stream when fitting ops (FITOPS_FA=auto)
+.PHONY: score-unlabeled-tcn-le2i score-unlabeled-gcn-le2i
+
+score-unlabeled-tcn-le2i: fit-ops-tcn-le2i unlabeled-le2i
+	@mkdir -p "$(MET_DIR)"; \
 	$(RUN) eval/score_unlabeled_alert_rate.py \
-	  --win_dir "$(WIN_LE2I_UNLAB)" --ckpt "$(CKPT_TCN_LE2I)" --out_json "$(REPORTS_DIR)/le2i_tcn_unlabeled_alerts.json" \
-	  --ema_alpha "$(ALERT_EMA_ALPHA)" --k "$(ALERT_K)" --n "$(ALERT_N)" \
-	  --tau_high "$(ALERT_TAU_HIGH)" --tau_low "$(ALERT_TAU_LOW)" --cooldown_s "$(ALERT_COOLDOWN_S)" \
-	  --confirm "$(ALERT_CONFIRM)" --confirm_s "$(ALERT_CONFIRM_S)" \
-	  --confirm_min_lying "$(ALERT_CONFIRM_MIN_LYING)" --confirm_max_motion "$(ALERT_CONFIRM_MAX_MOTION)" \
-	  --confirm_require_low "$(ALERT_CONFIRM_REQUIRE_LOW)"
+	  --arch tcn \
+	  --windows_dir "$(WIN_le2i)/$(UNLAB_SUBSET)" \
+	  --ckpt "$(CKPT_TCN_le2i)" \
+	  --out_json "$(MET_DIR)/unlabeled_tcn_le2i.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_le2i)" \
+	  --ops_yaml "$(OPS_TCN_le2i)"
 
-score-unlabeled-le2i-gcn: windows-le2i-unlabeled
-	@mkdir -p "$(REPORTS_DIR)"
-	@if [ ! -f "$(CKPT_GCN_LE2I)" ]; then \
-	  echo "[err] missing checkpoint: $(CKPT_GCN_LE2I)"; \
-	  echo "      Run: make train-gcn-le2i (or set CKPT_GCN_LE2I=...)"; \
-	  exit 2; \
-	fi
+score-unlabeled-gcn-le2i: fit-ops-gcn-le2i unlabeled-le2i
+	@mkdir -p "$(MET_DIR)"; \
 	$(RUN) eval/score_unlabeled_alert_rate.py \
-	  --win_dir "$(WIN_LE2I_UNLAB)" --ckpt "$(CKPT_GCN_LE2I)" --out_json "$(REPORTS_DIR)/le2i_gcn_unlabeled_alerts.json" \
-	  --ema_alpha "$(ALERT_EMA_ALPHA)" --k "$(ALERT_K)" --n "$(ALERT_N)" \
-	  --tau_high "$(ALERT_TAU_HIGH)" --tau_low "$(ALERT_TAU_LOW)" --cooldown_s "$(ALERT_COOLDOWN_S)" \
-	  --confirm "$(ALERT_CONFIRM)" --confirm_s "$(ALERT_CONFIRM_S)" \
-	  --confirm_min_lying "$(ALERT_CONFIRM_MIN_LYING)" --confirm_max_motion "$(ALERT_CONFIRM_MAX_MOTION)" \
-	  --confirm_require_low "$(ALERT_CONFIRM_REQUIRE_LOW)"
+	  --arch gcn \
+	  --windows_dir "$(WIN_le2i)/$(UNLAB_SUBSET)" \
+	  --ckpt "$(CKPT_GCN_le2i)" \
+	  --out_json "$(MET_DIR)/unlabeled_gcn_le2i.json" \
+	  --op "$(OP)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_le2i)" \
+	  --ops_yaml "$(OPS_GCN_le2i)"
 
-# ---- Unlabeled scoring presets (≈1s persistence) ----
-.PHONY: score-unlabeled-le2i-tcn-s4 score-unlabeled-le2i-tcn-s8
-.PHONY: score-unlabeled-le2i-gcn-s4 score-unlabeled-le2i-gcn-s8
+# ============================================================
+# Plotting (from ops YAML)
+# ============================================================
+.PHONY: plot-ops-tcn-% plot-ops-gcn-%
 
-score-unlabeled-le2i-tcn-s4:
-	$(MAKE) WIN_W=48 WIN_S=4 windows-le2i-unlabeled
-	$(MAKE) WIN_W=48 WIN_S=4 score-unlabeled-le2i-tcn ALERT_N=7 ALERT_K=5
+plot-ops-tcn-%: fit-ops-tcn-%
+	@mkdir -p "$(PLOTS_DIR)"
+	$(RUN) eval/plot_fa_recall.py \
+	  --ops_yaml "$(OPS_TCN_$*)" \
+	  --out "$(PLOTS_DIR)/tcn_$*_recall_vs_fa.png" \
+	  --out_f1 "$(PLOTS_DIR)/tcn_$*_f1_vs_tau.png" \
+	  --log_x
 
-score-unlabeled-le2i-tcn-s8:
-	$(MAKE) WIN_W=48 WIN_S=8 windows-le2i-unlabeled
-	$(MAKE) WIN_W=48 WIN_S=8 score-unlabeled-le2i-tcn ALERT_N=4 ALERT_K=3
+plot-ops-gcn-%: fit-ops-gcn-%
+	@mkdir -p "$(PLOTS_DIR)"
+	$(RUN) eval/plot_fa_recall.py \
+	  --ops_yaml "$(OPS_GCN_$*)" \
+	  --out "$(PLOTS_DIR)/gcn_$*_recall_vs_fa.png" \
+	  --out_f1 "$(PLOTS_DIR)/gcn_$*_f1_vs_tau.png" \
+	  --log_x
 
-score-unlabeled-le2i-gcn-s4:
-	$(MAKE) WIN_W=48 WIN_S=4 windows-le2i-unlabeled
-	$(MAKE) WIN_W=48 WIN_S=4 score-unlabeled-le2i-gcn ALERT_N=7 ALERT_K=5 
+# ============================================================
+# Mining + finetune
+# ============================================================
+.PHONY: mine-nearmiss-tcn-% mine-nearmiss-gcn-% mine-hardneg-tcn-% mine-hardneg-gcn-% \
+        finetune-hardneg-tcn-% finetune-hardneg-gcn-%
 
-score-unlabeled-le2i-gcn-s8:
-	$(MAKE) WIN_W=48 WIN_S=8 windows-le2i-unlabeled
-	$(MAKE) WIN_W=48 WIN_S=8 score-unlabeled-le2i-gcn ALERT_N=4 ALERT_K=3
+mine-nearmiss-tcn-%: calibrate-tcn-%
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_near_miss_negatives.py \
+	  --arch tcn \
+	  --windows_dir "$(WIN_$*)/$(NEARMISS_SPLIT)" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out_txt "$(MINED_DIR)/nearmiss_tcn_$*.txt" \
+	  --out_csv "$(MINED_DIR)/nearmiss_tcn_$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/nearmiss_tcn_$*.jsonl" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_$*)" \
+	  --ops_yaml "$(OPS_TCN_$*)" --op "$(OP)"
 
+mine-nearmiss-gcn-%: calibrate-gcn-%
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_near_miss_negatives.py \
+	  --arch gcn \
+	  --windows_dir "$(WIN_$*)/$(NEARMISS_SPLIT)" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out_txt "$(MINED_DIR)/nearmiss_gcn_$*.txt" \
+	  --out_csv "$(MINED_DIR)/nearmiss_gcn_$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/nearmiss_gcn_$*.jsonl" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_$*)" \
+	  --ops_yaml "$(OPS_GCN_$*)" --op "$(OP)"
 
-# If you want HNM to mine from unlabeled streams (recommended for LE2i), run:
-#   make HNM_SRC_LE2I=$(WIN_LE2I)/test_unlabeled mine-hardneg-tcn-le2i
-#   make HNM_SRC_LE2I=$(WIN_LE2I)/test_unlabeled mine-hardneg-gcn-le2i
+mine-hardneg-tcn-%: calibrate-tcn-%
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_hard_negatives.py \
+	  --arch tcn \
+	  --windows_dir "$(WIN_$*)/$(HARDNEG_SPLIT)" \
+	  --ckpt "$(CKPT_TCN_$*)" \
+	  --out_txt "$(MINED_DIR)/hardneg_tcn_$*.txt" \
+	  --out_csv "$(MINED_DIR)/hardneg_tcn_$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/hardneg_tcn_$*.jsonl" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_TCN_$*)"
 
+mine-hardneg-gcn-%: calibrate-gcn-%
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_hard_negatives.py \
+	  --arch gcn \
+	  --windows_dir "$(WIN_$*)/$(HARDNEG_SPLIT)" \
+	  --ckpt "$(CKPT_GCN_$*)" \
+	  --out_txt "$(MINED_DIR)/hardneg_gcn_$*.txt" \
+	  --out_csv "$(MINED_DIR)/hardneg_gcn_$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/hardneg_gcn_$*.jsonl" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(CAL_GCN_$*)"
 
-# -------------------------
-# Deploy / triage modes (CPU test)
-# -------------------------
-DEPLOY_MODE ?= dual
-DEPLOY_WIN_DIR ?= data/processed/le2i/windows_W48_S12/test_unlabeled
-CKPT_TCN ?= outputs/le2i_tcn_W48S12/best.pt
-CKPT_GCN ?= outputs/le2i_gcn_W48S12/best.pt
-DEPLOY_CFG ?= configs/deploy_modes.yaml
-DEPLOY_DEVICE ?= cpu
+finetune-hardneg-tcn-%: mine-hardneg-tcn-%
+	@OUT="$(OUT_TCN_$*)_hardneg"; \
+	if [ -f "$$OUT/best.pt" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $$OUT/best.pt exists (FORCE=1 to rerun)"; exit 0; fi; \
+	mkdir -p "$$OUT"; \
+	$(RUN) models/train_tcn.py \
+	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
+	  --fps_default "$(FPS_$*)" \
+	  --epochs "$(EPOCHS_TCN)" --patience "$(PATIENCE_TCN)" \
+	  --batch "$(BATCH_TCN)" --lr "$(LR_TCN)" --seed "$(SPLIT_SEED)" \
+	  --resume "$(CKPT_TCN_$*)" \
+	  --hard_neg_list "$(MINED_DIR)/hardneg_tcn_$*.txt" --hard_neg_mult "$(HARDNEG_MULT)" \
+	  --save_dir "$$OUT" \
+	  $(TRAIN_COMMON_FLAGS)
 
-deploy:
-	$(RUN) deploy/run_modes.py --mode "$(DEPLOY_MODE)" --win_dir "$(DEPLOY_WIN_DIR)" \
-		--ckpt_tcn "$(CKPT_TCN)" --ckpt_gcn "$(CKPT_GCN)" --cfg "$(DEPLOY_CFG)" --device "$(DEPLOY_DEVICE)"
+finetune-hardneg-gcn-%: mine-hardneg-gcn-%
+	@OUT="$(OUT_GCN_$*)_hardneg"; \
+	if [ -f "$$OUT/best.pt" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $$OUT/best.pt exists (FORCE=1 to rerun)"; exit 0; fi; \
+	mkdir -p "$$OUT"; \
+	$(RUN) models/train_gcn.py \
+	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
+	  --fps_default "$(FPS_$*)" \
+	  --epochs "$(EPOCHS_GCN)" --patience "$(PATIENCE_GCN)" --min_epochs "$(MIN_EPOCHS_GCN)" \
+	  --batch "$(BATCH_GCN)" --lr "$(LR_GCN)" --seed "$(SPLIT_SEED)" \
+	  --resume "$(CKPT_GCN_$*)" \
+	  --hard_neg_list "$(MINED_DIR)/hardneg_gcn_$*.txt" --hard_neg_mult "$(HARDNEG_MULT)" \
+	  --save_dir "$$OUT" \
+	  $(TRAIN_COMMON_FLAGS)
 
-deploy-tcn:
-	$(RUN) deploy/run_modes.py --mode tcn --win_dir "$(DEPLOY_WIN_DIR)" \
-		--ckpt_tcn "$(CKPT_TCN)" --cfg "$(DEPLOY_CFG)" --device "$(DEPLOY_DEVICE)"
+# ============================================================
+# Deploy simulation runner (optional)
+# ============================================================
+.PHONY: deploy-tcn-% deploy-gcn-% deploy-dual-%
 
-deploy-gcn:
-	$(RUN) deploy/run_modes.py --mode gcn --win_dir "$(DEPLOY_WIN_DIR)" \
-		--ckpt_gcn "$(CKPT_GCN)" --cfg "$(DEPLOY_CFG)" --device "$(DEPLOY_DEVICE)"
+deploy-tcn-%: fit-ops-tcn-%
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	$(RUN) deploy/run_modes.py \
+	  --mode tcn \
+	  --win_dir "$(WIN_$*)/$$SPL" \
+	  --ckpt_tcn "$(CKPT_TCN_$*)" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
 
-deploy-dual:
-	$(RUN) deploy/run_modes.py --mode dual --win_dir "$(DEPLOY_WIN_DIR)" \
-		--ckpt_tcn "$(CKPT_TCN)" --ckpt_gcn "$(CKPT_GCN)" --cfg "$(DEPLOY_CFG)" --device "$(DEPLOY_DEVICE)"
+deploy-gcn-%: fit-ops-gcn-%
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	$(RUN) deploy/run_modes.py \
+	  --mode gcn \
+	  --win_dir "$(WIN_$*)/$$SPL" \
+	  --ckpt_gcn "$(CKPT_GCN_$*)" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
 
+deploy-dual-%: fit-ops-tcn-% fit-ops-gcn-%
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	$(RUN) deploy/run_modes.py \
+	  --mode dual \
+	  --win_dir "$(WIN_$*)/$$SPL" \
+	  --ckpt_tcn "$(CKPT_TCN_$*)" \
+	  --ckpt_gcn "$(CKPT_GCN_$*)" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
 
-# -------------------------
-# Server (FastAPI)
-# -------------------------
-SERVER_HOST ?= 0.0.0.0
-SERVER_PORT ?= 8000
+# ============================================================
+# Meta targets
+# ============================================================
+.PHONY: pipeline-% workflow-tcn-% workflow-gcn-% pipeline-all workflow-all
 
-serve:
-	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)"
+pipeline-%: extract-% preprocess-% labels-% splits-% windows-%
+	@:
 
-serve-dev:
-	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
+workflow-tcn-%: windows-% train-tcn-% calibrate-tcn-% fit-ops-tcn-% eval-tcn-%
+	@:
+
+workflow-gcn-%: windows-% train-gcn-% calibrate-gcn-% fit-ops-gcn-% eval-gcn-%
+	@:
+
+pipeline-all:
+	@for d in $(DATASETS); do $(MAKE) pipeline-$$d; done
+
+workflow-all:
+	@for d in $(DATASETS); do $(MAKE) workflow-tcn-$$d; $(MAKE) workflow-gcn-$$d; done
+
+# ============================================================
+# Cleaning helpers
+# ============================================================
+.PHONY: clean-metrics clean-ops clean-cal clean-mined clean-plots clean-windows clean-all
+
+clean-metrics:
+	@rm -rf "$(MET_DIR)" && echo "[ok] removed $(MET_DIR)"
+
+clean-ops:
+	@rm -rf "$(OPS_DIR)" && echo "[ok] removed $(OPS_DIR)"
+
+clean-cal:
+	@rm -rf "$(CAL_DIR)" && echo "[ok] removed $(CAL_DIR)"
+
+clean-mined:
+	@rm -rf "$(MINED_DIR)" && echo "[ok] removed $(MINED_DIR)"
+
+clean-plots:
+	@rm -rf "$(PLOTS_DIR)" && echo "[ok] removed $(PLOTS_DIR)"
+
+clean-windows:
+	@rm -rf "$(PROCESSED)" && echo "[ok] removed $(PROCESSED)"
+
+clean-all: clean-metrics clean-ops clean-cal clean-mined clean-plots
+	@rm -rf "$(OUT_DIR)" && echo "[ok] removed $(OUT_DIR)"

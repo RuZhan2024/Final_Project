@@ -1,0 +1,50 @@
+{
+  "labels_json": "configs/labels/le2i.json",
+  "prefix": "le2i",
+  "seed": 33724876,
+  "fractions": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+  },
+  "grouping": {
+    "mode": "none",
+    "regex": null,
+    "group_json": null,
+    "balance_by": "stems"
+  },
+  "counts": {
+    "total": 260,
+    "train": 208,
+    "val": 26,
+    "test": 26
+  },
+  "class_counts_total": {
+    "0": 68,
+    "1": 192
+  },
+  "class_counts_train": {
+    "0": 54,
+    "1": 154
+  },
+  "class_counts_val": {
+    "0": 7,
+    "1": 19
+  },
+  "class_counts_test": {
+    "0": 7,
+    "1": 19
+  },
+  "groups": {
+    "total_groups": 260,
+    "groups_by_class": {
+      "0": 68,
+      "1": 192
+    }
+  },
+  "files": {
+    "train": "configs/splits/le2i_train.txt",
+    "val": "configs/splits/le2i_val.txt",
+    "test": "configs/splits/le2i_test.txt"
+  }
+}

@@ -1,108 +1,27 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import * as mpPose from "@mediapipe/pose";
-import * as drawingUtils from "@mediapipe/drawing_utils";
+import React, { useMemo } from "react";
+
 import styles from "./Monitor.module.css";
 
 import { useMonitoring } from "../monitoring/MonitoringContext";
 
-const { POSE_CONNECTIONS } = mpPose;
-const { drawConnectors, drawLandmarks } = drawingUtils;
+import { useApiSpec } from "./monitor/hooks/useApiSpec";
+import { useApiSummary } from "./monitor/hooks/useApiSummary";
+import { useOperatingPointParams } from "./monitor/hooks/useOperatingPointParams";
+import { usePoseMonitor } from "./monitor/hooks/usePoseMonitor";
 
-// Prefer env var, fallback to localhost
-const API_BASE =
-  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
-    ? process.env.REACT_APP_API_BASE
-    : "http://localhost:8000";
+import { ControlsCard } from "./monitor/components/ControlsCard";
+import { LiveMonitorCard } from "./monitor/components/LiveMonitorCard";
+import { ModelInfoCard } from "./monitor/components/ModelInfoCard";
+import { TimelineCard } from "./monitor/components/TimelineCard";
 
-const NUM_JOINTS = 33;
+import { normModeFromCode, pickFirstByArch, pickModelPair, prettyModelTag, targetFpsForDataset } from "./monitor/utils";
 
-function clamp01(x) {
-  if (x < 0) return 0;
-  if (x > 1) return 1;
-  return x;
-}
-
-/**
- * Build a fixed-length [T,33,2] + [T,33] window at a target FPS by resampling
- * the raw pose frames (which arrive at variable FPS).
- */
-function buildResampledWindow(rawFrames, targetFps, windowSize) {
-  if (!rawFrames || rawFrames.length === 0) return null;
-
-  const dt = 1000 / targetFps;
-  const endTs = rawFrames[rawFrames.length - 1].t;
-  const startTs = endTs - (windowSize - 1) * dt;
-
-  // Need at least one sample at/before startTs to cover full window
-  if (rawFrames[0].t > startTs) return null;
-
-  const xyOut = [];
-  const confOut = [];
-
-  let j = 0;
-  for (let k = 0; k < windowSize; k++) {
-    const tWanted = startTs + k * dt;
-    while (j + 1 < rawFrames.length && rawFrames[j + 1].t <= tWanted) j++;
-    const fr = rawFrames[j] || rawFrames[0];
-    xyOut.push(fr.xy);
-    confOut.push(fr.conf);
-  }
-
-  return { xy: xyOut, conf: confOut, startTs, endTs };
-}
-
-function normModeFromCode(code) {
-  const c = (code || "").toUpperCase();
-  if (c === "TCN") return "tcn";
-  if (c === "GCN") return "gcn";
-  if (c === "HYBRID") return "dual";
-  return "gcn";
-}
-
-function labelForTriage(triageState) {
-  const t = (triageState || "").toLowerCase();
-  if (t === "fall") return "Fall";
-  if (t === "uncertain") return "Uncertain";
-  return "No fall";
-}
-
-function prettyModelTag(activeModelCode) {
-  const c = (activeModelCode || "").toUpperCase();
-  if (c === "HYBRID") return "HYBRID";
-  if (c === "TCN") return "TCN";
-  if (c === "GCN") return "GCN";
-  return "GCN";
-}
-
-function pickFirstByArch(models, arch, datasetCode) {
-  const a = (arch || "").toLowerCase();
-  const d = (datasetCode || "").toLowerCase();
-  const m = (models || []).find((x) => {
-    const xa = (x?.arch || "").toLowerCase();
-    const xd = (x?.dataset_code || x?.dataset || "").toLowerCase();
-    return xa === a && (!d || xd === d);
-  });
-  return m?.id || "";
-}
-
-function pickModelPair(models, datasetCode) {
-  const tcn = pickFirstByArch(models, "tcn", datasetCode);
-  const gcn = pickFirstByArch(models, "gcn", datasetCode);
-  return { tcn, gcn };
+function safeNumber(x, fallback = null) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function Monitor({ isActive = true } = {}) {
-  // Backend config
-  const [deployW, setDeployW] = useState(48);
-  const [deployS, setDeployS] = useState(12);
-  const [mcCfg, setMcCfg] = useState({ M: 10, M_confirm: 25 });
-  const [mcEnabled, setMcEnabled] = useState(true);
-  const [activeModelCode, setActiveModelCode] = useState("GCN");
-  const [activeDatasetCode, setActiveDatasetCode] = useState("muvim");
-  const MAX_PROC_FPS = 30;
-  const lastProcMsRef = useRef(0);
-
-  // Global monitoring (persisted via /api/settings)
   const {
     monitoringOn,
     setMonitoringOn,
@@ -110,63 +29,46 @@ function Monitor({ isActive = true } = {}) {
     error: monitoringErr,
     settings: settingsPayload,
     loaded: settingsLoaded,
-    apiBase: apiBaseFromCtx,
+    apiBase,
   } = useMonitoring();
 
-  const apiBase = apiBaseFromCtx || API_BASE;
+  // ---- Settings → derived runtime config ----
+  const deployW = useMemo(() => safeNumber(settingsPayload?.deploy?.window?.W, 48), [settingsPayload]);
+  const deployS = useMemo(() => safeNumber(settingsPayload?.deploy?.window?.S, 12), [settingsPayload]);
 
-  // Deploy specs (source of truth for available models)
-  const [models, setModels] = useState([]);
-  const [modelsErr, setModelsErr] = useState(null);
+  const mcCfg = useMemo(() => {
+    const mc = settingsPayload?.deploy?.mc;
+    const M = safeNumber(mc?.M, 10);
+    const M_confirm = safeNumber(mc?.M_confirm, 25);
+    return { M, M_confirm };
+  }, [settingsPayload]);
 
-  // Optional: dashboard summary (/api/summary alias)
-  const [apiSummary, setApiSummary] = useState(null);
-  const [summaryErr, setSummaryErr] = useState(null);
+  const activeModelCode = useMemo(() => {
+    const code = settingsPayload?.system?.active_model_code;
+    return code ? String(code) : "GCN";
+  }, [settingsPayload]);
 
-  // Live state
-  const [liveRunning, setLiveRunning] = useState(false);
-  const [streamFps, setStreamFps] = useState(null);
+  const activeDatasetCode = useMemo(() => {
+    const code = settingsPayload?.system?.active_dataset_code;
+    return code ? String(code) : "muvim";
+  }, [settingsPayload]);
 
-  // Prediction UI
-  const [triageState, setTriageState] = useState("not_fall");
-  const [pFall, setPFall] = useState(null);
-  const [sigma, setSigma] = useState(null);
+  const mcEnabled = useMemo(() => {
+    const v = settingsPayload?.system?.mc_enabled;
+    return v == null ? true : Boolean(v);
+  }, [settingsPayload]);
 
-  // Timeline markers (store indices of non-safe windows in last 50)
-  const [timeline, setTimeline] = useState([]); // array of {i, kind: 'fall'|'uncertain'}
+  const fallThreshold = useMemo(() => {
+    const v = settingsPayload?.system?.fall_threshold;
+    return typeof v === "number" && Number.isFinite(v) ? Number(v) : null;
+  }, [settingsPayload]);
 
-  // Model info
-  const [modelTag, setModelTag] = useState("GCN");
-  const [tauHigh, setTauHigh] = useState(null);
-  // Thresholds (from DB operating point / settings)
-  const [fallThreshold, setFallThreshold] = useState(null);
-  const [opThrLow, setOpThrLow] = useState(null);
-  const [opThrHigh, setOpThrHigh] = useState(null);
-  const [opCode, setOpCode] = useState(null);
-
-  
-  const [opK, setOpK] = useState(null);
-  const [opN, setOpN] = useState(null);
-  const [opCooldownS, setOpCooldownS] = useState(null);
-// Refs for camera + mediapipe
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const isActiveRef = useRef(isActive);
-  useEffect(() => {
-    isActiveRef.current = Boolean(isActive);
-  }, [isActive]);
-  const poseRef = useRef(null);
-  const streamRef = useRef(null);
-  const rafRef = useRef(null);
-  const liveFlagRef = useRef(false);
-
-  // Throttle MediaPipe inference so the UI stays responsive while monitoring runs in background.
-  const lastInferTsRef = useRef(0);
-  const inferFpsRef = useRef(15);
-
-
-  // Mode + chosen models
   const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
+  const modelTag = useMemo(() => prettyModelTag(activeModelCode), [activeModelCode]);
+  const targetFps = useMemo(() => targetFpsForDataset(activeDatasetCode), [activeDatasetCode]);
+
+  // ---- Backend spec + model picking ----
+  const { models, error: modelsErr } = useApiSpec(apiBase);
 
   const chosen = useMemo(() => {
     if (mode === "dual") return pickModelPair(models, activeDatasetCode);
@@ -181,666 +83,55 @@ function Monitor({ isActive = true } = {}) {
     return models.find((m) => m.id === chosen.gcn) || models.find((m) => m.id === chosen.tcn) || null;
   }, [mode, models, chosen]);
 
-  const targetFps = useMemo(() => {
-    // Keep client-side timing aligned with the backend's expected FPS per dataset.
-    const ds = String(activeDatasetCode || "").toLowerCase();
-    const byDs = { le2i: 25, urfd: 30, caucafall: 23, muvim: 30 };
-    const f = byDs[ds];
-    return typeof f === "number" && Number.isFinite(f) && f > 0 ? f : 30;
-  }, [activeDatasetCode]);
-
-  useEffect(() => {
-    // When not on the /Monitor page, keep monitoring running but reduce load so navigation stays smooth.
-    // Keep this conservative so React routing remains snappy while the pipeline runs.
-    const fgFps = Math.min(12, Math.max(5, Number(targetFps) || 12));
-    const bgFps = Math.min(5, fgFps);
-    inferFpsRef.current = isActiveRef.current ? fgFps : bgFps;
-
-    // Lower MediaPipe complexity when the page is not visible.
-    try {
-      if (poseRef.current && poseRef.current.setOptions) {
-        poseRef.current.setOptions({ modelComplexity: isActiveRef.current ? 1 : 0 });
-      }
-    } catch {
-      // ignore
-    }
-  }, [targetFps, isActive]);
-
-  // Expose start/stop to the app-level toggle (so Dashboard can turn monitoring on/off)
-  const startLiveFnRef = useRef(null);
-  const stopLiveFnRef = useRef(null);
-
-  // Frame buffer for windowing
-  const rawFramesRef = useRef([]); // [{t,xy,conf}]
-  const lastPoseTsRef = useRef(null);
-  const fpsDeltasRef = useRef([]);
-  const fpsEstimateRef = useRef(null);
-
-  // Throttled UI update for stream FPS (avoid React re-render every frame)
-  useEffect(() => {
-    if (!liveRunning) {
-      setStreamFps(null);
-      return;
-    }
-    const id = setInterval(() => {
-      const v = fpsEstimateRef.current;
-      setStreamFps(v == null ? null : v);
-    }, 500);
-    return () => clearInterval(id);
-  }, [liveRunning]);
-  const lastSentRef = useRef(0);
-
-  // Session id for server-side state machine
-  const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
-  // Keep Model Info box in sync
-  useEffect(() => {
-    setModelTag(prettyModelTag(activeModelCode));
-    // Prefer resolved OP values (from /api/settings derived from configs/ops/*.yaml)
-    if (opThrHigh != null) setTauHigh(Number(opThrHigh));
-    else if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
-  }, [activeModelCode, chosenSpec, opThrHigh]);
-
-  // Apply global settings so this page follows changes made on /Settings.
-  useEffect(() => {
-    if (!settingsLoaded || !settingsPayload) return;
-    const s = settingsPayload;
-
-    const W = s?.deploy?.window?.W;
-    const S = s?.deploy?.window?.S;
-    if (typeof W === "number") setDeployW(W);
-    if (typeof S === "number") setDeployS(S);
-
-    const mc = s?.deploy?.mc;
-    if (mc && typeof mc === "object") {
-      setMcCfg({ M: mc.M, M_confirm: mc.M_confirm });
-    }
-
-    const sys = s?.system || {};
-    if (sys?.active_model_code) setActiveModelCode(sys.active_model_code);
-    if (sys?.active_dataset_code) setActiveDatasetCode(String(sys.active_dataset_code));
-    if (sys?.mc_enabled != null) setMcEnabled(Boolean(sys.mc_enabled));
-    if (typeof sys?.fall_threshold === "number") setFallThreshold(Number(sys.fall_threshold));
-
-    // Prefer YAML-derived deploy params for thresholds/cooldown/etc.
-    const ui = sys?.deploy_params?.ui || sys?.deploy_params || {};
-    const uiTauH = ui?.tau_high;
-    const uiTauL = ui?.tau_low;
-      const uiK = ui?.k ?? ui?.confirm ?? ui?.confirm_k ?? null;
-      const uiN = ui?.n ?? ui?.confirm_n ?? null;
-      const uiCooldownS = ui?.cooldown_s ?? ui?.cooldownSec ?? ui?.cooldown_sec ?? null;
-    const uiOp = ui?.op_code;
-    if (uiOp) setOpCode(uiOp);
-    if (uiTauH != null) {
-      const th = Number(uiTauH);
-      setOpThrHigh(th);
-      if (!(typeof sys?.fall_threshold === "number")) setFallThreshold(th);
-    }
-    if (uiTauL != null) setOpThrLow(Number(uiTauL));
-
-    setOpK(uiK != null ? Number(uiK) : null);
-    setOpN(uiN != null ? Number(uiN) : null);
-    setOpCooldownS(uiCooldownS != null ? Number(uiCooldownS) : null);
-
-    // Fallback: load thresholds from DB operating points (legacy installs)
-    if (uiTauH != null || uiTauL != null) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const opId = sys?.active_operating_point;
-        const codeRaw = String(sys?.active_model_code || "GCN").toUpperCase();
-        const tryCodes = codeRaw === "HYBRID" ? ["HYBRID", "GCN"] : [codeRaw];
-        let picked = null;
-        for (const code of tryCodes) {
-          const rop = await fetch(
-            `${apiBase}/api/operating_points?model_code=${encodeURIComponent(code)}`
-          );
-          if (!rop.ok) continue;
-          const opData = await rop.json();
-          const ops = Array.isArray(opData?.operating_points)
-            ? opData.operating_points
-            : Array.isArray(opData)
-              ? opData
-              : [];
-          const byId = opId != null ? ops.find((o) => Number(o.id) === Number(opId)) : null;
-          picked =
-            byId ||
-            ops.find((o) => String(o.code || o.op_code || "").toUpperCase() === "OP-2") ||
-            ops[0] ||
-            null;
-          if (picked) break;
-        }
-        if (!picked || cancelled) return;
-
-        setOpCode(picked.code || picked.op_code || null);
-        const low =
-          picked.thr_low_conf != null
-            ? Number(picked.thr_low_conf)
-            : picked.threshold_low != null
-              ? Number(picked.threshold_low)
-              : null;
-        const high =
-          picked.thr_high_conf != null
-            ? Number(picked.thr_high_conf)
-            : picked.threshold_high != null
-              ? Number(picked.threshold_high)
-              : null;
-        setOpThrLow(low);
-        setOpThrHigh(high);
-      } catch {
-        // ignore
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [settingsLoaded, settingsPayload, apiBase]);
-
-  // Load deploy specs (what's actually available in the repo)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        setModelsErr(null);
-        const rm = await fetch(`${apiBase}/api/spec`);
-        if (!rm.ok) throw new Error(await rm.text());
-        const data = await rm.json();
-        const arr = Array.isArray(data?.models) ? data.models : [];
-
-        // Normalise to the shape this page expects.
-        const norm = arr.map((m) => {
-          const id = m?.id || m?.key || m?.spec_key || "";
-          // Convenience: expose OP-2 tau in a predictable place.
-          const op2 = m?.ops?.["OP-2"] || m?.ops?.op2 || null;
-          const tau_low = op2?.tau_low != null ? Number(op2.tau_low) : null;
-          const tau_high = op2?.tau_high != null ? Number(op2.tau_high) : null;
-          return { ...m, id, tau_low, tau_high };
-        });
-
-        if (!cancelled) setModels(norm);
-      } catch (e) {
-        if (!cancelled) {
-          setModelsErr(String(e?.message || e));
-          setModels([]);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase]);
-
-  // Load a lightweight server summary (optional, for displaying API health/latency)
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        setSummaryErr(null);
-        const r = await fetch(`${apiBase}/api/summary`);
-        if (!r.ok) throw new Error(await r.text());
-        const data = await r.json();
-        if (!cancelled) setApiSummary(data);
-      } catch (e) {
-        if (!cancelled) setSummaryErr(String(e?.message || e));
-      }
-    };
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [apiBase]);
-
-  // Canvas sizing helper
-  function ensureCanvasMatchesVideo() {
-    const videoEl = videoRef.current;
-    const canvasEl = canvasRef.current;
-    if (!videoEl || !canvasEl) return;
-
-    const vw = videoEl.videoWidth || 1280;
-    const vh = videoEl.videoHeight || 720;
-
-    // Only resize when changed (avoid flicker)
-    if (canvasEl.width !== vw) canvasEl.width = vw;
-    if (canvasEl.height !== vh) canvasEl.height = vh;
-  }
-
-  // Start/Stop camera + pose
-  async function startLive() {
-    const videoEl = videoRef.current;
-    if (!videoEl) return false;
-
-    try {
-      liveFlagRef.current = true;
-      setLiveRunning(true);
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, frameRate: { ideal: targetFps } },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-      videoEl.srcObject = stream;
-
-      await new Promise((resolve) => {
-        const onLoaded = () => resolve();
-        videoEl.onloadedmetadata = onLoaded;
-      });
-
-      await videoEl.play();
-      ensureCanvasMatchesVideo();
-
-      // Try camera-reported FPS if available
-      try {
-        const track = stream.getVideoTracks()[0];
-        const settings = track?.getSettings?.();
-        if (settings && typeof settings.frameRate === "number") {
-          fpsEstimateRef.current = settings.frameRate;
-          setStreamFps(settings.frameRate);
-        }
-      } catch {
-        // ignore
-      }
-
-      // MediaPipe Pose
-      const pose = new mpPose.Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-      });
-
-      pose.setOptions({
-        // Use the lightest model by default. When /Monitor is the active page,
-        // the effect above may bump complexity up if needed.
-        modelComplexity: 0,
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-
-      pose.onResults(handlePoseResults);
-      poseRef.current = pose;
-
-      const loop = async () => {
-        if (!liveFlagRef.current) return;
-        const now = performance.now();
-        const target = Math.max(1, Number(inferFpsRef.current) || 15);
-        const minIntervalMs = 1000 / target;
-        if (now - lastInferTsRef.current >= minIntervalMs) {
-          lastInferTsRef.current = now;
-          if (videoEl.readyState >= 2 && poseRef.current) {
-            try {
-              await poseRef.current.send({ image: videoEl });
-            } catch (err) {
-              console.error("pose.send error", err);
-            }
-          }
-        }
-        rafRef.current = requestAnimationFrame(loop);
-      };
-
-      loop();
-      return true;
-    } catch (err) {
-      console.error("Error starting monitor:", err);
-      stopLive();
-      return false;
-    }
-  }
-
-  function stopLive() {
-    liveFlagRef.current = false;
-    setLiveRunning(false);
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
-
-    try {
-      poseRef.current?.close?.();
-    } catch {
-      // ignore
-    }
-    poseRef.current = null;
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    // Clear buffer
-    rawFramesRef.current = [];
-    lastPoseTsRef.current = null;
-    fpsDeltasRef.current = [];
-    lastSentRef.current = 0;
-
-    // Reset UI
-    setPFall(null);
-    setSigma(null);
-    setTriageState("not_fall");
-    setTimeline([]);
-  }
-
-  // Keep controller refs up-to-date, then register with the app-level toggle.
-  useEffect(() => {
-    startLiveFnRef.current = startLive;
-    stopLiveFnRef.current = stopLive;
+  // ---- Operating point params (YAML-derived preferred; legacy DB fallback) ----
+  const { opCode, tauLow, tauHigh, confirmK, confirmN, cooldownS } = useOperatingPointParams({
+    apiBase,
+    settingsPayload,
+    modelCode: activeModelCode,
   });
 
-  useEffect(() => {
-    registerController({
-      start: () => startLiveFnRef.current && startLiveFnRef.current(),
-      stop: () => stopLiveFnRef.current && stopLiveFnRef.current(),
-    });
-    return () => registerController(null);
-  }, [registerController]);
+  const resolvedTauHigh = useMemo(() => {
+    if (tauHigh != null) return tauHigh;
+    if (fallThreshold != null) return fallThreshold;
+    if (chosenSpec?.tau_high != null) return Number(chosenSpec.tau_high);
+    return null;
+  }, [tauHigh, fallThreshold, chosenSpec]);
 
-  // Keep video off-screen (we want skeleton-only view)
-  useEffect(() => {
-    const v = videoRef.current;
-    if (v) v.playsInline = true;
-  }, []);
+  // ---- Optional server summary ----
+  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase);
 
-  // Cleanup
-  useEffect(() => {
-    return () => stopLive();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // ---- Live pipeline (camera + pose + inference) ----
+  const {
+    videoRef,
+    canvasRef,
+    currentPrediction,
+    pText,
+    sigma,
+    markers,
+    captureFpsText,
+    modelFpsText,
+    resetSession,
+    testFall,
+  } = usePoseMonitor({
+    apiBase,
+    isActive,
+    monitoringOn,
+    registerController,
+    settingsPayload,
+    deployW,
+    deployS,
+    targetFps,
+    mode,
+    chosen,
+    opCode,
+    mcEnabled,
+    mcCfg,
+    activeDatasetCode,
+    chosenSpec,
+  });
 
-  // Pose callback
-  function handlePoseResults(results) {
-    // Option A: cap pose processing rate to MAX_PROC_FPS
-    const nowMs = performance.now();
-    if (nowMs - lastProcMsRef.current < 1000 / MAX_PROC_FPS) return;
-    lastProcMsRef.current = nowMs;
-    const canvasEl = canvasRef.current;
-    if (!canvasEl) return;
-
-    const ctx = canvasEl.getContext("2d");
-      const doDraw = isActiveRef.current;
-
-      const landmarks = results.poseLandmarks;
-
-      // If no pose is detected, keep the pipeline running but don't crash the UI.
-      if (!landmarks || !landmarks.length) {
-        if (doDraw && ctx) {
-          ensureCanvasMatchesVideo();
-          ctx.fillStyle = "#020617";
-          ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.fillStyle = "#94a3b8";
-          ctx.fillText("No pose detected…", 16, 24);
-        }
-        return;
-      }
-
-      // Draw only when this page is active (so other pages stay responsive)
-      if (doDraw && ctx) {
-        ensureCanvasMatchesVideo();
-        const w = canvasEl.width;
-        const h = canvasEl.height;
-
-        ctx.fillStyle = "#020617";
-        ctx.fillRect(0, 0, w, h);
-
-        // Simple skeleton overlay
-        drawConnectors(ctx, landmarks, mpPose.POSE_CONNECTIONS, {
-          color: "#22c55e",
-          lineWidth: 2,
-        });
-        drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
-
-        // Timestamp
-        ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
-        ctx.fillStyle = "#94a3b8";
-        ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
-      }
-
-      // Build raw frame
-    const xyFrame = new Array(NUM_JOINTS);
-    const confFrame = new Array(NUM_JOINTS);
-
-    for (let i = 0; i < NUM_JOINTS; i++) {
-      const lm = landmarks[i];
-      if (!lm) {
-        xyFrame[i] = [0, 0];
-        confFrame[i] = 0;
-      } else {
-        xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
-        confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
-      }
-    }
-
-    const tNow = performance.now();
-
-    // Estimate FPS from callback timing (smoothed)
-    const last = lastPoseTsRef.current;
-    if (typeof last === "number") {
-      const dt = tNow - last;
-      if (dt > 0 && dt < 5000) {
-        const arr = fpsDeltasRef.current;
-        arr.push(dt);
-        if (arr.length > 30) arr.shift();
-        const meanDt = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
-        const estFps = meanDt > 0 ? 1000 / meanDt : null;
-        if (estFps && Number.isFinite(estFps)) {
-          const prev = fpsEstimateRef.current;
-          fpsEstimateRef.current = prev == null ? estFps : prev * 0.8 + estFps * 0.2;
-        }
-      }
-    }
-    lastPoseTsRef.current = tNow;
-
-    // Push raw
-    const raw = rawFramesRef.current;
-    raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
-    // Keep ~10s max (enough for windowing)
-    const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
-    if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
-
-    // Only send once we have a full resampled window
-    maybeSendWindow();
-  }
-
-  function addTimelineMarker(kind) {
-    setTimeline((prev) => {
-      const next = prev.slice(-49); // keep last 49, then add 1
-      next.push({ i: (prev.length ? prev[prev.length - 1].i + 1 : 0), kind });
-      return next;
-    });
-  }
-
-    async function maybeSendWindow() {
-    const now = performance.now();
-    // Stride is defined in frames at the *target/model* FPS (e.g., S=12 at 30 FPS => ~0.4s).
-    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
-    if (now - lastSentRef.current < minGapMs) return;
-
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - needMs;
-
-    // Wait until we have enough history to cover the full window duration.
-    if (raw[0].t > startNeed) return;
-
-    // Include one frame before startNeed for interpolation on the server.
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    const slice = raw.slice(startIdx);
-
-    lastSentRef.current = now;
-
-    // Best-practice: send *raw* frames + timestamps; server resamples to target_fps/target_T.
-    const payload = {
-      session_id: sessionIdRef.current,
-      resident_id: 1,
-      mode: mode,
-      dataset_code: activeDatasetCode,
-      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-      model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
-      model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
-      model_id: mode === "dual" ? null : mode === "tcn" ? chosen.tcn : chosen.gcn,
-
-      // The model expects this FPS after resampling.
-      fps: targetFps,
-      target_fps: targetFps,
-      target_T: deployW,
-
-      // Useful for debugging / dashboards (does NOT affect inference)
-      capture_fps: streamFps || fpsEstimateRef.current || null,
-
-      timestamp_ms: Date.now(),
-      use_mc: Boolean(mcEnabled),
-      mc_M: mcCfg?.M,
-      persist: Boolean(monitoringOn),
-
-      // Raw pose samples (variable FPS)
-      raw_t_ms: slice.map((fr) => fr.t),
-      raw_xy: slice.map((fr) => fr.xy),
-      raw_conf: slice.map((fr) => fr.conf),
-
-      // Optional (helps server align the window end exactly)
-      window_end_t_ms: endTs,
-    };
-
-    try {
-      const resp = await fetch(`${apiBase}/api/monitor/predict_window`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!resp.ok) {
-        console.error("Backend error", await resp.text());
-        return;
-      }
-
-      const data = await resp.json();
-
-      const tri = data?.triage_state || data?.triageState || "not_fall";
-      setTriageState(tri);
-
-      // pFall display: use overall mu (single) or max of (tcn,gcn) for dual
-      let mu = null;
-      let sig = null;
-
-      if (mode === "dual") {
-        const mt = data?.models?.tcn;
-        const mg = data?.models?.gcn;
-        const mh = data?.models?.hybrid;
-        const muT = mt?.mu != null ? Number(mt.mu) : null;
-        const muG = mg?.mu != null ? Number(mg.mu) : null;
-        // For hybrid fusion we display a conservative joint confidence.
-        // Prefer the backend-provided hybrid mu/sigma when available.
-        if (mh?.mu != null) mu = Number(mh.mu);
-        else mu = Math.min(muT ?? 1, muG ?? 1);
-
-        const sT = mt?.sigma != null ? Number(mt.sigma) : null;
-        const sG = mg?.sigma != null ? Number(mg.sigma) : null;
-        if (mh?.sigma != null) sig = Number(mh.sigma);
-        else sig = Math.max(sT ?? 0, sG ?? 0);
-        // threshold (use the "primary" spec if available)
-        if (chosenSpec?.tau_high != null) setTauHigh(Number(chosenSpec.tau_high));
-      } else {
-        const mOut = data?.models?.[mode];
-        if (mOut) {
-          mu = mOut?.mu != null ? Number(mOut.mu) : mOut?.p_det != null ? Number(mOut.p_det) : null;
-          sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
-          if (mOut?.triage?.tau_high != null) setTauHigh(Number(mOut.triage.tau_high));
-        }
-      }
-
-      setPFall(mu);
-      setSigma(sig);
-
-      // timeline markers: mark uncertain/fall
-      const triNorm = (tri || "").toLowerCase();
-      if (triNorm === "fall") addTimelineMarker("fall");
-      else if (triNorm === "uncertain") addTimelineMarker("uncertain");
-    } catch (err) {
-      console.error("Error calling /api/monitor/predict_window:", err);
-    }
-  }
-
-  async function resetSession() {
-    try {
-      await fetch(`${apiBase}/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`, {
-        method: "POST",
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  async function testFall() {
-    // 1) Try backend helper endpoint (if present)
-    try {
-      const r = await fetch(`${apiBase}/api/events/test_fall`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resident_id: 1, model_code: prettyModelTag(activeModelCode) }),
-      });
-      if (r.ok) {
-        addTimelineMarker("fall");
-        return;
-      }
-    } catch {
-      // ignore
-    }
-
-    // 2) Fallback: record a test notification (if DB exists)
-    try {
-      await fetch(`${apiBase}/api/notifications/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resident_id: 1,
-          channel: "email",
-          message: "[UI] Test Fall button pressed",
-        }),
-      });
-    } catch {
-      // ignore
-    }
-
-    // 3) UI-only marker
-    addTimelineMarker("fall");
-  }
-
-  const currentPrediction = labelForTriage(triageState);
-  const pText = pFall == null ? "—" : pFall.toFixed(3);
-
-  // markers: translate last 50 markers to positions (0..100%)
-  const markers = useMemo(() => {
-    // We don't know exact index within 50; approximate by spreading over the bar.
-    const last50 = timeline.slice(-50);
-    const n = last50.length;
-    if (n === 0) return [];
-    return last50.map((m, idx) => ({
-      leftPct: ((idx + 1) / (n + 1)) * 100,
-      kind: m.kind,
-    }));
-  }, [timeline]);
-
-  // Display both FPS numbers:
-  // - Capture FPS: the actual MediaPipe callback rate (variable)
-  // - Model FPS: the FPS the server resamples to before inference (fixed, from model spec)
-  const captureFpsText = useMemo(() => {
-    const v = streamFps;
-    if (v == null) return "—";
-    const n = Number(v);
-    if (!Number.isFinite(n) || n <= 0) return "—";
-    return n.toFixed(1);
-  }, [streamFps]);
-
-  const modelFpsText = useMemo(() => {
-    const n = Number(targetFps);
-    if (!Number.isFinite(n) || n <= 0) return "—";
-    return n.toFixed(1);
-  }, [targetFps]);
+  // If settings are still loading, keep UI stable but show placeholders.
+  const showPlaceholders = !settingsLoaded;
 
   return (
     <div className={styles.pageContainer}>
@@ -849,166 +140,45 @@ function Monitor({ isActive = true } = {}) {
       <div className={styles.content}>
         {/* LEFT COLUMN (2/3) */}
         <div className={styles.leftColumn}>
-          <div className={styles.card}>
-            <div className={styles.cardHeader}>
-              <h3>Live Monitoring</h3>
-              <p>Real-time Skeleton tracking and fall detection</p>
-            </div>
-
-            {/* Video/Skeleton View (skeleton-only canvas) */}
-            <div className={styles.videoPlaceholder}>
-              <video
-                ref={videoRef}
-                muted
-                playsInline
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  opacity: 0, // keep hidden (skeleton-only)
-                }}
-              />
-              <canvas
-                ref={canvasRef}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                }}
-              />
-            </div>
-
-            {/* Prediction Result Box */}
-            <div className={styles.predictionBox}>
-              <div className={styles.predictionItem}>
-                <span className={styles.label}>Current Prediction</span>
-                <span className={styles.value}>{currentPrediction}</span>
-              </div>
-              <div className={styles.predictionItem}>
-                <span className={styles.label}>P (fall)</span>
-                <span className={styles.value}>{pText}</span>
-              </div>
-            </div>
-          </div>
+          <LiveMonitorCard
+            videoRef={videoRef}
+            canvasRef={canvasRef}
+            currentPrediction={showPlaceholders ? "—" : currentPrediction}
+            pText={showPlaceholders ? "—" : pText}
+          />
         </div>
 
         {/* RIGHT COLUMN (1/3) */}
         <div className={styles.rightColumn}>
-          {/* Controls Card */}
-          <div className={styles.card}>
-            <h3>Controls</h3>
-            {modelsErr && (
-              <p className={styles.subText} style={{ color: "#B45309" }}>
-                Backend error: {modelsErr}
-              </p>
-            )}
-            {monitoringErr && (
-              <p className={styles.subText} style={{ color: "#B45309" }}>
-                Settings error: {monitoringErr}
-              </p>
-            )}
-            {summaryErr && (
-              <p className={styles.subText} style={{ color: "#B45309" }}>
-                Summary error: {summaryErr}
-              </p>
-            )}
-            {!summaryErr && apiSummary?.system && (
-              <p className={styles.subText}>
-                API: {apiSummary.system.api_online ? "Online" : "Offline"} • Last latency: {apiSummary.system.last_latency_ms ?? "—"} ms
-              </p>
-            )}
-            <div className={styles.buttonGroup}>
-              {!monitoringOn ? (
-                <button
-                  className={styles.btnGray}
-                  onClick={() => {
-                    // Don't await here: we want getUserMedia to run under a user gesture.
-                    resetSession();
-                    setMonitoringOn(true);
-                  }}
-                  title="Start"
-                >
-                  Start
-                </button>
-              ) : (
-                <button className={styles.btnGray} onClick={() => setMonitoringOn(false)}>
-                  Stop
-                </button>
-              )}
-              <button className={styles.btnRed} onClick={testFall}>
-                Test Fall
-              </button>
-            </div>
-          </div>
+          <ControlsCard
+            monitoringOn={monitoringOn}
+            setMonitoringOn={setMonitoringOn}
+            resetSession={resetSession}
+            testFall={testFall}
+            modelsErr={modelsErr}
+            monitoringErr={monitoringErr}
+            summaryErr={summaryErr}
+            apiSummary={apiSummary}
+          />
 
-          {/* Timeline Card */}
-          <div className={styles.card}>
-            <h3>Event Timeline</h3>
-            <p className={styles.subText}>Last 50 prediction windows</p>
-            <div className={styles.timelineBar}>
-              {markers.map((m, idx) => (
-                <div
-                  key={idx}
-                  className={styles.marker}
-                  style={{
-                    left: `${m.leftPct}%`,
-                    opacity: m.kind === "uncertain" ? 0.5 : 1,
-                  }}
-                  title={m.kind}
-                />
-              ))}
-            </div>
-          </div>
+          <TimelineCard markers={markers} />
 
-          {/* Model Info Card */}
-          <div className={styles.card}>
-            <h3>Model Info</h3>
-            <div className={styles.infoTable}>
-              <div className={styles.infoRow}>
-                <span>Model:</span>
-                <span className={styles.tag}>{modelTag}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Window Size</span>
-                <span>{deployW}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Stride</span>
-                <span>{deployS}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>τ_low</span>
-                <span>{opThrLow != null ? Number(opThrLow).toFixed(2) : "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>τ_high</span>
-                <span>
-                  {(() => {
-                    const v = opThrHigh ?? fallThreshold ?? tauHigh;
-                    if (v == null) return "—";
-                    const tag = opCode ? ` (${opCode})` : "";
-                    return `${Number(v).toFixed(2)}${tag}`;
-                  })()}
-                </span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Confirm (k/n)</span>
-                <span>{opK != null && opN != null ? `${opK}/${opN}` : "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span>Cooldown (s)</span>
-                <span>{opCooldownS != null ? opCooldownS : "—"}</span>
-              </div>
-            </div>
-            {/* Keep extra info out of the design, but useful for debugging */}
-            <p className={styles.subText} style={{ marginTop: 12 }}>
-              Mode: {mode} • Capture FPS: {captureFpsText} • Model FPS: {modelFpsText} • MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
-              {sigma != null ? ` • σ=${sigma.toFixed(3)}` : ""}
-            </p>
-          </div>
+          <ModelInfoCard
+            modelTag={modelTag}
+            deployW={deployW}
+            deployS={deployS}
+            tauLow={tauLow}
+            tauHigh={resolvedTauHigh}
+            opCode={opCode}
+            confirmK={confirmK}
+            confirmN={confirmN}
+            cooldownS={cooldownS}
+            mode={mode}
+            captureFpsText={captureFpsText}
+            modelFpsText={modelFpsText}
+            mcCfg={mcCfg}
+            sigma={sigma}
+          />
         </div>
       </div>
     </div>

@@ -330,9 +330,16 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     torch = _torch()
     device = _pick_device(torch)
 
-    from core.ckpt import load_ckpt
-    from core.models import build_model
-    from core.features import FeatCfg
+    try:
+        from core.ckpt import load_ckpt
+        from core.models import build_model
+        from core.features import FeatCfg
+    except Exception as e:
+        raise RuntimeError(
+            "Missing ML runtime package 'core'. "
+            "Make sure you run the server from the repo root (so 'core/' is on PYTHONPATH), "
+            "or install the ML package into this environment."
+        ) from e
 
     bundle = load_ckpt(spec.ckpt, map_location=str(device))
 
@@ -425,7 +432,6 @@ def predict_spec(
         )
         x_t = torch.from_numpy(Xt).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,C]
         x_t = _match_in_ch_tcn(torch, model, x_t)
-        inputs = (x_t,)
 
         def forward_fn():
             with torch.no_grad():
@@ -469,15 +475,12 @@ def predict_spec(
             else:
                 raise RuntimeError(f"Unexpected GCN feature dim F={f} for two-stream model")
 
-            inputs = (xj_t, xm_t)
-
             def forward_fn():
                 with torch.no_grad():
                     logits = model(xj_t, xm_t)
                     return torch.sigmoid(logits).view(-1)
 
         else:
-            inputs = (xb,)
 
             def forward_fn():
                 with torch.no_grad():
