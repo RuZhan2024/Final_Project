@@ -55,6 +55,32 @@ from core.yamlio import yaml_load_simple
 
 
 # ============================================================
+# 0) JSON sanitization helper (convert NaN/Inf -> null)
+# ============================================================
+def _json_sanitize(obj: Any):
+    """Recursively convert values into JSON-safe Python types.
+
+    - float NaN/Inf -> None (serialized as null)
+    - numpy scalars -> Python scalars
+    - numpy arrays -> lists
+    """
+    # numpy scalar
+    if isinstance(obj, (np.floating, float)):
+        v = float(obj)
+        return v if np.isfinite(v) else None
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return [_json_sanitize(x) for x in obj.tolist()]
+    if isinstance(obj, dict):
+        return {str(k): _json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize(v) for v in obj]
+    return obj
+
+# ============================================================
 # 1) Small numerical helper
 # ============================================================
 def _sigmoid_np(x: np.ndarray) -> np.ndarray:
@@ -325,7 +351,7 @@ def aggregate_event_metrics(
     delays: List[float] = []
 
     # Count how often the alert state machine is in each state
-    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0}
+    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "pending": 0, "alert": 0}
 
     # ------------------------------------------------------------
     # Auto-estimate merge gap if not provided
@@ -416,6 +442,7 @@ def aggregate_event_metrics(
                 "n_windows": int(t_v.size),
                 "clear": int(np.sum(st["clear"])),
                 "suspect": int(np.sum(st["suspect"])),
+                "pending": int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool)))),
                 "alert": int(np.sum(st["alert"])),
             },
         }
@@ -433,6 +460,7 @@ def aggregate_event_metrics(
         state_totals["n_windows"] += int(t_v.size)
         state_totals["clear"] += int(np.sum(st["clear"]))
         state_totals["suspect"] += int(np.sum(st["suspect"]))
+        state_totals["pending"] += int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool))))
         state_totals["alert"] += int(np.sum(st["alert"]))
 
     # ------------------------------------------------------------
@@ -640,7 +668,7 @@ def main() -> int:
 
     os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
     with open(args.out_json, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
+        json.dump(_json_sanitize(out), f, indent=2, allow_nan=False)
     print(f"[ok] wrote: {args.out_json}")
 
     return 0

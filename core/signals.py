@@ -7,7 +7,7 @@ Compute per-window *auxiliary signals* used for post-processing, alerting, and a
 
   1) quality  : fraction of valid joints in the window (0..1)
   2) lying    : "torso horizontalness" proxy (0..1)
-  3) motion   : mean motion magnitude (units depend on motion scaling)
+  3) motion   : robust post-motion magnitude (units depend on motion scaling)
 
 Why this file matters
 ---------------------
@@ -37,18 +37,31 @@ quality:
     quality = (#valid joints) / (T * V)
 
 lying (torso horizontalness):
-  Let v = shoulder_mid - hip_mid in the model coordinate system.
-  We compute:
-    lying_frame = |dx| / (|dx| + |dy| + eps)
-  lying is the mean of lying_frame across valid frames.
+  We want a signal that is HIGH when the person is likely horizontal.
+
+  v = shoulder_mid - hip_mid (in the model coordinate system).
+  A more stable horizontalness measure is:
+    lying_angle = |dx| / (sqrt(dx^2 + dy^2) + eps)
+  which is sin(theta) where theta is the torso angle away from vertical.
+
+  We also compute a simple "bbox aspect" proxy:
+    bbox_aspect = (x_range / (y_range + eps))
+  and map it into [0,1]. This helps when shoulder/hip angle is noisy.
+
+  Final lying = max(lying_angle_mean, lying_bbox_mean).
   Interpretation:
     - If torso is horizontal: dy small, dx large => lying ~ 1
     - If torso is vertical:   dy large => lying ~ 0
 
 motion:
-  mean of motion magnitude over valid joints:
-    mag = sqrt(dx^2 + dy^2)
-  motion is the mean mag for mask==True entries.
+  Confirmation wants "still after the fall", but the window also contains
+  the fall itself (high motion). Using a full-window mean makes confirm
+  overly strict and collapses recall.
+
+  We therefore compute motion on the *tail* of the window (last ~1/3), and
+  use a robust statistic per-frame:
+    frame_motion = median_joints( sqrt(dx^2 + dy^2) )
+  motion = mean(frame_motion over tail frames)
 
 Notes:
 - If you enable motion_scale_by_fps in features, motion is "per second" velocity.
@@ -69,6 +82,25 @@ from core.features import FeatCfg, build_gcn_input
 # We only compute lying if we have these joints.
 L_SHO, R_SHO = 11, 12
 L_HIP, R_HIP = 23, 24
+
+
+# ------------------------------------------------------------
+# Tail-of-window policy for confirm signals
+# ------------------------------------------------------------
+# We compute lying/motion on the LAST part of the window so the signal
+# reflects the *post-fall* state (lying + still), not the fall dynamics.
+_TAIL_FRAC = 0.33
+_TAIL_MIN_FRAMES = 8
+
+
+def _tail_slice(T: int) -> slice:
+    """Return a slice selecting the tail frames used for confirm signals."""
+    if T <= 0:
+        return slice(0, 0)
+    k = int(np.ceil(float(T) * float(_TAIL_FRAC)))
+    k = max(int(_TAIL_MIN_FRAMES), k)
+    k = min(int(T), k)
+    return slice(int(T - k), int(T))
 
 
 @dataclass(frozen=True)
@@ -166,8 +198,11 @@ def compute_window_signals(
     # m is boolean [T,V], True means "valid joint"
     quality = float(np.mean(m.astype(np.float32))) if m is not None else 0.0
 
+    # Tail frames for confirm-related signals
+    tail = _tail_slice(int(X.shape[0]))
+
     # -------------------------
-    # 2) lying: torso horizontalness
+    # 2) lying: torso horizontalness (tail-based)
     # -------------------------
     lying = 0.0
 
@@ -179,8 +214,11 @@ def compute_window_signals(
         # Only use frames where BOTH shoulders and BOTH hips are valid.
         # This avoids "lying" being computed on zeros when joints are missing.
         ok = (m[:, L_SHO] & m[:, R_SHO] & m[:, L_HIP] & m[:, R_HIP])  # [T]
+        ok_tail = ok.copy()
+        ok_tail[: tail.start] = False
 
-        if np.any(ok):
+        lying_angle = 0.0
+        if np.any(ok_tail):
             # Shoulder and hip midpoints per frame
             sh = 0.5 * (xy[:, L_SHO, :] + xy[:, R_SHO, :])   # [T,2]
             hip = 0.5 * (xy[:, L_HIP, :] + xy[:, R_HIP, :])  # [T,2]
@@ -189,16 +227,40 @@ def compute_window_signals(
             v = sh - hip
 
             # Use absolute x/y to measure direction without sign
-            dx = np.abs(v[ok, 0])
-            dy = np.abs(v[ok, 1])
+            dx = np.abs(v[ok_tail, 0])
+            dy = np.abs(v[ok_tail, 1])
 
-            # Horizontalness ratio in [0,1]
-            # If dy dominates => close to 0 (upright)
-            # If dx dominates => close to 1 (horizontal)
-            lying = _safe_mean(dx / (dx + dy + 1e-6))
+            # More stable "horizontalness" in [0,1]
+            # - upright:  dx small, dy large => ~0
+            # - horizontal: dx large => ~1
+            lying_angle = _safe_mean(dx / (np.sqrt(dx * dx + dy * dy) + 1e-6))
+
+        # Bounding-box aspect proxy (tail-based), works even if shoulders/hips are noisy.
+        # Compute width/height over valid joints for each tail frame.
+        lying_bbox = 0.0
+        try:
+            xy_tail = xy[tail]  # [k,V,2]
+            m_tail = m[tail]    # [k,V]
+            if xy_tail.size > 0 and np.any(m_tail):
+                # Mask invalid joints as NaN so nanmin/nanmax ignore them.
+                xt = xy_tail[..., 0].astype(np.float32)
+                yt = xy_tail[..., 1].astype(np.float32)
+                xt = np.where(m_tail, xt, np.nan)
+                yt = np.where(m_tail, yt, np.nan)
+                x_rng = np.nanmax(xt, axis=1) - np.nanmin(xt, axis=1)  # [k]
+                y_rng = np.nanmax(yt, axis=1) - np.nanmin(yt, axis=1)  # [k]
+                aspect = x_rng / (y_rng + 1e-6)
+                # Map aspect into [0,1] with a gentle ramp.
+                # Typical standing: aspect <~ 0.8
+                # Typical lying:    aspect >~ 1.4
+                lying_bbox = _safe_mean(np.clip((aspect - 0.8) / (1.4 - 0.8), 0.0, 1.0))
+        except Exception:
+            lying_bbox = 0.0
+
+        lying = float(max(float(lying_angle), float(lying_bbox)))
 
     # -------------------------
-    # 3) motion: mean magnitude over valid joints
+    # 3) motion: tail-based robust motion magnitude
     # -------------------------
     motion = 0.0
 
@@ -206,10 +268,13 @@ def compute_window_signals(
     #   feat_cfg.use_motion is True
     # and our feature tensor has at least 4 channels.
     if feat_cfg.use_motion and X.shape[-1] >= 4 and m is not None:
-        mv = X[..., 2:4]                       # [T,V,2] motion (masked)
+        mv = X[..., 2:4]                        # [T,V,2] motion (masked)
         mag = np.sqrt(np.sum(mv * mv, axis=-1)) # [T,V] magnitude
 
-        # Only average over valid joints (mask==True)
-        motion = _safe_mean(mag[m])
+        # Robust per-frame motion: median over valid joints.
+        mag2 = mag.astype(np.float32, copy=True)
+        mag2[~m] = np.nan
+        frame_med = np.nanmedian(mag2, axis=1)  # [T]
+        motion = _safe_mean(frame_med[tail])
 
     return WindowSignals(quality=float(quality), lying=float(lying), motion=float(motion))

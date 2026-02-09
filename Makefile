@@ -1,54 +1,55 @@
 # ------------------------------------------------------------
 # Makefile — Skeleton-only Fall Detection (ML + Eval + Deploy-sim)
+# Core + Nice-to-have targets, refactored to reduce duplication.
+# (Core + nice targets; dataset-specific extract + preprocess; optional UR_Fall prep helpers.)
 # ------------------------------------------------------------
-#
-# This Makefile orchestrates your OFFLINE pipeline:
-#   raw videos/frames
-#     -> pose_npz_raw        (pose extraction)
-#     -> pose_npz            (preprocess: resample + One-Euro + masks)
-#     -> labels/spans.json   (dataset labeling)
-#     -> splits              (train/val/test lists)
-#     -> windows_W*_S*       (window NPZ for training/eval)
-#     -> train (TCN/GCN)
-#     -> calibrate temperature
-#     -> fit operating points (OP-1/2/3)
-#     -> eval / replay / mining
-#
-# Optional utilities included:
-#   - LE2i unlabeled window generation (FA-only stream)
-#   - score FA/day on unlabeled LE2i windows
-#   - deploy simulation runner (deploy/run_modes.py)
-#
-# ------------------------------------------------------------
+
+# extract (raw video/images → pose_npz_raw)
+
+# preprocess (clean/resample/normalize → pose_npz)
+
+# labels (make labels.json + spans.json)
+
+# splits (train/val/test lists of sequences)
+
+# windows (build windows_W.._S.. from pose_npz + spans + splits)
+
+# train (produce best.pt)
+
+# calibrate (optional but recommended: temperature scaling / reliability calibration on val)
+
+# fit thresholds / ops (choose deployment thresholds, cooldown, OP-1/2/3 params on val)
+
+# plot / report (PR curve, ROC, calibration curve, ops plots, confusion vs threshold)
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# Prevent Make from deleting intermediate results when a command fails.
+THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+
 .SECONDARY:
 .DELETE_ON_ERROR:
 
-# -------------------------
+# ============================================================
 # Python runner
-# -------------------------
+# ============================================================
 PY ?= python3
 VENV_ACT ?= .venv/bin/activate
 
-# RUN will activate venv if present and ensure imports work from repo root.
 ifneq ("$(wildcard $(VENV_ACT))","")
 RUN := source "$(VENV_ACT)" && PYTHONPATH="$(CURDIR)" $(PY) -u
 else
 RUN := PYTHONPATH="$(CURDIR)" $(PY) -u
 endif
 
-# -------------------------
-# Datasets supported in this repo
-# -------------------------
+# ============================================================
+# Datasets supported
+# ============================================================
 DATASETS := le2i urfd caucafall muvim
 
-# -------------------------
-# Top-level paths
-# -------------------------
+# ============================================================
+# Paths
+# ============================================================
 RAW_DIR    := data/raw
 INTERIM    := data/interim
 PROCESSED  := data/processed
@@ -64,73 +65,119 @@ MET_DIR    := $(OUT_DIR)/metrics
 MINED_DIR  := $(OUT_DIR)/mined
 PLOTS_DIR  := $(OUT_DIR)/plots
 
-# Selected operating point when a script supports it (op1/op2/op3)
-OP ?= op2
-
-# -------------------------
-# Raw dataset roots (override if your paths differ)
-# -------------------------
+# ============================================================
+# Per-dataset roots (override if your paths differ)
+# ============================================================
 RAW_le2i      := $(RAW_DIR)/LE2i
 RAW_urfd      := $(RAW_DIR)/UR_Fall
+RAW_urfd_clip := $(RAW_DIR)/UR_Fall_clips
 RAW_caucafall := $(RAW_DIR)/CAUCAFall
 RAW_muvim     := $(RAW_DIR)/MUVIM
 
-# Source FPS defaults (used only when metadata is missing)
+# Source FPS defaults (used when raw/extracted metadata is missing)
 FPS_le2i      ?= 25
 FPS_urfd      ?= 30
 FPS_caucafall ?= 23
 FPS_muvim     ?= 30
 
-# -------------------------
-# Preprocess knobs (pose_npz_raw -> pose_npz)
-# -------------------------
-# Confidence gating threshold when constructing masks.
-PREPROC_CONF_THR ?= 0.20
+# ============================================================
+# Dataset formats (extraction)
+# ============================================================
+# le2i      : videos (.avi)
+# urfd      : UR_Fall image sequences (.jpg/.jpeg/.png) under RAW_urfd_clip
+# caucafall : image sequences (.png)
+# muvim     : image sequences (.png) under ZED_RGB
+URFD_SEQUENCE_ID_DEPTH ?= 2
+CAUCA_SEQUENCE_ID_DEPTH ?= 2
+MUVIM_SEQUENCE_ID_DEPTH ?= 2
 
-# Target deploy FPS (your "single time base").
+# Restrict globs to the actual dataset formats to avoid picking up labels/CSVs/etc.
+URFD_IMAGES_GLOBS  ?= "$(RAW_urfd_clip)/**/*.jpg" "$(RAW_urfd_clip)/**/*.jpeg" "$(RAW_urfd_clip)/**/*.png"
+CAUCA_IMAGES_GLOB  ?= "$(RAW_caucafall)/**/*.png"
+MUVIM_IMAGES_GLOB  ?= "$(RAW_muvim)/ZED_RGB/**/*.png"
+
+# ============================================================
+# Preprocess (pose_npz_raw -> pose_npz)
+# CLI: pose/preprocess_pose_npz.py (new-only decoupled flags)
+# ============================================================
 PREPROC_TARGET_FPS ?= 30
+POST_FPS ?= $(PREPROC_TARGET_FPS)
 
-# One-Euro smoothing settings
+# Decoupled thresholds
+# - conf_gate: validity mask for smoothing/filling
+# - fill_conf_thr: confidence assigned to filled points (if fill_conf=thr)
+# - norm_conf_gate: frames below this are excluded from normalization math
+PREPROC_CONF_GATE      ?= 0.20
+PREPROC_FILL_CONF_THR  ?= 0.20
+PREPROC_NORM_CONF_GATE ?= 0.10
+
+PREPROC_CONF_GATE_CLEAN      = $(strip $(PREPROC_CONF_GATE))
+PREPROC_FILL_CONF_THR_CLEAN  = $(strip $(PREPROC_FILL_CONF_THR))
+PREPROC_NORM_CONF_GATE_CLEAN = $(strip $(PREPROC_NORM_CONF_GATE))
+
+# Smoothing
 PREPROC_ONE_EURO ?= 1
 PREPROC_ONE_EURO_MIN_CUTOFF ?= 1.0
 PREPROC_ONE_EURO_BETA ?= 0.0
 PREPROC_ONE_EURO_D_CUTOFF ?= 1.0
 
-# Legacy smoothing (kept for backwards compatibility; usually keep 1 when One-Euro is enabled)
 PREPROC_SMOOTH_K ?= 1
 PREPROC_MAX_GAP  ?= 4
+# Gap fill confidence policy: keep|thr|min_neighbors|linear
+PREPROC_FILL_CONF ?= thr
 
-# -------------------------
-# Window builder knobs (pose_npz -> windows)
-# -------------------------
+# Frame-level gating (preprocess wrapper)
+PREPROC_MIN_VALID_RATIO ?= 0.25
+# 1 => pass --invalidate_bad_frames
+PREPROC_INVALIDATE_BAD_FRAMES ?= 1
+
+# Normalisation / rotation knobs (wrapper-level)
+# normalize: none|torso|shoulder
+PREPROC_NORMALIZE ?= torso
+# rotate: none|shoulders
+PREPROC_ROTATE ?= none
+# pelvis_fill: nearest|zero
+PREPROC_PELVIS_FILL ?= nearest
+
+# Cleaned variants (strip whitespace in case of overrides)
+PREPROC_FILL_CONF_CLEAN = $(strip $(PREPROC_FILL_CONF))
+PREPROC_NORMALIZE_CLEAN = $(strip $(PREPROC_NORMALIZE))
+PREPROC_ROTATE_CLEAN = $(strip $(PREPROC_ROTATE))
+PREPROC_PELVIS_FILL_CLEAN = $(strip $(PREPROC_PELVIS_FILL))
+PREPROC_INVALIDATE_BAD_FRAMES_CLEAN = $(strip $(PREPROC_INVALIDATE_BAD_FRAMES))
+# Windows
+# ============================================================
 WIN_W ?= 48
 WIN_S ?= 12
 
-# Extra arguments for windows/make_windows.py
-# Keep this as a single variable so you can override it in one place.
 WIN_EXTRA ?= --strategy balanced --min_overlap_frames 1 --pos_per_span 80 --neg_ratio 3.0 \
             --max_neg_per_video 250 --max_windows_per_video_no_spans 120 --min_valid_frac 0.0 \
             --skip_existing --write_manifest
 
-# -------------------------
-# Unlabeled window pipeline knobs (LE2i only; optional)
-# -------------------------
-# Scene keywords used by labels/make_unlabeled_test_list.py (case-insensitive match).
+# ============================================================
+# Unlabeled windows (LE2i; optional)
+# ============================================================
 LE2I_UNLABELED_SCENES ?= Office "Lecture room"
 UNLAB_SUBSET ?= test_unlabeled
-
 UNLAB_MAX_WINDOWS_PER_VIDEO ?= 400
 UNLAB_CONF_GATE ?= 0.20
 UNLAB_MIN_VALID_FRAC ?= 0.00
 UNLAB_MIN_AVG_CONF ?= 0.00
 UNLAB_USE_PRECOMPUTED_MASK ?= 1
 
-# -------------------------
+# ============================================================
 # Training knobs
-# -------------------------
-FORCE ?= 0               # FORCE=1 reruns even if outputs exist
+# ============================================================
+FORCE ?= 0
+
+# Stamp files to mark completed stages (so .PHONY targets can skip fast)
+STAMP_EXTRACT := .done_extract
+STAMP_PREPROC := .done_preprocess
+STAMP_WINDOWS := .done_windows
+
 SPLIT_SEED ?= 33724876
 
+# Keep your existing names (TCN/GCN), but also expose arch-keyed aliases for templates.
 EPOCHS_TCN ?= 200
 BATCH_TCN  ?= 64
 LR_TCN     ?= 0.0005
@@ -142,26 +189,34 @@ LR_GCN     ?= 0.0005
 PATIENCE_GCN ?= 30
 MIN_EPOCHS_GCN ?= 20
 
-# ReduceLROnPlateau knobs
+# Arch aliases used internally by templates (override if you want)
+EPOCHS_tcn ?= $(EPOCHS_TCN)
+BATCH_tcn  ?= $(BATCH_TCN)
+LR_tcn     ?= $(LR_TCN)
+PATIENCE_tcn ?= $(PATIENCE_TCN)
+MIN_EPOCHS_tcn ?= 0
+
+EPOCHS_gcn ?= $(EPOCHS_GCN)
+BATCH_gcn  ?= $(BATCH_GCN)
+LR_gcn     ?= $(LR_GCN)
+PATIENCE_gcn ?= $(PATIENCE_GCN)
+MIN_EPOCHS_gcn ?= $(MIN_EPOCHS_GCN)
+
 LR_PLATEAU_PATIENCE ?= 5
 LR_PLATEAU_FACTOR   ?= 0.5
 LR_PLATEAU_MIN_LR   ?= 1e-6
 
-# Training objective
-MONITOR ?= ap # ap | f1
-LOSS ?= bce # bce | focal
+MONITOR ?= ap
+LOSS ?= bce
 FOCAL_ALPHA ?= 0.25
 FOCAL_GAMMA ?= 2.0
 
-# Use balanced sampler? (flag only)
 BALANCED_SAMPLER ?= 1
 BALANCED_SAMPLER_FLAG := $(if $(filter 1 true yes,$(BALANCED_SAMPLER)),--balanced_sampler,)
 
-# EMA for more stable validation
 EMA_DECAY  ?= 0.999
 PREFER_EMA ?= 1
 
-# Augmentation knobs
 MASK_JOINT_P ?= 0.15
 MASK_FRAME_P ?= 0.10
 AUG_HFLIP_P ?= 0.50
@@ -172,237 +227,261 @@ AUG_OCC_MIN ?= 3
 AUG_OCC_MAX ?= 10
 AUG_TIME_SHIFT ?= 1
 
-# -------------------------
-# Alert policy knobs for fit_ops (deployment-style)
-# -------------------------
+# ============================================================
+# fit_ops knobs
+# ============================================================
+OP ?= op2
+OPS ?= op1 op2 op3
+
 CONFIRM ?= 1
 QUALITY_ADAPT ?= 1
 QUALITY_MIN   ?= 0.25
 QUALITY_BOOST ?= 0.15
+QUALITY_BOOST_LOW ?= 0.10
 
-# Override temperature manually when fitting ops (optional)
-# Example: make fit-ops-tcn-le2i TEMP=1.2
+# Confirmation knobs (passed to fit_ops.py; stored in ops YAML for eval/replay)
+# Balanced defaults (recommended for CAUCAFall; override per run if needed):
+#   make ... CONFIRM_S=3.0 CONFIRM_MIN_LYING=0.50 CONFIRM_MAX_MOTION=0.12 CONFIRM_REQUIRE_LOW=1
+CONFIRM_S ?= 3.0
+CONFIRM_MIN_LYING ?= 0.50
+CONFIRM_MAX_MOTION ?= 0.12
+CONFIRM_REQUIRE_LOW ?= 1
+
+# Extra raw flags for eval/fit_ops.py (advanced)
+FITOPS_EXTRA ?=
+
+
 TEMP ?=
-
-# Fit-ops FA estimation
-#   auto: use $(WIN_ds)/$(UNLAB_SUBSET) if present
-#   none: don't pass --fa_dir
-#   <path>: explicit folder
+# FA reference directory for fit_ops: auto | none | <path>
 FITOPS_FA ?= auto
+FITOPS_FA_CLEAN = $(strip $(FITOPS_FA))
 
-# Mining knobs
+# ============================================================
+# Mining knobs (optional)
+# ============================================================
 HARDNEG_SPLIT ?= val
 NEARMISS_SPLIT ?= val
 HARDNEG_MULT ?= 5
 
-# Deploy-sim knobs
+# ============================================================
+# Deploy sim knobs (optional)
+# ============================================================
 DEPLOY_CFG ?= $(CFG_DIR)/deploy_modes.yaml
-DEPLOY_SPLIT ?= $(UNLAB_SUBSET)   # prefer unlabeled if available; falls back to test
+DEPLOY_SPLIT ?= $(UNLAB_SUBSET)
 DEPLOY_TIME_MODE ?= center
+SKIP_IF_NO_VIDEOS ?= 0
 
 # ============================================================
-# Derived per-dataset paths
+# Helpers: paths
 # ============================================================
-POSE_RAW_le2i      := $(INTERIM)/le2i/pose_npz_raw
-POSE_RAW_urfd      := $(INTERIM)/urfd/pose_npz_raw
-POSE_RAW_caucafall := $(INTERIM)/caucafall/pose_npz_raw
-POSE_RAW_muvim     := $(INTERIM)/muvim/pose_npz_raw
+pose_raw   = $(INTERIM)/$1/pose_npz_raw
+pose_dir   = $(INTERIM)/$1/pose_npz
 
-POSE_le2i      := $(INTERIM)/le2i/pose_npz
-POSE_urfd      := $(INTERIM)/urfd/pose_npz
-POSE_caucafall := $(INTERIM)/caucafall/pose_npz
-POSE_muvim     := $(INTERIM)/muvim/pose_npz
 
-LABELS_le2i      := $(LABELS_DIR)/le2i.json
-LABELS_urfd      := $(LABELS_DIR)/urfd.json
-LABELS_caucafall := $(LABELS_DIR)/caucafall.json
-LABELS_muvim     := $(LABELS_DIR)/muvim.json
+labels_json = $(LABELS_DIR)/$1.json
+spans_json  = $(LABELS_DIR)/$1_spans.json
 
-SPANS_le2i      := $(LABELS_DIR)/le2i_spans.json
-SPANS_urfd      := $(LABELS_DIR)/urfd_spans.json
-SPANS_caucafall := $(LABELS_DIR)/caucafall_spans.json
-SPANS_muvim     := $(LABELS_DIR)/muvim_spans.json
+split_train = $(SPLITS_DIR)/$1_train.txt
+split_val   = $(SPLITS_DIR)/$1_val.txt
+split_test  = $(SPLITS_DIR)/$1_test.txt
+split_unlabeled_le2i = $(SPLITS_DIR)/le2i_unlabeled.txt
 
-SPLIT_TRAIN_le2i      := $(SPLITS_DIR)/le2i_train.txt
-SPLIT_TRAIN_urfd      := $(SPLITS_DIR)/urfd_train.txt
-SPLIT_TRAIN_caucafall := $(SPLITS_DIR)/caucafall_train.txt
-SPLIT_TRAIN_muvim     := $(SPLITS_DIR)/muvim_train.txt
+win_dir    = $(PROCESSED)/$1/windows_W$(WIN_W)_S$(WIN_S)
 
-SPLIT_VAL_le2i      := $(SPLITS_DIR)/le2i_val.txt
-SPLIT_VAL_urfd      := $(SPLITS_DIR)/urfd_val.txt
-SPLIT_VAL_caucafall := $(SPLITS_DIR)/caucafall_val.txt
-SPLIT_VAL_muvim     := $(SPLITS_DIR)/muvim_val.txt
+out_dir    = $(OUT_DIR)/$1_$2_W$(WIN_W)S$(WIN_S)
+ckpt       = $(call out_dir,$1,$2)/best.pt
 
-SPLIT_TEST_le2i      := $(SPLITS_DIR)/le2i_test.txt
-SPLIT_TEST_urfd      := $(SPLITS_DIR)/urfd_test.txt
-SPLIT_TEST_caucafall := $(SPLITS_DIR)/caucafall_test.txt
-SPLIT_TEST_muvim     := $(SPLITS_DIR)/muvim_test.txt
+hardneg_out_dir = $(call out_dir,$1,$2)_hardneg
+hardneg_ckpt    = $(call hardneg_out_dir,$1,$2)/best.pt
 
-# Optional: list of stems used to build unlabeled windows (LE2i helper)
-SPLIT_UNLABELED_le2i := $(SPLITS_DIR)/le2i_unlabeled.txt
-
-WIN_le2i      := $(PROCESSED)/le2i/windows_W$(WIN_W)_S$(WIN_S)
-WIN_urfd      := $(PROCESSED)/urfd/windows_W$(WIN_W)_S$(WIN_S)
-WIN_caucafall := $(PROCESSED)/caucafall/windows_W$(WIN_W)_S$(WIN_S)
-WIN_muvim     := $(PROCESSED)/muvim/windows_W$(WIN_W)_S$(WIN_S)
-
-OUT_TCN_le2i      := $(OUT_DIR)/le2i_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_urfd      := $(OUT_DIR)/urfd_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_caucafall := $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)
-OUT_TCN_muvim     := $(OUT_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S)
-
-OUT_GCN_le2i      := $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_urfd      := $(OUT_DIR)/urfd_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_caucafall := $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)
-OUT_GCN_muvim     := $(OUT_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S)
-
-CKPT_TCN_le2i      := $(OUT_TCN_le2i)/best.pt
-CKPT_TCN_urfd      := $(OUT_TCN_urfd)/best.pt
-CKPT_TCN_caucafall := $(OUT_TCN_caucafall)/best.pt
-CKPT_TCN_muvim     := $(OUT_TCN_muvim)/best.pt
-
-CKPT_GCN_le2i      := $(OUT_GCN_le2i)/best.pt
-CKPT_GCN_urfd      := $(OUT_GCN_urfd)/best.pt
-CKPT_GCN_caucafall := $(OUT_GCN_caucafall)/best.pt
-CKPT_GCN_muvim     := $(OUT_GCN_muvim)/best.pt
-
-CAL_TCN_le2i      := $(CAL_DIR)/tcn_le2i.yaml
-CAL_TCN_urfd      := $(CAL_DIR)/tcn_urfd.yaml
-CAL_TCN_caucafall := $(CAL_DIR)/tcn_caucafall.yaml
-CAL_TCN_muvim     := $(CAL_DIR)/tcn_muvim.yaml
-
-CAL_GCN_le2i      := $(CAL_DIR)/gcn_le2i.yaml
-CAL_GCN_urfd      := $(CAL_DIR)/gcn_urfd.yaml
-CAL_GCN_caucafall := $(CAL_DIR)/gcn_caucafall.yaml
-CAL_GCN_muvim     := $(CAL_DIR)/gcn_muvim.yaml
-
-OPS_TCN_le2i      := $(OPS_DIR)/tcn_le2i.yaml
-OPS_TCN_urfd      := $(OPS_DIR)/tcn_urfd.yaml
-OPS_TCN_caucafall := $(OPS_DIR)/tcn_caucafall.yaml
-OPS_TCN_muvim     := $(OPS_DIR)/tcn_muvim.yaml
-
-OPS_GCN_le2i      := $(OPS_DIR)/gcn_le2i.yaml
-OPS_GCN_urfd      := $(OPS_DIR)/gcn_urfd.yaml
-OPS_GCN_caucafall := $(OPS_DIR)/gcn_caucafall.yaml
-OPS_GCN_muvim     := $(OPS_DIR)/gcn_muvim.yaml
+cal_yaml   = $(CAL_DIR)/$2_$1.yaml
+ops_yaml   = $(OPS_DIR)/$2_$1.yaml
 
 # ============================================================
 # Help
 # ============================================================
-.PHONY: help
+.PHONY: help print-config
 help:
 	@echo "Core pipeline (per dataset):"
-	@echo "  make extract-<ds>            # pose from videos (ds: $(DATASETS))"
-	@echo "  make extract-img-urfd        # pose from image sequences (URFD) [optional]"
-	@echo "  make extract-img-caucafall   # pose from image sequences (CAUCAFall) [optional]"
-	@echo "  make preprocess-<ds>         # resample + One-Euro + masks"
+	@echo "  make extract-<ds>            # pose from videos/images (ds: $(DATASETS))"
+	@echo "  make preprocess-<ds>         # resample + smoothing + gap fill"
 	@echo "  make labels-<ds>             # labels.json + spans.json"
 	@echo "  make splits-<ds>             # train/val/test lists"
 	@echo "  make windows-<ds>            # build windows_W*_S*"
-	@echo "  make check-windows-<ds>      # quick schema checks"
+	@echo "  make check-windows-<ds>      # quick schema checks (nice)"
 	@echo ""
 	@echo "Training + eval:"
 	@echo "  make train-tcn-<ds> | train-gcn-<ds>"
 	@echo "  make calibrate-tcn-<ds> | calibrate-gcn-<ds>"
 	@echo "  make fit-ops-tcn-<ds> | fit-ops-gcn-<ds>"
-	@echo "  make eval-tcn-<ds> | eval-gcn-<ds>"
-	@echo "  make replay-tcn-<ds> | replay-gcn-<ds>"
+	@echo "  make eval-tcn-<ds> | eval-gcn-<ds>        (OP=$(OP))"
+	@echo "  make replay-tcn-<ds> | replay-gcn-<ds>    (OP=$(OP))"
 	@echo ""
-	@echo "Unlabeled (FA-only) + deploy-sim (optional):"
-	@echo "  make unlabeled-le2i          # create $(UNLAB_SUBSET) windows for LE2i"
-	@echo "  make score-unlabeled-tcn-le2i | score-unlabeled-gcn-le2i"
+	@echo "Nice-to-have:"
+	@echo "  make plot-ops-tcn-<ds> | plot-ops-gcn-<ds>"
+	@echo "  make mine-hardneg-tcn-<ds> | mine-hardneg-gcn-<ds>"
+	@echo "  make mine-nearmiss-tcn-<ds> | mine-nearmiss-gcn-<ds> (OP=$(OP))"
+	@echo "  make finetune-hardneg-tcn-<ds> | finetune-hardneg-gcn-<ds>"
 	@echo "  make deploy-tcn-<ds> | deploy-gcn-<ds> | deploy-dual-<ds>"
 	@echo ""
-	@echo "Mining + finetune:"
-	@echo "  make mine-nearmiss-tcn-<ds> | mine-nearmiss-gcn-<ds>"
-	@echo "  make mine-hardneg-tcn-<ds>  | mine-hardneg-gcn-<ds>"
-	@echo "  make finetune-hardneg-tcn-<ds> | finetune-hardneg-gcn-<ds>"
-	@echo ""
-	@echo "Plots:"
-	@echo "  make plot-ops-tcn-<ds> | plot-ops-gcn-<ds>"
+	@echo "LE2i unlabeled (nice):"
+	@echo "  make unlabeled-le2i"
+	@echo "  make score-unlabeled-tcn-le2i | score-unlabeled-gcn-le2i"
 	@echo ""
 	@echo "Meta:"
 	@echo "  make pipeline-<ds>           # extract->preprocess->labels->splits->windows"
-	@echo "  make workflow-tcn-<ds>       # windows->train->calibrate->fit-ops->eval"
+	@echo "  make workflow-tcn-<ds>       # pipeline->train->calibrate->fit-ops->eval"
 	@echo "  make workflow-gcn-<ds>"
+	@echo "  make workflow-full-<ds>      # tcn+gcn+dual + mining + deploy (nice)"
 	@echo ""
-	@echo "Common overrides:"
-	@echo "  WIN_W=48 WIN_S=12  LOSS=focal  EMA_DECAY=0.999  QUALITY_ADAPT=1 CONFIRM=1"
-	@echo "  FORCE=1 (rerun even if outputs exist)"
-	@echo "  FITOPS_FA=auto|none|<path> (use unlabeled windows for FA in fit_ops)"
+	@echo "Inspect config:"
+	@echo "  make print-config"
+
+print-config:
+	@echo "WIN_W=$(WIN_W) WIN_S=$(WIN_S) POST_FPS=$(POST_FPS) PREPROC_TARGET_FPS=$(PREPROC_TARGET_FPS)"
+	@echo "PREPROC_CONF_GATE=$(PREPROC_CONF_GATE) PREPROC_FILL_CONF_THR=$(PREPROC_FILL_CONF_THR) PREPROC_NORM_CONF_GATE=$(PREPROC_NORM_CONF_GATE) PREPROC_MAX_GAP=$(PREPROC_MAX_GAP) PREPROC_FILL_CONF=$(PREPROC_FILL_CONF_CLEAN)"
+	@echo "LOSS=$(LOSS) MONITOR=$(MONITOR) EMA_DECAY=$(EMA_DECAY) BALANCED_SAMPLER=$(BALANCED_SAMPLER)"
+	@echo "CONFIRM=$(CONFIRM) CONFIRM_S=$(CONFIRM_S) CONFIRM_MIN_LYING=$(CONFIRM_MIN_LYING) CONFIRM_MAX_MOTION=$(CONFIRM_MAX_MOTION) CONFIRM_REQUIRE_LOW=$(CONFIRM_REQUIRE_LOW)"
+	@echo "Image globs: URFD=$(URFD_IMAGES_GLOBS)"
+	@echo "            CAUCA=$(CAUCA_IMAGES_GLOB)"
+	@echo "            MUVIM=$(MUVIM_IMAGES_GLOB)"
 
 # ============================================================
 # Pose extraction
 # ============================================================
 .PHONY: extract-le2i extract-urfd extract-caucafall extract-muvim
 
+# LE2i is videos (.avi)
 extract-le2i:
-	@mkdir -p "$(POSE_RAW_le2i)"
-	$(RUN) pose/extract_2d.py \
-	  --videos_glob "$(RAW_le2i)/**/Videos/*.avi" "$(RAW_le2i)/**/*.avi" "$(RAW_le2i)/**/Videos/*.mp4" "$(RAW_le2i)/**/*.mp4" \
-	  --out_dir "$(POSE_RAW_le2i)" --fps_default "$(FPS_le2i)" --skip_existing || true
+	@mkdir -p "$(call pose_raw,le2i)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call pose_raw,le2i)/$(STAMP_EXTRACT)" ]; then \
+	  echo "[skip] extract-le2i (stamp exists: $(call pose_raw,le2i)/$(STAMP_EXTRACT))"; \
+	elif [ "$(FORCE)" != "1" ] && [ -n "$$(find "$(call pose_raw,le2i)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[skip] extract-le2i (npz exists) -> stamping"; \
+	  touch "$(call pose_raw,le2i)/$(STAMP_EXTRACT)"; \
+	else \
+	  $(RUN) pose/extract_2d.py \
+	    --videos_glob "$(RAW_le2i)/**/Videos/*.avi" "$(RAW_le2i)/**/*.avi" \
+	    --out_dir "$(call pose_raw,le2i)" \
+	    --fps_default "$(FPS_le2i)" \
+	    --skip_existing || true; \
+	  touch "$(call pose_raw,le2i)/$(STAMP_EXTRACT)"; \
+	fi
 
+# UR_Fall (dataset code: urfd) is image sequences (.jpg/.png) — use the prepared clips folder
 extract-urfd:
-	@mkdir -p "$(POSE_RAW_urfd)"
-	$(RUN) pose/extract_2d.py \
-	  --videos_glob "$(RAW_urfd)/**/*.avi" "$(RAW_urfd)/**/*.mp4" \
-	  --out_dir "$(POSE_RAW_urfd)" --fps_default "$(FPS_urfd)" --skip_existing || true
+	@mkdir -p "$(call pose_raw,urfd)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call pose_raw,urfd)/$(STAMP_EXTRACT)" ]; then \
+	  echo "[skip] extract-urfd (stamp exists: $(call pose_raw,urfd)/$(STAMP_EXTRACT))"; \
+	elif [ "$(FORCE)" != "1" ] && [ -n "$$(find "$(call pose_raw,urfd)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[skip] extract-urfd (npz exists) -> stamping"; \
+	  touch "$(call pose_raw,urfd)/$(STAMP_EXTRACT)"; \
+	else \
+	  $(RUN) pose/extract_2d_from_images.py \
+	    --dataset urfd \
+	    --images_glob $(URFD_IMAGES_GLOBS) \
+	    --sequence_id_depth "$(URFD_SEQUENCE_ID_DEPTH)" \
+	    --out_dir "$(call pose_raw,urfd)" \
+	    --fps "$(FPS_urfd)" \
+	    --skip_existing || true; \
+	  touch "$(call pose_raw,urfd)/$(STAMP_EXTRACT)"; \
+	fi
 
+# CAUCAFall is image sequences (.png)
 extract-caucafall:
-	@mkdir -p "$(POSE_RAW_caucafall)"
-	$(RUN) pose/extract_2d.py \
-	  --videos_glob "$(RAW_caucafall)/**/*.avi" "$(RAW_caucafall)/**/*.mp4" \
-	  --out_dir "$(POSE_RAW_caucafall)" --fps_default "$(FPS_caucafall)" --skip_existing || true
+	@mkdir -p "$(call pose_raw,caucafall)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call pose_raw,caucafall)/$(STAMP_EXTRACT)" ]; then \
+	  echo "[skip] extract-caucafall (stamp exists: $(call pose_raw,caucafall)/$(STAMP_EXTRACT))"; \
+	elif [ "$(FORCE)" != "1" ] && [ -n "$$(find "$(call pose_raw,caucafall)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[skip] extract-caucafall (npz exists) -> stamping"; \
+	  touch "$(call pose_raw,caucafall)/$(STAMP_EXTRACT)"; \
+	else \
+	  $(RUN) pose/extract_2d_from_images.py \
+	    --dataset caucafall \
+	    --images_glob $(CAUCA_IMAGES_GLOB) \
+	    --sequence_id_depth "$(CAUCA_SEQUENCE_ID_DEPTH)" \
+	    --out_dir "$(call pose_raw,caucafall)" \
+	    --fps "$(FPS_caucafall)" \
+	    --skip_existing || true; \
+	  touch "$(call pose_raw,caucafall)/$(STAMP_EXTRACT)"; \
+	fi
 
+# MUVIM is image sequences (.png) under ZED_RGB
 extract-muvim:
-	@mkdir -p "$(POSE_RAW_muvim)"
-	$(RUN) pose/extract_2d.py \
-	  --videos_glob "$(RAW_muvim)/**/*.avi" "$(RAW_muvim)/**/*.mp4" \
-	  --out_dir "$(POSE_RAW_muvim)" --fps_default "$(FPS_muvim)" --skip_existing || true
-
-# Alternative extractors for image-sequence datasets (optional)
-.PHONY: extract-img-urfd extract-img-caucafall
-
-extract-img-urfd:
-	@mkdir -p "$(POSE_RAW_urfd)"
-	$(RUN) pose/extract_2d_from_images.py \
-	  --dataset_code urfd \
-	  --images_glob "$(RAW_urfd)/**/*.*" \
-	  --out_dir "$(POSE_RAW_urfd)" --fps_default "$(FPS_urfd)" --skip_existing || true
-
-extract-img-caucafall:
-	@mkdir -p "$(POSE_RAW_caucafall)"
-	$(RUN) pose/extract_2d_from_images.py \
-	  --dataset_code caucafall \
-	  --images_glob "$(RAW_caucafall)/**/*.*" \
-	  --out_dir "$(POSE_RAW_caucafall)" --fps_default "$(FPS_caucafall)" --skip_existing || true
+	@mkdir -p "$(call pose_raw,muvim)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call pose_raw,muvim)/$(STAMP_EXTRACT)" ]; then \
+	  echo "[skip] extract-muvim (stamp exists: $(call pose_raw,muvim)/$(STAMP_EXTRACT))"; \
+	elif [ "$(FORCE)" != "1" ] && [ -n "$$(find "$(call pose_raw,muvim)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[skip] extract-muvim (npz exists) -> stamping"; \
+	  touch "$(call pose_raw,muvim)/$(STAMP_EXTRACT)"; \
+	else \
+	  $(RUN) pose/extract_2d_from_images.py \
+	    --dataset muvim \
+	    --images_glob $(MUVIM_IMAGES_GLOB) \
+	    --sequence_id_depth "$(MUVIM_SEQUENCE_ID_DEPTH)" \
+	    --out_dir "$(call pose_raw,muvim)" \
+	    --fps "$(FPS_muvim)" \
+	    --skip_existing || true; \
+	  touch "$(call pose_raw,muvim)/$(STAMP_EXTRACT)"; \
+	fi
 
 # ============================================================
 # Preprocess (pose_npz_raw -> pose_npz)
 # ============================================================
+# ============================================================
+# Preprocess targets
+# ============================================================
 .PHONY: preprocess-% preprocess-only-%
-
-preprocess-%: extract-%
-	$(MAKE) preprocess-only-$*
+preprocess-%: extract-% preprocess-only-%
+	@:
 
 preprocess-only-%:
-	@mkdir -p "$(POSE_$*)" "$(POSE_RAW_$*)"
-	@if [ ! -d "$(POSE_RAW_$*)" ]; then echo "[err] missing pose raw dir: $(POSE_RAW_$*)"; exit 2; fi
+	@mkdir -p "$(call pose_dir,$*)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call pose_dir,$*)/$(STAMP_PREPROC)" ]; then \
+	  echo "[skip] preprocess-$* (stamp exists: $(call pose_dir,$*)/$(STAMP_PREPROC))"; \
+	  exit 0; \
+	fi
+	@if [ ! -d "$(call pose_raw,$*)" ]; then echo "[err] missing pose raw dir: $(call pose_raw,$*)"; exit 2; fi
+	@if [ -z "$$(find "$(call pose_raw,$*)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[err] no .npz files under: $(call pose_raw,$*)"; \
+	  echo "      - check RAW_$* path: $(RAW_$*)"; \
+	  echo "      - run: make extract-$*"; \
+	  exit 2; \
+	fi
+	@RAWN="$$(find "$(call pose_raw,$*)" -type f -name '*.npz' 2>/dev/null | wc -l | tr -d ' ')"; \
+	OUTN="$$(find "$(call pose_dir,$*)" -type f -name '*.npz' 2>/dev/null | wc -l | tr -d ' ')"; \
+	if [ "$(FORCE)" != "1" ] && [ "$$RAWN" -gt 0 ] && [ "$$OUTN" -ge "$$RAWN" ]; then \
+	  echo "[skip] preprocess-$* (already cleaned: $$OUTN/$$RAWN) -> stamping"; \
+	  touch "$(call pose_dir,$*)/$(STAMP_PREPROC)"; \
+	  exit 0; \
+	fi
+	@INV=""; if [ "$(PREPROC_INVALIDATE_BAD_FRAMES_CLEAN)" = "1" ]; then INV="--invalidate_bad_frames"; fi; \
 	$(RUN) pose/preprocess_pose_npz.py \
-	  --in_dir "$(POSE_RAW_$*)" --out_dir "$(POSE_$*)" \
+	  --in_dir "$(call pose_raw,$*)" \
+	  --out_dir "$(call pose_dir,$*)" \
 	  --fps_default "$(FPS_$*)" \
 	  --target_fps "$(PREPROC_TARGET_FPS)" \
+	  --conf_gate "$(PREPROC_CONF_GATE_CLEAN)" \
+	  --fill_conf_thr "$(PREPROC_FILL_CONF_THR_CLEAN)" \
+	  --norm_conf_gate "$(PREPROC_NORM_CONF_GATE_CLEAN)" \
+	  --max_gap "$(PREPROC_MAX_GAP)" \
+	  --fill_conf "$(PREPROC_FILL_CONF_CLEAN)" \
 	  --one_euro "$(PREPROC_ONE_EURO)" \
 	  --one_euro_min_cutoff "$(PREPROC_ONE_EURO_MIN_CUTOFF)" \
 	  --one_euro_beta "$(PREPROC_ONE_EURO_BETA)" \
 	  --one_euro_d_cutoff "$(PREPROC_ONE_EURO_D_CUTOFF)" \
-	  --conf_thr "$(PREPROC_CONF_THR)" \
 	  --smooth_k "$(PREPROC_SMOOTH_K)" \
-	  --max_gap "$(PREPROC_MAX_GAP)" \
+	  --normalize "$(PREPROC_NORMALIZE_CLEAN)" \
+	  --rotate "$(PREPROC_ROTATE_CLEAN)" \
+	  --pelvis_fill "$(PREPROC_PELVIS_FILL_CLEAN)" \
+	  --min_valid_ratio "$(PREPROC_MIN_VALID_RATIO)" \
+	  $$INV \
 	  --skip_existing
+	@touch "$(call pose_dir,$*)/$(STAMP_PREPROC)"
+
 
 # ============================================================
-# Labels (pose_npz -> labels.json/spans.json)
+# Labels
 # ============================================================
 URFD_MIN_RUN ?= 2
 URFD_GAP_FILL ?= 2
@@ -414,92 +493,138 @@ MUVIM_ZED_CSV ?= $(RAW_muvim)/ZED_RGB/ZED_RGB.csv
 
 .PHONY: labels-le2i labels-urfd labels-caucafall labels-muvim
 
-labels-le2i: preprocess-only-le2i
+labels-le2i: preprocess-le2i
 	@mkdir -p "$(LABELS_DIR)"
-	$(RUN) labels/make_le2i_labels.py \
-	  --npz_dir "$(POSE_le2i)" --raw_root "$(RAW_le2i)" \
-	  --out_labels "$(LABELS_le2i)" --out_spans "$(SPANS_le2i)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call labels_json,le2i)" ] && [ -s "$(call spans_json,le2i)" ]; then \
+	  echo "[skip] labels-le2i (exists: $(call labels_json,le2i))"; \
+	else \
+	  $(RUN) labels/make_le2i_labels.py \
+	    --npz_dir "$(call pose_dir,le2i)" \
+	    --raw_root "$(RAW_le2i)" \
+	    --out_labels "$(call labels_json,le2i)" \
+	    --out_spans "$(call spans_json,le2i)"; \
+	fi
 
-labels-urfd: preprocess-only-urfd
+labels-urfd: preprocess-urfd
 	@mkdir -p "$(LABELS_DIR)"
-	$(RUN) labels/make_urfd_labels.py \
-	  --raw_root "$(RAW_urfd)" --npz_dir "$(POSE_urfd)" \
-	  --out_labels "$(LABELS_urfd)" --out_spans "$(SPANS_urfd)" \
-	  --min_run "$(URFD_MIN_RUN)" --gap_fill "$(URFD_GAP_FILL)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call labels_json,urfd)" ] && [ -s "$(call spans_json,urfd)" ]; then \
+	  echo "[skip] labels-urfd (exists: $(call labels_json,urfd))"; \
+	else \
+	  $(RUN) labels/make_urfd_labels.py \
+	    --raw_root "$(RAW_urfd)" \
+	    --npz_dir "$(call pose_dir,urfd)" \
+	    --out_labels "$(call labels_json,urfd)" \
+	    --out_spans "$(call spans_json,urfd)" \
+	    --min_run "$(URFD_MIN_RUN)" \
+	    --gap_fill "$(URFD_GAP_FILL)"; \
+	fi
 
-labels-caucafall: preprocess-only-caucafall
+labels-caucafall: preprocess-caucafall
 	@mkdir -p "$(LABELS_DIR)"
-	$(RUN) labels/make_caucafall_labels_from_frames.py \
-	  --raw_root "$(RAW_caucafall)" --npz_dir "$(POSE_caucafall)" \
-	  --out_labels "$(LABELS_caucafall)" --out_spans "$(SPANS_caucafall)" \
-	  --min_run "$(CAUC_MIN_RUN)" --gap_fill "$(CAUC_GAP_FILL)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call labels_json,caucafall)" ] && [ -s "$(call spans_json,caucafall)" ]; then \
+	  echo "[skip] labels-caucafall (exists: $(call labels_json,caucafall))"; \
+	else \
+	  $(RUN) labels/make_caucafall_labels_from_frames.py \
+	    --raw_root "$(RAW_caucafall)" \
+	    --npz_dir "$(call pose_dir,caucafall)" \
+	    --out_labels "$(call labels_json,caucafall)" \
+	    --out_spans "$(call spans_json,caucafall)" \
+	    --min_run "$(CAUC_MIN_RUN)" \
+	    --gap_fill "$(CAUC_GAP_FILL)"; \
+	fi
 
-labels-muvim: preprocess-only-muvim
+labels-muvim: preprocess-muvim
 	@mkdir -p "$(LABELS_DIR)"
-	$(RUN) labels/make_muvim_labels.py \
-	  --npz_dir "$(POSE_muvim)" --zed_csv "$(MUVIM_ZED_CSV)" \
-	  --out_labels "$(LABELS_muvim)" --out_spans "$(SPANS_muvim)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call labels_json,muvim)" ] && [ -s "$(call spans_json,muvim)" ]; then \
+	  echo "[skip] labels-muvim (exists: $(call labels_json,muvim))"; \
+	else \
+	  $(RUN) labels/make_muvim_labels.py \
+	    --npz_dir "$(call pose_dir,muvim)" \
+	    --zed_csv "$(MUVIM_ZED_CSV)" \
+	    --out_labels "$(call labels_json,muvim)" \
+	    --out_spans "$(call spans_json,muvim)"; \
+	fi
 
 # ============================================================
-# Splits (labels.json -> train/val/test lists)
+# Splits
 # ============================================================
 .PHONY: splits-%
-
 splits-%: labels-%
 	@mkdir -p "$(SPLITS_DIR)"
-	$(RUN) split/make_splits.py \
-	  --labels_json "$(LABELS_$*)" \
-	  --out_dir "$(SPLITS_DIR)" --prefix "$*" \
-	  --seed "$(SPLIT_SEED)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call split_train,$*)" ] && [ -s "$(call split_val,$*)" ] && [ -s "$(call split_test,$*)" ]; then \
+	  echo "[skip] splits-$* (exists under $(SPLITS_DIR))"; \
+	else \
+	  $(RUN) split/make_splits.py \
+	    --labels_json "$(call labels_json,$*)" \
+	    --out_dir "$(SPLITS_DIR)" \
+	    --prefix "$*" \
+	    --seed "$(SPLIT_SEED)"; \
+	fi
+
 
 # ============================================================
-# Windows (pose_npz + splits -> windows folder)
+# Windows
 # ============================================================
 .PHONY: windows-% check-windows-%
-
 windows-%: splits-%
-	@mkdir -p "$(WIN_$*)"
-	@SP=""; \
-	if [ -f "$(SPANS_$*)" ] && [ "$$(wc -c < "$(SPANS_$*)")" -gt 5 ]; then SP="--spans_json \"$(SPANS_$*)\""; fi; \
-	eval "$(RUN) windows/make_windows.py \
-	  --npz_dir \"$(POSE_$*)\" \
-	  --labels_json \"$(LABELS_$*)\" $$SP \
-	  --out_dir \"$(WIN_$*)\" \
-	  --W \"$(WIN_W)\" --stride \"$(WIN_S)\" \
-	  --fps_default \"$(FPS_$*)\" \
-	  --train_list \"$(SPLIT_TRAIN_$*)\" \
-	  --val_list \"$(SPLIT_VAL_$*)\" \
-	  --test_list \"$(SPLIT_TEST_$*)\" \
-	  $(WIN_EXTRA)"
+	@mkdir -p "$(call win_dir,$*)"
+	@if [ "$(FORCE)" != "1" ] && [ -f "$(call win_dir,$*)/$(STAMP_WINDOWS)" ]; then \
+	  echo "[skip] windows-$* (stamp exists: $(call win_dir,$*)/$(STAMP_WINDOWS))"; \
+	elif [ "$(FORCE)" != "1" ] && \
+	     [ -n "$$(find "$(call win_dir,$*)/train" -type f -name '*.npz' -print -quit 2>/dev/null)" ] && \
+	     [ -n "$$(find "$(call win_dir,$*)/val"  -type f -name '*.npz' -print -quit 2>/dev/null)" ] && \
+	     [ -n "$$(find "$(call win_dir,$*)/test" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	  echo "[skip] windows-$* (already built) -> stamping"; \
+	  touch "$(call win_dir,$*)/$(STAMP_WINDOWS)"; \
+	else \
+	  SP=""; \
+	  if [ -f "$(call spans_json,$*)" ] && [ "$$(wc -c < "$(call spans_json,$*)")" -gt 5 ]; then SP="--spans_json \"$(call spans_json,$*)\""; fi; \
+	  eval '$(RUN) windows/make_windows.py \
+	    --npz_dir "$(call pose_dir,$*)" \
+	    --labels_json "$(call labels_json,$*)" '$$SP' \
+	    --out_dir "$(call win_dir,$*)" \
+	    --W "$(WIN_W)" --stride "$(WIN_S)" \
+	    --fps_default "$(POST_FPS)" \
+	    --train_list "$(call split_train,$*)" \
+	    --val_list "$(call split_val,$*)" \
+	    --test_list "$(call split_test,$*)" \
+	    $(WIN_EXTRA)' && \
+	  touch "$(call win_dir,$*)/$(STAMP_WINDOWS)"; \
+	fi
+
 
 check-windows-%:
-	@if [ ! -d "$(WIN_$*)" ]; then echo "[err] missing windows: $(WIN_$*) (run make windows-$*)"; exit 2; fi
-	$(RUN) windows/check_windows.py --root "$(WIN_$*)"
+	@if [ ! -d "$(call win_dir,$*)" ]; then echo "[err] missing windows: $(call win_dir,$*) (run make windows-$*)"; exit 2; fi
+	$(RUN) windows/check_windows.py --root "$(call win_dir,$*)"
+
+.PHONY: clean-stamps-%
+clean-stamps-%:
+	@rm -f "$(call pose_raw,$*)/$(STAMP_EXTRACT)" "$(call pose_dir,$*)/$(STAMP_PREPROC)" "$(call win_dir,$*)/$(STAMP_WINDOWS)"
+	@echo "[ok] removed stamps for $* (set FORCE=1 to rebuild without stamps)"
+
 
 # ============================================================
 # Unlabeled windows (LE2i only; optional)
 # ============================================================
-.PHONY: unlabeled-le2i unlabeled-list-le2i windows-unlabeled-le2i
+.PHONY: unlabeled-list-le2i windows-unlabeled-le2i unlabeled-le2i
 
-# 1) Pick stems by scene keywords
-unlabeled-list-le2i: preprocess-only-le2i
+unlabeled-list-le2i: preprocess-le2i
 	@mkdir -p "$(SPLITS_DIR)"
 	$(RUN) labels/make_unlabeled_test_list.py \
-	  --npz_dir "$(POSE_le2i)" \
-	  --out "$(SPLIT_UNLABELED_le2i)" \
+	  --npz_dir "$(call pose_dir,le2i)" \
+	  --out "$(split_unlabeled_le2i)" \
 	  --scenes $(LE2I_UNLABELED_SCENES)
 
-# 2) Build unlabeled windows from the stems list
 windows-unlabeled-le2i: unlabeled-list-le2i
-	@mkdir -p "$(WIN_le2i)/$(UNLAB_SUBSET)"
+	@mkdir -p "$(call win_dir,le2i)/$(UNLAB_SUBSET)"
 	@MASKFLAG=""; if [ "$(UNLAB_USE_PRECOMPUTED_MASK)" = "1" ]; then MASKFLAG="--use_precomputed_mask"; fi; \
 	$(RUN) windows/make_unlabeled_windows.py \
-	  --npz_dir "$(POSE_le2i)" \
-	  --stems_txt "$(SPLIT_UNLABELED_le2i)" \
-	  --out_dir "$(WIN_le2i)" \
+	  --npz_dir "$(call pose_dir,le2i)" \
+	  --stems_txt "$(split_unlabeled_le2i)" \
+	  --out_dir "$(call win_dir,le2i)" \
 	  --subset "$(UNLAB_SUBSET)" \
 	  --W "$(WIN_W)" --stride "$(WIN_S)" \
-	  --fps_default "$(FPS_le2i)" \
+	  --fps_default "$(POST_FPS)" \
 	  --seed "$(SPLIT_SEED)" \
 	  --max_windows_per_video "$(UNLAB_MAX_WINDOWS_PER_VIDEO)" \
 	  $$MASKFLAG \
@@ -512,393 +637,439 @@ unlabeled-le2i: windows-unlabeled-le2i
 	@:
 
 # ============================================================
-# Training
+# Training / Calibration / fit_ops / eval / replay (templated)
 # ============================================================
-define TRAIN_COMMON_FLAGS
---monitor "$(strip $(MONITOR))" $(BALANCED_SAMPLER_FLAG) \
---loss "$(strip $(LOSS))" --focal_alpha "$(FOCAL_ALPHA)" --focal_gamma "$(FOCAL_GAMMA)" \
---ema_decay "$(EMA_DECAY)" \
---mask_joint_p "$(MASK_JOINT_P)" --mask_frame_p "$(MASK_FRAME_P)" \
---aug_hflip_p "$(AUG_HFLIP_P)" --aug_jitter_std "$(AUG_JITTER_STD)" --aug_jitter_conf_scaled "$(AUG_JITTER_CONF_SCALED)" \
---aug_occ_p "$(AUG_OCC_P)" --aug_occ_min_len "$(AUG_OCC_MIN)" --aug_occ_max_len "$(AUG_OCC_MAX)" \
---aug_time_shift "$(AUG_TIME_SHIFT)"
+ARCHS := tcn gcn
+TRAIN_COMMON_FLAGS = \
+  --monitor "$(MONITOR)" $(BALANCED_SAMPLER_FLAG) \
+  --loss "$(LOSS)" --focal_alpha "$(FOCAL_ALPHA)" --focal_gamma "$(FOCAL_GAMMA)" \
+  --ema_decay "$(EMA_DECAY)" \
+  --mask_joint_p "$(MASK_JOINT_P)" --mask_frame_p "$(MASK_FRAME_P)" \
+  --aug_hflip_p "$(AUG_HFLIP_P)" \
+  --aug_jitter_std "$(AUG_JITTER_STD)" --aug_jitter_conf_scaled "$(AUG_JITTER_CONF_SCALED)" \
+  --aug_occ_p "$(AUG_OCC_P)" --aug_occ_min_len "$(AUG_OCC_MIN)" --aug_occ_max_len "$(AUG_OCC_MAX)" \
+  --aug_time_shift "$(AUG_TIME_SHIFT)"
+
+TRAIN_EXTRA_tcn :=
+TRAIN_EXTRA_gcn := --min_epochs "$(MIN_EPOCHS_gcn)"
+
+define TRAIN_RULE
+.PHONY: train-$(1)-% train-$(1)-only-%
+train-$(1)-%: windows-% train-$(1)-only-%
+	@:
+
+train-$(1)-only-%:
+	@mkdir -p "$(call out_dir,$$*,$(1))"
+	@if [ ! -d "$(call win_dir,$$*)/train" ] || [ ! -d "$(call win_dir,$$*)/val" ]; then \
+	  echo "[err] missing train/val windows under $(call win_dir,$$*) (run make windows-$$*)"; exit 2; \
+	fi
+	@if [ -f "$(call ckpt,$$*,$(1))" ] && [ "$(FORCE)" != "1" ]; then \
+	  echo "[skip] $(call ckpt,$$*,$(1)) exists (FORCE=1 to retrain)"; exit 0; \
+	fi
+	$(RUN) models/train_$(1).py \
+	  --train_dir "$(call win_dir,$$*)/train" \
+	  --val_dir "$(call win_dir,$$*)/val" \
+	  --epochs "$(EPOCHS_$(1))" \
+	  --patience "$(PATIENCE_$(1))" \
+	  $(TRAIN_EXTRA_$(1)) \
+	  --batch "$(BATCH_$(1))" \
+	  --lr "$(LR_$(1))" \
+	  --seed "$(SPLIT_SEED)" \
+	  --lr_plateau_patience "$(LR_PLATEAU_PATIENCE)" \
+	  --lr_plateau_factor "$(LR_PLATEAU_FACTOR)" \
+	  --lr_plateau_min_lr "$(LR_PLATEAU_MIN_LR)" \
+	  --fps_default "$(POST_FPS)" \
+	  --save_dir "$(call out_dir,$$*,$(1))" \
+	  $(TRAIN_COMMON_FLAGS)
 endef
 
-.PHONY: train-tcn-% train-gcn-%
+define CAL_RULE
+.PHONY: calibrate-$(1)-% calibrate-$(1)-only-%
+calibrate-$(1)-%: train-$(1)-% calibrate-$(1)-only-%
+	@:
 
-train-tcn-%: windows-%
-	@mkdir -p "$(OUT_TCN_$*)"
-	@if [ -f "$(CKPT_TCN_$*)" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $(CKPT_TCN_$*) exists (FORCE=1 to retrain)"; exit 0; fi
-	$(RUN) models/train_tcn.py \
-	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
-	  --epochs "$(EPOCHS_TCN)" --patience "$(PATIENCE_TCN)" \
-	  --batch "$(BATCH_TCN)" --lr "$(LR_TCN)" \
-	  --seed "$(SPLIT_SEED)" \
-	  --lr_plateau_patience "$(LR_PLATEAU_PATIENCE)" \
-	  --lr_plateau_factor "$(LR_PLATEAU_FACTOR)" \
-	  --lr_plateau_min_lr "$(LR_PLATEAU_MIN_LR)" \
-	  --fps_default "$(FPS_$*)" \
-	  --save_dir "$(OUT_TCN_$*)" \
-	  $(TRAIN_COMMON_FLAGS)
-
-train-gcn-%: windows-%
-	@mkdir -p "$(OUT_GCN_$*)"
-	@if [ -f "$(CKPT_GCN_$*)" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $(CKPT_GCN_$*) exists (FORCE=1 to retrain)"; exit 0; fi
-	$(RUN) models/train_gcn.py \
-	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
-	  --epochs "$(EPOCHS_GCN)" --patience "$(PATIENCE_GCN)" --min_epochs "$(MIN_EPOCHS_GCN)" \
-	  --batch "$(BATCH_GCN)" --lr "$(LR_GCN)" \
-	  --seed "$(SPLIT_SEED)" \
-	  --lr_plateau_patience "$(LR_PLATEAU_PATIENCE)" \
-	  --lr_plateau_factor "$(LR_PLATEAU_FACTOR)" \
-	  --lr_plateau_min_lr "$(LR_PLATEAU_MIN_LR)" \
-	  --fps_default "$(FPS_$*)" \
-	  --save_dir "$(OUT_GCN_$*)" \
-	  $(TRAIN_COMMON_FLAGS)
-
-# ============================================================
-# Temperature calibration
-# ============================================================
-.PHONY: calibrate-tcn-% calibrate-gcn-%
-
-calibrate-tcn-%: train-tcn-%
+calibrate-$(1)-only-%:
 	@mkdir -p "$(CAL_DIR)"
-	$(RUN) eval/calibrate_temperature.py \
-	  --arch tcn \
-	  --val_dir "$(WIN_$*)/val" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out_yaml "$(CAL_TCN_$*)" \
-	  --prefer_ema "$(PREFER_EMA)"
-
-calibrate-gcn-%: train-gcn-%
-	@mkdir -p "$(CAL_DIR)"
-	$(RUN) eval/calibrate_temperature.py \
-	  --arch gcn \
-	  --val_dir "$(WIN_$*)/val" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out_yaml "$(CAL_GCN_$*)" \
-	  --prefer_ema "$(PREFER_EMA)"
-
-# ============================================================
-# Fit operating points (OP-1/2/3)
-# ============================================================
-.PHONY: fit-ops-tcn-% fit-ops-gcn-%
-
-fit-ops-tcn-%: calibrate-tcn-%
-	@mkdir -p "$(OPS_DIR)"
-	@TFLAG=""; if [ -n "$(TEMP)" ]; then TFLAG="--temperature $(TEMP)"; fi; \
-	FAFLAG=""; \
-	if [ "$(FITOPS_FA)" = "auto" ]; then \
-	  if [ -d "$(WIN_$*)/$(UNLAB_SUBSET)" ]; then FAFLAG="--fa_dir \"$(WIN_$*)/$(UNLAB_SUBSET)\""; fi; \
-	elif [ "$(FITOPS_FA)" = "none" ]; then \
-	  FAFLAG=""; \
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call cal_yaml,$$*,$(1))" ]; then \
+	  echo "[skip] calibrate-$(1)-$$* (exists: $(call cal_yaml,$$*,$(1)))"; \
 	else \
-	  FAFLAG="--fa_dir \"$(FITOPS_FA)\""; \
+	  $(RUN) eval/calibrate_temperature.py \
+	    --arch $(1) \
+	    --val_dir "$(call win_dir,$$*)/val" \
+	    --ckpt "$(call ckpt,$$*,$(1))" \
+	    --out_yaml "$(call cal_yaml,$$*,$(1))" \
+	    --prefer_ema "$(PREFER_EMA)"; \
+	fi
+endef
+
+define FITOPS_RULE
+.PHONY: fit-ops-$(1)-% fit-ops-$(1)-only-%
+fit-ops-$(1)-%: calibrate-$(1)-% fit-ops-$(1)-only-%
+	@:
+
+fit-ops-$(1)-only-%:
+	@mkdir -p "$(OPS_DIR)"
+	@if [ "$(FORCE)" != "1" ] && [ -s "$(call ops_yaml,$$*,$(1))" ]; then \
+	  echo "[skip] fit-ops-$(1)-$$* (exists: $(call ops_yaml,$$*,$(1)))"; \
+	else \
+	  FA_DIR=""; \
+	if [ "$(FITOPS_FA_CLEAN)" = "auto" ]; then \
+	  if [ -d "$(call win_dir,$$*)/$(UNLAB_SUBSET)" ] && [ -n "$$(find "$(call win_dir,$$*)/$(UNLAB_SUBSET)" -type f -name '*.npz' -print -quit 2>/dev/null)" ]; then \
+	    FA_DIR="$(call win_dir,$$*)/$(UNLAB_SUBSET)"; \
+	  fi; \
+	elif [ "$(FITOPS_FA_CLEAN)" = "none" ]; then \
+	  FA_DIR=""; \
+	else \
+	  FA_DIR="$(FITOPS_FA_CLEAN)"; \
 	fi; \
+	TFLAG=""; if [ -n "$$$$TEMP" ]; then TFLAG="--temperature $$$$TEMP"; fi; \
+	FAFLAG=""; if [ -n "$$$$FA_DIR" ]; then FAFLAG="--fa_dir=$$$$FA_DIR"; fi; \
 	$(RUN) eval/fit_ops.py \
-	  --arch tcn \
-	  --val_dir "$(WIN_$*)/val" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out "$(OPS_TCN_$*)" \
+	  --arch $(1) \
+	  --val_dir "$(call win_dir,$$*)/val" \
+	  --ckpt "$(call ckpt,$$*,$(1))" \
+	  --out "$(call ops_yaml,$$*,$(1))" \
 	  --deploy_fps "$(PREPROC_TARGET_FPS)" --deploy_w "$(WIN_W)" --deploy_s "$(WIN_S)" \
 	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_$*)" $$TFLAG $$FAFLAG \
+	  --calibration_yaml "$(call cal_yaml,$$*,$(1))" $$$$TFLAG $$$$FAFLAG \
 	  --confirm "$(CONFIRM)" \
-	  --quality_adapt "$(QUALITY_ADAPT)" --quality_min "$(QUALITY_MIN)" --quality_boost "$(QUALITY_BOOST)"
+	  --confirm_s "$(CONFIRM_S)" \
+	  --confirm_min_lying "$(CONFIRM_MIN_LYING)" \
+	  --confirm_max_motion "$(CONFIRM_MAX_MOTION)" \
+	  --confirm_require_low "$(CONFIRM_REQUIRE_LOW)" \
+	  --quality_adapt "$(QUALITY_ADAPT)" --quality_min "$(QUALITY_MIN)" --quality_boost "$(QUALITY_BOOST)" --quality_boost_low "$(QUALITY_BOOST_LOW)" \
+	  $(FITOPS_EXTRA); \
+	fi
+endef
 
-fit-ops-gcn-%: calibrate-gcn-%
-	@mkdir -p "$(OPS_DIR)"
-	@TFLAG=""; if [ -n "$(TEMP)" ]; then TFLAG="--temperature $(TEMP)"; fi; \
-	FAFLAG=""; \
-	if [ "$(FITOPS_FA)" = "auto" ]; then \
-	  if [ -d "$(WIN_$*)/$(UNLAB_SUBSET)" ]; then FAFLAG="--fa_dir \"$(WIN_$*)/$(UNLAB_SUBSET)\""; fi; \
-	elif [ "$(FITOPS_FA)" = "none" ]; then \
-	  FAFLAG=""; \
+define EVAL_RULE
+.PHONY: eval-$(1)-% eval-$(1)-only-%
+eval-$(1)-%: fit-ops-$(1)-% eval-$(1)-only-%
+	@:
+
+eval-$(1)-only-%:
+	@mkdir -p "$(MET_DIR)"
+	@if [ -f "$(MET_DIR)/$(1)_$$*_$(OP).json" ] && [ "$(FORCE)" != "1" ]; then \
+	  echo "[skip] $(MET_DIR)/$(1)_$$*_$(OP).json exists (FORCE=1 to re-eval)"; \
 	else \
-	  FAFLAG="--fa_dir \"$(FITOPS_FA)\""; \
-	fi; \
-	$(RUN) eval/fit_ops.py \
-	  --arch gcn \
-	  --val_dir "$(WIN_$*)/val" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out "$(OPS_GCN_$*)" \
-	  --deploy_fps "$(PREPROC_TARGET_FPS)" --deploy_w "$(WIN_W)" --deploy_s "$(WIN_S)" \
+	  $(RUN) eval/metrics.py \
+	    --arch $(1) \
+	    --windows_dir "$(call win_dir,$$*)/test" \
+	    --ckpt "$(call ckpt,$$*,$(1))" \
+	    --out_json "$(MET_DIR)/$(1)_$$*_$(OP).json" \
+	    --op "$(OP)" \
+	    --prefer_ema "$(PREFER_EMA)" \
+	    --calibration_yaml "$(call cal_yaml,$$*,$(1))" \
+	    --ops_yaml "$(call ops_yaml,$$*,$(1))"; \
+	  echo " [ok] wrote: $(MET_DIR)/$(1)_$$*_$(OP).json"; \
+	fi
+endef
+
+define REPLAY_RULE
+.PHONY: replay-$(1)-% replay-$(1)-only-%
+replay-$(1)-%: fit-ops-$(1)-% replay-$(1)-only-%
+	@:
+
+replay-$(1)-only-%:
+	@mkdir -p "$(MET_DIR)"
+	@if [ -f "$(MET_DIR)/replay_$(1)_$$*_$(OP).json" ] && [ "$(FORCE)" != "1" ]; then \
+	  echo "[skip] $(MET_DIR)/replay_$(1)_$$*_$(OP).json exists (FORCE=1 to replay again)"; \
+	else \
+	  $(RUN) eval/replay_eval.py \
+	    --arch $(1) \
+	    --windows_dir "$(call win_dir,$$*)/test" \
+	    --ckpt "$(call ckpt,$$*,$(1))" \
+	    --out_json "$(MET_DIR)/replay_$(1)_$$*_$(OP).json" \
+	    --op "$(OP)" \
+	    --prefer_ema "$(PREFER_EMA)" \
+	    --calibration_yaml "$(call cal_yaml,$$*,$(1))" \
+	    --ops_yaml "$(call ops_yaml,$$*,$(1))"; \
+	  echo " [ok] wrote: $(MET_DIR)/replay_$(1)_$$*_$(OP).json"; \
+	fi
+endef
+
+define PLOT_RULE
+.PHONY: plot-ops-$(1)-% plot-ops-$(1)-only-%
+plot-ops-$(1)-%: fit-ops-$(1)-% plot-ops-$(1)-only-%
+	@:
+
+plot-ops-$(1)-only-%:
+	@mkdir -p "$(PLOTS_DIR)"
+	$(RUN) eval/plot_fa_recall.py \
+	  --ops_yaml "$(call ops_yaml,$$*,$(1))" \
+	  --out "$(PLOTS_DIR)/$(1)_$$*_recall_vs_fa.png" \
+	  --out_f1 "$(PLOTS_DIR)/$(1)_$$*_f1_vs_tau.png" \
+	  --log_x
+endef
+
+define MINE_NEARMISS_RULE
+.PHONY: mine-nearmiss-$(1)-% mine-nearmiss-$(1)-only-%
+mine-nearmiss-$(1)-%: fit-ops-$(1)-% mine-nearmiss-$(1)-only-%
+	@:
+
+mine-nearmiss-$(1)-only-%:
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_near_miss_negatives.py \
+	  --arch $(1) \
+	  --windows_dir "$(call win_dir,$$*)/$(NEARMISS_SPLIT)" \
+	  --ckpt "$(call ckpt,$$*,$(1))" \
+	  --out_txt "$(MINED_DIR)/nearmiss_$(1)_$$*.txt" \
+	  --out_csv "$(MINED_DIR)/nearmiss_$(1)_$$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/nearmiss_$(1)_$$*.jsonl" \
 	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_$*)" $$TFLAG $$FAFLAG \
-	  --confirm "$(CONFIRM)" \
-	  --quality_adapt "$(QUALITY_ADAPT)" --quality_min "$(QUALITY_MIN)" --quality_boost "$(QUALITY_BOOST)"
+	  --calibration_yaml "$(call cal_yaml,$$*,$(1))" \
+	  --ops_yaml "$(call ops_yaml,$$*,$(1))" \
+	  --op "$(OP)"
+endef
+
+define MINE_HARDNEG_RULE
+.PHONY: mine-hardneg-$(1)-% mine-hardneg-$(1)-only-%
+mine-hardneg-$(1)-%: calibrate-$(1)-% mine-hardneg-$(1)-only-%
+	@:
+
+mine-hardneg-$(1)-only-%:
+	@mkdir -p "$(MINED_DIR)"
+	$(RUN) eval/mine_hard_negatives.py \
+	  --arch $(1) \
+	  --windows_dir "$(call win_dir,$$*)/$(HARDNEG_SPLIT)" \
+	  --ckpt "$(call ckpt,$$*,$(1))" \
+	  --out_txt "$(MINED_DIR)/hardneg_$(1)_$$*.txt" \
+	  --out_csv "$(MINED_DIR)/hardneg_$(1)_$$*.csv" \
+	  --out_jsonl "$(MINED_DIR)/hardneg_$(1)_$$*.jsonl" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --calibration_yaml "$(call cal_yaml,$$*,$(1))"
+endef
+
+define FINETUNE_HARDNEG_RULE
+.PHONY: finetune-hardneg-$(1)-% finetune-hardneg-$(1)-only-%
+finetune-hardneg-$(1)-%: mine-hardneg-$(1)-% finetune-hardneg-$(1)-only-%
+	@:
+
+finetune-hardneg-$(1)-only-%:
+	@OUT="$(call hardneg_out_dir,$$*,$(1))"; \
+	if [ -f "$$OUT/best.pt" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $$OUT/best.pt exists (FORCE=1 to rerun)"; exit 0; fi; \
+	mkdir -p "$$OUT"; \
+	$(RUN) models/train_$(1).py \
+	  --train_dir "$(call win_dir,$$*)/train" \
+	  --val_dir "$(call win_dir,$$*)/val" \
+	  --fps_default "$(POST_FPS)" \
+	  --epochs "$(EPOCHS_$(1))" \
+	  --patience "$(PATIENCE_$(1))" \
+	  $(TRAIN_EXTRA_$(1)) \
+	  --batch "$(BATCH_$(1))" \
+	  --lr "$(LR_$(1))" \
+	  --seed "$(SPLIT_SEED)" \
+	  --resume "$(call ckpt,$$*,$(1))" \
+	  --hard_neg_list "$(MINED_DIR)/hardneg_$(1)_$$*.txt" \
+	  --hard_neg_mult "$(HARDNEG_MULT)" \
+	  --save_dir "$$OUT" \
+	  $(TRAIN_COMMON_FLAGS)
+endef
+
+$(foreach A,$(ARCHS),$(eval $(call TRAIN_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call CAL_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call FITOPS_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call EVAL_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call REPLAY_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call PLOT_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call MINE_NEARMISS_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call MINE_HARDNEG_RULE,$(A))))
+$(foreach A,$(ARCHS),$(eval $(call FINETUNE_HARDNEG_RULE,$(A))))
 
 # ============================================================
-# Evaluation
+# Unlabeled FA scoring (LE2i only; nice)
 # ============================================================
-.PHONY: eval-tcn-% eval-gcn-% replay-tcn-% replay-gcn-%
-
-eval-tcn-%: fit-ops-tcn-%
-	@mkdir -p "$(MET_DIR)"
-	$(RUN) eval/metrics.py \
-	  --arch tcn \
-	  --windows_dir "$(WIN_$*)/test" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out_json "$(MET_DIR)/tcn_$*.json" \
-	  --op "$(OP)" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_$*)" \
-	  --ops_yaml "$(OPS_TCN_$*)"
-
-eval-gcn-%: fit-ops-gcn-%
-	@mkdir -p "$(MET_DIR)"
-	$(RUN) eval/metrics.py \
-	  --arch gcn \
-	  --windows_dir "$(WIN_$*)/test" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out_json "$(MET_DIR)/gcn_$*.json" \
-	  --op "$(OP)" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_$*)" \
-	  --ops_yaml "$(OPS_GCN_$*)"
-
-replay-tcn-%: fit-ops-tcn-%
-	@mkdir -p "$(MET_DIR)"
-	$(RUN) eval/replay_eval.py \
-	  --arch tcn \
-	  --windows_dir "$(WIN_$*)/test" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out_json "$(MET_DIR)/replay_tcn_$*.json" \
-	  --op "$(OP)" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_$*)" \
-	  --ops_yaml "$(OPS_TCN_$*)"
-
-replay-gcn-%: fit-ops-gcn-%
-	@mkdir -p "$(MET_DIR)"
-	$(RUN) eval/replay_eval.py \
-	  --arch gcn \
-	  --windows_dir "$(WIN_$*)/test" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out_json "$(MET_DIR)/replay_gcn_$*.json" \
-	  --op "$(OP)" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_$*)" \
-	  --ops_yaml "$(OPS_GCN_$*)"
-
-# Unlabeled FA scoring (LE2i only)
-# --------------------------------
-# LE2i is the only dataset in this repo with a built-in helper for selecting
-# "unlabeled test scenes" (Office/Lecture room). These windows are useful for:
-#   - estimating FA/day on long normal-life footage
-#   - providing a realistic FA stream when fitting ops (FITOPS_FA=auto)
 .PHONY: score-unlabeled-tcn-le2i score-unlabeled-gcn-le2i
-
 score-unlabeled-tcn-le2i: fit-ops-tcn-le2i unlabeled-le2i
-	@mkdir -p "$(MET_DIR)"; \
+	@mkdir -p "$(MET_DIR)"
 	$(RUN) eval/score_unlabeled_alert_rate.py \
 	  --arch tcn \
-	  --windows_dir "$(WIN_le2i)/$(UNLAB_SUBSET)" \
-	  --ckpt "$(CKPT_TCN_le2i)" \
+	  --windows_dir "$(call win_dir,le2i)/$(UNLAB_SUBSET)" \
+	  --ckpt "$(call ckpt,le2i,tcn)" \
 	  --out_json "$(MET_DIR)/unlabeled_tcn_le2i.json" \
 	  --op "$(OP)" \
 	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_le2i)" \
-	  --ops_yaml "$(OPS_TCN_le2i)"
+	  --calibration_yaml "$(call cal_yaml,le2i,tcn)" \
+	  --ops_yaml "$(call ops_yaml,le2i,tcn)"
 
 score-unlabeled-gcn-le2i: fit-ops-gcn-le2i unlabeled-le2i
-	@mkdir -p "$(MET_DIR)"; \
+	@mkdir -p "$(MET_DIR)"
 	$(RUN) eval/score_unlabeled_alert_rate.py \
 	  --arch gcn \
-	  --windows_dir "$(WIN_le2i)/$(UNLAB_SUBSET)" \
-	  --ckpt "$(CKPT_GCN_le2i)" \
+	  --windows_dir "$(call win_dir,le2i)/$(UNLAB_SUBSET)" \
+	  --ckpt "$(call ckpt,le2i,gcn)" \
 	  --out_json "$(MET_DIR)/unlabeled_gcn_le2i.json" \
 	  --op "$(OP)" \
 	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_le2i)" \
-	  --ops_yaml "$(OPS_GCN_le2i)"
-
-# ============================================================
-# Plotting (from ops YAML)
-# ============================================================
-.PHONY: plot-ops-tcn-% plot-ops-gcn-%
-
-plot-ops-tcn-%: fit-ops-tcn-%
-	@mkdir -p "$(PLOTS_DIR)"
-	$(RUN) eval/plot_fa_recall.py \
-	  --ops_yaml "$(OPS_TCN_$*)" \
-	  --out "$(PLOTS_DIR)/tcn_$*_recall_vs_fa.png" \
-	  --out_f1 "$(PLOTS_DIR)/tcn_$*_f1_vs_tau.png" \
-	  --log_x
-
-plot-ops-gcn-%: fit-ops-gcn-%
-	@mkdir -p "$(PLOTS_DIR)"
-	$(RUN) eval/plot_fa_recall.py \
-	  --ops_yaml "$(OPS_GCN_$*)" \
-	  --out "$(PLOTS_DIR)/gcn_$*_recall_vs_fa.png" \
-	  --out_f1 "$(PLOTS_DIR)/gcn_$*_f1_vs_tau.png" \
-	  --log_x
-
-# ============================================================
-# Mining + finetune
-# ============================================================
-.PHONY: mine-nearmiss-tcn-% mine-nearmiss-gcn-% mine-hardneg-tcn-% mine-hardneg-gcn-% \
-        finetune-hardneg-tcn-% finetune-hardneg-gcn-%
-
-mine-nearmiss-tcn-%: calibrate-tcn-%
-	@mkdir -p "$(MINED_DIR)"
-	$(RUN) eval/mine_near_miss_negatives.py \
-	  --arch tcn \
-	  --windows_dir "$(WIN_$*)/$(NEARMISS_SPLIT)" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out_txt "$(MINED_DIR)/nearmiss_tcn_$*.txt" \
-	  --out_csv "$(MINED_DIR)/nearmiss_tcn_$*.csv" \
-	  --out_jsonl "$(MINED_DIR)/nearmiss_tcn_$*.jsonl" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_$*)" \
-	  --ops_yaml "$(OPS_TCN_$*)" --op "$(OP)"
-
-mine-nearmiss-gcn-%: calibrate-gcn-%
-	@mkdir -p "$(MINED_DIR)"
-	$(RUN) eval/mine_near_miss_negatives.py \
-	  --arch gcn \
-	  --windows_dir "$(WIN_$*)/$(NEARMISS_SPLIT)" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out_txt "$(MINED_DIR)/nearmiss_gcn_$*.txt" \
-	  --out_csv "$(MINED_DIR)/nearmiss_gcn_$*.csv" \
-	  --out_jsonl "$(MINED_DIR)/nearmiss_gcn_$*.jsonl" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_$*)" \
-	  --ops_yaml "$(OPS_GCN_$*)" --op "$(OP)"
-
-mine-hardneg-tcn-%: calibrate-tcn-%
-	@mkdir -p "$(MINED_DIR)"
-	$(RUN) eval/mine_hard_negatives.py \
-	  --arch tcn \
-	  --windows_dir "$(WIN_$*)/$(HARDNEG_SPLIT)" \
-	  --ckpt "$(CKPT_TCN_$*)" \
-	  --out_txt "$(MINED_DIR)/hardneg_tcn_$*.txt" \
-	  --out_csv "$(MINED_DIR)/hardneg_tcn_$*.csv" \
-	  --out_jsonl "$(MINED_DIR)/hardneg_tcn_$*.jsonl" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_TCN_$*)"
-
-mine-hardneg-gcn-%: calibrate-gcn-%
-	@mkdir -p "$(MINED_DIR)"
-	$(RUN) eval/mine_hard_negatives.py \
-	  --arch gcn \
-	  --windows_dir "$(WIN_$*)/$(HARDNEG_SPLIT)" \
-	  --ckpt "$(CKPT_GCN_$*)" \
-	  --out_txt "$(MINED_DIR)/hardneg_gcn_$*.txt" \
-	  --out_csv "$(MINED_DIR)/hardneg_gcn_$*.csv" \
-	  --out_jsonl "$(MINED_DIR)/hardneg_gcn_$*.jsonl" \
-	  --prefer_ema "$(PREFER_EMA)" \
-	  --calibration_yaml "$(CAL_GCN_$*)"
-
-finetune-hardneg-tcn-%: mine-hardneg-tcn-%
-	@OUT="$(OUT_TCN_$*)_hardneg"; \
-	if [ -f "$$OUT/best.pt" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $$OUT/best.pt exists (FORCE=1 to rerun)"; exit 0; fi; \
-	mkdir -p "$$OUT"; \
-	$(RUN) models/train_tcn.py \
-	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
-	  --fps_default "$(FPS_$*)" \
-	  --epochs "$(EPOCHS_TCN)" --patience "$(PATIENCE_TCN)" \
-	  --batch "$(BATCH_TCN)" --lr "$(LR_TCN)" --seed "$(SPLIT_SEED)" \
-	  --resume "$(CKPT_TCN_$*)" \
-	  --hard_neg_list "$(MINED_DIR)/hardneg_tcn_$*.txt" --hard_neg_mult "$(HARDNEG_MULT)" \
-	  --save_dir "$$OUT" \
-	  $(TRAIN_COMMON_FLAGS)
-
-finetune-hardneg-gcn-%: mine-hardneg-gcn-%
-	@OUT="$(OUT_GCN_$*)_hardneg"; \
-	if [ -f "$$OUT/best.pt" ] && [ "$(FORCE)" != "1" ]; then echo "[skip] $$OUT/best.pt exists (FORCE=1 to rerun)"; exit 0; fi; \
-	mkdir -p "$$OUT"; \
-	$(RUN) models/train_gcn.py \
-	  --train_dir "$(WIN_$*)/train" --val_dir "$(WIN_$*)/val" \
-	  --fps_default "$(FPS_$*)" \
-	  --epochs "$(EPOCHS_GCN)" --patience "$(PATIENCE_GCN)" --min_epochs "$(MIN_EPOCHS_GCN)" \
-	  --batch "$(BATCH_GCN)" --lr "$(LR_GCN)" --seed "$(SPLIT_SEED)" \
-	  --resume "$(CKPT_GCN_$*)" \
-	  --hard_neg_list "$(MINED_DIR)/hardneg_gcn_$*.txt" --hard_neg_mult "$(HARDNEG_MULT)" \
-	  --save_dir "$$OUT" \
-	  $(TRAIN_COMMON_FLAGS)
+	  --calibration_yaml "$(call cal_yaml,le2i,gcn)" \
+	  --ops_yaml "$(call ops_yaml,le2i,gcn)"
 
 # ============================================================
 # Deploy simulation runner (optional)
 # ============================================================
-.PHONY: deploy-tcn-% deploy-gcn-% deploy-dual-%
+$(DEPLOY_CFG):
+	@mkdir -p "$(CFG_DIR)"
+	@if [ -f "$@" ]; then :; \
+	elif [ -f "deploy_modes.yaml" ]; then \
+	  echo "[info] copying deploy_modes.yaml -> $@"; \
+	  cp "deploy_modes.yaml" "$@"; \
+	else \
+	  echo "[err] missing deploy config. Put deploy_modes.yaml in repo root OR $(CFG_DIR)/deploy_modes.yaml"; \
+	  exit 2; \
+	fi
 
-deploy-tcn-%: fit-ops-tcn-%
+.PHONY: deploy-tcn-% deploy-gcn-% deploy-dual-% deploy-tcn-hardneg-% deploy-gcn-hardneg-% deploy-dual-hardneg-%
+
+deploy-tcn-%: fit-ops-tcn-% $(DEPLOY_CFG)
 	@SPL="$(DEPLOY_SPLIT)"; \
-	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
 	$(RUN) deploy/run_modes.py \
 	  --mode tcn \
-	  --win_dir "$(WIN_$*)/$$SPL" \
-	  --ckpt_tcn "$(CKPT_TCN_$*)" \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_tcn "$(call ckpt,$*,tcn)" \
 	  --cfg "$(DEPLOY_CFG)" \
 	  --prefer_ema "$(PREFER_EMA)" \
 	  --time_mode "$(DEPLOY_TIME_MODE)"
 
-deploy-gcn-%: fit-ops-gcn-%
+deploy-gcn-%: fit-ops-gcn-% $(DEPLOY_CFG)
 	@SPL="$(DEPLOY_SPLIT)"; \
-	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
 	$(RUN) deploy/run_modes.py \
 	  --mode gcn \
-	  --win_dir "$(WIN_$*)/$$SPL" \
-	  --ckpt_gcn "$(CKPT_GCN_$*)" \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_gcn "$(call ckpt,$*,gcn)" \
 	  --cfg "$(DEPLOY_CFG)" \
 	  --prefer_ema "$(PREFER_EMA)" \
 	  --time_mode "$(DEPLOY_TIME_MODE)"
 
-deploy-dual-%: fit-ops-tcn-% fit-ops-gcn-%
+deploy-dual-%: fit-ops-tcn-% fit-ops-gcn-% $(DEPLOY_CFG)
 	@SPL="$(DEPLOY_SPLIT)"; \
-	if [ ! -d "$(WIN_$*)/$$SPL" ]; then SPL="test"; fi; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
 	$(RUN) deploy/run_modes.py \
 	  --mode dual \
-	  --win_dir "$(WIN_$*)/$$SPL" \
-	  --ckpt_tcn "$(CKPT_TCN_$*)" \
-	  --ckpt_gcn "$(CKPT_GCN_$*)" \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_tcn "$(call ckpt,$*,tcn)" \
+	  --ckpt_gcn "$(call ckpt,$*,gcn)" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
+
+deploy-tcn-hardneg-%: finetune-hardneg-tcn-% $(DEPLOY_CFG)
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
+	CKPT="$(call hardneg_ckpt,$*,tcn)"; \
+	$(RUN) deploy/run_modes.py \
+	  --mode tcn \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_tcn "$$CKPT" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
+
+deploy-gcn-hardneg-%: finetune-hardneg-gcn-% $(DEPLOY_CFG)
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
+	CKPT="$(call hardneg_ckpt,$*,gcn)"; \
+	$(RUN) deploy/run_modes.py \
+	  --mode gcn \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_gcn "$$CKPT" \
+	  --cfg "$(DEPLOY_CFG)" \
+	  --prefer_ema "$(PREFER_EMA)" \
+	  --time_mode "$(DEPLOY_TIME_MODE)"
+
+deploy-dual-hardneg-%: finetune-hardneg-tcn-% finetune-hardneg-gcn-% $(DEPLOY_CFG)
+	@SPL="$(DEPLOY_SPLIT)"; \
+	if [ ! -d "$(call win_dir,$*)/$$SPL" ]; then SPL="test"; fi; \
+	CKPT_TCN="$(call hardneg_ckpt,$*,tcn)"; \
+	CKPT_GCN="$(call hardneg_ckpt,$*,gcn)"; \
+	$(RUN) deploy/run_modes.py \
+	  --mode dual \
+	  --win_dir "$(call win_dir,$*)/$$SPL" \
+	  --ckpt_tcn "$$CKPT_TCN" \
+	  --ckpt_gcn "$$CKPT_GCN" \
 	  --cfg "$(DEPLOY_CFG)" \
 	  --prefer_ema "$(PREFER_EMA)" \
 	  --time_mode "$(DEPLOY_TIME_MODE)"
 
 # ============================================================
-# Meta targets
+# Meta targets (nice)
 # ============================================================
-.PHONY: pipeline-% workflow-tcn-% workflow-gcn-% pipeline-all workflow-all
+.PHONY: pipeline-% workflow-tcn-% workflow-gcn-% \
+        eval-all-tcn-% eval-all-gcn-% replay-all-tcn-% replay-all-gcn-% \
+        workflow-full-tcn-% workflow-full-gcn-% workflow-full-%
 
-pipeline-%: extract-% preprocess-% labels-% splits-% windows-%
+pipeline-%: windows-%
 	@:
 
-workflow-tcn-%: windows-% train-tcn-% calibrate-tcn-% fit-ops-tcn-% eval-tcn-%
+workflow-tcn-%: eval-tcn-%
 	@:
 
-workflow-gcn-%: windows-% train-gcn-% calibrate-gcn-% fit-ops-gcn-% eval-gcn-%
+workflow-gcn-%: eval-gcn-%
 	@:
 
-pipeline-all:
-	@for d in $(DATASETS); do $(MAKE) pipeline-$$d; done
+eval-all-tcn-%: fit-ops-tcn-%
+	@for o in $(OPS); do $(MAKE) -f "$(THIS_MAKEFILE)" eval-tcn-$* OP=$$o; done
 
-workflow-all:
-	@for d in $(DATASETS); do $(MAKE) workflow-tcn-$$d; $(MAKE) workflow-gcn-$$d; done
+eval-all-gcn-%: fit-ops-gcn-%
+	@for o in $(OPS); do $(MAKE) -f "$(THIS_MAKEFILE)" eval-gcn-$* OP=$$o; done
 
-# ============================================================
-# Cleaning helpers
-# ============================================================
-.PHONY: clean-metrics clean-ops clean-cal clean-mined clean-plots clean-windows clean-all
+replay-all-tcn-%: fit-ops-tcn-%
+	@for o in $(OPS); do $(MAKE) -f "$(THIS_MAKEFILE)" replay-tcn-$* OP=$$o; done
 
-clean-metrics:
-	@rm -rf "$(MET_DIR)" && echo "[ok] removed $(MET_DIR)"
+replay-all-gcn-%: fit-ops-gcn-%
+	@for o in $(OPS); do $(MAKE) -f "$(THIS_MAKEFILE)" replay-gcn-$* OP=$$o; done
 
-clean-ops:
-	@rm -rf "$(OPS_DIR)" && echo "[ok] removed $(OPS_DIR)"
+workflow-full-tcn-%: eval-all-tcn-% replay-all-tcn-% mine-nearmiss-tcn-% finetune-hardneg-tcn-% deploy-tcn-% deploy-tcn-hardneg-%
+	@:
 
-clean-cal:
-	@rm -rf "$(CAL_DIR)" && echo "[ok] removed $(CAL_DIR)"
+workflow-full-gcn-%: eval-all-gcn-% replay-all-gcn-% mine-nearmiss-gcn-% finetune-hardneg-gcn-% deploy-gcn-% deploy-gcn-hardneg-%
+	@:
 
-clean-mined:
-	@rm -rf "$(MINED_DIR)" && echo "[ok] removed $(MINED_DIR)"
+workflow-full-%:
+	@if [ "$(SKIP_IF_NO_VIDEOS)" = "1" ]; then \
+	  if [ -z "$$(find "$(RAW_$*)" -type f \\( -iname '*.mp4' -o -iname '*.avi' -o -iname '*.mov' -o -iname '*.mkv' \\) -print -quit 2>/dev/null)" ] && \
+	     [ -z "$$(find "$(RAW_$*)" -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \\) -print -quit 2>/dev/null)" ]; then \
+	    echo "[skip] $*: no videos/images found under $(RAW_$*)."; \
+	    exit 0; \
+	  fi; \
+	fi
+	@$(MAKE) -f "$(THIS_MAKEFILE)" workflow-full-tcn-$*
+	@$(MAKE) -f "$(THIS_MAKEFILE)" workflow-full-gcn-$*
+	@$(MAKE) -f "$(THIS_MAKEFILE)" deploy-dual-$*
+	@$(MAKE) -f "$(THIS_MAKEFILE)" deploy-dual-hardneg-$*
 
-clean-plots:
-	@rm -rf "$(PLOTS_DIR)" && echo "[ok] removed $(PLOTS_DIR)"
 
-clean-windows:
-	@rm -rf "$(PROCESSED)" && echo "[ok] removed $(PROCESSED)"
 
-clean-all: clean-metrics clean-ops clean-cal clean-mined clean-plots
-	@rm -rf "$(OUT_DIR)" && echo "[ok] removed $(OUT_DIR)"
+
+
+
+# -------------------------
+# UR-Fall prep (optional)
+# -------------------------
+URFALL_RAW   ?= data/raw/UR_Fall
+URFALL_SEQ   ?= data/raw/UR_Fall_seq
+URFALL_CLIPS ?= data/raw/UR_Fall_clips
+URFALL_DRYRUN ?= 0
+
+.PHONY: urfall-strip-rf urfall-group-seq urfall-merge-clips urfall-prep
+
+urfall-strip-rf:
+	$(RUN) tools/urfall_strip_rf.py \
+	  --root "$(URFALL_RAW)" \
+	  $(if $(filter 1,$(URFALL_DRYRUN)),--dry_run,)
+
+urfall-group-seq: urfall-strip-rf
+	$(RUN) tools/urfall_group_by_prefix.py \
+	  --in_root "$(URFALL_RAW)" \
+	  --out_root "$(URFALL_SEQ)"
+
+urfall-merge-clips: urfall-group-seq
+	$(RUN) tools/urfall_merge_seq_splits.py \
+	  --in_root "$(URFALL_SEQ)" \
+	  --out_root "$(URFALL_CLIPS)"
+
+# One-shot
+urfall-prep: urfall-strip-rf urfall-group-seq urfall-merge-clips
+	@echo "[OK] UR-Fall prepared at: $(URFALL_CLIPS)"
+

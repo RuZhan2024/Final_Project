@@ -55,8 +55,16 @@ def atomic_save_npz(out_path: str, payload: Dict[str, Any]) -> None:
     """
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = str(p) + ".tmp"
-    np.savez_compressed(tmp, **payload)
+    tmp = Path(str(p) + ".tmp")
+    # IMPORTANT: write via file handle so NumPy does NOT auto-append ".npz"
+    # when tmp does not end with ".npz" (e.g. ".npz.tmp").
+    with open(tmp, "wb") as f:
+        np.savez_compressed(f, **payload)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
     os.replace(tmp, str(p))
 
 
@@ -85,6 +93,9 @@ def index_npz(npz_root: str) -> Dict[str, str]:
     """
     idx: Dict[str, str] = {}
     files = sorted(glob.glob(os.path.join(npz_root, "**", "*.npz"), recursive=True))
+    # Ignore temp artifacts (e.g. "*.tmp.npz" or "*.npz.tmp.npz") that can appear
+    # if a previous run was interrupted mid-write.
+    files = [p for p in files if ".tmp" not in pathlib.Path(p).name]
 
     dup = 0
     for p in files:

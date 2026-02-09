@@ -287,18 +287,49 @@ def _pick_op2(sweep: Dict[str, List[float]]) -> int:
     OP-2 Balanced:
     Choose maximum F1.
     Tie-break: higher recall, lower FA/24h.
+
+    Robustness:
+    - If there are GT events in the labeled sweep, prefer configurations that
+      actually produce at least one TRUE alert (n_true_alerts > 0). This prevents
+      the degenerate "silent OP" where FA=0 but recall=0.
+    - If *no* sweep point produces any true alerts, fall back to the old rule but
+      emit a warning (usually confirm/quality gating is too strict).
     """
     f1 = np.asarray(sweep["f1"], dtype=float)
     r = np.asarray(sweep["recall"], dtype=float)
     fa = np.asarray(sweep["fa24h"], dtype=float)
 
+    n_true = np.asarray(sweep.get("n_true_alerts", [0] * len(f1)), dtype=float)
+    n_alert_events = np.asarray(sweep.get("n_alert_events", [0] * len(f1)), dtype=float)
+    n_gt = np.asarray(sweep.get("n_gt_events", [0] * len(f1)), dtype=float)
+
     ok = np.isfinite(f1) & np.isfinite(r) & np.isfinite(fa)
+
+    has_gt = (np.nanmax(n_gt) > 0) if n_gt.size > 0 else False
+    if has_gt:
+        ok_live = ok & (n_true > 0)
+        if ok_live.any():
+            idx = np.where(ok_live)[0]
+            best = idx[np.lexsort((fa[idx], -r[idx], -f1[idx]))][0]
+            return int(best)
+
+        ok_relax = ok & (r > 0) & (n_alert_events > 0)
+        if ok_relax.any():
+            idx = np.where(ok_relax)[0]
+            best = idx[np.lexsort((fa[idx], -r[idx], -f1[idx]))][0]
+            return int(best)
+
+        print(
+            "[warn] OP-2: no sweep point produced any true alerts on labeled data. "
+            "Confirm/quality gating may be too strict. Falling back to best recall.",
+            file=_sys.stderr,
+        )
+
     if ok.any():
         idx = np.where(ok)[0]
         best = idx[np.lexsort((fa[idx], -r[idx], -f1[idx]))][0]
         return int(best)
 
-    # fallback: highest recall with minimal fa
     ok2 = np.isfinite(r) & np.isfinite(fa)
     if ok2.any():
         idx = np.where(ok2)[0]
@@ -306,7 +337,6 @@ def _pick_op2(sweep: Dict[str, List[float]]) -> int:
         return int(best)
 
     return 0
-
 
 def _pick_op3(sweep: Dict[str, List[float]], target_fa24h: float) -> int:
     """

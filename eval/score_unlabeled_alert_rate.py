@@ -237,7 +237,7 @@ def score_alert_rate(
     total_duration_s = 0.0
     total_alerts = 0
 
-    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0}
+    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "pending": 0, "alert": 0}
     per_video: Dict[str, Any] = {}
 
     for v in unique_vids:
@@ -294,6 +294,7 @@ def score_alert_rate(
                 "n_windows": int(t_v.size),
                 "clear": int(np.sum(st["clear"])),
                 "suspect": int(np.sum(st["suspect"])),
+                "pending": int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool)))),
                 "alert": int(np.sum(st["alert"])),
             },
         }
@@ -301,6 +302,7 @@ def score_alert_rate(
         state_totals["n_windows"] += int(t_v.size)
         state_totals["clear"] += int(np.sum(st["clear"]))
         state_totals["suspect"] += int(np.sum(st["suspect"]))
+        state_totals["pending"] += int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool))))
         state_totals["alert"] += int(np.sum(st["alert"]))
 
     dur_h = total_duration_s / 3600.0 if total_duration_s > 0 else float("nan")

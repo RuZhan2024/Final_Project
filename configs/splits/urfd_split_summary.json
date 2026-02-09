@@ -14,32 +14,32 @@
     "balance_by": "stems"
   },
   "counts": {
-    "total": 167,
-    "train": 134,
-    "val": 17,
-    "test": 16
+    "total": 100,
+    "train": 80,
+    "val": 10,
+    "test": 10
   },
   "class_counts_total": {
-    "0": 80,
-    "1": 87
+    "0": 40,
+    "1": 60
   },
   "class_counts_train": {
-    "0": 64,
-    "1": 70
+    "0": 32,
+    "1": 48
   },
   "class_counts_val": {
-    "0": 8,
-    "1": 9
+    "0": 4,
+    "1": 6
   },
   "class_counts_test": {
-    "0": 8,
-    "1": 8
+    "0": 4,
+    "1": 6
   },
   "groups": {
-    "total_groups": 167,
+    "total_groups": 100,
     "groups_by_class": {
-      "0": 80,
-      "1": 87
+      "0": 40,
+      "1": 60
     }
   },
   "files": {

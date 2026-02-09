@@ -316,7 +316,7 @@ def replay_aggregate(
     false_alert_total = 0
     delays: List[float] = []
 
-    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0}
+    state_totals = {"n_windows": 0, "clear": 0, "suspect": 0, "pending": 0, "alert": 0}
     per_video: Dict[str, Any] = {}
 
     for v in unique_vids:
@@ -373,6 +373,7 @@ def replay_aggregate(
                 "n_windows": int(t_v.size),
                 "clear": int(np.sum(st["clear"])),
                 "suspect": int(np.sum(st["suspect"])),
+                "pending": int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool)))),
                 "alert": int(np.sum(st["alert"])),
             },
             "detail": detail,
@@ -389,6 +390,7 @@ def replay_aggregate(
         state_totals["n_windows"] += int(t_v.size)
         state_totals["clear"] += int(np.sum(st["clear"]))
         state_totals["suspect"] += int(np.sum(st["suspect"]))
+        state_totals["pending"] += int(np.sum(st.get("pending", np.zeros_like(st["alert"], dtype=bool))))
         state_totals["alert"] += int(np.sum(st["alert"]))
 
     recall = float(matched_gt_total / gt_total) if gt_total > 0 else float("nan")

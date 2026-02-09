@@ -39,7 +39,11 @@ def norm(s: str) -> str:
 
 def list_npz_files(npz_dir: str) -> List[str]:
     """List all NPZ files under npz_dir (recursive)."""
-    return sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
+    files = sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
+    # Ignore temp artifacts (e.g. "*.tmp.npz" or "*.npz.tmp.npz") that can appear
+    # if a previous run was interrupted mid-write.
+    files = [p for p in files if ".tmp" not in pathlib.Path(p).name]
+    return files
 
 
 def scene_from_stem(stem: str) -> str:

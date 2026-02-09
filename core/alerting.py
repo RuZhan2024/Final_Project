@@ -542,6 +542,7 @@ def classify_states(
       - clear   : ps < tau_low_eff
       - suspect : tau_low_eff <= ps < tau_high_eff and not in alert
       - alert   : alert policy is active
+      - pending : ps >= tau_high_eff but confirm/gates prevent alert (not in alert)
 
     Returns:
       {
@@ -549,6 +550,7 @@ def classify_states(
         "clear": bool mask,
         "suspect": bool mask,
         "alert": bool mask,
+        "pending": bool mask,
       }
 
     NOTE:
@@ -563,6 +565,7 @@ def classify_states(
             "clear": np.asarray([], dtype=bool),
             "suspect": np.asarray([], dtype=bool),
             "alert": np.asarray([], dtype=bool),
+            "pending": np.asarray([], dtype=bool),
         }
     if t.size != p.size:
         raise ValueError("classify_states: probs and times_s must have the same length")
@@ -616,8 +619,9 @@ def classify_states(
 
     suspect = (~alert_mask) & (ps >= tau_lo) & (ps < tau_hi)
     clear = (~alert_mask) & (ps < tau_lo)
+    pending = (~alert_mask) & (ps >= tau_hi)
 
-    return {"ps": ps, "clear": clear, "suspect": suspect, "alert": alert_mask}
+    return {"ps": ps, "clear": clear, "suspect": suspect, "pending": pending, "alert": alert_mask}
 
 
 # ============================================================

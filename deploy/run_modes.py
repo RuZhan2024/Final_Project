@@ -317,8 +317,14 @@ def predict_mu_sigma(
 # 6) YAML config loader
 # ============================================================
 def load_cfg(path: str) -> Dict[str, Any]:
-    """Load YAML config if provided, else return {}."""
+    """Load YAML config if provided, else return {}.
+
+    If the file path is missing or does not exist, return {} and continue.
+    """
     if not path:
+        return {}
+    if not os.path.exists(path):
+        print(f"[warn] cfg not found: {path} (using defaults)")
         return {}
     return yaml_load_simple(path) or {}
 

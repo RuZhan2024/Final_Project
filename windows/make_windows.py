@@ -550,6 +550,12 @@ def main() -> None:
     # ------------------------------------------------------------
     for stem in stems_ordered:
         sp = split_for(stem)
+
+        # Strategy is split-aware: keep training balanced if requested,
+        # but force val/test to 'all' so event-level evaluation is meaningful.
+        strategy = args.strategy
+        if sp != "train" and strategy == "balanced":
+            strategy = "all"
         if sp is None:
             continue
 
@@ -627,7 +633,7 @@ def main() -> None:
         # --------------------------------------------------------
         # Strategy A: ALL windows
         # --------------------------------------------------------
-        if args.strategy == "all":
+        if strategy == "all":
             if seq_spans:
                 for st in starts:
                     ed = st + args.W - 1
@@ -743,7 +749,7 @@ def main() -> None:
 
                 # meta
                 fps=np.float32(fps),
-                video_id=np.array(seq_id),
+                video_id=np.array(stem),  # unique per clip
                 seq_id=np.array(seq_id),
                 src=np.array(src),
                 seq_stem=np.array(seq_stem),
@@ -770,7 +776,8 @@ def main() -> None:
                         "overlap_frames": int(ov),
                         "valid_frac": float(valid_frac),
                         "fps": float(fps),
-                        "video_id": str(seq_id),
+                        "video_id": str(stem),
+                        "seq_id": str(seq_id),
                     }
                 )
 
@@ -787,7 +794,7 @@ def main() -> None:
     # Final summary
     print(f"[OK] windows saved to: {args.out_dir}")
     print(f"[count] total={total} pos={pos} neg={neg} skipped_quality={skipped_quality} missing_seq={missing_seq}")
-    print(f"[info] spans_end_exclusive={spans_end_exclusive} req_overlap={req_ov} strategy={args.strategy}")
+    print(f"[info] spans_end_exclusive={spans_end_exclusive} req_overlap={req_ov} strategy={args.strategy} (val/test forced to all if balanced)")
     if use_splits:
         print("[info] splits mode: enabled (processed only stems in split lists)")
 

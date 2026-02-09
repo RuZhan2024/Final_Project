@@ -13,7 +13,7 @@ Each output .npz contains:
   - src  : str                  original video path
 
 Design notes:
-- This script is *label-agnostic* (labels are added later by your labels/build scripts).
+- This script is *label-agnostic* (labels are added later by labels/build scripts).
 - It produces a "pose_npz" stage output that later preprocessing/windowing scripts consume.
 
 Typical usage:
@@ -45,7 +45,7 @@ import time
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 import tempfile
-
+import re
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -168,9 +168,9 @@ def list_videos(patterns: Iterable[str]) -> List[str]:
     """
     Expand glob patterns, deduplicate results, and sort deterministically.
 
-    Why we do this:
+    The reason of doing this:
     - globbing behavior can vary slightly across shells/OS.
-    - deterministic ordering makes your runs reproducible.
+    - deterministic ordering makes it runs reproducible.
     """
     files: List[str] = []
     for pat in patterns:
@@ -179,8 +179,15 @@ def list_videos(patterns: Iterable[str]) -> List[str]:
     # Keep only real files (filter out directories).
     files = [f for f in files if os.path.isfile(f)]
 
-    # Deduplicate + sort (stable run order).
-    return sorted(set(files))
+    # Define the natural sort key
+    def natural_keys(text):
+        # Splits text into a list of strings and integers:
+        # "video (10).avi" -> ["video (", 10, ").avi"]
+        return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', text)]
+
+    # Use the key to sort
+    print(sorted(set(files), key=natural_keys))
+    return sorted(set(files), key=natural_keys)
 
 
 def common_root(paths: List[str]) -> str:
@@ -227,19 +234,6 @@ def _atomic_save_npz(out_npz: str, payload: dict) -> None:
     Atomically write NPZ:
     - write to a temporary file in the SAME directory
     - then rename to the final path using os.replace (atomic on same filesystem)
-
-    IMPORTANT BUG EXPLANATION (why your old code failed):
-    ----------------------------------------------------
-    Your old temp name was:  out.npz.tmp
-    But numpy's np.savez_compressed() may append ".npz" automatically if the
-    filename doesn't end with ".npz". So it actually wrote:
-        out.npz.tmp.npz
-    Then os.replace("out.npz.tmp", "out.npz") crashed because "out.npz.tmp"
-    never existed.
-
-    Fix:
-    - Always ensure the temp filename ends with ".npz" (we use suffix=".tmp.npz").
-    - Use a unique temp name to avoid collisions.
     """
     out_path = Path(out_npz)
     out_path.parent.mkdir(parents=True, exist_ok=True)

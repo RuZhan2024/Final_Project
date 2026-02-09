@@ -1,0 +1,31 @@
+# configs/deploy_modes.yaml
+# Default deployment-like triage settings for deploy/run_modes.py.
+# You can tune these later (they do NOT affect training).
+
+tcn:
+  tau_low: 0.05
+  tau_high: 0.90
+  ema_alpha: 0.20
+
+gcn:
+  tau_low: 0.05
+  tau_high: 0.90
+  ema_alpha: 0.20
+
+single:
+  possible_k: 3
+  possible_T_s: 2.0
+  confirm_T_s: 3.6
+  confirm_k_fall: 2
+  cooldown_possible_s: 15.0
+  cooldown_confirmed_s: 60.0
+
+dual:
+  possible_k: 3
+  possible_T_s: 2.0
+  confirm_T_s: 3.6
+  confirm_k_tcn: 1
+  confirm_k_gcn: 1
+  require_both: true
+  cooldown_possible_s: 15.0
+  cooldown_confirmed_s: 60.0
