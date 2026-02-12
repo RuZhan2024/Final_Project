@@ -39,7 +39,7 @@ NORM_MODE  ?= torso
 PELVIS_FILL?= nearest
 
 # Common train knobs
-EPOCHS ?= 100
+EPOCHS ?= 200
 # -------------------------
 # GCN training knobs
 # -------------------------
@@ -48,7 +48,7 @@ LR_GCN ?= $(LR)
 EPOCHS_GCN ?= $(EPOCHS)
 BATCH_GCN ?= $(BATCH)
 
-GCN_PATIENCE ?= 12
+GCN_PATIENCE ?= 30
 GCN_GCN_HIDDEN ?= 96
 GCN_TCN_HIDDEN ?= 192
 GCN_DROPOUT ?= 0.35
@@ -102,7 +102,7 @@ TCN_HIDDEN ?= 128
 TCN_DROPOUT ?= 0.30
 TCN_NUM_BLOCKS ?= 4
 TCN_KERNEL ?= 3
-TCN_PATIENCE ?= 12
+TCN_PATIENCE ?= 30
 TCN_GRAD_CLIP ?= 1.0
 TCN_POS_WEIGHT ?= auto
 TCN_BALANCED_SAMPLER ?= 0
@@ -386,8 +386,15 @@ extract-caucafall:
 	  --skip_existing
 
 extract-muvim:
-	@echo "[info] MUVIM extraction depends on your raw layout."
-	@echo "       If you already have pose_npz_raw or pose_npz, you can run preprocess-muvim."
+	@mkdir -p "$(POSE_MUVIM_RAW)"
+	$(RUN) pose/extract_2d_from_images.py \
+	  --images_glob "$(RAW_MUVIM)/ZED_RGB/**/*.jpg" "$(RAW_MUVIM)/ZED_RGB/**/*.png" \
+	  --sequence_id_depth "2" \
+	  --out_dir "$(POSE_MUVIM_RAW)" \
+	  --dataset muvim \
+	  --fps "$(FPS_MUVIM)" \
+	  --skip_existing
+
 
 # -------------------------
 # Preprocess (clean/gate/smooth/normalize)
@@ -479,11 +486,17 @@ labels-urfd: preprocess-urfd-only
 
 labels-caucafall: preprocess-caucafall-only
 	@mkdir -p "$(LABELS_DIR)"
-	@ANN=""; \
-	if [ -n "$(CAUCA_ANN_GLOB)" ]; then \
-	  ANN="--ann_glob \"$(CAUCA_ANN_GLOB)\" --use_per_frame_action_txt $(USE_PER_FRAME_ACTION_TXT) --fall_class_id $(CAUCA_FALL_CLASS_ID) --min_run $(CAUCA_MIN_RUN) --gap_fill $(CAUCA_GAP_FILL)"; \
+	@SPAN_ARGS=""; \
+	if [ "$(USE_PER_FRAME_ACTION_TXT)" = "1" ]; then \
+	  SPAN_ARGS="--use_per_frame_action_txt 1 --fall_class_id $(CAUCA_FALL_CLASS_ID) --min_run $(CAUCA_MIN_RUN) --gap_fill $(CAUCA_GAP_FILL) --frame_label_mode auto --clamp_to_npz_len"; \
 	fi; \
-	eval "$(RUN) labels/make_caucafall_labels.py --npz_dir \"$(POSE_CAUC)\" --out_labels \"$(LABELS_CAUC)\" --out_spans \"$(SPANS_CAUC)\" $$ANN"
+	eval "$(RUN) labels/make_caucafall_labels.py \
+	  --raw_root \"$(RAW_CAUC)\" \
+	  --npz_dir \"$(POSE_CAUC)\" \
+	  --out_labels \"$(LABELS_CAUC)\" \
+	  --out_spans \"$(SPANS_CAUC)\" \
+	  $$SPAN_ARGS \
+	  --verbose"
 
 labels-muvim: preprocess-muvim-only
 	@mkdir -p "$(LABELS_DIR)"
