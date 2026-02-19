@@ -267,6 +267,40 @@ def _fill_nearest_2d(center: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return out
 
 
+
+def _fill_forward_2d(center: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """
+    Fill invalid frames in center[T,2] using last valid (forward fill).
+
+    Notes
+    -----
+    - This is causal after the first valid frame appears.
+    - For leading invalid frames (before the first valid), we backfill with the first valid
+      to avoid large artificial translation from zero-centering.
+    """
+    T = center.shape[0]
+    valid2 = valid & np.isfinite(center[:, 0]) & np.isfinite(center[:, 1])
+    if valid2.sum() == 0:
+        return np.zeros_like(center, dtype=np.float32)
+
+    out = center.copy().astype(np.float32)
+    idx = np.arange(T)
+    first = int(idx[valid2][0])
+
+    last = first
+    for t in range(T):
+        if valid2[t]:
+            last = t
+        else:
+            out[t] = center[last]
+
+    # Backfill leading invalid frames with first valid
+    if first > 0:
+        out[:first] = center[first]
+
+    out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    return out
+
 def _joint_center(xy: np.ndarray, conf: np.ndarray, a: int, b: int, conf_thr: float) -> Tuple[np.ndarray, np.ndarray]:
     """Return center[T,2] and valid[T] using joints a/b with fallback if one missing."""
     T = xy.shape[0]
@@ -349,7 +383,10 @@ def normalize_body_centric(
 
     if pelvis_fill == "nearest":
         pelvis_used = _fill_nearest_2d(pelvis, pelvis_ok)
+    elif pelvis_fill == "forward":
+        pelvis_used = _fill_forward_2d(pelvis, pelvis_ok)
     else:
+        # "zero": keep valid pelvis, replace missing with (0,0)
         pelvis_used = np.nan_to_num(pelvis, nan=0.0, posinf=0.0, neginf=0.0)
 
     xy2 = xy.astype(np.float32, copy=False)
@@ -386,7 +423,7 @@ def compute_masks(xy: np.ndarray, conf: np.ndarray, conf_thr: float) -> Tuple[np
     """
     Returns:
       joint_mask  : (T,J) bool
-      frame_mask  : (T,)  bool  (>= min_valid_ratio handled outside)
+      frame_mask  : (T,)  bool  (refined by min_valid_ratio in process_one)
       valid_ratio : (T,)  float32
     """
     joint_mask = (conf >= conf_thr) & np.isfinite(xy[..., 0]) & np.isfinite(xy[..., 1])
@@ -476,6 +513,10 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
     # 5) masks / frame quality
     joint_mask, frame_mask, valid_ratio = compute_masks(xy, conf, conf_thr=args.conf_thr)
 
+    # Always reflect min_valid_ratio in frame_mask, even if we do not zero-out frames.
+    if args.min_valid_ratio > 0.0:
+        frame_mask = frame_mask & (valid_ratio >= float(args.min_valid_ratio))
+
     if args.invalidate_bad_frames:
         xy, conf, frame_mask = invalidate_bad_frames(
             xy, conf, joint_mask, frame_mask, valid_ratio, min_valid_ratio=args.min_valid_ratio
@@ -498,6 +539,7 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
         pelvis_fill=str(args.pelvis_fill),
         min_valid_ratio=float(args.min_valid_ratio),
         invalidate_bad_frames=bool(args.invalidate_bad_frames),
+        frame_mask_min_valid_ratio_applied=True,
         frames=int(xy.shape[0]),
         joints=int(xy.shape[1]),
         filled_points=int(filled_mask.sum()),
@@ -554,9 +596,9 @@ def parse_args():
     )
     ap.add_argument(
         "--pelvis_fill",
-        choices=["nearest", "zero"],
+        choices=["nearest", "forward", "zero"],
         default="nearest",
-        help="How to fill missing pelvis center before translation.",
+        help="How to fill missing pelvis center before translation (nearest is non-causal; forward is causal after first valid).",
     )
 
     ap.add_argument(

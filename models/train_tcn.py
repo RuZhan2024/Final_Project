@@ -2,46 +2,41 @@
 # -*- coding: utf-8 -*-
 """models/train_tcn.py
 
-Redesigned trainer that uses core/* as the single source of truth.
+Upgraded TCN trainer (single source of truth via core/*).
 
-Key properties
-- Saves a checkpoint BUNDLE (core/ckpt.py) with arch/model_cfg/feat_cfg/state_dict.
-- Uses consistent feature flags for train/eval (core/features.py).
-- Threshold sweep uses thr_min=0.05 and thr_step=0.01 by default.
-- Early stopping can monitor F1 or AP (recommended AP for MUVIM/LE2i).
-
-Typical use:
-  python models/train_tcn.py --train_dir .../train --val_dir .../val --save_dir outputs/le2i_tcn_W48S12
+Key fixes vs older script:
+- Uses core.features.read_window_npz + core.features.build_canonical_input (matches window NPZ schema).
+- Consistent feature flags (FeatCfg) saved into checkpoint bundle.
+- Works with hard-negative mining (--resume + --hard_neg_list + --hard_neg_mult).
+- Balanced sampler and/or pos_weight supported (choose ONE).
+- Applies random mask augmentation (--mask_joint_p/--mask_frame_p) *after* feature-building so it works
+  regardless of whether precomputed/derived masks are used.
+- Validation collect_probs flattens y correctly.
 """
-
 
 from __future__ import annotations
 
-# -------------------------
-# Path bootstrap (so `from core.*` works when running as a script)
-# -------------------------
-import os as _os
-import sys as _sys
-_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
-if _ROOT not in _sys.path:
-    _sys.path.insert(0, _ROOT)
+def _to_f32(x, device: torch.device) -> torch.Tensor:
+    # Works for numpy arrays and torch tensors
+    return torch.as_tensor(x, dtype=torch.float32, device=device)
 
+# ---- bootstrap: allow running as a script from repo root ----
+def _bootstrap_project_root():
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    root = here.parents[1]  # repo root
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+_bootstrap_project_root()
+# -------------------------------------------------------------
 
 import argparse
-def _write_train_report(path, payload):
-    if not path:
-        return
-    try:
-        import os, json
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-    except Exception as e:
-        print(f"[warn] failed to write report_json={path}: {e}")
-
 import json
 import os
 import random
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -51,28 +46,70 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
-from core.ckpt import save_ckpt, load_ckpt, get_cfg
-from core.features import FeatCfg, read_window_npz, build_tcn_input
+from core.ckpt import get_cfg, load_ckpt, save_ckpt
+from core.features import FeatCfg, build_tcn_input, build_canonical_input,read_window_npz
+from core.losses import FocalLossWithLogits
 from core.metrics import ap_auc, best_threshold_by_f1
-from core.models import TCN, TCNConfig, pick_device, logits_1d
+from core.models import TCNConfig, build_model, pick_device
+from core.ema import EMA
 
 
 # -------------------------
-# Repro
+# Utilities
 # -------------------------
-def set_seed(s: int) -> None:
-    random.seed(s)
-    np.random.seed(s)
-    torch.manual_seed(s)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(s)
+def set_seed(seed: int) -> None:
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-# -------------------------
-# DropGraph augmentation (mask only)
-# -------------------------
+def logits_1d(out: torch.Tensor) -> torch.Tensor:
+    if out.ndim == 2 and out.shape[1] == 1:
+        return out[:, 0]
+    if out.ndim == 1:
+        return out
+    return out.view(out.shape[0], -1)[:, 0]
+
+
+def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
+    y = np.asarray(labels01).astype(int).reshape(-1)
+    pos = max(1, int((y == 1).sum()))
+    neg = max(1, int((y == 0).sum()))
+    return torch.tensor([neg / pos], dtype=torch.float32)
+
+
+def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
+    y = np.asarray(y01).reshape(-1)
+    pos = max(1, int((y == 1).sum()))
+    neg = max(1, int((y == 0).sum()))
+    w_pos = 1.0 / pos
+    w_neg = 1.0 / neg
+    w = np.where(y == 1, w_pos, w_neg).astype(np.float64)
+    return WeightedRandomSampler(weights=torch.from_numpy(w), num_samples=len(w), replacement=True)
+
+
+def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple[float, float, float, float]:
+    yb = (np.asarray(y_true).reshape(-1).astype(np.int64) > 0).astype(np.int64)
+    pb = (np.asarray(p).reshape(-1) >= float(thr)).astype(np.int64)
+
+    tp = int(((pb == 1) & (yb == 1)).sum())
+    fp = int(((pb == 1) & (yb == 0)).sum())
+    fn = int(((pb == 0) & (yb == 1)).sum())
+    tn = int(((pb == 0) & (yb == 0)).sum())
+
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2.0 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    return float(prec), float(rec), float(f1), float(fpr)
+
+
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
-    m = mask.copy().astype(bool)
+    m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
     if mask_joint_p > 0:
         drop_j = rng.random(V) < float(mask_joint_p)
@@ -82,9 +119,72 @@ def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float
         drop_t = rng.random(T) < float(mask_frame_p)
         if drop_t.any():
             m[drop_t, :] = False
+    # ensure at least one valid joint/frame remains
     if not m.any():
         m[int(rng.integers(0, T)), int(rng.integers(0, V))] = True
     return m
+
+
+def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
+    """Convert canonical X[T,V,F] into TCN input x[T, V*F].
+
+    This delegates to core.features.build_tcn_input so the layout is single-source-of-truth.
+    """
+    return build_tcn_input(X, feat_cfg)
+
+
+
+
+def collect_probs(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    ema: Optional[EMA] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    ps: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    ctx = ema.use(model) if ema is not None else nullcontext()
+    with ctx, torch.no_grad():
+        for xb, yb in loader:
+            xb = _to_f32(xb, device)  # [B,T,C]
+            logits = logits_1d(model(xb))
+            p = torch.sigmoid(logits).detach().cpu().numpy()
+            y = yb.detach().cpu().numpy().reshape(-1)
+            ps.append(p)
+            ys.append(y)
+    return np.concatenate(ps, axis=0), np.concatenate(ys, axis=0)
+
+def compute_loss_on_loader(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    criterion: nn.Module,
+    ema: Optional[EMA] = None,
+) -> float:
+    """Compute mean loss on a loader with model in eval mode (no grad)."""
+    model.eval()
+    losses: List[float] = []
+    counts: List[int] = []
+    ctx = ema.use(model) if ema is not None else nullcontext()
+    with ctx, torch.no_grad():
+        for xb, yb in loader:
+            xb = _to_f32(xb, device)
+            yb = _to_f32(yb, device).view(-1)
+            logits = logits_1d(model(xb))
+            loss = criterion(logits, yb).detach()
+            losses.append(float(loss.cpu()) * xb.shape[0])
+            counts.append(int(xb.shape[0]))
+    return float(sum(losses) / max(1, sum(counts)))
+
+
+
+def list_npz_files(root: str) -> List[str]:
+    import glob
+    pat = os.path.join(root, "**", "*.npz")
+    files = glob.glob(pat, recursive=True)
+    files.sort()
+    return files
 
 
 class WindowDatasetTCN(Dataset):
@@ -95,126 +195,110 @@ class WindowDatasetTCN(Dataset):
         split: str,
         feat_cfg: FeatCfg,
         fps_default: float,
-        skip_unlabeled: bool = True,
-        hard_neg_files: Optional[List[str]] = None,
-        hard_neg_mult: int = 0,
-        mask_joint_p: float = 0.0,
-        mask_frame_p: float = 0.0,
-        seed: int = 33724876,
-    ):
-        import glob
-
-        self.fps_default = float(fps_default)
-
-        self.files = sorted(glob.glob(os.path.join(root, "**", "*.npz"), recursive=True))
-        if not self.files:
-            raise FileNotFoundError(f"No .npz under: {root}")
-
-        kept: List[str] = []
-        labels: List[int] = []
-        skipped = 0
-        for p in self.files:
-            try:
-                _, _, _, _, _, meta = read_window_npz(p, fps_default=fps_default)
-                if skip_unlabeled and meta.y < 0:
-                    skipped += 1
-                    continue
-                kept.append(p)
-                labels.append(int(meta.y if meta.y >= 0 else 0))
-            except Exception:
-                skipped += 1
-        if not kept:
-            raise FileNotFoundError(f"All windows under {root} were unlabeled/unreadable.")
-        if skipped:
-            print(f"[dataset] skipped {skipped} unlabeled/unreadable windows in {root}")
-
-        self.files = kept
-        self.labels = np.asarray(labels, dtype=np.int64)
-
-        # Add hard negatives (can be unlabeled NPZ) and oversample them by duplicating paths.
-        if hard_neg_files:
-            extra: List[str] = []
-            for p in hard_neg_files:
-                p = str(p).strip()
-                if not p:
-                    continue
-                if not os.path.exists(p):
-                    continue
-                # avoid accidentally treating labeled positives as negatives
-                _, _, _, _, _, meta2 = read_window_npz(p, fps_default=self.fps_default)
-                if meta2.y == 1:
-                    continue
-                extra.append(p)
-
-            if extra:
-                mult = int(hard_neg_mult) if int(hard_neg_mult) > 0 else 1
-                extra_rep = extra * mult
-                self.files.extend(extra_rep)
-                self.labels = np.concatenate([self.labels, np.zeros(len(extra_rep), dtype=np.int64)], axis=0)
-
+        skip_unlabeled: bool,
+        mask_joint_p: float,
+        mask_frame_p: float,
+        seed: int,
+        extra_neg_files: Optional[List[str]] = None,
+        extra_neg_mult: int = 1,
+    ) -> None:
+        self.root = str(root)
         self.split = str(split)
         self.feat_cfg = feat_cfg
         self.fps_default = float(fps_default)
+        self.skip_unlabeled = bool(skip_unlabeled)
+        self.mask_joint_p = float(mask_joint_p)
+        self.mask_frame_p = float(mask_frame_p)
 
-        self.mask_joint_p = float(mask_joint_p) if self.split == "train" else 0.0
-        self.mask_frame_p = float(mask_frame_p) if self.split == "train" else 0.0
-        self.rng = np.random.default_rng(int(seed) + (0 if self.split == "train" else 991))
+        files = list_npz_files(self.root)
+        self.files: List[str] = []
+        self.labels01: List[int] = []
+
+        fail = 0
+        examples: List[str] = []
+
+        # main dataset files
+        for fp in files:
+            try:
+                _, _, _, _, _, meta = read_window_npz(fp, fps_default=self.fps_default)
+            except Exception as e:
+                fail += 1
+                if len(examples) < 5:
+                    examples.append(f"{fp}: {type(e).__name__}: {e}")
+                continue
+            y = int(meta.y)
+            if self.skip_unlabeled and y < 0:
+                continue
+            self.files.append(fp)
+            self.labels01.append(1 if y == 1 else 0)
+
+        # extra hard negatives (treated as y=0 unless y==1, which is skipped)
+        if extra_neg_files:
+            mult = max(1, int(extra_neg_mult))
+            extra = list(extra_neg_files) * mult
+            for fp in extra:
+                fp = fp.strip()
+                if not fp:
+                    continue
+                try:
+                    _, _, _, _, _, meta = read_window_npz(fp, fps_default=self.fps_default)
+                except Exception as e:
+                    fail += 1
+                    if len(examples) < 5:
+                        examples.append(f"{fp}: {type(e).__name__}: {e}")
+                    continue
+                y = int(meta.y)
+                if y == 1:
+                    continue
+                self.files.append(fp)
+                self.labels01.append(0)
+
+        if fail:
+            print(f"[warn] skipped {fail} unreadable windows under: {self.root}")
+            for ex in examples:
+                print(f"[warn]   example: {ex}")
+
+        if len(self.files) == 0:
+            raise RuntimeError(
+                f"[err] no readable windows under: {self.root}. "
+                f"found={len(files)} failed_reads={fail}. "
+                "Check make_windows.py output + key/dtype consistency."
+            )
+
+        self.labels01 = np.asarray(self.labels01, dtype=np.int64)
+        base = int(seed) + (11 if split == "train" else 22)
+        self.rng = np.random.default_rng(base)
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int):
-        p = self.files[idx]
-        joints, motion, conf, mask, fps, meta = read_window_npz(p, fps_default=self.fps_default)
+    def __getitem__(self, i: int):
+        fp = self.files[i]
+        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
 
-        # mask selection happens in build_tcn_input; but we may augment the precomputed mask
-        if mask is None:
-            # provide None; build_tcn_input will derive
-            pass
-        else:
-            if self.mask_joint_p > 0 or self.mask_frame_p > 0:
-                mask = augment_mask(mask, self.rng, self.mask_joint_p, self.mask_frame_p)
+        # Build [T,V,F] first; get mask_used after conf gating.
+        Xg, mask_used = build_canonical_input(
+            joints_xy=joints,
+            motion_xy=motion,
+            conf=conf,
+            mask=mask,
+            fps=fps,
+            feat_cfg=self.feat_cfg,
+        )
 
-        X, _ = build_tcn_input(joints, motion, conf, mask, fps, self.feat_cfg)  # [T,C]
-        y = float(meta.y if meta.y >= 0 else 0.0)
-        return torch.from_numpy(X).float(), torch.tensor([y], dtype=torch.float32)
+        # Random mask augmentation (train only) applied post-feature-build.
+        if self.split == "train" and (self.mask_joint_p > 0 or self.mask_frame_p > 0):
+            m_aug = augment_mask(mask_used, self.rng, self.mask_joint_p, self.mask_frame_p)
+            Xg = Xg * m_aug[..., None]
 
+        Xt = flatten_tcn_from_gcn(Xg, self.feat_cfg)  # [T,C]
+        y = 1 if int(meta.y) == 1 else 0
 
-def compute_pos_weight(y: np.ndarray) -> Optional[torch.Tensor]:
-    y = np.asarray(y).reshape(-1)
-    pos = float((y == 1).sum())
-    neg = float((y == 0).sum())
-    if pos <= 0 or neg <= 0:
-        return None
-    w = neg / pos
-    print(f"[info] class balance: pos={int(pos)} neg={int(neg)} pos_weight={w:.2f}")
-    return torch.tensor([w], dtype=torch.float32)
-
-
-def make_balanced_sampler(y: np.ndarray) -> WeightedRandomSampler:
-    y = np.asarray(y).reshape(-1)
-    pos = max(1, int((y == 1).sum()))
-    neg = max(1, int((y == 0).sum()))
-    w_pos = 1.0 / pos
-    w_neg = 1.0 / neg
-    w = np.where(y == 1, w_pos, w_neg).astype(np.float64)
-    return WeightedRandomSampler(weights=torch.from_numpy(w), num_samples=len(w), replacement=True)
-
-
-@torch.no_grad()
-def collect_probs(model: nn.Module, loader: DataLoader, device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
-    model.eval()
-    ps: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    for xb, yb in loader:
-        xb = xb.to(device)
-        logits = logits_1d(model(xb))
-        p = torch.sigmoid(logits).detach().cpu().numpy()
-        y = yb.detach().cpu().numpy().reshape(-1).astype(int)
-        ps.append(p)
-        ys.append(y)
-    return (np.concatenate(ps) if ps else np.array([])), (np.concatenate(ys) if ys else np.array([]))
-
+        # NumPy -> Torch (explicit, no copy when possible)
+        return (
+            torch.as_tensor(Xt, dtype=torch.float32),
+            torch.as_tensor([y], dtype=torch.float32),
+        )
 
 @dataclass
 class TrainCfg:
@@ -223,200 +307,191 @@ class TrainCfg:
     save_dir: str
     test_dir: Optional[str] = None
 
+    # resume / hard negatives
     resume: Optional[str] = None
     hard_neg_list: Optional[str] = None
-    hard_neg_mult: int = 0
+    hard_neg_mult: int = 1
 
-    epochs: int = 50
+    epochs: int = 200
     batch: int = 128
     lr: float = 1e-3
     seed: int = 33724876
     grad_clip: float = 1.0
-    patience: int = 12
+
+    lr_plateau_patience: int = 5
+    lr_plateau_factor: float = 0.5
+    lr_plateau_min_lr: float = 1e-6
+
+    weight_decay: float = 1e-4
+    label_smoothing: float = 0.0
+
+    fixed_thr: float = 0.5
+    thr_min: float = 0.05
+    thr_max: float = 0.95
+    thr_step: float = 0.01
+
+    use_ema: int = 0
+    ema_decay: float = 0.995
+
+    patience: int = 30
     fps_default: float = 30.0
 
-    # monitoring
-    monitor: str = "f1"  # f1|ap
+    loss: str = "bce"
+    focal_alpha: float = 0.25
+    focal_gamma: float = 2.0
 
-    # imbalance (use only ONE)
-    pos_weight: str = "auto"   # auto|none|<float>
+    monitor: str = "f1"
+    pos_weight: str = "auto"
     balanced_sampler: bool = False
 
-    # augmentation
-    mask_joint_p: float = 0.15
-    mask_frame_p: float = 0.10
+    mask_joint_p: float = 0.05
+    mask_frame_p: float = 0.05
 
-    # tcn
     hidden: int = 128
     dropout: float = 0.30
     num_blocks: int = 4
     kernel: int = 3
 
-    # features
+    # feature flags (must match fit/eval)
     center: str = "pelvis"
     use_motion: int = 1
     use_conf_channel: int = 1
+    use_bone: int = 0
+    use_bone_length: int = 0
     motion_scale_by_fps: int = 1
     conf_gate: float = 0.20
     use_precomputed_mask: int = 1
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Train TCN on window NPZs.")
+
     ap.add_argument("--train_dir", required=True)
     ap.add_argument("--val_dir", required=True)
     ap.add_argument("--test_dir", default=None)
     ap.add_argument("--save_dir", required=True)
 
-    # Optional training report (for Makefile compatibility / logging)
-    ap.add_argument("--report_json", default=None, help="Write a training summary JSON to this path.")
-    ap.add_argument("--report_dataset_name", default=None, help="Dataset name to store in the report JSON.")
+    ap.add_argument("--resume", default=None, help="Optional checkpoint to init weights from.")
+    ap.add_argument("--hard_neg_list", default=None, help="Optional text file listing extra negative window NPZ paths.")
+    ap.add_argument("--hard_neg_mult", type=int, default=1, help="Repeat hard negatives N times.")
 
-    ap.add_argument("--resume", default=None, help="Path to a checkpoint bundle to fine-tune from")
-    ap.add_argument("--hard_neg_list", default=None, help="TXT of NPZ paths to oversample as hard negatives")
-    ap.add_argument("--hard_neg_mult", type=int, default=0, help="Oversampling multiplier for hard negatives (e.g., 5)")
-
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=33724876)
     ap.add_argument("--grad_clip", type=float, default=1.0)
-    ap.add_argument("--patience", type=int, default=12)
+
+    ap.add_argument("--lr_plateau_patience", type=int, default=5)
+    ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
+    ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+
+    ap.add_argument("--weight_decay", type=float, default=1e-4)
+    ap.add_argument("--label_smoothing", type=float, default=0.0)
+
+    ap.add_argument("--fixed_thr", type=float, default=0.5)
+    ap.add_argument("--thr_min", type=float, default=0.05)
+    ap.add_argument("--thr_max", type=float, default=0.95)
+    ap.add_argument("--thr_step", type=float, default=0.01)
+
+    ap.add_argument("--use_ema", type=int, default=0)
+    ap.add_argument("--ema_decay", type=float, default=0.995)
+
+    ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--fps_default", type=float, default=30.0)
 
     ap.add_argument("--monitor", choices=["f1", "ap"], default="f1")
-
-    ap.add_argument("--pos_weight", default="auto", help="auto|none|<float>")
+    ap.add_argument("--pos_weight", default="auto")
     ap.add_argument("--balanced_sampler", action="store_true")
 
-    ap.add_argument("--mask_joint_p", type=float, default=0.15)
-    ap.add_argument("--mask_frame_p", type=float, default=0.10)
+    ap.add_argument("--loss", choices=["bce", "focal"], default="bce")
+    ap.add_argument("--focal_alpha", type=float, default=0.25)
+    ap.add_argument("--focal_gamma", type=float, default=2.0)
+
+    ap.add_argument("--mask_joint_p", type=float, default=0.05)
+    ap.add_argument("--mask_frame_p", type=float, default=0.05)
 
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--dropout", type=float, default=0.30)
     ap.add_argument("--num_blocks", type=int, default=4)
     ap.add_argument("--kernel", type=int, default=3)
 
-    # feature flags (Makefile-friendly ints)
     ap.add_argument("--center", choices=["pelvis", "none"], default="pelvis")
-    # Deprecated: older Makefiles used --scale (e.g., 'torso').
-    # Scaling is handled inside core/features.py; we accept the flag to avoid breaking runs.
-    ap.add_argument("--scale", default=None, help="(deprecated) kept for Makefile compatibility; ignored")
     ap.add_argument("--use_motion", type=int, default=1)
     ap.add_argument("--use_conf_channel", type=int, default=1)
+    ap.add_argument("--use_bone", type=int, default=0)
+    ap.add_argument("--use_bone_length", type=int, default=0)
     ap.add_argument("--motion_scale_by_fps", type=int, default=1)
     ap.add_argument("--conf_gate", type=float, default=0.20)
     ap.add_argument("--use_precomputed_mask", type=int, default=1)
 
     args = ap.parse_args()
-
-    if getattr(args, "scale", None) not in (None, "", "none"):
-        print(f"[warn] --scale={args.scale!r} is deprecated and ignored (scaling is handled in core/features.py)")
-
-    cfg = TrainCfg(
-        train_dir=args.train_dir,
-        val_dir=args.val_dir,
-        test_dir=args.test_dir if args.test_dir else None,
-        save_dir=args.save_dir,
-        resume=args.resume,
-        hard_neg_list=args.hard_neg_list,
-        hard_neg_mult=int(args.hard_neg_mult),
-        epochs=int(args.epochs),
-        batch=int(args.batch),
-        lr=float(args.lr),
-        seed=int(args.seed),
-        grad_clip=float(args.grad_clip),
-        patience=int(args.patience),
-        fps_default=float(args.fps_default),
-        monitor=str(args.monitor),
-        pos_weight=str(args.pos_weight),
-        balanced_sampler=bool(args.balanced_sampler),
-        mask_joint_p=float(args.mask_joint_p),
-        mask_frame_p=float(args.mask_frame_p),
-        hidden=int(args.hidden),
-        dropout=float(args.dropout),
-        num_blocks=int(args.num_blocks),
-        kernel=int(args.kernel),
-        center=str(args.center),
-        use_motion=int(args.use_motion),
-        use_conf_channel=int(args.use_conf_channel),
-        motion_scale_by_fps=int(args.motion_scale_by_fps),
-        conf_gate=float(args.conf_gate),
-        use_precomputed_mask=int(args.use_precomputed_mask),
-    )
-
-    # enforce imbalance rule
-    if cfg.balanced_sampler and str(cfg.pos_weight).strip().lower() not in {"none", "0", "0.0"}:
-        if str(cfg.pos_weight).strip().lower() == "auto":
-            print("[warn] You enabled --balanced_sampler and --pos_weight=auto. Using balanced_sampler only.")
-            cfg.pos_weight = "none"
+    cfg = TrainCfg(**vars(args))
 
     set_seed(cfg.seed)
     os.makedirs(cfg.save_dir, exist_ok=True)
+
+    # If resuming, load cfg from checkpoint (single source of truth).
+    if cfg.resume:
+        bundle = load_ckpt(cfg.resume, map_location="cpu")
+        arch0, model_cfg_d0, feat_cfg_d0, data_cfg0 = get_cfg(bundle)
+        if arch0 and arch0 != "tcn":
+            raise SystemExit(f"[err] resume arch mismatch: expected tcn, got {arch0}")
+
+        # Override feature flags (so train/fit/eval stay aligned).
+        if isinstance(feat_cfg_d0, dict) and feat_cfg_d0:
+            cfg.center = str(feat_cfg_d0.get("center", cfg.center))
+            cfg.use_motion = 1 if bool(feat_cfg_d0.get("use_motion", cfg.use_motion)) else 0
+            cfg.use_conf_channel = 1 if bool(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel)) else 0
+            cfg.use_bone = 1 if bool(feat_cfg_d0.get("use_bone", cfg.use_bone)) else 0
+            cfg.use_bone_length = 1 if bool(feat_cfg_d0.get("use_bone_length", cfg.use_bone_length)) else 0
+            cfg.motion_scale_by_fps = 1 if bool(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps)) else 0
+            cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
+            cfg.use_precomputed_mask = 1 if bool(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask)) else 0
+
+        # Override model cfg (avoid accidental mismatch when mining hard negatives).
+        if isinstance(model_cfg_d0, dict) and model_cfg_d0:
+            cfg.hidden = int(model_cfg_d0.get("hidden", cfg.hidden))
+            cfg.dropout = float(model_cfg_d0.get("dropout", cfg.dropout))
+            cfg.num_blocks = int(model_cfg_d0.get("num_blocks", model_cfg_d0.get("blocks", cfg.num_blocks)))
+            cfg.kernel = int(model_cfg_d0.get("kernel", cfg.kernel))
+
+        if isinstance(data_cfg0, dict) and "fps_default" in data_cfg0:
+            cfg.fps_default = float(data_cfg0["fps_default"])
+
     with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
 
     device = pick_device()
     print(f"[info] device: {device.type}")
 
-
-    bundle = None
-    if cfg.resume:
-        bundle = load_ckpt(cfg.resume, map_location="cpu")
-        arch0, model_cfg_d0, feat_cfg_d0, data_cfg0 = get_cfg(bundle)
-        if arch0 and arch0 != "tcn":
-            raise SystemExit(f"[err] resume arch mismatch: expected tcn, got {arch0}")
-        # Override feature flags from checkpoint
-        try:
-            cfg.center = str(feat_cfg_d0.get("center", cfg.center))
-            cfg.use_motion = int(feat_cfg_d0.get("use_motion", cfg.use_motion))
-            cfg.use_conf_channel = int(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel))
-            cfg.motion_scale_by_fps = int(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps))
-            cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
-            cfg.use_precomputed_mask = int(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask))
-        except Exception:
-            pass
-        # Override model config (keeps architecture identical)
-        try:
-            cfg.hidden = int(model_cfg_d0.get("hidden", cfg.hidden))
-            cfg.dropout = float(model_cfg_d0.get("dropout", cfg.dropout))
-            cfg.num_blocks = int(model_cfg_d0.get("num_blocks", cfg.num_blocks))
-            cfg.kernel = int(model_cfg_d0.get("kernel", cfg.kernel))
-        except Exception:
-            pass
-        # Prefer fps_default from checkpoint (for consistent motion scaling)
-        try:
-            cfg.fps_default = float(data_cfg0.get("fps_default", cfg.fps_default))
-        except Exception:
-            pass
     feat_cfg = FeatCfg(
         center=cfg.center,
         use_motion=bool(cfg.use_motion),
         use_conf_channel=bool(cfg.use_conf_channel),
+        use_bone=bool(cfg.use_bone),
+        use_bone_length=bool(cfg.use_bone_length),
         motion_scale_by_fps=bool(cfg.motion_scale_by_fps),
         conf_gate=float(cfg.conf_gate),
         use_precomputed_mask=bool(cfg.use_precomputed_mask),
     )
 
-
-    hard_neg_files: Optional[List[str]] = None
+    extra_neg_files: Optional[List[str]] = None
     if cfg.hard_neg_list:
-        try:
-            with open(cfg.hard_neg_list, "r", encoding="utf-8") as f:
-                hard_neg_files = [ln.strip() for ln in f.readlines() if ln.strip()]
-        except Exception:
-            hard_neg_files = None
+        with open(cfg.hard_neg_list, "r", encoding="utf-8") as f:
+            extra_neg_files = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+        print(f"[info] hard_neg_list: {cfg.hard_neg_list} (n={len(extra_neg_files)}) mult={cfg.hard_neg_mult}")
+
     train_ds = WindowDatasetTCN(
         cfg.train_dir,
         split="train",
         feat_cfg=feat_cfg,
         fps_default=cfg.fps_default,
         skip_unlabeled=True,
-        hard_neg_files=hard_neg_files,
-        hard_neg_mult=int(cfg.hard_neg_mult),
         mask_joint_p=cfg.mask_joint_p,
         mask_frame_p=cfg.mask_frame_p,
         seed=cfg.seed,
+        extra_neg_files=extra_neg_files,
+        extra_neg_mult=cfg.hard_neg_mult,
     )
     val_ds = WindowDatasetTCN(
         cfg.val_dir,
@@ -433,124 +508,205 @@ def main() -> None:
     T, C = x0.shape
     print(f"[info] window shape: T={T}, C={C}")
 
+    from core.features import channel_layout
+
+    layout = channel_layout(feat_cfg)
+    F = max(end for (_, end) in layout.values())  # feature channels per joint
+    if C % F != 0:
+        raise ValueError(f"Flattened C={C} not divisible by F={F}. Check feature layout / flatten.")
+    V = C // F
+
     model_cfg = TCNConfig(hidden=cfg.hidden, dropout=cfg.dropout, num_blocks=cfg.num_blocks, kernel=cfg.kernel)
-    model = TCN(in_ch=C, hidden=model_cfg.hidden, dropout=model_cfg.dropout, num_blocks=model_cfg.num_blocks, kernel=model_cfg.kernel).to(device)
-    if bundle is not None:
-        model.load_state_dict(bundle["state_dict"], strict=True)
+    model = build_model("tcn", model_cfg.to_dict(), in_ch=C).to(device)
+
+    model_cfg_save = model_cfg.to_dict()
+    model_cfg_save["in_ch"] = int(C)
+    model_cfg_save["num_joints"] = int(V)
+
+    resume_bundle = None
+    if cfg.resume:
+        bundle = load_ckpt(cfg.resume, map_location="cpu")
+        sd = bundle.get("state_dict", {})
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        if missing:
+            print(f"[warn] resume: missing keys: {missing[:5]}{'...' if len(missing)>5 else ''}")
+        if unexpected:
+            print(f"[warn] resume: unexpected keys: {unexpected[:5]}{'...' if len(unexpected)>5 else ''}")
         print(f"[info] resumed weights from: {cfg.resume}")
+        resume_bundle = bundle
 
-    # Safety: use only ONE imbalance strategy at a time
-    if cfg.balanced_sampler and str(cfg.pos_weight).strip().lower() not in ["none", "0", "0.0"]:
-        cfg.pos_weight = "none"
-    # loss
-    pos_w = None
-    pw = str(cfg.pos_weight).strip().lower()
-    if pw == "auto":
-        pos_w = compute_pos_weight(train_ds.labels)
-    elif pw == "none":
-        pos_w = None
-    else:
+    ema = EMA(model, decay=cfg.ema_decay) if int(cfg.use_ema) == 1 else None
+
+    if ema is not None and resume_bundle is not None and isinstance(resume_bundle, dict) and "ema_state" in resume_bundle:
         try:
-            pos_w = torch.tensor([float(cfg.pos_weight)], dtype=torch.float32)
-        except Exception:
-            pos_w = None
+            ema.load_state_dict(resume_bundle["ema_state"])
+            print("[info] resumed EMA state")
+        except Exception as e:
+            print(f"[warn] failed to load EMA state: {type(e).__name__}: {e}")
 
-    if pos_w is not None:
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_w.to(device))
+    
+    # dataset summary (helps catch silent skips / tiny splits)
+    n_tr = len(train_ds)
+    n_va = len(val_ds)
+    tr_pos = int((train_ds.labels01 == 1).sum()) if hasattr(train_ds, "labels01") else -1
+    tr_neg = int((train_ds.labels01 == 0).sum()) if hasattr(train_ds, "labels01") else -1
+    va_pos = int((val_ds.labels01 == 1).sum()) if hasattr(val_ds, "labels01") else -1
+    va_neg = int((val_ds.labels01 == 0).sum()) if hasattr(val_ds, "labels01") else -1
+    print(f"[info] train windows: n={n_tr} pos={tr_pos} neg={tr_neg}")
+    print(f"[info] val   windows: n={n_va} pos={va_pos} neg={va_neg}")
+# imbalance strategy guard
+    # IMPORTANT: avoid "double correction" which often hurts calibration and AP:
+    # - For BCE: choose ONE of (--balanced_sampler) OR (--pos_weight auto/number).
+    # - For focal: prefer NOT using --balanced_sampler (focal already emphasizes hard samples).
+    if cfg.loss != "focal":
+        if cfg.balanced_sampler and str(cfg.pos_weight).lower() not in ("none", "0", "0.0"):
+            raise SystemExit("[err] choose ONE imbalance strategy for BCE: --balanced_sampler OR --pos_weight (auto/number).")
     else:
-        criterion = nn.BCEWithLogitsLoss()
+        if cfg.balanced_sampler:
+            print("[warn] loss=focal with --balanced_sampler can hurt probability calibration / AP. Consider dropping --balanced_sampler.")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max", factor=0.5, patience=3, min_lr=1e-6)
+    # loss
+    if cfg.loss == "focal":
+        criterion = FocalLossWithLogits(alpha=cfg.focal_alpha, gamma=cfg.focal_gamma)
+        print("[warn] loss=focal: ignoring --pos_weight (use focal_alpha/gamma instead).")
+    else:
+        pos_w = None
+        if str(cfg.pos_weight).lower() == "auto":
+            pos_w = compute_pos_weight(train_ds.labels01)
+        elif str(cfg.pos_weight).lower() not in ("none", "0", "0.0"):
+            pos_w = torch.tensor([float(cfg.pos_weight)], dtype=torch.float32)
+
+        if pos_w is not None:
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_w.to(device))
+        else:
+            criterion = nn.BCEWithLogitsLoss()
+
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode="max", factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
+    )
 
     pin = torch.cuda.is_available()
     if cfg.balanced_sampler:
-        sampler = make_balanced_sampler(train_ds.labels)
+        sampler = make_balanced_sampler(train_ds.labels01)
         train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=0, pin_memory=pin)
     else:
         train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, num_workers=0, pin_memory=pin)
+
     val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=0, pin_memory=pin)
 
     best_score = -1.0
     best_path = os.path.join(cfg.save_dir, "best.pt")
-    no_improve = 0
     history_path = os.path.join(cfg.save_dir, "history.jsonl")
     if os.path.exists(history_path):
         os.remove(history_path)
 
     def log_row(row: Dict[str, Any]) -> None:
         with open(history_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json.dumps(row) + "\n")
+
+    no_improve = 0
 
     for ep in range(1, cfg.epochs + 1):
         model.train()
         running = 0.0
-        n_seen = 0
-        pbar = tqdm(train_loader, desc=f"train TCN ep{ep}", leave=False)
-        for xb, yb in pbar:
-            xb = xb.to(device)
-            yb = yb.to(device).view(-1)
+        seen = 0
+
+        for xb, yb in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
+            xb = _to_f32(xb, device)         # [B,T,C]
+            yb = _to_f32(yb, device).view(-1)  # [B]
+
             opt.zero_grad(set_to_none=True)
             logits = logits_1d(model(xb))
-            loss = criterion(logits, yb)
+
+            # label smoothing
+            yb_loss = yb
+            if cfg.label_smoothing > 0:
+                eps = float(cfg.label_smoothing)
+                yb_loss = yb * (1.0 - eps) + 0.5 * eps
+
+            loss = criterion(logits, yb_loss)
             loss.backward()
-            if cfg.grad_clip and cfg.grad_clip > 0:
+            if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             opt.step()
-            running += float(loss.detach().cpu()) * int(xb.shape[0])
-            n_seen += int(xb.shape[0])
-            pbar.set_postfix(loss=float(loss.detach().cpu()))
 
-        train_loss = running / max(1, n_seen)
+            if ema is not None:
+                ema.update(model)
 
-        probs, y_true = collect_probs(model, val_loader, device)
-        if probs.size == 0:
-            print("[val] empty val set?")
-            continue
+            running += float(loss.detach().cpu()) * xb.shape[0]
+            seen += xb.shape[0]
 
-        sweep_best = best_threshold_by_f1(probs, y_true, thr_min=0.05, thr_max=0.95, thr_step=0.01)
+        train_loss = running / max(1, seen)
+
+        probs, y_true = collect_probs(model, val_loader, device, ema=ema)
+
+        # compute val loss (for debugging divergence vs overfit)
+        val_loss = compute_loss_on_loader(model, val_loader, device, criterion, ema=ema)
+
+
+        best = best_threshold_by_f1(probs, y_true, thr_min=cfg.thr_min, thr_max=cfg.thr_max, thr_step=cfg.thr_step)
+        prec, rec, f1, fpr, thr = best["precision"], best["recall"], best["f1"], best["fpr"], best["thr"]
+        p_fixed, r_fixed, f1_fixed, fpr_fixed = prf_fpr_at_threshold(y_true, probs, cfg.fixed_thr)
         extras = ap_auc(probs, y_true)
-        score = float(sweep_best["f1"]) if cfg.monitor == "f1" else float(extras.get("ap", float("nan")))
+        apv = float(extras.get("ap", float("nan")))
+        auc = float(extras.get("auc", float("nan")))
 
+        score = float(f1) if cfg.monitor == "f1" else float(apv)
         lr_now = float(opt.param_groups[0]["lr"])
+
+        print(
+            f"[val] ep={ep:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+            f"F1={f1:.3f} (F1@{cfg.fixed_thr:.2f}={f1_fixed:.3f}) "
+            f"P={prec:.3f} R={rec:.3f} FPR={fpr:.3f} thr={thr:.2f} "
+            f"AP={apv:.3f} AUC={auc:.3f} lr={lr_now:.5g}"
+        )
+
         row = {
             "epoch": ep,
             "train_loss": float(train_loss),
-            "val_f1": float(sweep_best["f1"]),
-            "val_precision": float(sweep_best["precision"]),
-            "val_recall": float(sweep_best["recall"]),
-            "val_fpr": float(sweep_best["fpr"]),
-            "val_thr": float(sweep_best["thr"]),
-            "val_ap": float(extras.get("ap", float("nan"))),
-            "val_auc": float(extras.get("auc", float("nan"))),
+            "val_loss": float(val_loss),
+
+            "val_f1": float(f1),
+            "val_precision": float(prec),
+            "val_recall": float(rec),
+            "val_fpr": float(fpr),
+            "val_thr": float(thr),
+
+            "val_f1_fixed": float(f1_fixed),
+            "val_p_fixed": float(p_fixed),
+            "val_r_fixed": float(r_fixed),
+            "val_fpr_fixed": float(fpr_fixed),
+            "val_thr_fixed": float(cfg.fixed_thr),
+
+            "val_ap": float(apv),
+            "val_auc": float(auc),
+
             "monitor": cfg.monitor,
             "monitor_score": float(score),
             "lr": lr_now,
         }
         log_row(row)
 
-        print(
-            f"[val] ep={ep:03d} loss={train_loss:.4f} "
-            f"F1={row['val_f1']:.3f} P={row['val_precision']:.3f} R={row['val_recall']:.3f} "
-            f"FPR={row['val_fpr']:.3f} thr={row['val_thr']:.2f} "
-            f"AP={row['val_ap']:.3f} AUC={row['val_auc']:.3f} lr={lr_now:g}"
-        )
-
-        sched.step(score if np.isfinite(score) else row["val_f1"])
+        sched.step(score if np.isfinite(score) else float(f1))
 
         if score > best_score + 1e-6:
             best_score = float(score)
             no_improve = 0
-            save_ckpt(
-                best_path,
-                arch="tcn",
-                state_dict=model.state_dict(),
-                model_cfg=model_cfg.to_dict(),
-                feat_cfg=feat_cfg.to_dict(),
-                data_cfg={"fps_default": cfg.fps_default},
-                best={"val_best": row, "best_thr": float(row["val_thr"])},
-                meta={"monitor": cfg.monitor},
-            )
+
+            ctx_save = ema.use(model) if ema is not None else nullcontext()
+            with ctx_save:
+                save_ckpt(
+                    best_path,
+                    arch="tcn",
+                    state_dict=model.state_dict(),
+                    model_cfg=model_cfg_save,
+                    feat_cfg=feat_cfg.to_dict(),
+                    data_cfg={"fps_default": cfg.fps_default},
+                    best={"val_best": row, "best_thr": float(thr)},
+                    meta={"monitor": cfg.monitor},
+                    **({"ema_state": ema.state_dict()} if ema is not None else {}),
+                )
             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
         else:
             no_improve += 1
@@ -558,9 +714,6 @@ def main() -> None:
                 print(f"[early stop] patience={cfg.patience} reached at ep={ep}")
                 break
 
-    report = {"arch": "tcn", "best_ckpt": best_path, "monitor": cfg.monitor, "best_score": float(best_score)}
-    with open(os.path.join(cfg.save_dir, "train_report.json"), "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
     print(f"[done] ckpt={best_path}")
     print(f"[ok] wrote history: {history_path}")
 

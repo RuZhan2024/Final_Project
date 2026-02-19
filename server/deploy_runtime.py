@@ -330,9 +330,16 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     torch = _torch()
     device = _pick_device(torch)
 
-    from core.ckpt import load_ckpt
-    from core.models import build_model
-    from core.features import FeatCfg
+    try:
+        from core.ckpt import load_ckpt
+        from core.models import build_model
+        from core.features import FeatCfg
+    except Exception as e:
+        raise RuntimeError(
+            "Missing ML runtime package 'core'. "
+            "Make sure you run the server from the repo root (so 'core/' is on PYTHONPATH), "
+            "or install the ML package into this environment."
+        ) from e
 
     bundle = load_ckpt(spec.ckpt, map_location=str(device))
 
@@ -408,45 +415,38 @@ def predict_spec(
     # resamples/pads to target_T). Our feature builders operate on that window.
     import numpy as np
 
-    from core.features import build_tcn_input, build_gcn_input
+    from core.features import build_tcn_input, build_canonical_input
 
     j = np.asarray(joints_xy, dtype=np.float32)
     c = np.asarray(conf, dtype=np.float32) if conf is not None else None
 
     # Prepare inputs.
+    Xg, _mask = build_canonical_input(
+        joints_xy=j,
+        motion_xy=None,
+        conf=c,
+        mask=None,
+        fps=float(fps),
+        feat_cfg=feat_cfg,
+    )
+
     if spec.arch == "tcn":
-        Xt, _mask = build_tcn_input(
-            joints_xy=j,
-            motion_xy=None,
-            conf=c,
-            mask=None,
-            fps=float(fps),
-            feat_cfg=feat_cfg,
-        )
+        
+        Xt = build_tcn_input(Xg, feat_cfg)
         x_t = torch.from_numpy(Xt).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,C]
         x_t = _match_in_ch_tcn(torch, model, x_t)
-        inputs = (x_t,)
 
         def forward_fn():
             with torch.no_grad():
                 logits = model(x_t)
                 return torch.sigmoid(logits).view(-1)
-
     else:
-        Xg, _mask = build_gcn_input(
-            joints_xy=j,
-            motion_xy=None,
-            conf=c,
-            mask=None,
-            fps=float(fps),
-            feat_cfg=feat_cfg,
-        )
         xb = torch.from_numpy(Xg).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,V,F]
 
         # Two-stream models expect (xj, xm). We follow the same split logic as deploy/run_modes.py.
         is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
         if is_two_stream:
-            # build_gcn_input() produces features in the order:
+            # build_canonical_input() produces features in the order:
             #   [x, y] + ([dx, dy] if use_motion) + ([conf] if use_conf_channel)
             # Motion stream for TwoStreamGCN is **dx,dy only** (no conf).
             f = int(xb.shape[-1])
@@ -469,15 +469,12 @@ def predict_spec(
             else:
                 raise RuntimeError(f"Unexpected GCN feature dim F={f} for two-stream model")
 
-            inputs = (xj_t, xm_t)
-
             def forward_fn():
                 with torch.no_grad():
                     logits = model(xj_t, xm_t)
                     return torch.sigmoid(logits).view(-1)
 
         else:
-            inputs = (xb,)
 
             def forward_fn():
                 with torch.no_grad():

@@ -84,21 +84,24 @@ def list_sequences(image_globs, sequence_id_depth: int):
     return dict(frames_by_seq), all_paths
 
 
-def _safe_out_name(seq_id: str, seq_src_dir: str) -> str:
+def _safe_out_name(seq_id: str, src_rel: str) -> str:
     """
-    Collision-safe filename from seq_id + short hash of source directory.
+    Stable filename from seq_id + short hash of *relative* source directory.
+
+    Using a relative path keeps filenames reproducible across machines.
     """
     base = _sanitize_stem(seq_id.replace("/", "__"))
-    h = hashlib.md5(seq_src_dir.encode("utf-8")).hexdigest()[:8]
+    src_rel_norm = src_rel.replace(os.sep, "/")
+    h = hashlib.md5(src_rel_norm.encode("utf-8")).hexdigest()[:8]
     return f"{base}__{h}.npz"
 
 
-def extract_sequence(frames, pose, out_npz: str, fps: float, store_frames: bool = False):
+def extract_sequence(frames, pose, out_npz: str, fps: float, src: str, seq_id: str, store_frames: bool = False):
     """
     Save:
       xy  [T,33,2] (0 when missing)
       conf[T,33]
-      fps, size, src, seq_id (set by caller)
+      fps, size, src, seq_id
     """
     xy_list, conf_list = [], []
     size = np.array([0, 0], dtype=np.int32)  # [w,h]
@@ -141,11 +144,16 @@ def extract_sequence(frames, pose, out_npz: str, fps: float, store_frames: bool 
         conf=cf.astype(np.float32),
         fps=np.float32(fps),
         size=size,
+        src=np.str_(src),
+        seq_id=np.str_(seq_id),
     )
     if store_frames:
         payload["frames"] = np.array(frames, dtype=np.str_)
 
-    np.savez_compressed(out_npz, **payload)
+    # Atomic write: avoid partially-written files being "skipped" forever.
+    tmp_npz = out_npz + ".tmp.npz"
+    np.savez_compressed(tmp_npz, **payload)
+    os.replace(tmp_npz, out_npz)
 
 
 def parse_args():
@@ -174,6 +182,8 @@ def parse_args():
                     help="Min detection confidence.")
     ap.add_argument("--min_track_conf", type=float, default=0.5,
                     help="Min tracking confidence.")
+    ap.add_argument("--static_image_mode", action="store_true",
+                    help="If set, disables temporal tracking (usually slower for sequences).")
     # kept for backwards compatibility (ignored)
     ap.add_argument("--label_component", type=int, default=None,
                     help="(Deprecated/ignored) Previously used for inline labelling.")
@@ -208,7 +218,7 @@ def main():
 
     mp_pose = mp.solutions.pose
     with mp_pose.Pose(
-        static_image_mode=False,
+        static_image_mode=args.static_image_mode,
         model_complexity=args.model_complexity,
         enable_segmentation=False,
         min_detection_confidence=args.min_det_conf,
@@ -222,7 +232,7 @@ def main():
             except Exception:
                 src_rel = seq_src_dir
 
-            out_name = _safe_out_name(seq_id, seq_src_dir)
+            out_name = _safe_out_name(seq_id, src_rel)
             out_npz = os.path.join(args.out_dir, out_name)
 
             if args.skip_existing and os.path.exists(out_npz):
@@ -230,14 +240,15 @@ def main():
                 continue
 
             print(f"[pose] {i}/{len(seq_items)} seq_id={seq_id}  frames={len(frames)}  src={src_rel}")
-            extract_sequence(frames, pose, out_npz, fps=fps_value, store_frames=args.store_frames)
-
-            # attach small metadata without pickle (reload + resave)
-            with np.load(out_npz, allow_pickle=False) as d:
-                payload = {k: d[k] for k in d.files}
-            payload["src"] = np.str_(seq_src_dir)
-            payload["seq_id"] = np.str_(seq_id)
-            np.savez_compressed(out_npz, **payload)
+            extract_sequence(
+                frames,
+                pose,
+                out_npz,
+                fps=fps_value,
+                src=src_rel,
+                seq_id=seq_id,
+                store_frames=args.store_frames,
+            )
 
     print(f"[OK] wrote {len(seq_items)} sequences to {args.out_dir}")
 

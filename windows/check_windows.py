@@ -67,7 +67,7 @@ def count_split(split_dir: str) -> Tuple[int, int, int, int, int, int, int, floa
     per_video: Dict[str, int] = defaultdict(int)
     for p in files:
         try:
-            z = np.load(p, allow_pickle=True)
+            z = np.load(p, allow_pickle=False)
         except Exception:
             continue
 

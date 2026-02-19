@@ -2,32 +2,9 @@
 """
 LE2i labels + fall spans builder (rewrite).
 
-Reads
------
-- Cleaned pose sequences (.npz) under --npz_dir (default: data/interim/le2i/pose_npz)
-- LE2i annotation txt files under --raw_root (default: data/raw/LE2i)
-
-Writes
-------
-- --out_labels : JSON mapping {stem: "adl"|"fall"} (only for sequences with annotations by default)
-- --out_spans  : JSON mapping {stem: [[start, stop], ...]} with half-open spans [start, stop)
-
-Why this rewrite?
------------------
-1) Keeps frame indices stable (we do NOT drop frames in preprocess) so spans remain aligned.
-2) Adds robust filename matching for many LE2i annotation filename variants.
-3) Adds clamping/scaling options in case your pose extraction sampled frames.
-
-Notes
------
-- By default, scenes/videos with no annotation file are *excluded* from outputs so you can
-  treat them as unlabeled test data. Use --include_unannotated_as_adl to include them as ADL.
-
-Span conventions
-----------------
-- Spans are half-open [start, stop) in pose-frame index units.
-- If your pose extraction used frame_stride > 1 (e.g., took every 2nd frame), set --frame_stride=2
-  so spans are mapped from raw-frame indices to pose-frame indices: pose_idx = raw_idx // frame_stride.
+Updates:
+- Verbose warnings on annotation read/parse errors.
+- Final summary stats always printed (npz_total, matched_labels, missing/skipped).
 """
 
 from __future__ import annotations
@@ -40,12 +17,8 @@ import pathlib
 import re
 from typing import Dict, List, Optional, Tuple
 
-# MediaPipe Pose doesn't matter here; we only use stems.
-
-# NPZ stems often look like: Coffee_room_01__Videos__video__10_
 _VIDEO_RE = re.compile(r"__video__\(?(\d+)\)?_", re.IGNORECASE)
 
-# Annotation filename variants we try (LE2i is inconsistent across releases)
 _CANDIDATE_PATTERNS = [
     "video ({i}).txt", "Video ({i}).txt",
     "video({i}).txt",  "Video({i}).txt",
@@ -53,9 +26,11 @@ _CANDIDATE_PATTERNS = [
     "video {i}.txt",   "Video {i}.txt",
 ]
 
+
 def list_npz_stems(npz_dir: str) -> List[str]:
     files = sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
     return [pathlib.Path(p).stem for p in files]
+
 
 def stem_to_scene_and_vid(stem: str) -> Tuple[Optional[str], Optional[int]]:
     toks = stem.split("__")
@@ -64,45 +39,37 @@ def stem_to_scene_and_vid(stem: str) -> Tuple[Optional[str], Optional[int]]:
     vid = int(m.group(1)) if m else None
     return scene, vid
 
+
 def find_annotation_file(raw_root: str, scene: str, vid_idx: int) -> Optional[str]:
     ann_dir = os.path.join(raw_root, scene, "Annotation_files")
     if not os.path.isdir(ann_dir):
         return None
 
-    # 1) deterministic patterns
     for pat in _CANDIDATE_PATTERNS:
         p = os.path.join(ann_dir, pat.format(i=vid_idx))
         if os.path.isfile(p):
             return p
 
-    # 2) fuzzy fallback
     for p in glob.glob(os.path.join(ann_dir, "*.txt")):
         name = os.path.basename(p).lower()
         if re.search(rf"video\s*[(_ ]?{vid_idx}[)_ ]?\.txt$", name):
             return p
     return None
 
-def parse_span_txt(txt_path: str) -> List[List[int]]:
+
+def parse_span_txt(txt_path: str, *, verbose: bool = False) -> List[List[int]]:
     """
-    Return fall span(s) from a LE2i annotation text file.
-
-    LE2i annotation txt files are messy: some variants contain long per-frame
-    bbox/tracking dumps (many integers per line). The *true* fall span is usually
-    encoded very early and appears as either:
-      - two separate lines, each with a single integer (start then end), OR
-      - a single line containing exactly two integers (start end)
-
-    To avoid accidentally reading bbox numbers, we *ignore* any line that contains
-    more than 2 integers and only accept the first plausible (start, end).
-    Returned spans are half-open: [start, end).
+    Extract fall span(s) from LE2i annotation file.
+    Returns [[start, end)] in raw-frame units.
     """
     try:
         lines = pathlib.Path(txt_path).read_text(encoding="utf-8", errors="ignore").splitlines()
-    except Exception:
+    except Exception as e:
+        if verbose:
+            print(f"[warn] failed to read annotation txt: {txt_path} ({e})")
         return []
 
     singles: List[int] = []
-    # Scan early lines first; if span isn't found, we fall back (with warning) later.
     for line in lines[:50]:
         ints = [int(x) for x in re.findall(r"-?\d+", line)]
         if not ints:
@@ -116,11 +83,8 @@ def parse_span_txt(txt_path: str) -> List[List[int]]:
             s, e = ints[0], ints[1]
             break
         else:
-            # Likely bbox/tracking dump; ignore.
             continue
     else:
-        # Fallback: take the first two integers seen in the first 10 lines.
-        # This keeps older edge-cases working but may be wrong if the file starts with bboxes.
         nums: List[int] = []
         for line in lines[:10]:
             nums.extend(int(x) for x in re.findall(r"-?\d+", line))
@@ -136,6 +100,7 @@ def parse_span_txt(txt_path: str) -> List[List[int]]:
         return []
     return [[int(s), int(e)]]
 
+
 def normalise_spans(
     spans: List[List[int]],
     *,
@@ -150,7 +115,7 @@ def normalise_spans(
         s2 = int(s) // stride
         e2 = int(e) // stride
         if end_inclusive:
-            e2 += 1  # inclusive -> exclusive
+            e2 += 1
 
         if clamp_len is not None:
             s2 = max(0, min(s2, clamp_len))
@@ -159,7 +124,6 @@ def normalise_spans(
         if e2 > s2:
             out.append([s2, e2])
 
-    # merge overlaps
     out.sort(key=lambda x: (x[0], x[1]))
     merged: List[List[int]] = []
     for s, e in out:
@@ -169,8 +133,8 @@ def normalise_spans(
             merged[-1][1] = max(merged[-1][1], e)
     return merged
 
+
 def maybe_get_seq_len(npz_dir: str, stem: str) -> Optional[int]:
-    # Best-effort: open the matching npz and read xy length
     path = None
     for p in glob.glob(os.path.join(npz_dir, "**", stem + ".npz"), recursive=True):
         path = p
@@ -186,6 +150,7 @@ def maybe_get_seq_len(npz_dir: str, stem: str) -> Optional[int]:
         return None
     return None
 
+
 def main():
     ap = argparse.ArgumentParser(description="Build LE2i labels + fall spans.")
     ap.add_argument("--raw_root", default="data/raw/LE2i", help="LE2i raw root containing scenes/*/Annotation_files")
@@ -194,12 +159,10 @@ def main():
     ap.add_argument("--out_spans", default="configs/labels/le2i_spans.json")
     ap.add_argument("--include_unannotated_as_adl", action="store_true",
                     help="Include sequences without annotation txt as ADL labels.")
-    ap.add_argument("--end_inclusive", action="store_true",
-                    help="Treat annotation end as inclusive, i.e. convert (start,end) -> [start,end+1).")
-    ap.add_argument("--frame_stride", type=int, default=1,
-                    help="If pose extraction sampled every k frames from the raw video, set k here.")
-    ap.add_argument("--clamp_to_npz_len", action="store_true",
-                    help="Clamp spans to the sequence length read from corresponding pose npz (best-effort).")
+    ap.add_argument("--end_inclusive", action="store_true")
+    ap.add_argument("--frame_stride", type=int, default=1)
+    ap.add_argument("--clamp_to_npz_len", action="store_true")
+    ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     stems = list_npz_stems(args.npz_dir)
@@ -211,10 +174,12 @@ def main():
 
     labeled, unlabeled = 0, 0
     fall_count = 0
+    skipped_bad_stem = 0
 
     for stem in stems:
         scene, vid = stem_to_scene_and_vid(stem)
         if scene is None or vid is None:
+            skipped_bad_stem += 1
             continue
 
         ann = find_annotation_file(args.raw_root, scene, vid)
@@ -224,9 +189,8 @@ def main():
                 labels[stem] = "adl"
             continue
 
-        # We have an annotation file -> include in labels
         labeled += 1
-        raw_spans = parse_span_txt(ann)
+        raw_spans = parse_span_txt(ann, verbose=args.verbose)
 
         clamp_len = maybe_get_seq_len(args.npz_dir, stem) if args.clamp_to_npz_len else None
         spans = normalise_spans(
@@ -254,9 +218,15 @@ def main():
     adl_count = sum(1 for v in labels.values() if v == "adl")
     print(f"[OK] wrote labels  → {args.out_labels}  (total={len(labels)}, fall={fall_count}, adl={adl_count})")
     print(f"[OK] wrote spans   → {args.out_spans}   (videos_with_spans={len(spans_out)})")
-    print(f"[info] stems scanned: {len(stems)}  annotated_included={labeled}  without_annotation={unlabeled}")
+    print(f"[info] stems scanned: {len(stems)}  annotated_included={labeled}  without_annotation={unlabeled}  bad_stem_skipped={skipped_bad_stem}")
     if not args.include_unannotated_as_adl:
         print("[info] sequences without annotations were excluded (use --include_unannotated_as_adl to include as ADL)")
+
+    # Required verification stats
+    total_npz = len(stems)
+    matched_labels = len(labels)
+    missing = total_npz - matched_labels
+    print(f"[summary] npz_total={total_npz}  matched_labels={matched_labels}  missing_or_skipped={missing}")
 
 if __name__ == "__main__":
     main()

@@ -429,6 +429,8 @@ def event_metrics_from_windows(
     times_s: Sequence[float],
     alert_cfg: AlertCfg,
     *,
+    lying_score: Optional[Sequence[float]] = None,
+    motion_score: Optional[Sequence[float]] = None,
     duration_s: Optional[float] = None,
     merge_gap_s: float = 2.0,
     overlap_slack_s: float = 0.0,
@@ -472,7 +474,13 @@ def event_metrics_from_windows(
     gt_events = _events_from_positive_windows(t, y01, merge_gap_s=float(merge_gap_s))
 
     # Alert events
-    _, alert_events = detect_alert_events(p, t, alert_cfg)
+    _, alert_events = detect_alert_events(
+        p,
+        t,
+        alert_cfg,
+        lying_score=lying_score,
+        motion_score=motion_score,
+    )
     alert_intervals = [(ev.start_time_s, ev.end_time_s) for ev in alert_events]
 
     # Match GT -> earliest overlapping alert for delay
@@ -554,10 +562,15 @@ def sweep_alert_policy_from_windows(
     overlap_slack_s: float = 0.0,
     time_mode: str = "center",
     fps_default: float = 30.0,
+    # Optional confirm-stage heuristic signals (per window).
+    lying_score: Optional[Sequence[float]] = None,
+    motion_score: Optional[Sequence[float]] = None,
     # Optional: separate negative/unlabeled stream windows for FA/24h estimation.
     # If provided, fa24h/fa_per_hour will be computed from these windows instead
     # of the (often short) labeled validation videos.
     fa_probs: Optional[Sequence[float]] = None,
+    fa_lying_score: Optional[Sequence[float]] = None,
+    fa_motion_score: Optional[Sequence[float]] = None,
     fa_video_ids: Optional[Sequence[str]] = None,
     fa_w_start: Optional[Sequence[int]] = None,
     fa_w_end: Optional[Sequence[int]] = None,
@@ -579,6 +592,13 @@ def sweep_alert_policy_from_windows(
     ws = np.asarray(w_start, dtype=np.int32).reshape(-1)
     we = np.asarray(w_end, dtype=np.int32).reshape(-1)
     fps_arr = np.asarray(fps, dtype=np.float32).reshape(-1)
+
+    ls = None
+    ms = None
+    if lying_score is not None:
+        ls = np.asarray(lying_score, dtype=np.float32).reshape(-1)
+    if motion_score is not None:
+        ms = np.asarray(motion_score, dtype=np.float32).reshape(-1)
 
     if probs.size == 0:
         return {"thr": [], "recall": [], "fa24h": []}, {"n_videos": 0}
@@ -602,18 +622,31 @@ def sweep_alert_policy_from_windows(
         t_v = times_from_windows(ws_v, we_v, fps_v, mode=time_mode)
         duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
         total_duration_s += max(0.0, duration_s)
-        per_video[v] = (p_v, y_v, t_v, duration_s, fps_v, ws_v, we_v)
+        ls_v = ls[mv][idx] if ls is not None else None
+        ms_v = ms[mv][idx] if ms is not None else None
+        per_video[v] = (p_v, y_v, t_v, duration_s, fps_v, ws_v, we_v, ls_v, ms_v)
 
     # Optional FA-only set (unlabeled/negative stream). All alerts are false by definition.
     per_video_fa = {}
     total_duration_s_fa = 0.0
     if fa_probs is not None and fa_video_ids is not None and fa_w_start is not None and fa_w_end is not None and fa_fps is not None:
         fa_p = np.asarray(fa_probs, dtype=np.float32).reshape(-1)
+        fa_ls = None
+        fa_ms = None
+        if fa_lying_score is not None:
+            fa_ls = np.asarray(fa_lying_score, dtype=np.float32).reshape(-1)
+        if fa_motion_score is not None:
+            fa_ms = np.asarray(fa_motion_score, dtype=np.float32).reshape(-1)
         fa_vids_arr = np.asarray(fa_video_ids).astype(str).reshape(-1)
         fa_ws_arr = np.asarray(fa_w_start, dtype=np.int32).reshape(-1)
         fa_we_arr = np.asarray(fa_w_end, dtype=np.int32).reshape(-1)
         fa_fps_arr = np.asarray(fa_fps, dtype=np.float32).reshape(-1)
-        if fa_p.size == fa_vids_arr.size == fa_ws_arr.size == fa_we_arr.size == fa_fps_arr.size and fa_p.size > 0:
+        ok_sizes = (fa_p.size == fa_vids_arr.size == fa_ws_arr.size == fa_we_arr.size == fa_fps_arr.size)
+        if fa_ls is not None:
+            ok_sizes = ok_sizes and (fa_ls.size == fa_p.size)
+        if fa_ms is not None:
+            ok_sizes = ok_sizes and (fa_ms.size == fa_p.size)
+        if ok_sizes and fa_p.size > 0:
             fa_unique_vids = list(dict.fromkeys(list(fa_vids_arr)))
             for v in fa_unique_vids:
                 mv = fa_vids_arr == v
@@ -631,12 +664,15 @@ def sweep_alert_policy_from_windows(
                 t_v = times_from_windows(ws_v, we_v, fps_v, mode=time_mode)
                 duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
                 total_duration_s_fa += max(0.0, duration_s)
-                per_video_fa[v] = (p_v, y_v, t_v, duration_s, fps_v, ws_v, we_v)
+                ls_v = fa_ls[mv][idx] if fa_ls is not None else None
+                ms_v = fa_ms[mv][idx] if fa_ms is not None else None
+                per_video_fa[v] = (p_v, y_v, t_v, duration_s, fps_v, ws_v, we_v, ls_v, ms_v)
 
     if merge_gap_s is None:
         # default: 2x median step between windows (seconds)
         gaps = []
-        for v, (_, _, t_v, _, _, _, _) in per_video.items():
+        for _v, item in per_video.items():
+            t_v = item[2]
             if t_v.size >= 2:
                 gaps.append(float(np.median(np.diff(t_v))))
         med_gap = float(np.median(gaps)) if gaps else 0.5
@@ -686,9 +722,16 @@ def sweep_alert_policy_from_windows(
         false_alert_total_fa = 0
         delays_all: List[float] = []
 
-        for v, (p_v, y_v, t_v, dur_s, *_rest) in per_video.items():
+        for _v, item in per_video.items():
+            p_v, y_v, t_v, dur_s = item[0], item[1], item[2], item[3]
+            ls_v, ms_v = item[7], item[8]
             em, _detail = event_metrics_from_windows(
-                p_v, y_v, t_v, cfg,
+                p_v,
+                y_v,
+                t_v,
+                cfg,
+                lying_score=ls_v,
+                motion_score=ms_v,
                 duration_s=float(dur_s),
                 merge_gap_s=float(merge_gap_s),
                 overlap_slack_s=float(overlap_slack_s),
@@ -703,9 +746,16 @@ def sweep_alert_policy_from_windows(
 
         # If FA-only stream is provided, compute FA rate from it (more realistic for deployment)
         if per_video_fa:
-            for v, (p_v, y_v, t_v, dur_s, *_rest) in per_video_fa.items():
+            for _v, item in per_video_fa.items():
+                p_v, y_v, t_v, dur_s = item[0], item[1], item[2], item[3]
+                ls_v, ms_v = item[7], item[8]
                 em, _detail = event_metrics_from_windows(
-                    p_v, y_v, t_v, cfg,
+                    p_v,
+                    y_v,
+                    t_v,
+                    cfg,
+                    lying_score=ls_v,
+                    motion_score=ms_v,
                     duration_s=float(dur_s),
                     merge_gap_s=float(merge_gap_s),
                     overlap_slack_s=float(overlap_slack_s),
@@ -788,6 +838,17 @@ class SingleModeCfg:
     cooldown_possible_s: float = 15.0
     cooldown_confirmed_s: float = 60.0
 
+    # Optional skeleton-derived confirmation gate (applied at CONFIRMED time).
+    confirm_use_scores: bool = False
+    confirm_min_lying: float = 0.65
+    confirm_max_motion: float = 0.08
+
+    # Optional lightweight confirmation using skeleton-derived heuristics.
+    # (Useful for rejecting fast-sit / kneel / stumble false positives.)
+    confirm_use_scores: bool = False
+    confirm_min_lying: float = 0.65
+    confirm_max_motion: float = 0.08
+
 
 @dataclass
 class DualModeCfg:
@@ -800,6 +861,11 @@ class DualModeCfg:
     require_both: bool = True
     cooldown_possible_s: float = 15.0
     cooldown_confirmed_s: float = 60.0
+
+    # Optional skeleton-derived confirmation gate (applied at CONFIRMED time).
+    confirm_use_scores: bool = False
+    confirm_min_lying: float = 0.65
+    confirm_max_motion: float = 0.08
 
 
 @dataclass
@@ -849,7 +915,7 @@ class SingleTriageStateMachine:
             self._ema = a * float(x) + (1.0 - a) * float(self._ema)
         return float(self._ema)
 
-    def step(self, t_sec: float, p_or_mu: float, sigma: Optional[float] = None) -> List[TriageEvent]:
+    def step(self, t_sec: float, p_or_mu: float, sigma: Optional[float] = None, lying: Optional[float] = None, motion: Optional[float] = None) -> List[TriageEvent]:
         evs: List[TriageEvent] = []
         t = float(t_sec)
 
@@ -882,11 +948,25 @@ class SingleTriageStateMachine:
             Tc = float(self.mode_cfg.confirm_T_s)
             self._fall_times = [x for x in self._fall_times if (t - x) <= Tc]
             if len(self._fall_times) >= int(self.mode_cfg.confirm_k_fall):
-                evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu": mu, "sigma": sigma}))
-                self._state = "idle"
-                self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
-                self._fall_times = []
-                return evs
+                gate = bool(getattr(self.mode_cfg, "confirm_use_scores", False)) and (lying is not None or motion is not None)
+                if gate:
+                    ok_lying = True if lying is None else (float(lying) >= float(getattr(self.mode_cfg, "confirm_min_lying", 0.65)))
+                    ok_motion = True if motion is None else (float(motion) <= float(getattr(self.mode_cfg, "confirm_max_motion", 0.08)))
+                    if not (ok_lying and ok_motion):
+                        # Do not confirm yet; wait for more evidence or timeout.
+                        pass
+                    else:
+                        evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu": mu, "sigma": sigma, "lying": lying, "motion": motion}))
+                        self._state = "idle"
+                        self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                        self._fall_times = []
+                        return evs
+                else:
+                    evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu": mu, "sigma": sigma, "lying": lying, "motion": motion}))
+                    self._state = "idle"
+                    self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                    self._fall_times = []
+                    return evs
 
             # time out -> resolved
             if (t - self._t_state0) > Tc:
@@ -949,6 +1029,8 @@ class DualTriageStateMachine:
         p_gcn: float,
         sigma_tcn: Optional[float] = None,
         sigma_gcn: Optional[float] = None,
+        lying: Optional[float] = None,
+        motion: Optional[float] = None,
     ) -> List[TriageEvent]:
         evs: List[TriageEvent] = []
         t = float(t_sec)
@@ -993,12 +1075,27 @@ class DualTriageStateMachine:
 
             confirmed = (ok_t and ok_g) if bool(self.mode_cfg.require_both) else (ok_t or ok_g)
             if confirmed:
-                evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
-                self._state = "idle"
-                self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
-                self._fall_tcn = []
-                self._fall_gcn = []
-                return evs
+                gate = bool(getattr(self.mode_cfg, "confirm_use_scores", False)) and (lying is not None or motion is not None)
+                if gate:
+                    ok_lying = True if lying is None else (float(lying) >= float(getattr(self.mode_cfg, "confirm_min_lying", 0.65)))
+                    ok_motion = True if motion is None else (float(motion) <= float(getattr(self.mode_cfg, "confirm_max_motion", 0.08)))
+                    if not (ok_lying and ok_motion):
+                        # Do not confirm yet; wait for more evidence or timeout.
+                        pass
+                    else:
+                        evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn, "lying": lying, "motion": motion}))
+                        self._state = "idle"
+                        self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                        self._fall_tcn = []
+                        self._fall_gcn = []
+                        return evs
+                else:
+                    evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn, "lying": lying, "motion": motion}))
+                    self._state = "idle"
+                    self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
+                    self._fall_tcn = []
+                    self._fall_gcn = []
+                    return evs
 
             if (t - self._t_state0) > Tc:
                 evs.append(TriageEvent(EVENT_RESOLVED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
@@ -1009,3 +1106,133 @@ class DualTriageStateMachine:
             return evs
 
         return evs
+
+
+# ---------------- operating point selection ----------------
+
+def pick_ops_from_sweep(
+    sweep: Dict[str, List[float]],
+    *,
+    op1_recall: float = 0.95,
+    op3_fa24h: float = 2.0,
+) -> Dict[str, Dict[str, float]]:
+    """Pick deployment operating points from a sweep.
+
+    Inputs
+    - sweep: dict of lists as returned by sweep_alert_policy_from_windows()
+
+    Outputs
+    - dict with keys OP1/OP2/OP3, each containing tau_high/tau_low and the
+      corresponding sweep metrics at that index.
+
+    Selection rules (practical + stable):
+    - OP2: best F1.
+    - OP1: among points with recall >= op1_recall, choose the smallest FA/day;
+           tie-break by higher F1 then precision.
+    - OP3: among points with FA/day <= op3_fa24h, choose the highest recall;
+           tie-break by higher F1 then precision.
+
+    If a constraint has no feasible points, we fall back gracefully.
+    """
+    def _arr(key: str, fill: float = float('nan')) -> np.ndarray:
+        v = sweep.get(key, None)
+        if v is None:
+            return np.asarray([], dtype=np.float32)
+        a = np.asarray(v, dtype=np.float32)
+        if a.ndim != 1:
+            a = a.reshape(-1)
+        return a
+
+    thr = _arr('thr')
+    if thr.size == 0:
+        return {}
+
+    tau_low = _arr('tau_low')
+    if tau_low.size != thr.size:
+        tau_low = np.full_like(thr, np.nan, dtype=np.float32)
+
+    prec = _arr('precision')
+    rec = _arr('recall')
+    f1 = _arr('f1')
+    fa = _arr('fa24h')
+    if prec.size != thr.size:
+        prec = np.full_like(thr, np.nan, dtype=np.float32)
+    if rec.size != thr.size:
+        rec = np.full_like(thr, np.nan, dtype=np.float32)
+    if f1.size != thr.size:
+        f1 = np.full_like(thr, np.nan, dtype=np.float32)
+    if fa.size != thr.size:
+        fa = np.full_like(thr, np.nan, dtype=np.float32)
+
+    def _nanargmax(a: np.ndarray) -> int:
+        if a.size == 0:
+            return 0
+        ok = np.isfinite(a)
+        if ok.any():
+            return int(np.argmax(np.where(ok, a, -np.inf)))
+        return 0
+
+    def _nanargmin(a: np.ndarray) -> int:
+        if a.size == 0:
+            return 0
+        ok = np.isfinite(a)
+        if ok.any():
+            return int(np.argmin(np.where(ok, a, np.inf)))
+        return 0
+
+    # OP2: best F1
+    i2 = _nanargmax(f1)
+
+    # OP1: recall constraint, then minimal FA/day
+    mask1 = np.isfinite(rec) & (rec >= float(op1_recall))
+    if mask1.any():
+        idxs = np.where(mask1)[0]
+        # sort by (fa asc, f1 desc, precision desc)
+        keys = np.lexsort((
+            -np.nan_to_num(prec[idxs], nan=-np.inf),
+            -np.nan_to_num(f1[idxs], nan=-np.inf),
+            np.nan_to_num(fa[idxs], nan=np.inf),
+        ))
+        i1 = int(idxs[keys[0]])
+    else:
+        # fallback: closest to target recall, then best F1
+        if np.isfinite(rec).any():
+            dist = np.abs(rec - float(op1_recall))
+            i1 = int(np.argmin(np.where(np.isfinite(dist), dist, np.inf)))
+            # if multiple tie, prefer higher F1
+            tied = np.where(np.isfinite(dist) & (dist == dist[i1]))[0]
+            if tied.size > 1:
+                i1 = int(tied[_nanargmax(f1[tied])])
+        else:
+            i1 = i2
+
+    # OP3: FA/day constraint, then maximize recall
+    mask3 = np.isfinite(fa) & (fa <= float(op3_fa24h))
+    if mask3.any():
+        idxs = np.where(mask3)[0]
+        # sort by (rec desc, f1 desc, precision desc)
+        keys = np.lexsort((
+            -np.nan_to_num(prec[idxs], nan=-np.inf),
+            -np.nan_to_num(f1[idxs], nan=-np.inf),
+            -np.nan_to_num(rec[idxs], nan=-np.inf),
+        ))
+        i3 = int(idxs[keys[0]])
+    else:
+        # fallback: minimal FA/day overall
+        i3 = _nanargmin(fa)
+
+    def _pack(i: int) -> Dict[str, float]:
+        return {
+            'tau_high': float(thr[i]),
+            'tau_low': float(tau_low[i]) if np.isfinite(tau_low[i]) else float(thr[i]) * 0.8,
+            'precision': float(prec[i]) if np.isfinite(prec[i]) else float('nan'),
+            'recall': float(rec[i]) if np.isfinite(rec[i]) else float('nan'),
+            'f1': float(f1[i]) if np.isfinite(f1[i]) else float('nan'),
+            'fa24h': float(fa[i]) if np.isfinite(fa[i]) else float('nan'),
+        }
+
+    return {
+        'OP1': _pack(i1),
+        'OP2': _pack(i2),
+        'OP3': _pack(i3),
+    }

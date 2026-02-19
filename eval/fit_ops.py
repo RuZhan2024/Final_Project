@@ -2,330 +2,601 @@
 # -*- coding: utf-8 -*-
 """eval/fit_ops.py
 
-Fit operating points for REAL-TIME deployment on a validation windows split.
+Fit operating points (OP1/OP2/OP3) for the *deployment alert policy*.
 
-Key difference vs older versions:
-  - Threshold sweep is done under the FULL alert policy:
-      sigmoid -> EMA -> k-of-n -> hysteresis -> cooldown
-  - FA/24h counts FALSE alerts only (alerts not overlapping GT fall events).
+Key behaviours (repo contracts):
+  - Contract B: build features via core.features (no hard-coded slicing).
+  - Contract C: calibration is temperature scaling only (scalar T).
 
-Output YAML is consumed by eval/metrics.py and deployment.
+This script:
+  1) Loads a validation window dir + model checkpoint
+  2) Runs inference to obtain logits
+  3) Fits temperature T on validation logits
+  4) Sweeps tau_high under the alert policy (incl. confirm gating)
+  5) Picks OPs and writes ops YAML (embedding calibration)
 
-YAML schema (compact):
-  arch: tcn|gcn
-  ckpt: path
-  feat_cfg: {...}              # from checkpoint bundle
-  alert_cfg: {...}             # base policy (ema/k/n/cooldown); tau from OP2 by default
-  ops:
-    op1: {tau_high, tau_low, precision, recall, f1, fa24h, mean_delay_s}
-    op2: ...
-    op3: ...
-  sweep_meta: {...}
+Optionally, provide a separate FA-only window dir to estimate FA/24h from a
+more realistic negative stream (recommended).
+
+Notes
+  - The sweep curve can have large plateaus (many thresholds with identical
+    best F1 / FA/24h). By default we pick *conservative* thresholds on such
+    plateaus (highest tau_high), which tends to be more deployable.
 """
-
 
 from __future__ import annotations
 
-# -------------------------
-# Path bootstrap (so `from core.*` works when running as a script)
-# -------------------------
-import os as _os
-import sys as _sys
-_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
-if _ROOT not in _sys.path:
-    _sys.path.insert(0, _ROOT)
-
-
 import argparse
-import glob
 import os
+import json
+import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 
-from core.ckpt import load_ckpt, get_cfg
-from core.features import FeatCfg, read_window_npz, build_tcn_input, build_gcn_input
-from core.models import build_model, pick_device, logits_1d
-from core.metrics import pareto_frontier
-from core.alerting import AlertCfg, sweep_alert_policy_from_windows
-from core.yamlio import yaml_dump_simple
+from core.alerting import AlertCfg, pick_ops_from_sweep, sweep_alert_policy_from_windows
+from core.calibration import fit_temperature, sigmoid
+from core.ckpt import load_ckpt
+from core.confirm import confirm_scores_window
+from core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_gcn_two_stream
+from core.models import build_model
+from core.yamlio import yaml_dump_simple, yaml_load_simple
+
+
+def _strip(s: str) -> str:
+    return str(s).strip()
+
+def _strip_lower(s: str) -> str:
+    return str(s).strip().lower()
+
+def _int_or_default(default: int):
+    def _f(x):
+        xs = str(x).strip()
+        return default if xs == "" else int(xs)
+    return _f
+
+
+def logits_1d(x: torch.Tensor) -> torch.Tensor:
+    """Force logits into shape [B]."""
+    if x.ndim == 2 and x.shape[1] == 1:
+        return x[:, 0]
+    if x.ndim == 1:
+        return x
+    return x.reshape(x.shape[0], -1)[:, 0]
+
+
+def _sanitize_json(x: Any) -> Any:
+    """Convert numpy/scalars to JSON-safe types and replace NaN/Inf with null."""
+    if isinstance(x, dict):
+        return {str(k): _sanitize_json(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_sanitize_json(v) for v in x]
+    if isinstance(x, (np.integer,)):
+        return int(x)
+    if isinstance(x, (np.floating,)):
+        f = float(x)
+        return None if not math.isfinite(f) else f
+    if isinstance(x, float):
+        return None if not math.isfinite(x) else x
+    if isinstance(x, (int, str, bool)) or x is None:
+        return x
+    # fallback: string representation
+    return str(x)
+
+
+def _to_np(x: Any, *, dtype=np.float32) -> np.ndarray:
+    """Convert a sweep list (possibly containing None) to a numpy array."""
+    if isinstance(x, np.ndarray):
+        return x.astype(dtype, copy=False)
+    if x is None:
+        return np.asarray([], dtype=dtype)
+    # Replace None with nan
+    if isinstance(x, (list, tuple)):
+        out = [np.nan if v is None else v for v in x]
+        return np.asarray(out, dtype=dtype)
+    return np.asarray(x, dtype=dtype)
+
+
+def _pick_index_by_thr(cand: np.ndarray, thr: np.ndarray, *, tie_break: str) -> int:
+    """Pick an index from candidate indices based on thr tie-break."""
+    if cand.size == 0:
+        raise ValueError("empty candidate set")
+    if cand.size == 1:
+        return int(cand[0])
+    if tie_break == "min_thr":
+        return int(cand[np.nanargmin(thr[cand])])
+    # default: max_thr
+    return int(cand[np.nanargmax(thr[cand])])
+
+
+def pick_ops_from_sweep_conservative(
+    sweep: Dict[str, Any],
+    *,
+    op1_recall: float,
+    op3_fa24h: float,
+    tie_break: str = "max_thr",
+    min_tau_high: float = 0.0,
+    eps: float = 1e-9,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Pick OPs from sweep dict with conservative tie-breaks.
+
+    Expected sweep keys (from core.alerting.sweep_alert_policy_from_windows):
+      thr, tau_low, precision, recall, f1, fa24h, mean_delay_s, ...
+
+    Strategy
+      OP2: maximize F1, tie-break by thr (default: max_thr).
+      OP1: among points with recall>=op1_recall, maximize F1, tie-break by thr.
+           If none meet recall, fall back to max recall (tie-break by thr).
+      OP3: among points with fa24h<=op3_fa24h, maximize recall, then minimize
+           fa24h, then tie-break by thr. If none meet fa, fall back to minimum
+           fa24h (then max recall), then tie-break by thr.
+    """
+
+    thr = _to_np(sweep.get("thr"), dtype=np.float32)
+    tau_low = _to_np(sweep.get("tau_low"), dtype=np.float32)
+    prec = _to_np(sweep.get("precision"), dtype=np.float32)
+    rec = _to_np(sweep.get("recall"), dtype=np.float32)
+    f1 = _to_np(sweep.get("f1"), dtype=np.float32)
+    fa24h = _to_np(sweep.get("fa24h"), dtype=np.float32)
+    mean_delay = _to_np(sweep.get("mean_delay_s"), dtype=np.float32)
+    med_delay = _to_np(sweep.get("median_delay_s"), dtype=np.float32)
+    n_gt = _to_np(sweep.get("n_gt_events"), dtype=np.float32)
+    n_alert = _to_np(sweep.get("n_alert_events"), dtype=np.float32)
+    n_true = _to_np(sweep.get("n_true_alerts"), dtype=np.float32)
+    n_false = _to_np(sweep.get("n_false_alerts"), dtype=np.float32)
+
+    if thr.size == 0:
+        raise ValueError("sweep.thr is empty")
+
+    # Optional lower bound on tau_high for deployability.
+    ok_thr = np.isfinite(thr) & (thr >= float(min_tau_high))
+
+    def _row(i: int) -> Dict[str, Any]:
+        i = int(i)
+        return {
+            "tau_high": float(thr[i]),
+            "tau_low": float(tau_low[i]) if tau_low.size == thr.size else float(0.0),
+            "precision": None if not np.isfinite(prec[i]) else float(prec[i]),
+            "recall": None if not np.isfinite(rec[i]) else float(rec[i]),
+            "f1": None if not np.isfinite(f1[i]) else float(f1[i]),
+            "fa24h": None if not np.isfinite(fa24h[i]) else float(fa24h[i]),
+            "mean_delay_s": None if not np.isfinite(mean_delay[i]) else float(mean_delay[i]),
+            "median_delay_s": None if not np.isfinite(med_delay[i]) else float(med_delay[i]),
+            "n_gt_events": int(n_gt[i]) if np.isfinite(n_gt[i]) else None,
+            "n_alert_events": int(n_alert[i]) if np.isfinite(n_alert[i]) else None,
+            "n_true_alerts": int(n_true[i]) if np.isfinite(n_true[i]) else None,
+            "n_false_alerts": int(n_false[i]) if np.isfinite(n_false[i]) else None,
+        }
+
+    # ---------- OP2 (best F1) ----------
+    f1_ok = np.isfinite(f1) & ok_thr
+    if not f1_ok.any():
+        # fallback to max recall
+        rec_ok = np.isfinite(rec) & ok_thr
+        i2 = int(np.nanargmax(rec[rec_ok]))
+        cand = np.where(rec_ok & (rec >= np.nanmax(rec[rec_ok]) - eps))[0]
+        i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    else:
+        best = float(np.nanmax(f1[f1_ok]))
+        cand = np.where(f1_ok & (f1 >= best - eps))[0]
+        i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+
+    # ---------- OP1 (recall target) ----------
+    rec_ok = np.isfinite(rec) & ok_thr
+    meet = rec_ok & (rec >= float(op1_recall) - eps)
+    if meet.any():
+        # maximize F1 among those meeting recall
+        f1_meet_ok = np.isfinite(f1) & meet
+        if f1_meet_ok.any():
+            best = float(np.nanmax(f1[f1_meet_ok]))
+            cand = np.where(f1_meet_ok & (f1 >= best - eps))[0]
+            i1 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+        else:
+            # no finite F1 -> pick max thr among recall-meeting
+            cand = np.where(meet)[0]
+            i1 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    elif rec_ok.any():
+        best_rec = float(np.nanmax(rec[rec_ok]))
+        cand = np.where(rec_ok & (rec >= best_rec - eps))[0]
+        i1 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    else:
+        i1 = i2
+
+    # ---------- OP3 (FA constraint) ----------
+    fa_ok = np.isfinite(fa24h) & ok_thr
+    meet_fa = fa_ok & (fa24h <= float(op3_fa24h) + eps)
+    if meet_fa.any() and np.isfinite(rec).any():
+        # maximize recall, then minimize fa24h
+        rec_meet = rec.copy()
+        rec_meet[~meet_fa] = -np.inf
+        best_rec = float(np.nanmax(rec_meet))
+        cand = np.where(meet_fa & (rec >= best_rec - eps))[0]
+        if cand.size > 1:
+            # minimize fa first
+            fa_c = fa24h[cand]
+            min_fa = float(np.nanmin(fa_c))
+            cand2 = cand[np.where(fa_c <= min_fa + eps)[0]]
+            cand = cand2
+        i3 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    elif fa_ok.any():
+        # fallback: minimize fa24h, then max recall
+        min_fa = float(np.nanmin(fa24h[fa_ok]))
+        cand = np.where(fa_ok & (fa24h <= min_fa + eps))[0]
+        if cand.size > 1 and np.isfinite(rec).any():
+            rec_c = rec[cand]
+            best_rec = float(np.nanmax(rec_c))
+            cand = cand[np.where(rec_c >= best_rec - eps)[0]]
+        i3 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    else:
+        i3 = i2
+
+    ops = {"OP1": _row(i1), "OP2": _row(i2), "OP3": _row(i3)}
+    meta = {
+        "picker": "conservative",
+        "tie_break": str(tie_break),
+        "min_tau_high": float(min_tau_high),
+        "op1_recall": float(op1_recall),
+        "op3_fa24h": float(op3_fa24h),
+        "idx": {"OP1": int(i1), "OP2": int(i2), "OP3": int(i3)},
+    }
+    return ops, meta
 
 
 @dataclass
 class MetaRow:
-    path: str
     video_id: str
     w_start: int
     w_end: int
     fps: float
+    y: int
+    lying_score: float
+    motion_score: float
 
 
-class ValWindows(Dataset):
-    def __init__(self, root: str, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
-        self.files = sorted(glob.glob(os.path.join(root, "*.npz")))
-        if not self.files:
-            raise FileNotFoundError(f"No .npz in {root}")
+class WindowDirDataset(Dataset):
+    def __init__(
+        self,
+        root: str,
+        *,
+        feat_cfg: FeatCfg,
+        arch: str,
+        two_stream: bool,
+        fps_default: float,
+        recursive: bool = False,
+    ) -> None:
+        self.root = str(root)
+        self.paths: List[str] = []
+        if recursive:
+            for dp, _dns, fns in os.walk(self.root):
+                for fn in fns:
+                    if fn.startswith("."):
+                        continue
+                    if fn.endswith(".npz"):
+                        self.paths.append(os.path.join(dp, fn))
+        else:
+            for fn in os.listdir(self.root):
+                if fn.startswith("."):
+                    continue
+                if fn.endswith(".npz"):
+                    self.paths.append(os.path.join(self.root, fn))
+        self.paths = sorted(self.paths)
+        if not self.paths:
+            raise SystemExit(f"[err] no .npz files under: {self.root}")
+
         self.feat_cfg = feat_cfg
-        self.fps_default = float(fps_default)
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
+        self.fps_default = float(fps_default)
 
     def __len__(self) -> int:
-        return len(self.files)
+        return len(self.paths)
 
     def __getitem__(self, idx: int):
-        p = self.files[idx]
-        joints, motion, conf, mask, fps, meta = read_window_npz(p, fps_default=self.fps_default)
-        # y: labeled windows should store y=0/1
-        y = int(meta.y) if meta.y is not None else int(meta.label) if meta.label is not None else 0
+        path = self.paths[idx]
+        joints_xy, motion_xy, conf, mask, fps, meta = read_window_npz(path, fps_default=self.fps_default)
+        fps = float(fps) if fps and fps > 0 else float(self.fps_default)
 
-        if self.arch == "tcn":
-            X, _ = build_tcn_input(joints, motion, conf, mask, fps=float(fps), feat_cfg=self.feat_cfg)
-        else:
-            X, _ = build_gcn_input(joints, motion, conf, mask, fps=float(fps), feat_cfg=self.feat_cfg)
-            if self.two_stream:
-                # Two-stream GCN expects separate inputs:
-                #   joints stream: (x,y[,conf])
-                #   motion stream: (dx,dy) (or zeros if motion is disabled)
-                xy = X[..., 0:2]
+        X, m = build_canonical_input(
+            joints_xy=joints_xy,
+            motion_xy=motion_xy,
+            conf=conf,
+            mask=mask,
+            fps=fps,
+            feat_cfg=self.feat_cfg,
+        )
+        ls, ms = confirm_scores_window(joints_xy, m, fps, tail_s=1.0)
+        # Clamp non-finite scores to safe values (never confirm by accident)
+        ls = float(ls) if np.isfinite(ls) else 0.0
+        ms = float(ms) if np.isfinite(ms) else float('inf')
 
-                if getattr(self.feat_cfg, 'use_motion', False) and X.shape[-1] >= 4:
-                    xm = X[..., 2:4]
-                else:
-                    xm = np.zeros_like(xy)
-
-                if getattr(self.feat_cfg, 'use_conf_channel', False) and X.shape[-1] >= 3:
-                    # conf is always the last channel when present
-                    conf_ch = X[..., -1:]
-                    xj = np.concatenate([xy, conf_ch], axis=-1)
-                else:
-                    xj = xy
-
-                X = (xj, xm)
-
-        m = MetaRow(
-            path=str(p),
-            video_id=str(meta.video_id or meta.seq_id or os.path.splitext(os.path.basename(p))[0]),
+        y = int(meta.y) if meta.y is not None else -1
+        row = MetaRow(
+            video_id=str(meta.video_id or ""),
             w_start=int(meta.w_start),
             w_end=int(meta.w_end),
             fps=float(fps),
+            y=y,
+            lying_score=float(ls),
+            motion_score=float(ms),
         )
-        return X, np.int64(y), m
+
+        if self.arch == "gcn":
+            if self.two_stream:
+                xj, xm = split_gcn_two_stream(X, self.feat_cfg)
+                return (
+                    torch.from_numpy(xj).to(torch.float32),
+                    torch.from_numpy(xm).to(torch.float32),
+                    torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+                    row,
+                )
+            return (
+                torch.from_numpy(X).to(torch.float32),
+                torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+                row,
+            )
+
+        # tcn
+        x = build_tcn_input(X, self.feat_cfg)
+        return (
+            torch.from_numpy(x).to(torch.float32),
+            torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+            row,
+        )
 
 
 def _collate(batch):
-    Xs, ys, metas = zip(*batch)
-    return list(Xs), np.asarray(ys, dtype=np.int64), list(metas)
+    # Keep MetaRow objects as a list.
+    if len(batch[0]) == 4:
+        xj, xm, y, meta = zip(*batch)
+        return torch.stack(list(xj)), torch.stack(list(xm)), torch.stack(list(y)), list(meta)
+    xb, y, meta = zip(*batch)
+    return torch.stack(list(xb)), torch.stack(list(y)), list(meta)
 
 
 @torch.no_grad()
-def infer_probs(model, loader, device, arch: str, two_stream: bool):
-    probs = []
-    y_true = []
-    vids, ws, we, fps = [], [], [], []
-    for Xs, ys, metas in loader:
-        if arch == "tcn":
-            xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
-            logits = logits_1d(model(xb))
+def infer_logits(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    arch: str,
+    two_stream: bool,
+) -> Tuple[np.ndarray, np.ndarray, List[MetaRow]]:
+    model.eval()
+    logits_all: List[np.ndarray] = []
+    y_all: List[np.ndarray] = []
+    metas_all: List[MetaRow] = []
+
+    for batch in tqdm(loader, desc="infer", leave=False):
+        if arch == "gcn" and two_stream:
+            xj, xm, yb, meta = batch
+            xj = xj.to(device).float()
+            xm = xm.to(device).float()
+            yb = yb.to(device).view(-1)
+            logits = logits_1d(model(xj, xm)).detach().cpu().numpy()
         else:
-            if two_stream:
-                xj = torch.from_numpy(np.stack([x[0] for x in Xs], axis=0)).to(device)
-                xm = torch.from_numpy(np.stack([x[1] for x in Xs], axis=0)).to(device)
-                logits = logits_1d(model(xj, xm))
-            else:
-                xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
-                logits = logits_1d(model(xb))
+            xb, yb, meta = batch
+            xb = xb.to(device).float()
+            yb = yb.to(device).view(-1)
+            logits = logits_1d(model(xb)).detach().cpu().numpy()
 
-        p = torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
-        probs.append(p)
-        y_true.append(ys)
+        logits_all.append(logits.astype(np.float32, copy=False))
+        y_all.append(yb.detach().cpu().numpy().astype(np.float32, copy=False))
+        metas_all.extend(list(meta))
 
-        for m in metas:
-            vids.append(m.video_id)
-            ws.append(int(m.w_start))
-            we.append(int(m.w_end))
-            fps.append(float(m.fps))
-
-    return (
-        np.concatenate(probs) if probs else np.array([], dtype=np.float32),
-        np.concatenate(y_true) if y_true else np.array([], dtype=np.int32),
-        vids, ws, we, fps
-    )
+    return np.concatenate(logits_all), np.concatenate(y_all), metas_all
 
 
-def _pick_op1(sweep: Dict[str, List[float]], *, target_recall: float) -> int:
-    r = np.asarray(sweep["recall"], dtype=float)
-    fa = np.asarray(sweep["fa24h"], dtype=float)
-    ok = np.isfinite(r) & np.isfinite(fa) & (r >= float(target_recall))
-    if ok.any():
-        idx = np.where(ok)[0]
-        # among those, pick minimum FA; tie-breaker: higher recall
-        best = idx[np.lexsort((-r[idx], fa[idx]))][0]
-        return int(best)
-    # fallback: pick max recall, tie: min FA
-    ok2 = np.isfinite(r) & np.isfinite(fa)
-    if ok2.any():
-        idx = np.where(ok2)[0]
-        best = idx[np.lexsort((fa[idx], -r[idx]))][0]
-        return int(best)
-    # If recall is all-NaN (e.g., no GT positives in val), fall back to most conservative threshold.
-    ok3 = np.isfinite(fa)
-    if ok3.any():
-        idx = np.where(ok3)[0]
-        best = idx[np.argmin(fa[idx])]
-        return int(best)
-    return 0
+def _extract_arrays(metas: Sequence[MetaRow]) -> Dict[str, np.ndarray]:
+    vids = np.asarray([m.video_id for m in metas], dtype=object)
+    ws = np.asarray([m.w_start for m in metas], dtype=np.int32)
+    we = np.asarray([m.w_end for m in metas], dtype=np.int32)
+    fps = np.asarray([m.fps for m in metas], dtype=np.float32)
+    y = np.asarray([m.y for m in metas], dtype=np.int32)
+    ls = np.asarray([m.lying_score for m in metas], dtype=np.float32)
+    ms = np.asarray([m.motion_score for m in metas], dtype=np.float32)
+    return {"video_id": vids, "w_start": ws, "w_end": we, "fps": fps, "y": y, "lying": ls, "motion": ms}
 
 
-def _pick_op2(sweep: Dict[str, List[float]]) -> int:
-    f1 = np.asarray(sweep.get("f1", []), dtype=float)
-    fa = np.asarray(sweep.get("fa24h", []), dtype=float)
-    r = np.asarray(sweep.get("recall", []), dtype=float)
-    ok = np.isfinite(f1) & np.isfinite(fa)
-    if ok.any():
-        idx = np.where(ok)[0]
-        # max f1; tie min FA; tie max recall
-        best = idx[np.lexsort((-r[idx], fa[idx], -f1[idx]))][0]
-        return int(best)
-    # fallback: max recall, tie min FA
-    ok2 = np.isfinite(r) & np.isfinite(fa)
-    if ok2.any():
-        idx = np.where(ok2)[0]
-        best = idx[np.lexsort((fa[idx], -r[idx]))][0]
-        return int(best)
-    return 0
+def _override_feat_cfg(base: FeatCfg, args: argparse.Namespace) -> FeatCfg:
+    d = base.to_dict()
+    # Only override if user explicitly passed the flag.
+    if args.use_bone is not None:
+        d["use_bone"] = bool(int(args.use_bone))
+    if args.use_bone_length is not None:
+        d["use_bone_length"] = bool(int(args.use_bone_length))
+    if args.use_motion is not None:
+        d["use_motion"] = bool(int(args.use_motion))
+    if args.use_conf_channel is not None:
+        d["use_conf_channel"] = bool(int(args.use_conf_channel))
+    if args.center is not None:
+        d["center"] = str(args.center)
+    return FeatCfg.from_dict(d)
 
 
-def _pick_op3(sweep: Dict[str, List[float]], *, max_fa24h: float) -> int:
-    r = np.asarray(sweep["recall"], dtype=float)
-    fa = np.asarray(sweep["fa24h"], dtype=float)
-    ok = np.isfinite(r) & np.isfinite(fa) & (fa <= float(max_fa24h))
-    if ok.any():
-        idx = np.where(ok)[0]
-        # max recall; tie min FA
-        best = idx[np.lexsort((fa[idx], -r[idx]))][0]
-        return int(best)
-    # fallback: min FA (most conservative)
-    ok2 = np.isfinite(fa)
-    if ok2.any():
-        idx = np.where(ok2)[0]
-        best = idx[np.argmin(fa[idx])]
-        return int(best)
-    return 0
-
-
-def main() -> int:
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["tcn", "gcn"], required=True)
-    ap.add_argument("--val_dir", required=True)
-    ap.add_argument("--fa_dir", default="", help="Optional: windows dir used only to estimate FA/24h (long unlabeled/negative streams).")
-    ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--batch", type=int, default=256)
 
-    # Optional feature flags (accepted for backwards compatibility with older Makefiles).
-    # Normally, we use the checkpoint's feat_cfg. If the checkpoint has no feat_cfg, we
-    # will fall back to these CLI values (if provided).
+    ap.add_argument("--arch", type=str, required=True, choices=["tcn", "gcn"])
+    ap.add_argument("--val_dir", type=str, required=True)
+    ap.add_argument("--ckpt", type=str, required=True)
+    ap.add_argument("--out", type=str, required=True)
+
+    ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--batch", type=int, default=128)
+    ap.add_argument("--num_workers", type=int, default=0)
+
+    ap.add_argument("--fps_default", type=float, default=30.0)
+
+    # Feature overrides (optional). If not provided, use feat_cfg stored in ckpt.
     ap.add_argument("--center", type=str, default=None)
     ap.add_argument("--use_motion", type=int, default=None)
     ap.add_argument("--use_conf_channel", type=int, default=None)
-    ap.add_argument("--motion_scale_by_fps", type=int, default=None)
-    ap.add_argument("--conf_gate", type=float, default=None)
-    ap.add_argument("--use_precomputed_mask", type=int, default=None)
+    ap.add_argument("--use_bone", type=int, default=None)
+    ap.add_argument("--use_bone_length", type=int, default=None)
 
-    # Sweep range for tau_high (kept as thr_* names for backwards compat)
-    ap.add_argument("--thr_min", type=float, default=0.001)
-    ap.add_argument("--thr_max", type=float, default=0.999)
+    # Calibration
+    ap.add_argument("--calibration_yaml", type=str, default="")
+    ap.add_argument("--no_fit_calibration", action="store_true")
+
+    # Optional FA window set
+    ap.add_argument("--fa_dir", type=str, default="")
+
+    # Persist sweep curves as JSON (recommended; YAML dumper is scalar-only)
+    ap.add_argument("--save_sweep_json", type=int, default=1)
+
+    # OP picker behaviour
+    ap.add_argument("--ops_picker", type=_strip_lower, default="conservative", choices=["conservative", "core"])
+    ap.add_argument("--op_tie_break", type=_strip_lower, default="max_thr", choices=["max_thr", "min_thr"])
+    ap.add_argument("--min_tau_high", type=float, default=0.0, help="Optional lower bound for tau_high during OP selection")
+    ap.add_argument("--tie_eps", type=float, default=1e-9, help="Tolerance for plateau tie-breaking")
+
+    ap.add_argument("--recursive", type=int, default=0, help="Recursively scan val_dir/fa_dir for .npz")
+
+    # Sweep range
+    ap.add_argument("--thr_min", type=float, default=0.05)
+    ap.add_argument("--thr_max", type=float, default=0.95)
     ap.add_argument("--thr_step", type=float, default=0.01)
+    ap.add_argument("--tau_low_ratio", type=float, default=0.8)
 
-    # Real-time policy (base); tau_high/tau_low are swept/picked per OP
-    ap.add_argument("--ema_alpha", type=float, default=0.20)
-    ap.add_argument("--k", type=int, default=2)
-    ap.add_argument("--n", type=int, default=3)
-    ap.add_argument("--cooldown_s", type=float, default=30.0)
-    ap.add_argument("--tau_low_ratio", type=float, default=0.80, help="tau_low = tau_high * ratio")
-
-    # Optional confirmation stage (accepted because Makefile may pass these).
-    # These are used by core.alerting.AlertCfg when detect_alert_events(...) runs.
-    ap.add_argument("--confirm", type=int, default=0, help="1 => enable confirmation stage")
-    ap.add_argument("--confirm_s", type=float, default=2.0)
-    ap.add_argument("--confirm_min_lying", type=float, default=0.65)
-    ap.add_argument("--confirm_max_motion", type=float, default=0.08)
-    ap.add_argument("--confirm_require_low", type=int, default=1)
-
-    # Time mapping + GT/alert overlap definition
-    ap.add_argument("--time_mode", choices=["start", "center", "end"], default="center")
-    ap.add_argument("--merge_gap_s", type=float, default=-1.0, help="GT merge gap seconds; <=0 => auto from data")
-    ap.add_argument("--overlap_slack_s", type=float, default=0.0)
-
-    # OP selection policy
+    # OP selection targets
     ap.add_argument("--op1_recall", type=float, default=0.95)
-    ap.add_argument("--op3_fa24h", type=float, default=1.0)
+    ap.add_argument("--op3_fa24h", type=float, default=2.0)
 
-    # Info-only / legacy args (ignored but accepted for old Makefiles)
-    ap.add_argument("--pose_npz_dir", default="")
-    ap.add_argument("--stride_frames_hint", type=int, default=0)
-    ap.add_argument("--fps_default", type=float, default=30.0)
+    # Alert policy knobs
+    ap.add_argument("--ema_alpha", type=float, default=0.0)
+    ap.add_argument("--k", type=int, default=1)
+    ap.add_argument("--n", type=int, default=1)
+    ap.add_argument("--cooldown_s", type=float, default=0.0)
+
+    ap.add_argument("--confirm", type=int, default=0)
+    ap.add_argument("--confirm_s", type=float, default=1.0)
+    ap.add_argument("--confirm_min_lying", type=float, default=0.7)
+    ap.add_argument("--confirm_max_motion", type=float, default=0.08)
+    ap.add_argument("--confirm_require_low", type=_int_or_default(1), default=1)
+
+    # Event metrics details
+    ap.add_argument("--merge_gap_s", type=float, default=None)
+    ap.add_argument("--overlap_slack_s", type=float, default=0.0)
+    ap.add_argument("--time_mode", type=_strip_lower, default="center", choices=["start", "center", "end"])
 
     args = ap.parse_args()
 
+    device = torch.device(args.device)
+
     bundle = load_ckpt(args.ckpt, map_location="cpu")
-    arch = str(args.arch).lower()
+    model_cfg = bundle.get("model_cfg", {})
+    feat_cfg = FeatCfg.from_dict(bundle.get("feat_cfg", {}))
+    feat_cfg = _override_feat_cfg(feat_cfg, args)
 
-    model_cfg = get_cfg(bundle, "model_cfg", default={})
-    raw_feat = get_cfg(bundle, "feat_cfg", default={})
-    # CLI feature flags (if provided). Used only when checkpoint lacks feat_cfg.
-    cli_feat = {}
-    for k in ["center","use_motion","use_conf_channel","motion_scale_by_fps","conf_gate","use_precomputed_mask"]:
-        v = getattr(args, k, None)
-        if v is not None:
-            cli_feat[k] = v
-    # Normalize raw_feat to dict if possible
-    if hasattr(raw_feat, "to_dict"):
-        try:
-            raw_feat = raw_feat.to_dict()
-        except Exception:
-            pass
-    if (not raw_feat) and cli_feat:
-        raw_feat = cli_feat
-    elif raw_feat and cli_feat and isinstance(raw_feat, dict):
-        for k, v in cli_feat.items():
-            if k in raw_feat and str(raw_feat.get(k)) != str(v):
-                print(f"[warn] CLI feat flag {k}={v} ignored (ckpt has {raw_feat.get(k)}).")
-    feat_cfg = FeatCfg.from_dict(raw_feat)
-    two_stream = bool(model_cfg.get("two_stream", False)) if arch == "gcn" else False
+    # Determine two-stream for GCN
+    two_stream = bool(model_cfg.get("two_stream", False))
 
-    fps_default = float(get_cfg(bundle, "data_cfg", default={}).get("fps_default", args.fps_default))
-    device = pick_device()
-    model = build_model(arch, model_cfg, feat_cfg, fps_default=fps_default).to(device)
-    model.load_state_dict(bundle["state_dict"], strict=True)
-    model.eval()
+    model = build_model(args.arch, model_cfg, feat_cfg.to_dict(), fps_default=float(args.fps_default))
+    model.load_state_dict(bundle["state_dict"], strict=False)
+    model.to(device)
 
-    ds = ValWindows(args.val_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
-    loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
+    print(f"[info] arch={args.arch} two_stream={two_stream} feat={feat_cfg}")
 
-    probs, y_true, vids, ws, we, fps_list = infer_probs(model, loader, device, arch, two_stream)
+    val_ds = WindowDirDataset(
+        args.val_dir,
+        feat_cfg=feat_cfg,
+        arch=args.arch,
+        two_stream=two_stream,
+        fps_default=float(args.fps_default),
+        recursive=bool(int(args.recursive)),
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=int(args.batch),
+        shuffle=False,
+        num_workers=max(0, int(args.num_workers)),
+        pin_memory=torch.cuda.is_available(),
+        collate_fn=_collate,
+    )
 
-    fa_probs = fa_vids = fa_ws = fa_we = fa_fps_list = None
-    if str(args.fa_dir).strip():
-        ds_fa = ValWindows(args.fa_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
-        loader_fa = DataLoader(ds_fa, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
-        fa_probs, _fa_y, fa_vids, fa_ws, fa_we, fa_fps_list = infer_probs(model, loader_fa, device, arch, two_stream)
-        print(f"[info] FA-estimation set: {len(ds_fa)} windows from {args.fa_dir}")
+    logits_val, y_val_float, metas_val = infer_logits(model, val_loader, device, arch=args.arch, two_stream=two_stream)
+    arr_val = _extract_arrays(metas_val)
 
-    # Sanity: if validation contains no positives, recall is not identifiable; still write ops but warn.
-    if int(np.sum(np.asarray(y_true, dtype=np.int64) > 0)) == 0:
-        print('[warn] Validation split has 0 positive windows. OP-1/OP-2 based on recall are not meaningful; fix your split/windowing.')
+    # Fit temperature T on labeled windows only.
+    y_val = arr_val["y"].astype(np.int32)
+    labeled = (y_val == 0) | (y_val == 1)
+    if not labeled.any():
+        raise SystemExit("[err] validation set has no labeled windows (y in {0,1}).")
 
+    if args.no_fit_calibration:
+        T = 1.0
+        cal = {
+            "method": "temperature",
+            "T": float(T),
+            "n_val": int(labeled.sum()),
+            "note": "--no_fit_calibration enabled",
+        }
+        # If user supplied a calibration yaml and it exists, try to load T
+        if args.calibration_yaml and os.path.exists(args.calibration_yaml):
+            loaded = yaml_load_simple(args.calibration_yaml) or {}
+            T_loaded = float(((loaded.get("calibration") or loaded).get("T", 1.0)))
+            if np.isfinite(T_loaded) and T_loaded > 0:
+                T = float(T_loaded)
+                cal["T"] = float(T)
+                cal["note"] = "loaded existing calibration yaml"
+    else:
+        fit = fit_temperature(logits_val[labeled], y_val[labeled])
+        T = float(fit.T)
+        cal = {
+            "method": "temperature",
+            "T": float(T),
+            "n_val": int(fit.n_val),
+            "nll_before": float(fit.nll_before),
+            "nll_after": float(fit.nll_after),
+            "ece_before": float(fit.ece_before),
+            "ece_after": float(fit.ece_after),
+        }
+
+    # Apply calibration: p = sigmoid(logits/T)
+    probs_val = sigmoid(logits_val / max(1e-6, T)).astype(np.float32)
+
+    # Optional FA stream
+    fa_payload = {}
+    if args.fa_dir:
+        fa_ds = WindowDirDataset(
+            args.fa_dir,
+            feat_cfg=feat_cfg,
+            arch=args.arch,
+            two_stream=two_stream,
+            fps_default=float(args.fps_default),
+            recursive=bool(int(args.recursive)),
+        )
+        fa_loader = DataLoader(
+            fa_ds,
+            batch_size=int(args.batch),
+            shuffle=False,
+            num_workers=max(0, int(args.num_workers)),
+            pin_memory=torch.cuda.is_available(),
+            collate_fn=_collate,
+        )
+        logits_fa, _y_fa_float, metas_fa = infer_logits(model, fa_loader, device, arch=args.arch, two_stream=two_stream)
+        probs_fa = sigmoid(logits_fa / max(1e-6, T)).astype(np.float32)
+        arr_fa = _extract_arrays(metas_fa)
+        fa_payload = {
+            "fa_probs": probs_fa,
+            "fa_video_ids": arr_fa["video_id"],
+            "fa_w_start": arr_fa["w_start"],
+            "fa_w_end": arr_fa["w_end"],
+            "fa_fps": arr_fa["fps"],
+            "fa_lying_score": arr_fa["lying"],
+            "fa_motion_score": arr_fa["motion"],
+        }
 
     alert_base = AlertCfg(
         ema_alpha=float(args.ema_alpha),
         k=int(args.k),
         n=int(args.n),
-        tau_high=0.5,  # placeholder; swept
+        tau_high=0.5,
         tau_low=0.4,
         cooldown_s=float(args.cooldown_s),
         confirm=bool(int(args.confirm)),
@@ -335,101 +606,97 @@ def main() -> int:
         confirm_require_low=bool(int(args.confirm_require_low)),
     )
 
-    merge_gap_s = None if float(args.merge_gap_s) <= 0 else float(args.merge_gap_s)
-
-    sweep, sweep_meta = sweep_alert_policy_from_windows(
-        probs, y_true, vids, ws, we, fps_list,
+    sweep, meta = sweep_alert_policy_from_windows(
+        probs_val,
+        y_val,
+        arr_val["video_id"],
+        arr_val["w_start"],
+        arr_val["w_end"],
+        arr_val["fps"],
         alert_base=alert_base,
         thr_min=float(args.thr_min),
         thr_max=float(args.thr_max),
         thr_step=float(args.thr_step),
         tau_low_ratio=float(args.tau_low_ratio),
-        merge_gap_s=merge_gap_s,
+        merge_gap_s=args.merge_gap_s,
         overlap_slack_s=float(args.overlap_slack_s),
         time_mode=str(args.time_mode),
-        fa_probs=fa_probs,
-        fa_video_ids=fa_vids,
-        fa_w_start=fa_ws,
-        fa_w_end=fa_we,
-        fa_fps=fa_fps_list,
-        fps_default=float(fps_default),
+        fps_default=float(args.fps_default),
+        lying_score=arr_val["lying"],
+        motion_score=arr_val["motion"],
+        **fa_payload,
     )
 
-    # Pareto frontier (minimise FA, maximise recall)
-    # core.metrics.pareto_frontier signature is (recall, x) and it returns (idx, recall_arr, x_arr)
-    fa = np.asarray(sweep["fa24h"], dtype=float)
-    rec = np.asarray(sweep["recall"], dtype=float)
-    pf_idx, _, _ = pareto_frontier(rec, fa)
+    ops_meta: Dict[str, Any] = {}
+    if str(args.ops_picker) == "core":
+        # Keep legacy behaviour.
+        ops = pick_ops_from_sweep(sweep, op1_recall=float(args.op1_recall), op3_fa24h=float(args.op3_fa24h))
+        ops_meta = {"picker": "core"}
+    else:
+        ops, ops_meta = pick_ops_from_sweep_conservative(
+            sweep,
+            op1_recall=float(args.op1_recall),
+            op3_fa24h=float(args.op3_fa24h),
+            tie_break=str(args.op_tie_break),
+            min_tau_high=float(args.min_tau_high),
+            eps=float(args.tie_eps),
+        )
 
-    i1 = _pick_op1(sweep, target_recall=float(args.op1_recall))
-    i2 = _pick_op2(sweep)
-    i3 = _pick_op3(sweep, max_fa24h=float(args.op3_fa24h))
+    sweep_json_path = ""
+    if int(args.save_sweep_json):
+        base = os.path.splitext(os.path.abspath(args.out))[0]
+        sweep_json_path = base + ".sweep.json"
+        payload = _sanitize_json(
+            {
+                "sweep": sweep,
+                "sweep_meta": meta,
+                "sweep_cfg": {
+                    "thr_min": float(args.thr_min),
+                    "thr_max": float(args.thr_max),
+                    "thr_step": float(args.thr_step),
+                    "tau_low_ratio": float(args.tau_low_ratio),
+                },
+                "ops": ops,
+                "ops_meta": ops_meta,
+            }
+        )
+        with open(sweep_json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[ok] wrote sweep json: {sweep_json_path}")
 
-    def _op_at(i: int) -> Dict[str, Any]:
-        th = float(sweep["thr"][i])
-        tl = float(sweep["tau_low"][i])
-        return {
-            "tau_high": float(sweep["thr"][i]),
-            "tau_low": float(sweep["tau_low"][i]),
-            "uncertain_band": {"low": float(tl), "high": float(th)},
-            "precision": float(sweep["precision"][i]),
-            "recall": float(sweep["recall"][i]),
-            "f1": float(sweep["f1"][i]),
-            "fa24h": float(sweep["fa24h"][i]),
-            "fa_per_hour": float(sweep["fa_per_hour"][i]),
-            "mean_delay_s": float(sweep["mean_delay_s"][i]),
-            "median_delay_s": float(sweep["median_delay_s"][i]),
-        }
-
-    ops = {"op1": _op_at(i1), "op2": _op_at(i2), "op3": _op_at(i3)}
-
-    # Warn if any selected tau_high hits sweep boundary (usually means sweep range too narrow).
-    eps = 1e-9
-    for _k, _op in ops.items():
-        th = float(_op.get("tau_high", float('nan')))
-        hit = (abs(th - float(args.thr_min)) < eps) or (abs(th - float(args.thr_max)) < eps)
-        _op["hits_boundary"] = bool(hit)
-        if hit:
-            print(f"[warn] {_k} selected tau_high={th:.4f} hits sweep boundary [{args.thr_min:.4f},{args.thr_max:.4f}] — consider lowering --thr_min or raising --thr_max")
-
-
-    # base alert_cfg stored for convenience; set tau to OP2
-    alert_cfg = AlertCfg(
-        ema_alpha=float(args.ema_alpha),
-        k=int(args.k),
-        n=int(args.n),
-        tau_high=float(ops["op2"]["tau_high"]),
-        tau_low=float(ops["op2"]["tau_low"]),
-        cooldown_s=float(args.cooldown_s),
-        confirm=bool(int(args.confirm)),
-        confirm_s=float(args.confirm_s),
-        confirm_min_lying=float(args.confirm_min_lying),
-        confirm_max_motion=float(args.confirm_max_motion),
-        confirm_require_low=bool(int(args.confirm_require_low)),
-    )
-
-    out = {
-        "arch": arch,
-        "ckpt": str(args.ckpt),
-        "val_dir": str(args.val_dir),
-        "fa_dir": str(args.fa_dir) if str(args.fa_dir).strip() else "",
-        "feat_cfg": feat_cfg.to_dict(),
-        "alert_cfg": alert_cfg.to_dict(),
-        "ops": ops,
-        "sweep_meta": sweep_meta,
-        "pareto_idx": [int(i) for i in pf_idx],
+    sweep_cfg = {
+        "thr_min": float(args.thr_min),
+        "thr_max": float(args.thr_max),
+        "thr_step": float(args.thr_step),
+        "tau_low_ratio": float(args.tau_low_ratio),
     }
 
-    # yaml_dump_simple writes to a path (no PyYAML dependency). Older helper
-    # versions returned a string; call the current signature explicitly.
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    yaml_dump_simple(out, str(args.out))
-    print(f"[OK] wrote ops yaml → {args.out}")
-    print(f"     OP1: recall={ops['op1']['recall']:.3f} fa24h={ops['op1']['fa24h']:.3f} tau={ops['op1']['tau_high']:.2f}/{ops['op1']['tau_low']:.2f}")
-    print(f"     OP2: recall={ops['op2']['recall']:.3f} fa24h={ops['op2']['fa24h']:.3f} tau={ops['op2']['tau_high']:.2f}/{ops['op2']['tau_low']:.2f}")
-    print(f"     OP3: recall={ops['op3']['recall']:.3f} fa24h={ops['op3']['fa24h']:.3f} tau={ops['op3']['tau_high']:.2f}/{ops['op3']['tau_low']:.2f}")
-    return 0
+    out = {
+        "ops": ops,
+        "ops_meta": ops_meta,
+        "alert_cfg": alert_base.to_dict(),
+        "alert_base": alert_base.to_dict(),  # legacy alias
+        "sweep_meta": meta,
+        "sweep_cfg": sweep_cfg,
+        "sweep_json": sweep_json_path,
+        "calibration": cal,
+        "model": {
+            "arch": str(args.arch),
+            "ckpt": os.path.abspath(args.ckpt),
+            "model_cfg": model_cfg,
+            "feat_cfg": feat_cfg.to_dict(),
+        },
+    }
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    yaml_dump_simple(_sanitize_json(out), args.out)
+    print(f"[ok] wrote ops: {args.out}")
+
+    if args.calibration_yaml:
+        os.makedirs(os.path.dirname(os.path.abspath(args.calibration_yaml)), exist_ok=True)
+        yaml_dump_simple(_sanitize_json({"calibration": cal}), args.calibration_yaml)
+        print(f"[ok] wrote calibration: {args.calibration_yaml}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

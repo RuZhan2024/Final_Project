@@ -7,30 +7,23 @@ the real-time alert policy (EMA + k-of-n + hysteresis + cooldown).
 
 Output: JSON summary with FA/hour and FA/day per video, plus totals.
 
-Typical:
-  python eval/score_unlabeled_alert_rate.py \
-    --win_dir data/processed/le2i/windows_W48_S12/test_unlabeled \
-    --ckpt outputs/le2i_tcn_W48S12/best.pt \
-    --out_json reports/le2i_unlabeled_alerts.json
+IMPORTANT CONVENTION:
+  - w_end is INCLUSIVE (last frame index of the window).
+  - Any duration computed from indices MUST use:
+        duration_s = (w_end - w_start + 1) / fps
+  - For timestamps used in alert policy, we match metrics.py exactly by using:
+        core.alerting.times_from_windows(mode="center")  => (ws+we)/2/fps
 """
 
-
 from __future__ import annotations
-
-# -------------------------
-# Path bootstrap (so `from core.*` works when running as a script)
-# -------------------------
 import os as _os
 import sys as _sys
-_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
-if _ROOT not in _sys.path:
-    _sys.path.insert(0, _ROOT)
-
 
 import argparse
 import glob
 import json
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -38,57 +31,102 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from core.ckpt import load_ckpt, get_cfg
-from core.features import FeatCfg, read_window_npz, build_tcn_input, build_gcn_input
+from core.features import FeatCfg, read_window_npz, build_tcn_input, build_canonical_input, split_gcn_two_stream
 from core.models import build_model, pick_device, logits_1d
-from core.alerting import AlertCfg, detect_alert_events, classify_states
+from core.confirm import confirm_scores_window
+from core.alerting import AlertCfg, detect_alert_events, classify_states, times_from_windows
+
+
+@dataclass
+class MetaLite:
+    video_id: str
+    w_start: int
+    w_end: int
+    fps: float
+    lying_score: float
+    motion_score: float
 
 
 class UnlabeledWindows(Dataset):
-    def __init__(self, root: str, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
-        self.files = sorted(glob.glob(os.path.join(root, "*.npz")))
-        if not self.files:
-            raise FileNotFoundError(f"No npz in {root}")
+    def __init__(self, win_dir: str, *, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
+        self.win_dir = win_dir
         self.feat_cfg = feat_cfg
         self.fps_default = float(fps_default)
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
 
+        self.files = sorted(glob.glob(os.path.join(win_dir, "*.npz")))
+        if not self.files:
+            raise FileNotFoundError(f"No .npz windows found under: {win_dir}")
+
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int):
-        p = self.files[idx]
-        joints, motion, conf, mask, fps, meta = read_window_npz(p, fps_default=self.fps_default)
+    def __getitem__(self, i: int):
+        fp = self.files[i]
+        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
+
+        # Build canonical features + derived mask.
+        Xc, mask_used = build_canonical_input(
+            joints_xy=joints,
+            motion_xy=motion,
+            conf=conf,
+            mask=mask,
+            fps=fps,
+            feat_cfg=self.feat_cfg,
+        )
+
         if self.arch == "tcn":
-            X, _ = build_tcn_input(joints, motion, conf, mask, fps, self.feat_cfg)
-            return X.astype(np.float32), meta
-        X, _ = build_gcn_input(joints, motion, conf, mask, fps, self.feat_cfg)
-        if self.two_stream:
-            xy = X[..., 0:2]
-            conf1 = X[..., -1:] if (self.feat_cfg.use_conf_channel) else None
-            xj = np.concatenate([xy, conf1], axis=-1) if conf1 is not None else xy
-            xm = X[..., 2:4] if self.feat_cfg.use_motion else np.zeros_like(xy, dtype=np.float32)
-            return (xj.astype(np.float32), xm.astype(np.float32)), meta
-        return X.astype(np.float32), meta
+            X = build_tcn_input(Xc, self.feat_cfg)
+        else:
+            X = Xc
+            if self.two_stream:
+                X = split_gcn_two_stream(X, self.feat_cfg)
+
+        # Confirm scores (computed from window signal; used by alert policy if enabled).
+        lying_score = float(getattr(meta, "lying_score", 0.0))
+        motion_score = float(getattr(meta, "motion_score", 0.0))
+        if lying_score == 0.0 and motion_score == 0.0:
+            try:
+                ls, ms = confirm_scores_window(joints, mask_used, fps=float(fps))
+                lying_score = float(ls) if np.isfinite(ls) else 0.0
+                motion_score = float(ms) if np.isfinite(ms) else 0.0
+            except Exception:
+                # Keep zeros; alert policy will fall back to probability-only confirm if needed.
+                pass
+
+        m = MetaLite(
+            video_id=str(meta.video_id),
+            w_start=int(meta.w_start),
+            w_end=int(meta.w_end),
+            fps=float(meta.fps),
+            lying_score=lying_score,
+            motion_score=motion_score,
+        )
+        return X, m
+
 
 
 def _collate(batch):
-    Xs, metas = [], []
-    for x, m in batch:
-        Xs.append(x)
-        metas.append(m)
-    return Xs, metas
+    Xs, metas = zip(*batch)
+    return list(Xs), list(metas)
 
 
 def _times_from_windows(ws: np.ndarray, we: np.ndarray, fps: float) -> np.ndarray:
-    center = 0.5 * (ws.astype(np.float32) + we.astype(np.float32) + 1.0)
-    return center / max(1e-6, float(fps))
+    """Window timestamps aligned with metrics.py (w_end is INCLUSIVE).
+
+    We use the same implementation as core.alerting.times_from_windows with mode='center':
+      t = (w_start + w_end) / 2 / fps
+    """
+    return times_from_windows(ws, we, float(fps), mode="center")
 
 
 @torch.no_grad()
 def infer_probs(model, loader, device, arch: str, two_stream: bool):
     probs = []
     vids, ws, we, fps = [], [], [], []
+    ls_list, ms_list = [], []
+
     for Xs, metas in loader:
         if arch == "tcn":
             xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
@@ -101,15 +139,27 @@ def infer_probs(model, loader, device, arch: str, two_stream: bool):
             else:
                 xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
                 logits = logits_1d(model(xb))
-        # Always flatten to 1-D (defensive against (B,1) logits).
+
         p = torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
         probs.append(p)
+
         for m in metas:
-            vids.append(m.video_id or os.path.splitext(os.path.basename(m.path))[0])
+            vids.append(m.video_id)
             ws.append(int(m.w_start))
             we.append(int(m.w_end))
             fps.append(float(m.fps))
-    return (np.concatenate(probs) if probs else np.array([]), vids, np.asarray(ws), np.asarray(we), np.asarray(fps, dtype=float))
+            ls_list.append(float(m.lying_score))
+            ms_list.append(float(m.motion_score))
+
+    return (
+        (np.concatenate(probs) if probs else np.array([])),
+        vids,
+        np.asarray(ws),
+        np.asarray(we),
+        np.asarray(fps, dtype=float),
+        np.asarray(ls_list, dtype=np.float32),
+        np.asarray(ms_list, dtype=np.float32),
+    )
 
 
 def main() -> None:
@@ -145,33 +195,14 @@ def main() -> None:
     fps_default = float(data_cfg_d.get("fps_default", 30.0))
     two_stream = bool(model_cfg_d.get("two_stream", False))
 
-    # build model dims from one sample
-    sample_files = sorted(glob.glob(os.path.join(args.win_dir, "*.npz")))
-    if not sample_files:
-        raise SystemExit(f"No npz in {args.win_dir}")
-
-    joints, motion, conf, mask, fps, meta = read_window_npz(sample_files[0], fps_default=fps_default)
-    if arch == "tcn":
-        X0, _ = build_tcn_input(joints, motion, conf, mask, fps, feat_cfg)
-        model = build_model("tcn", model_cfg_d, in_ch=int(X0.shape[1])).to(device)
-    else:
-        X0, _ = build_gcn_input(joints, motion, conf, mask, fps, feat_cfg)
-        if two_stream:
-            xy = X0[..., 0:2]
-            conf1 = X0[..., -1:] if feat_cfg.use_conf_channel else None
-            xj = np.concatenate([xy, conf1], axis=-1) if conf1 is not None else xy
-            xm = X0[..., 2:4] if feat_cfg.use_motion else np.zeros_like(xy, dtype=np.float32)
-            model = build_model("gcn", model_cfg_d, in_ch=0, num_joints=int(X0.shape[1]), in_feats=0, in_feats_j=int(xj.shape[-1]), in_feats_m=int(xm.shape[-1])).to(device)
-        else:
-            model = build_model("gcn", model_cfg_d, in_ch=0, num_joints=int(X0.shape[1]), in_feats=int(X0.shape[-1])).to(device)
-
+    model = build_model(arch, model_cfg_d, feat_cfg, fps_default=fps_default).to(device)
     model.load_state_dict(bundle["state_dict"], strict=True)
     model.eval()
 
     ds = UnlabeledWindows(args.win_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
     loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
 
-    probs, vids, ws, we, fps_arr = infer_probs(model, loader, device, arch, two_stream)
+    probs, vids, ws, we, fps_arr, ls_arr, ms_arr = infer_probs(model, loader, device, arch, two_stream)
 
     alert_cfg = AlertCfg(
         ema_alpha=float(args.ema_alpha),
@@ -187,9 +218,15 @@ def main() -> None:
         confirm_require_low=bool(int(args.confirm_require_low)),
     )
 
-    # per-video alerts
     vids_arr = np.asarray(vids)
-    out = {"arch": arch, "ckpt": args.ckpt, "win_dir": args.win_dir, "alert_cfg": alert_cfg.to_dict(), "per_video": {}, "total": {}}
+    out: Dict[str, Any] = {
+        "arch": arch,
+        "ckpt": args.ckpt,
+        "win_dir": args.win_dir,
+        "alert_cfg": alert_cfg.to_dict(),
+        "per_video": {},
+        "total": {},
+    }
 
     total_alerts = 0
     total_dur_s = 0.0
@@ -201,12 +238,27 @@ def main() -> None:
         p_v = probs[mv][idx]
         ws_v = ws[mv][idx]
         we_v = we[mv][idx]
+        ls_v = ls_arr[mv][idx]
+        ms_v = ms_arr[mv][idx]
         fps_v = float(np.median(fps_arr[mv])) if np.isfinite(fps_arr[mv]).any() else fps_default
+
         t_v = _times_from_windows(ws_v, we_v, fps_v)
+
+        # Duration MUST honor inclusive w_end: +1 frame.
         duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
 
-        st = classify_states(p_v, t_v, alert_cfg)
-        _alert_mask, events = detect_alert_events(p_v, t_v, alert_cfg)
+        # Duration guard: skip degenerate videos to avoid infinite/unstable FA rates.
+        if not np.isfinite(duration_s) or duration_s < 1.0:
+            out["per_video"][v] = {
+                "skipped": True,
+                "reason": f"duration_s too small ({duration_s})",
+                "n_windows": int(len(ws_v)),
+            }
+            continue
+
+        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
+        _alert_mask, events = detect_alert_events(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
+
         n = int(len(events))
         fa_hour = float(n / (duration_s / 3600.0)) if duration_s > 0 else float("nan")
         fa_day = float(n / (duration_s / 86400.0)) if duration_s > 0 else float("nan")

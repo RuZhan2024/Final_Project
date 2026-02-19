@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-split/make_splits.py  (rewritten)
+split/make_splits.py  (upgraded)
 
 Create train/val/test stem lists from a labels JSON: {stem: label}.
 
-Design goals (new pipeline concepts)
------------------------------------
-1) Leak-proof: support *group-wise* splitting (subject / scene / clip) so that
+Design goals
+------------
+1) Leak-proof: support group-wise splitting (subject / scene / clip) so that
    all stems from the same group go to the same split.
 2) Stratified: keep class proportions roughly stable (binary by default, but
    supports multi-class).
-3) Deterministic: controlled by --seed.
+3) Deterministic: controlled by --seed; NO use of Python's built-in hash().
 4) Stable sizes: when groups have very different sizes, split to match fractions
    by STEM COUNTS (default), not just group counts.
 
@@ -19,44 +19,44 @@ Outputs (in --out_dir)
   <prefix>_train.txt
   <prefix>_val.txt
   <prefix>_test.txt
+  <prefix>_split_summary.json  (unless --summary_json specified)
 
-Optional:
-  <prefix>_split_summary.json
-
-Backwards compatible CLI
-------------------------
-This keeps the old flags used by your Makefile:
+CLI compatibility
+-----------------
+Keeps old flags used by your Makefile:
   --labels_json --out_dir --prefix --seed --train --val --test
   --group_mode --group_regex
 
-New features:
+New/Improved:
   --group_mode json --group_json <path>
+  --group_mode caucafall_subject   (robust Subject-level grouping)
   --balance_by stems|groups
   --ensure_min_per_class <int>
   --summary_json <path>
 
-Label normalization
--------------------
-Accepts: 1/0, true/false, "fall"/"adl", etc. For multi-class, any other string
-is treated as a distinct class name.
+Recommended for CAUCAFall:
+  --group_mode caucafall_subject
+OR
+  --group_mode regex --group_regex "(?i)^(subject[._-]?\\d+)"
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import re
-from collections import defaultdict, Counter
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # -----------------------------
 # Label normalization
 # -----------------------------
 _POS_STR = {"1", "true", "fall", "pos", "positive", "yes"}
-_NEG_STR = {"0", "false", "adl", "neg", "negative", "no", "nonfall"}
+_NEG_STR = {"0", "false", "adl", "neg", "negative", "no", "nonfall", "nofall"}
 
 
 def norm_label(v: Any) -> str:
@@ -77,14 +77,33 @@ def norm_label(v: Any) -> str:
         return "1"
     if s in _NEG_STR:
         return "0"
-    # multi-class label (e.g., "sit", "stand", ...)
     return str(v).strip()
+
+
+# -----------------------------
+# Stable hashing / determinism
+# -----------------------------
+def stable_hash_u32(text: str) -> int:
+    """
+    Stable 32-bit-ish integer hash for strings across platforms/runs.
+    Uses MD5 (fast, stable) and takes first 8 hex chars.
+    """
+    h = hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
+    return int(h, 16)
 
 
 # -----------------------------
 # Grouping helpers
 # -----------------------------
-def group_id_for(stem: str, mode: str, regex: Optional[str], group_map: Optional[Dict[str, str]]) -> str:
+_CAUC_SUBJ_RE = re.compile(r"(?i)(subject[._-]?\d+)")
+
+
+def group_id_for(
+    stem: str,
+    mode: str,
+    regex: Optional[str],
+    group_map: Optional[Dict[str, str]],
+) -> str:
     """
     Return a group id for a given stem.
 
@@ -92,6 +111,7 @@ def group_id_for(stem: str, mode: str, regex: Optional[str], group_map: Optional
       - none: each stem is its own group
       - before_dunder: split on first "__"
       - regex: use regex match (group 1 if exists, else full match)
+      - caucafall_subject: extract "SubjectXX"/"Subject.XX"/"Subject_XX" anywhere in stem
       - json: lookup stem in group_map, fallback to stem
     """
     if mode == "none":
@@ -99,6 +119,10 @@ def group_id_for(stem: str, mode: str, regex: Optional[str], group_map: Optional
 
     if mode == "before_dunder":
         return stem.split("__", 1)[0]
+
+    if mode == "caucafall_subject":
+        m = _CAUC_SUBJ_RE.search(stem)
+        return m.group(1) if m else stem
 
     if mode == "regex":
         if not regex:
@@ -127,7 +151,7 @@ def load_group_map(group_json: Optional[str]) -> Optional[Dict[str, str]]:
     p = Path(group_json)
     if not p.exists():
         raise SystemExit(f"[ERR] group_json not found: {p}")
-    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
     out: Dict[str, str] = {}
     if isinstance(raw, dict):
         for k, v in raw.items():
@@ -139,7 +163,7 @@ def load_group_map(group_json: Optional[str]) -> Optional[Dict[str, str]]:
 
 
 # -----------------------------
-# Splitting
+# Splitting helpers
 # -----------------------------
 def _validate_fracs(train: float, val: float, test: float) -> None:
     total = train + val + test
@@ -151,22 +175,22 @@ def _validate_fracs(train: float, val: float, test: float) -> None:
 
 def _targets(n: int, train: float, val: float, test: float) -> Tuple[int, int, int]:
     """
-    Turn fractions into counts that sum to n.
+    Turn fractions into counts that sum to n (rounded).
     """
     n_train = int(round(train * n))
     n_val = int(round(val * n))
     n_test = n - n_train - n_val
-    # guard against negative due to rounding
+
+    # Guard against negative due to rounding:
     if n_test < 0:
         n_test = 0
-        # adjust train/val down if needed
         over = (n_train + n_val) - n
         if over > 0:
-            # reduce val first, then train
             take = min(over, n_val)
             n_val -= take
             over -= take
             n_train = max(0, n_train - over)
+
     return n_train, n_val, n_test
 
 
@@ -185,15 +209,19 @@ def split_groups_to_match_targets(
     balance_by:
       - "groups": split by number of groups (simple)
       - "stems":  split by total stem count across groups (default; better when group sizes vary)
+
+    Determinism:
+      - group_ids are sorted before any seeded randomness
+      - for stems balancing, largest groups are placed first (bin-pack style)
     """
     balance_by = balance_by.lower()
     if balance_by not in {"groups", "stems"}:
         raise ValueError("balance_by must be 'groups' or 'stems'")
 
-    gids = list(group_ids)
-    rng.shuffle(gids)
+    gids = sorted(set(group_ids))  # deterministic base order
 
     if balance_by == "groups":
+        rng.shuffle(gids)
         n = len(gids)
         t_tr, t_va, _ = _targets(n, train, val, test)
         tr = gids[:t_tr]
@@ -205,33 +233,59 @@ def split_groups_to_match_targets(
     total = sum(group_sizes[g] for g in gids)
     t_tr, t_va, t_te = _targets(total, train, val, test)
 
-    tr, va, te = [], [], []
+    # Place large groups first. Use deterministic random tie-break for equal sizes.
+    items = [(g, group_sizes[g], rng.random()) for g in gids]
+    items.sort(key=lambda x: (-x[1], x[2]))
+    ordered = [g for (g, _, _) in items]
+
+    tr: List[str] = []
+    va: List[str] = []
+    te: List[str] = []
     c_tr = c_va = c_te = 0
 
-    # Sequential fill with mild balancing: push to split that is most under target.
     def deficit(cur: int, target: int) -> int:
         return target - cur
 
-    for g in gids:
+    def rel_fill(cur: int, target: int) -> float:
+        # lower is "more underfilled"; if target==0, treat as fully filled
+        if target <= 0:
+            return 1e9
+        return float(cur) / float(target)
+
+    for g in ordered:
         sz = group_sizes[g]
-        # compute deficits
+
         d_tr = deficit(c_tr, t_tr)
         d_va = deficit(c_va, t_va)
         d_te = deficit(c_te, t_te)
 
-        # pick split with largest positive deficit; if all <=0, put into test.
+        # Prefer the split with the largest positive deficit.
         choices = [("tr", d_tr), ("va", d_va), ("te", d_te)]
         choices.sort(key=lambda x: x[1], reverse=True)
-        pick = choices[0][0] if choices[0][1] > 0 else "te"
+
+        if choices[0][1] > 0:
+            pick = choices[0][0]
+        else:
+            # All deficits <= 0: pick the split with smallest relative fill
+            # (better than always dumping into test).
+            fills = [
+                ("tr", rel_fill(c_tr, t_tr)),
+                ("va", rel_fill(c_va, t_va)),
+                ("te", rel_fill(c_te, t_te)),
+            ]
+            fills.sort(key=lambda x: x[1])
+            pick = fills[0][0]
 
         if pick == "tr":
-            tr.append(g); c_tr += sz
+            tr.append(g)
+            c_tr += sz
         elif pick == "va":
-            va.append(g); c_va += sz
+            va.append(g)
+            c_va += sz
         else:
-            te.append(g); c_te += sz
+            te.append(g)
+            c_te += sz
 
-    # ensure all groups assigned
     return tr, va, te
 
 
@@ -241,7 +295,7 @@ def enforce_min_per_class(
 ) -> None:
     """
     Best-effort: ensure each class has at least min_per_class groups in each split,
-    if possible. This is a light-touch heuristic for tiny datasets.
+    if possible. This helps tiny datasets.
 
     class_to_split_gids[class]["tr"/"va"/"te"] = [group ids]
     """
@@ -249,27 +303,39 @@ def enforce_min_per_class(
         return
 
     splits = ("tr", "va", "te")
+
     for cls, d in class_to_split_gids.items():
-        # Count availability
         total = sum(len(d[s]) for s in splits)
         if total == 0:
             continue
+
+        # If total groups is too small to satisfy all splits, do best-effort only.
+        # (e.g., 2 groups can never cover 3 splits.)
         for s in splits:
             if len(d[s]) >= min_per_class:
                 continue
-            # attempt to borrow from the split with the most groups
+
             need = min_per_class - len(d[s])
-            donors = sorted([x for x in splits if x != s], key=lambda x: len(d[x]), reverse=True)
+            # Donors sorted by available surplus (deterministic)
+            donors = sorted(
+                [x for x in splits if x != s],
+                key=lambda x: (len(d[x]), x),
+                reverse=True,
+            )
+
             for donor in donors:
                 if need <= 0:
                     break
-                if len(d[donor]) > min_per_class:
-                    take = min(need, len(d[donor]) - min_per_class)
-                    moved = d[donor][:take]
-                    d[donor] = d[donor][take:]
-                    d[s].extend(moved)
-                    need -= take
-            # if cannot satisfy, leave as-is
+                surplus = len(d[donor]) - min_per_class
+                if surplus <= 0:
+                    continue
+
+                take = min(need, surplus)
+                # Move deterministically from the front (lists are deterministic from split logic)
+                moved = d[donor][:take]
+                d[donor] = d[donor][take:]
+                d[s].extend(moved)
+                need -= take
 
 
 def expand_groups(groups: Dict[str, List[str]], gids: List[str]) -> List[str]:
@@ -279,6 +345,9 @@ def expand_groups(groups: Dict[str, List[str]], gids: List[str]) -> List[str]:
     return sorted(out)
 
 
+# -----------------------------
+# Main
+# -----------------------------
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--labels_json", required=True, help="Path to labels JSON {stem: label}")
@@ -292,7 +361,7 @@ def main() -> None:
 
     ap.add_argument(
         "--group_mode",
-        choices=["none", "before_dunder", "regex", "json"],
+        choices=["none", "before_dunder", "regex", "caucafall_subject", "json"],
         default="none",
         help="How to group stems to avoid leakage (group-wise split).",
     )
@@ -320,24 +389,25 @@ def main() -> None:
     if not labels_path.exists():
         raise SystemExit(f"[ERR] labels_json not found: {labels_path}")
 
-    raw = json.loads(labels_path.read_text(encoding="utf-8"))
+    raw = json.loads(labels_path.read_text(encoding="utf-8", errors="ignore"))
     labels: Dict[str, str] = {str(stem): norm_label(lab) for stem, lab in raw.items()}
     if not labels:
         raise SystemExit("[ERR] labels_json is empty")
 
     group_map = load_group_map(args.group_json) if args.group_mode == "json" else None
 
-    # Build groups
+    # Build groups deterministically
     groups: Dict[str, List[str]] = defaultdict(list)
-    for stem in labels.keys():
+    for stem in sorted(labels.keys()):
         gid = group_id_for(stem, args.group_mode, args.group_regex, group_map)
         groups[gid].append(stem)
 
     # Group sizes (stems)
     group_sizes = {gid: len(stems) for gid, stems in groups.items()}
 
-    # Assign group label: if any member in group has a class, we use majority,
-    # but for binary (0/1) it's safer to mark group positive if ANY positive exists.
+    # Assign group label:
+    # - binary: group is positive if ANY positive exists (safer for fall detection)
+    # - multi-class: majority vote (stable tie-break)
     classes = sorted(set(labels.values()))
     is_binary_01 = set(classes) <= {"0", "1"}
 
@@ -347,21 +417,32 @@ def main() -> None:
         if is_binary_01:
             group_class[gid] = "1" if any(l == "1" for l in labs) else "0"
         else:
-            # majority vote
-            group_class[gid] = Counter(labs).most_common(1)[0][0]
+            cnt = Counter(labs)
+            best_n = max(cnt.values())
+            # stable tie-break: smallest label string
+            best_labels = sorted([k for k, v in cnt.items() if v == best_n])
+            group_class[gid] = best_labels[0]
 
     # Split per class at GROUP level
-    rng = random.Random(args.seed)
     class_to_gids: Dict[str, List[str]] = defaultdict(list)
     for gid, cls in group_class.items():
         class_to_gids[cls].append(gid)
 
     class_to_split_gids: Dict[str, Dict[str, List[str]]] = {}
-    for cls, gids in class_to_gids.items():
-        # use independent shuffle per class for determinism
-        rng_cls = random.Random(args.seed + (hash(cls) % 10_000))
+
+    for cls, gids in sorted(class_to_gids.items(), key=lambda kv: kv[0]):
+        # Stable per-class RNG (NO Python hash()).
+        cls_offset = stable_hash_u32(cls) % 1_000_000_000
+        rng_cls = random.Random(args.seed + cls_offset)
+
         tr, va, te = split_groups_to_match_targets(
-            gids, group_sizes, args.train, args.val, args.test, rng_cls, balance_by=args.balance_by
+            gids,
+            group_sizes,
+            args.train,
+            args.val,
+            args.test,
+            rng_cls,
+            balance_by=args.balance_by,
         )
         class_to_split_gids[cls] = {"tr": tr, "va": va, "te": te}
 
@@ -369,7 +450,10 @@ def main() -> None:
     enforce_min_per_class(class_to_split_gids, args.ensure_min_per_class)
 
     # Combine groups from all classes
-    tr_gids, va_gids, te_gids = [], [], []
+    tr_gids: List[str] = []
+    va_gids: List[str] = []
+    te_gids: List[str] = []
+
     for cls in sorted(class_to_split_gids.keys()):
         tr_gids.extend(class_to_split_gids[cls]["tr"])
         va_gids.extend(class_to_split_gids[cls]["va"])
@@ -379,13 +463,17 @@ def main() -> None:
     val_stems = expand_groups(groups, va_gids)
     test_stems = expand_groups(groups, te_gids)
 
-    # Safety checks
+    # Safety checks (no overlaps; no missing)
     set_tr, set_va, set_te = set(train_stems), set(val_stems), set(test_stems)
     if (set_tr & set_va) or (set_tr & set_te) or (set_va & set_te):
         raise SystemExit("[ERR] split overlap detected (grouping bug or duplicate stems).")
+
     if len(set_tr) + len(set_va) + len(set_te) != len(labels):
         missing = set(labels) - (set_tr | set_va | set_te)
-        raise SystemExit(f"[ERR] missing stems in splits: {len(missing)} (example: {next(iter(missing)) if missing else 'n/a'})")
+        raise SystemExit(
+            f"[ERR] missing stems in splits: {len(missing)} "
+            f"(example: {next(iter(missing)) if missing else 'n/a'})"
+        )
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -399,7 +487,7 @@ def main() -> None:
     p_va = write_txt(f"{args.prefix}_val.txt", val_stems)
     p_te = write_txt(f"{args.prefix}_test.txt", test_stems)
 
-    # Summary
+    # Summary helpers
     def count_by_class(stems: List[str]) -> Dict[str, int]:
         c: Dict[str, int] = defaultdict(int)
         for s in stems:
@@ -411,7 +499,12 @@ def main() -> None:
         "prefix": args.prefix,
         "seed": args.seed,
         "fractions": {"train": args.train, "val": args.val, "test": args.test},
-        "grouping": {"mode": args.group_mode, "regex": args.group_regex, "group_json": args.group_json, "balance_by": args.balance_by},
+        "grouping": {
+            "mode": args.group_mode,
+            "regex": args.group_regex,
+            "group_json": args.group_json,
+            "balance_by": args.balance_by,
+        },
         "counts": {
             "total": len(labels),
             "train": len(train_stems),
@@ -433,6 +526,7 @@ def main() -> None:
         sp = Path(args.summary_json)
     else:
         sp = out_dir / f"{args.prefix}_split_summary.json"
+
     sp.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print("[OK] wrote splits:")
@@ -440,8 +534,6 @@ def main() -> None:
     print(" ", p_va, len(val_stems))
     print(" ", p_te, len(test_stems))
     print("[OK] wrote summary:", sp)
-
-    # Pretty class summary
     print("[class total]", summary["class_counts_total"])
     print("[class train]", summary["class_counts_train"])
     print("[class val]  ", summary["class_counts_val"])

@@ -396,6 +396,8 @@ def main() -> None:
     ap.add_argument("--npz_dir", required=True)
     ap.add_argument("--labels_json", required=True)
     ap.add_argument("--spans_json", default=None)
+    ap.add_argument("--require_spans", type=int, default=0,
+                    help="If 1: spans_json must exist and contain at least one span entry; abort otherwise.")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--W", type=int, required=True)
     ap.add_argument("--stride", type=int, required=True)
@@ -464,6 +466,15 @@ def main() -> None:
     spans: Dict[str, List[Tuple[int, int]]] = {}
     if args.spans_json and os.path.exists(args.spans_json):
         spans = normalize_spans(load_json(args.spans_json))
+
+    # Hard span enforcement (recommended for realistic event metrics)
+    if int(getattr(args, 'require_spans', 0)) == 1:
+        if not args.spans_json:
+            raise SystemExit("[ERR] --require_spans=1 but --spans_json was not provided.")
+        if not os.path.exists(args.spans_json):
+            raise SystemExit(f"[ERR] --require_spans=1 but spans_json not found: {args.spans_json}")
+        if not spans:
+            raise SystemExit(f"[ERR] --require_spans=1 but spans_json is empty: {args.spans_json}")
 
     # Resolve auto fallback behaviour:
     # - If spans are provided (span-based datasets), default to skipping fall videos without spans (strict).
@@ -645,8 +656,8 @@ def main() -> None:
                 # legacy
                 xy=joints,
                 conf=win_conf.astype(np.float32, copy=False),
-                y=np.int8(y),
-                label=np.int8(y),
+                y=np.int32(y),
+                label=np.int32(y),
 
                 # multi-stream ready
                 joints=joints,
@@ -655,7 +666,7 @@ def main() -> None:
 
                 # overlap + quality
                 valid_frac=np.float32(valid_frac),
-                overlap_frames=np.int16(ov),
+                overlap_frames=np.int32(ov),
                 overlap_frac=np.float32(overlap_frac),
 
                 # meta

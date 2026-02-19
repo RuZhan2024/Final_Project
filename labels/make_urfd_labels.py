@@ -2,38 +2,9 @@
 """
 URFD labels (+ optional fall spans) builder (rewrite).
 
-Goal
-----
-Produce:
-  - labels JSON: stem -> "fall"/"adl"
-  - spans JSON (optional): stem -> [[start, stop], ...] (half-open)
-
-Why spans (optional)?
---------------------
-If you can derive fall spans from per-frame annotations, window labeling by overlap
-is much more accurate than "whole clip is fall". If your per-frame .txt files
-do NOT encode fall-vs-adl classes (e.g., only 'person' bounding boxes), then this
-script will still produce labels but spans will likely be empty.
-
-Inputs
-------
-- --npz_dir : cleaned pose sequences (default: data/interim/urfd/pose_npz)
-
-Optional per-frame annotation support:
-- --ann_glob : pattern with "{stem}" placeholder pointing to per-frame .txt files for that stem,
-               e.g. 'data/raw/UR_Fall_clips/{stem}/*.txt'
-- --fall_class_id : YOLO class id indicating FALL (only if your txts encode action classes)
-
-Span extraction rule
---------------------
-A frame is considered "fall" if ANY line in its txt has class_id == fall_class_id,
-or the file contains a token 'fall' (but not 'nonfall'/'nofall').
-We then convert consecutive fall frames into spans [start, stop) with optional gap filling.
-
-Outputs
--------
-- --out_labels (default: configs/labels/urfd.json)
-- --out_spans  (default: configs/labels/urfd_spans.json) if --ann_glob is provided
+Updates:
+- Verbose warnings on per-frame txt read failures.
+- Final summary stats always printed.
 """
 
 from __future__ import annotations
@@ -45,16 +16,16 @@ import os
 import pathlib
 import re
 from typing import Dict, List, Optional
+
 import numpy as np
 
 
 def read_npz_src(npz_path: str) -> str:
     """Read embedded 'src' field from a cleaned pose npz if present."""
     try:
-        with np.load(npz_path, allow_pickle=True) as z:
+        with np.load(npz_path, allow_pickle=False) as z:
             if "src" in z.files:
                 v = z["src"]
-                # np arrays can store bytes/object; normalize to str
                 if isinstance(v, (bytes, bytearray)):
                     return v.decode("utf-8", errors="ignore")
                 if hasattr(v, "item"):
@@ -67,19 +38,17 @@ def read_npz_src(npz_path: str) -> str:
         return ""
     return ""
 
+
 def list_npz_files(npz_dir: str) -> List[str]:
     return sorted(glob.glob(os.path.join(npz_dir, "**", "*.npz"), recursive=True))
+
 
 def tokenise(s: str) -> List[str]:
     return [t for t in re.split(r"[^A-Za-z0-9]+", s.lower()) if t]
 
+
 def infer_label_from_path(npz_path: str) -> str:
-    """
-    Robust label inference:
-      - if tokens contain nonfall/nofall/adl -> adl
-      - elif tokens contain fall -> fall
-      - else -> adl
-    """
+    """Robust label inference from tokens in path/stem."""
     p = pathlib.Path(npz_path)
     toks = set()
     for part in p.parts:
@@ -92,11 +61,13 @@ def infer_label_from_path(npz_path: str) -> str:
         return "fall"
     return "adl"
 
+
 def expand_ann_glob(ann_glob: str, stem: str) -> List[str]:
     pattern = ann_glob.format(stem=stem)
     return sorted(glob.glob(pattern, recursive=True))
 
-def parse_frame_is_fall(txt_path: str, fall_class_id: int) -> Optional[bool]:
+
+def parse_frame_is_fall(txt_path: str, fall_class_id: int, *, verbose: bool = False) -> Optional[bool]:
     """
     Return True if frame labeled fall, False otherwise, None if unreadable.
     Supports:
@@ -105,7 +76,9 @@ def parse_frame_is_fall(txt_path: str, fall_class_id: int) -> Optional[bool]:
     """
     try:
         content = pathlib.Path(txt_path).read_text(encoding="utf-8", errors="ignore").strip()
-    except Exception:
+    except Exception as e:
+        if verbose:
+            print(f"[warn] failed to read per-frame txt: {txt_path} ({e})")
         return None
 
     if not content:
@@ -131,6 +104,7 @@ def parse_frame_is_fall(txt_path: str, fall_class_id: int) -> Optional[bool]:
         if cid == int(fall_class_id):
             return True
     return False
+
 
 def bool_runs_to_spans(flags: List[bool], min_run: int, gap_fill: int) -> List[List[int]]:
     if not flags:
@@ -174,19 +148,21 @@ def bool_runs_to_spans(flags: List[bool], min_run: int, gap_fill: int) -> List[L
         i = stop
     return spans
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--npz_dir", default="data/interim/urfd/pose_npz")
     ap.add_argument("--out_labels", default="configs/labels/urfd.json")
     ap.add_argument("--out_spans", default="configs/labels/urfd_spans.json")
     ap.add_argument("--ann_glob", default=None,
-                    help="Per-frame annotation glob with {stem} placeholder. NOTE: DO NOT point this at YOLO bbox .txt files.")
+                    help="Per-frame annotation glob with {stem} placeholder.")
     ap.add_argument("--use_per_frame_action_txt", type=int, default=0,
                     help="Set to 1 only if your per-frame .txt truly encodes FALL/ADL action class IDs (NOT bboxes).")
     ap.add_argument("--fall_class_id", type=int, default=0)
     ap.add_argument("--min_run", type=int, default=3)
     ap.add_argument("--gap_fill", type=int, default=1)
     ap.add_argument("--print_stats", action="store_true")
+    ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     if args.ann_glob and int(args.use_per_frame_action_txt) != 1:
@@ -211,11 +187,10 @@ def main():
             if txts:
                 flags: List[bool] = []
                 for t in txts:
-                    is_fall = parse_frame_is_fall(t, args.fall_class_id)
+                    is_fall = parse_frame_is_fall(t, args.fall_class_id, verbose=args.verbose)
                     flags.append(bool(is_fall))  # None -> False
 
-                # Guard: URFD per-frame *.txt are often person bounding boxes (YOLO), not action labels.
-                # If almost every frame is flagged as fall, span-derivation is almost certainly wrong.
+                # Guard against bbox txt misuse
                 if len(flags) >= 20:
                     fall_ratio = float(sum(flags)) / float(len(flags))
                     if fall_ratio >= 0.95:
@@ -255,9 +230,14 @@ def main():
 
         if suspicious_ann:
             print(
-                f"[warn] skipped span-derivation for {suspicious_ann} videos because per-frame txts looked like bounding boxes (almost all frames flagged as fall).\n"
-                "       If you truly have per-frame action labels, set --fall_class_id correctly or disable this guard by editing make_urfd_labels.py."
+                f"[warn] skipped span-derivation for {suspicious_ann} videos because per-frame txts looked like bounding boxes (almost all frames flagged as fall)."
             )
+
+    # Required verification stats
+    total_npz = len(files)
+    matched_labels = len(labels)
+    missing = total_npz - matched_labels
+    print(f"[summary] npz_total={total_npz}  matched_labels={matched_labels}  missing_or_skipped={missing}")
 
 if __name__ == "__main__":
     main()

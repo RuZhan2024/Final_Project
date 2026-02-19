@@ -119,39 +119,54 @@ def run_one_video(
     frame_idx = 0
     last_log = time.time()
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frame_idx += 1
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_idx += 1
 
-        # BGR -> RGB (MediaPipe expects RGB)
-        try:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        except Exception:
-            frames_xy.append(np.zeros((J, 2), dtype=np.float32))
-            frames_conf.append(np.zeros((J,), dtype=np.float32))
-            continue
+            # If container metadata is missing, recover width/height from first valid frame.
+            if (w == 0 or h == 0) and frame is not None and hasattr(frame, "shape"):
+                fh, fw = frame.shape[:2]
+                if fw > 0 and fh > 0:
+                    w = fw if w == 0 else w
+                    h = fh if h == 0 else h
 
-        res = pose.process(rgb)
+            # Some decoders can return ok=True but frame=None; handle safely.
+            if frame is None:
+                frames_xy.append(np.zeros((J, 2), dtype=np.float32))
+                frames_conf.append(np.zeros((J,), dtype=np.float32))
+                continue
 
-        if res.pose_landmarks and res.pose_landmarks.landmark:
-            lm = res.pose_landmarks.landmark
-            xy = np.array([[lm[i].x, lm[i].y] for i in range(J)], dtype=np.float32)  # [33,2]
-            conf = np.array([lm[i].visibility for i in range(J)], dtype=np.float32)  # [33]
-        else:
-            xy = np.zeros((J, 2), dtype=np.float32)
-            conf = np.zeros((J,), dtype=np.float32)
+            # BGR -> RGB (MediaPipe expects RGB)
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except Exception:
+                frames_xy.append(np.zeros((J, 2), dtype=np.float32))
+                frames_conf.append(np.zeros((J,), dtype=np.float32))
+                continue
 
-        frames_xy.append(xy)
-        frames_conf.append(conf)
+            res = pose.process(rgb)
 
-        now = time.time()
-        if log_every_s > 0 and (now - last_log) >= log_every_s:
-            print(f"[pose] {os.path.basename(path)} : {frame_idx} frames...", flush=True)
-            last_log = now
+            if res.pose_landmarks and res.pose_landmarks.landmark:
+                lm = res.pose_landmarks.landmark
+                xy = np.array([[lm[i].x, lm[i].y] for i in range(J)], dtype=np.float32)  # [33,2]
+                conf = np.array([lm[i].visibility for i in range(J)], dtype=np.float32)  # [33]
+            else:
+                xy = np.zeros((J, 2), dtype=np.float32)
+                conf = np.zeros((J,), dtype=np.float32)
 
-    cap.release()
+            frames_xy.append(xy)
+            frames_conf.append(conf)
+
+            now = time.time()
+            if log_every_s > 0 and (now - last_log) >= log_every_s:
+                print(f"[pose] {os.path.basename(path)} : {frame_idx} frames...", flush=True)
+                last_log = now
+
+    finally:
+        cap.release()
 
     if not frames_xy:
         print(f"[warn] no frames read: {path}", file=sys.stderr)
@@ -161,14 +176,17 @@ def run_one_video(
     conf = np.stack(frames_conf, axis=0)     # [T,33]
 
     os.makedirs(os.path.dirname(out_npz), exist_ok=True)
+    # Atomic write: avoid partially-written files being skipped on rerun.
+    tmp_npz = out_npz + ".tmp.npz"
     np.savez_compressed(
-        out_npz,
+        tmp_npz,
         xy=xy.astype(np.float32),
         conf=conf.astype(np.float32),
         fps=np.float32(fps),
         size=np.array([w, h], dtype=np.int32),
         src=str(path),
     )
+    os.replace(tmp_npz, out_npz)
     print(f"[ok] {path} → {out_npz}  (T={xy.shape[0]}, fps={fps:.1f}, size={w}x{h})")
     return True
 

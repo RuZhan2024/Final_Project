@@ -5,33 +5,17 @@ labels/make_caucafall_labels.py
 
 CAUCAFall labels + optional spans that match pose NPZ stems.
 
-What it does
-------------
-1) Iterate pose NPZ files in --npz_dir. Their stems are the canonical keys.
-2) Map each stem -> raw action directory under --raw_root/Subject.*/<Action Folder>
-3) Video-level label:
-      1 if action folder name starts with "Fall"
-      0 otherwise
-4) If --use_per_frame_action_txt 1 and label==1:
-   Read per-frame .txt files to derive fall start/stop spans.
-   Output spans in pose-index space.
+Critical update:
+- Infer Subject/Action strictly from NPZ `src` metadata (NOT seq_id parsing).
+- Works with newer extractors that produce collision-safe stems unrelated to Subject.* naming.
 
-Frame txt formats supported
----------------------------
-A) Action-label frames:
-   - Each frame txt contains one or more lines, where the FIRST token is a class id.
-   - classes.txt (optional) maps class_id -> class_name (one name per line).
-   - If any line begins with fall_class_id => that frame is fall.
+Outputs:
+- labels JSON: stem -> 0/1
+- spans JSON:  stem -> [[start, end), ...] in pose-index space (optional)
 
-B) YOLO bbox-only frames:
-   - Lines are: class xc yc w h (normalized floats)
-   - No "fall" class exists.
-   - We can (optionally) estimate fall frames with bbox geometry (auto mode).
-
-Safety defaults
----------------
-- If spans cannot be derived, we DO NOT create a full-clip span by default.
-  Use --full_clip_fallback_if_no_fall_frames to restore that behavior.
+Safety:
+- Verbose warnings on NPZ read failures or missing src.
+- Final summary stats always printed.
 """
 
 from __future__ import annotations
@@ -41,8 +25,9 @@ import glob
 import json
 import os
 import re
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 
 # -------------------------
@@ -66,11 +51,109 @@ def _last_int_group(path: str) -> Optional[int]:
     return int(groups[-1])
 
 
+def _safe_read_npz_str(npz_path: str, key: str) -> str:
+    """Read a scalar string-like field from npz safely."""
+    try:
+        with np.load(npz_path, allow_pickle=False) as z:
+            if key not in z.files:
+                return ""
+            v = z[key]
+            # Normalize np scalar/array -> python string
+            if isinstance(v, (bytes, bytearray)):
+                return v.decode("utf-8", errors="ignore")
+            try:
+                vv = v.reshape(-1)[0]
+            except Exception:
+                vv = v
+            if isinstance(vv, (bytes, bytearray)):
+                return vv.decode("utf-8", errors="ignore")
+            try:
+                return str(vv.item())
+            except Exception:
+                return str(vv)
+    except Exception:
+        return ""
+
+
+def _split_src_parts(src: str) -> List[str]:
+    """
+    Split src into path parts robustly across platforms.
+    src may be absolute, relative, or stored with '/' separators.
+    """
+    s = (src or "").strip()
+    if not s:
+        return []
+    s = s.replace("\\", "/")
+    # Remove accidental leading './'
+    if s.startswith("./"):
+        s = s[2:]
+    # Collapse repeated slashes
+    s = re.sub(r"/+", "/", s)
+    return [p for p in s.split("/") if p]
+
+
+def _infer_subj_action_from_npz(npz_path: str, raw_root: str, *, verbose: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Infer (subject_dir_name, action_dir_name) strictly from NPZ `src`.
+
+    We DO NOT parse seq_id anymore (fragile assumptions like dot separators).
+
+    Expected raw tree:
+      <raw_root>/Subject.<n>/<ActionFolder>/...
+
+    src can be:
+      - absolute path into raw_root
+      - relative path under raw_root (recommended after extraction patch)
+    """
+    src = _safe_read_npz_str(npz_path, "src")
+    if not src:
+        if verbose:
+            print(f"[warn] NPZ missing 'src' metadata; cannot infer subject/action: {npz_path}")
+        return None, None
+
+    # If src is absolute and raw_root is given, attempt relpath; otherwise treat src as relative.
+    rel = src
+    if raw_root:
+        try:
+            # Only relpath if src looks like a real absolute path
+            if os.path.isabs(src) and os.path.isdir(raw_root):
+                rel = os.path.relpath(src, raw_root)
+        except Exception:
+            rel = src
+
+    parts = _split_src_parts(rel)
+    if not parts:
+        if verbose:
+            print(f"[warn] could not parse src parts from NPZ for subject/action: src={src!r} npz={npz_path}")
+        return None, None
+
+    subj = None
+    action = None
+
+    # Find the first Subject.* segment
+    for i, p in enumerate(parts):
+        if p.startswith("Subject."):
+            subj = p
+            if i + 1 < len(parts):
+                action = parts[i + 1]
+            break
+
+    if subj is None or action is None:
+        if verbose:
+            print(f"[warn] src did not include Subject.* and action folder as expected: src={src!r} rel={rel!r}")
+        return None, None
+
+    # Optional verification against filesystem
+    if raw_root and os.path.isdir(raw_root):
+        cand = os.path.join(raw_root, subj, action)
+        if not os.path.isdir(cand) and verbose:
+            print(f"[warn] inferred Subject/Action not found under raw_root: {cand} (src={src!r})")
+
+    return subj, action
+
+
 def _read_classes_txt(path: str) -> Dict[int, str]:
-    """
-    Read classes.txt if present: each line is a class name, line index is class id.
-    Returns mapping {id: name_lower}.
-    """
+    """Read classes.txt if present: each line is a class name, line index is class id."""
     out: Dict[int, str] = {}
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -80,6 +163,8 @@ def _read_classes_txt(path: str) -> Dict[int, str]:
                     continue
                 out[i] = s.lower()
     except FileNotFoundError:
+        return out
+    except Exception:
         return out
     return out
 
@@ -128,7 +213,6 @@ def _runs(flags: List[bool], min_run: int) -> List[Tuple[int, int]]:
 def seq_len_from_npz(npz_path: str) -> Optional[int]:
     """Read length from pose NPZ (xy or joints)."""
     try:
-        import numpy as np
         with np.load(npz_path, allow_pickle=False) as z:
             if "xy" in z:
                 return int(z["xy"].shape[0])
@@ -145,13 +229,7 @@ def map_spans_raw_to_pose(
     frame_stride: int,
     clamp_len: Optional[int],
 ) -> List[List[int]]:
-    """
-    Map raw spans -> pose spans.
-
-    For [s, e_excl) raw:
-      s_pose = floor(s / k)
-      e_pose = ceil(e_excl / k) = (e_excl + k - 1)//k
-    """
+    """Map raw spans -> pose spans with stride and optional clamping."""
     k = max(1, int(frame_stride))
     out: List[List[int]] = []
     for s, e in spans:
@@ -186,16 +264,13 @@ def _peek_first_valid_line(txt_path: str) -> Optional[List[str]]:
                 return s.split()
     except FileNotFoundError:
         return None
+    except Exception:
+        return None
     return None
 
 
 def _detect_frame_mode(sample_tokens: List[str]) -> str:
-    """
-    Detect whether a frame txt line looks like:
-      - "action label": just class id (len=1) or class+anything non-bbox
-      - "bbox": len>=5 and tokens 1..4 look like floats in [0,1]
-    Returns: "class_id" or "bbox"
-    """
+    """Detect whether a frame txt line looks like class_id vs bbox style."""
     if len(sample_tokens) >= 5:
         try:
             vals = [float(sample_tokens[i]) for i in range(1, 5)]
@@ -223,14 +298,13 @@ def _is_fall_frame_class_id(txt_path: str, fall_class_id: int) -> bool:
                     return True
     except FileNotFoundError:
         return False
+    except Exception:
+        return False
     return False
 
 
 def _read_bbox_wh_largest(txt_path: str) -> Optional[Tuple[float, float]]:
-    """
-    For bbox txt: pick the largest-area bbox and return (w, h).
-    Line format: class xc yc w h
-    """
+    """For bbox txt: pick the largest-area bbox and return (w, h)."""
     best: Optional[Tuple[float, float]] = None
     best_area = -1.0
     try:
@@ -248,6 +322,8 @@ def _read_bbox_wh_largest(txt_path: str) -> Optional[Tuple[float, float]]:
                     best_area = area
                     best = (w, h)
     except FileNotFoundError:
+        return None
+    except Exception:
         return None
     return best
 
@@ -270,10 +346,7 @@ def spans_from_action_dir(
     bbox_ar_thr: float,
     bbox_h_drop: float,
 ) -> List[List[int]]:
-    """
-    Build raw-frame fall spans from an action directory.
-    Returns spans in raw-frame index space: [[start, end_excl], ...]
-    """
+    """Build raw-frame fall spans from an action directory."""
     classes_path = os.path.join(action_dir, "classes.txt")
     mapping = _read_classes_txt(classes_path)
 
@@ -282,7 +355,6 @@ def spans_from_action_dir(
         p for p in glob.glob(os.path.join(action_dir, "*.txt"))
         if os.path.basename(p).lower() != "classes.txt"
     ]
-    # Prefer numeric ordering if possible
     numeric_txts = [p for p in txts if _last_int_group(p) is not None]
     txts = sorted(numeric_txts, key=_last_int_group) if numeric_txts else sorted(txts)
 
@@ -295,7 +367,6 @@ def spans_from_action_dir(
         sample = _peek_first_valid_line(txts[0])
         if sample is None:
             return []
-        # If classes.txt explicitly contains "fall", treat as class_id
         if any(v == "fall" for v in mapping.values()):
             mode = "class_id"
         else:
@@ -310,7 +381,6 @@ def spans_from_action_dir(
         flags = [_is_fall_frame_class_id(p, fall_id) for p in txts]
 
     elif mode == "bbox":
-        # Estimate fall frames from bbox geometry
         whs = [_read_bbox_wh_largest(p) for p in txts]
         hs = [h for wh in whs if wh is not None for h in [wh[1]]]
         if not hs:
@@ -402,21 +472,20 @@ def main() -> int:
     labels: Dict[str, int] = {}
     spans: Dict[str, List[List[int]]] = {}
 
+    skipped = 0
     missing_map = 0
     for npz_path in npz_files:
         stem = os.path.splitext(os.path.basename(npz_path))[0]
-        parts = stem.split("__")
-        if len(parts) < 2:
-            if args.verbose:
-                print(f"[warn] unexpected stem format, skipping: {stem}")
-            continue
 
-        subj = parts[0]           # Subject.1
-        action_token = parts[1]   # Fall_left / Walk / etc.
+        subj, action_token = _infer_subj_action_from_npz(npz_path, raw_root, verbose=args.verbose)
+        if subj is None or action_token is None:
+            skipped += 1
+            continue
 
         amap = subj_actions.get(subj)
         if not amap:
             missing_map += 1
+            skipped += 1
             if args.verbose:
                 print(f"[warn] no subject folder for {subj} (stem={stem})")
             continue
@@ -424,6 +493,7 @@ def main() -> int:
         action_dir = amap.get(_norm(action_token))
         if not action_dir:
             missing_map += 1
+            skipped += 1
             if args.verbose:
                 print(f"[warn] no action folder match for {subj}/{action_token} (stem={stem})")
             continue
@@ -455,7 +525,6 @@ def main() -> int:
                 spans[stem] = pose_spans
             else:
                 if args.full_clip_fallback_if_no_fall_frames:
-                    # full-clip span in raw-frame space based on number of frame txt files
                     txts = [
                         p for p in glob.glob(os.path.join(action_dir, "*.txt"))
                         if os.path.basename(p).lower() != "classes.txt"
@@ -484,10 +553,13 @@ def main() -> int:
     with open(args.out_spans, "w", encoding="utf-8") as f:
         json.dump(spans, f, indent=2, sort_keys=True)
 
-    print(f"[OK] wrote labels → {args.out_labels} (total={len(labels)})")
+    # Required summary stats
+    total_npz = len(npz_files)
+    matched = len(labels)
+    missing = total_npz - matched
+    print(f"[OK] wrote labels → {args.out_labels} (total={matched})")
     print(f"[OK] wrote spans  → {args.out_spans}  (videos_with_spans={len(spans)})")
-    if args.verbose and missing_map:
-        print(f"[warn] missing subject/action mapping for {missing_map} npz stems")
+    print(f"[summary] npz_total={total_npz}  matched_labels={matched}  missing_or_skipped={missing}  skipped={skipped}  missing_map={missing_map}")
 
     return 0
 

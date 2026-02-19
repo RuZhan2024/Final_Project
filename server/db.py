@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Optional
 
 
 def _require_env(name: str, default: str | None = None) -> str:
@@ -70,3 +70,18 @@ def get_conn() -> Iterator[object]:
             conn.close()
         except Exception:
             pass
+
+
+@contextmanager
+def get_conn_optional() -> Iterator[Optional[object]]:
+    """Yield a connection when available, otherwise yield None.
+
+    Use this in endpoints that should still work when:
+    - PyMySQL isn't installed, or
+    - the DB isn't reachable.
+    """
+    try:
+        with get_conn() as conn:
+            yield conn
+    except Exception:
+        yield None

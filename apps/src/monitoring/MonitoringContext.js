@@ -8,11 +8,11 @@ import React, {
   useState,
 } from "react";
 
+import { getApiBase } from "../lib/config";
+import { apiRequest } from "../lib/apiClient";
+
 // Prefer env var, fallback to localhost
-const API_BASE =
-  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
-    ? process.env.REACT_APP_API_BASE
-    : "http://localhost:8000";
+const API_BASE = getApiBase();
 
 const MonitoringContext = createContext(null);
 
@@ -39,9 +39,7 @@ export function MonitoringProvider({ children }) {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const r = await fetch(`${API_BASE}/api/settings`);
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
+      const data = await apiRequest(API_BASE, "/api/settings");
       setSettingsPayload(data);
       const sys = data?.system || data || {};
       const raw =
@@ -105,12 +103,10 @@ export function MonitoringProvider({ children }) {
       const desired = Boolean(next) && startedOk;
       try {
         setError(null);
-        const r = await fetch(`${API_BASE}/api/settings`, {
+        await apiRequest(API_BASE, "/api/settings", {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ monitoring_enabled: desired }),
+          body: { monitoring_enabled: desired },
         });
-        if (!r.ok) throw new Error(await r.text());
         // DB desired flag now matches the user's choice
         setMonitoringDesired(desired);
         // Refresh other settings (threshold, model, etc.)
@@ -130,12 +126,10 @@ export function MonitoringProvider({ children }) {
     async (patch) => {
       try {
         setError(null);
-        const r = await fetch(`${API_BASE}/api/settings`, {
+        await apiRequest(API_BASE, "/api/settings", {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(patch || {}),
+          body: patch || {},
         });
-        if (!r.ok) throw new Error(await r.text());
         await refresh();
         return true;
       } catch (e) {

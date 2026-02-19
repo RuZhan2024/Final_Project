@@ -1,40 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import styles from "./Events.module.css";
-
-// Prefer env var, fallback to localhost
-const API_BASE =
-  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
-    ? process.env.REACT_APP_API_BASE
-    : "http://localhost:8000";
-
-function toISODateInput(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function parseDateSafe(s) {
-  const d = new Date(s);
-  return Number.isFinite(d.getTime()) ? d : null;
-}
-
-function statusLabel(s) {
-  const x = (s || "").toLowerCase();
-  if (x === "confirmed_fall") return "Confirmed";
-  if (x === "false_alarm") return "False Alarm";
-  if (x === "pending_review") return "Pending Review";
-  if (x === "dismissed") return "Dismissed";
-  return s || "—";
-}
-
-function typeLabel(t) {
-  const x = (t || "").toLowerCase();
-  if (x === "fall") return "Fall";
-  if (x === "uncertain") return "Uncertain";
-  if (x === "not_fall") return "Safe";
-  return t || "—";
-}
+import { useMonitoring } from "../monitoring/MonitoringContext";
+import { toISODateInput, parseDateSafe, endOfDay } from "../lib/dates";
+import { eventStatusLabel, eventTypeLabel, EVENT_STATUS_OPTIONS } from "../lib/eventLabels";
+import { useEventsData } from "./events/hooks/useEventsData";
 
 export default function Events() {
+  const { apiBase } = useMonitoring();
   // Filters (default: last 7 days)
   const [startDate, setStartDate] = useState(toISODateInput(new Date(Date.now() - 7 * 864e5)));
   const [endDate, setEndDate] = useState(toISODateInput(new Date()));
@@ -42,50 +14,14 @@ export default function Events() {
   const [status, setStatus] = useState("All");
   const [model, setModel] = useState("All");
 
-  // Data
-  const [events, setEvents] = useState([]);
-  const [todaySummary, setTodaySummary] = useState({ falls: 0, pending: 0, false_alarms: 0 });
-
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
-
-  async function load() {
-    try {
-      setErr(null);
-      setLoading(true);
-
-      // summary (today)
-      try {
-        const rs = await fetch(`${API_BASE}/api/events/summary?resident_id=1`);
-        if (rs.ok) {
-          const s = await rs.json();
-          if (s?.today) setTodaySummary(s.today);
-        }
-      } catch {
-        // ignore
-      }
-
-      const r = await fetch(`${API_BASE}/api/events?resident_id=1&limit=500`);
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
-      setEvents(Array.isArray(data?.events) ? data.events : []);
-      setLoading(false);
-    } catch (e) {
-      setErr(String(e?.message || e));
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
+  const { events, todaySummary, loading, error, reload, updateStatus } = useEventsData(apiBase, 1);
 
   const filteredEvents = useMemo(() => {
     const sD = parseDateSafe(startDate);
-    const eD = parseDateSafe(endDate);
-    if (eD) eD.setHours(23, 59, 59, 999);
-
+    const eD0 = parseDateSafe(endDate);
+    const eD = eD0 ? endOfDay(eD0) : null;
     return (events || []).filter((ev) => {
+      
       const t = parseDateSafe(ev.event_time);
       if (sD && t && t < sD) return false;
       if (eD && t && t > eD) return false;
@@ -126,20 +62,6 @@ export default function Events() {
     return { total, pending, confirmed, falseAlarms };
   }, [events]);
 
-  async function updateEventStatus(ev, newStatus) {
-    try {
-      const r = await fetch(`${API_BASE}/api/events/${ev.id}/status`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      await load();
-    } catch (e) {
-      alert(`Failed to update status: ${String(e?.message || e)}`);
-    }
-  }
-
   async function handleView(ev) {
     const current = (ev.status || "pending_review").toLowerCase();
     const next = window.prompt(
@@ -147,23 +69,25 @@ export default function Events() {
       current
     );
     if (!next) return;
-    const ok = ["pending_review", "confirmed_fall", "false_alarm", "dismissed"].includes(
-      next.toLowerCase()
-    );
+    const ok = EVENT_STATUS_OPTIONS.includes(next.toLowerCase());
     if (!ok) {
       alert("Invalid status.");
       return;
     }
-    await updateEventStatus(ev, next.toLowerCase());
+    try {
+      await updateStatus(ev.id, next.toLowerCase());
+    } catch (e) {
+      alert(`Failed to update status: ${String(e?.message || e)}`);
+    }
   }
 
   return (
     <div className={styles.container}>
       <h2 className={styles.pageTitle}>Event History</h2>
 
-      {err && (
+      {error && (
         <div style={{ marginTop: -8, color: "#B45309" }}>
-          Backend error: {err}
+          Backend error: {error}
         </div>
       )}
 
@@ -236,7 +160,7 @@ export default function Events() {
 
           <button
             className={styles.viewBtn}
-            onClick={load}
+            onClick={reload}
             style={{ marginLeft: "auto" }}
             title="Refresh events"
           >
@@ -279,11 +203,12 @@ export default function Events() {
                       ? parseDateSafe(ev.event_time).toLocaleString()
                       : String(ev.event_time)}
                   </td>
-                  <td>{typeLabel(ev.type)}</td>
+            
+                  <td>{eventTypeLabel(ev.type)}</td>
                   <td>{(ev.model_code || "—").toUpperCase()}</td>
                   <td>{ev.p_fall != null ? Number(ev.p_fall).toFixed(2) : "—"}</td>
                   <td>
-                    <span className={styles.statusBadge}>{statusLabel(ev.status)}</span>
+                    <span className={styles.statusBadge}>{eventStatusLabel(ev.status)}</span>
                   </td>
                   <td>
                     <button className={styles.viewBtn} onClick={() => handleView(ev)}>

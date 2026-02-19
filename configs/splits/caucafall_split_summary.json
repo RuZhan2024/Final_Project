@@ -8,10 +8,10 @@
     "test": 0.1
   },
   "grouping": {
-    "mode": "none",
+    "mode": "caucafall_subject",
     "regex": null,
     "group_json": null,
-    "balance_by": "stems"
+    "balance_by": "groups"
   },
   "counts": {
     "total": 100,
@@ -36,10 +36,9 @@
     "1": 5
   },
   "groups": {
-    "total_groups": 100,
+    "total_groups": 10,
     "groups_by_class": {
-      "0": 50,
-      "1": 50
+      "1": 10
     }
   },
   "files": {

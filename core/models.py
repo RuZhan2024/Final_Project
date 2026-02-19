@@ -203,7 +203,11 @@ class GCNLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
         # x: [B,T,V,C]
-        x = torch.einsum("vw,btwc->btvc", A_hat, x)
+        # x: [B,T,V,C], A_hat: [V,V]
+        # Use matmul instead of einsum for better backend stability (e.g., MPS).
+        x = x.permute(0, 1, 3, 2)              # [B,T,C,V]
+        x = torch.matmul(x, A_hat.t())         # [B,T,C,V]
+        x = x.permute(0, 1, 3, 2)              # [B,T,V,C]
         x = self.lin(x)
         x = self.drop(self.act(self.ln(x)))
         return x
@@ -390,12 +394,18 @@ def infer_input_dims(
     # Otherwise infer from feature flags (project defaults).
     use_motion = _bool(feat_cfg, "use_motion", default=False)
     use_conf = _bool(feat_cfg, "use_conf_channel", default=False)
+    use_bone = _bool(feat_cfg, "use_bone", default=False)
+    use_bone_len = _bool(feat_cfg, "use_bone_length", default=False)
     # Note: use_precomputed_mask affects masking, not feature dimensionality.
 
     # Per-joint features for a single-stream representation
     per_joint = 2  # (x,y)
     if use_motion:
         per_joint += 2  # (dx,dy)
+    if use_bone:
+        per_joint += 2  # (bx,by)
+    if use_bone_len:
+        per_joint += 1  # (bone_len)
     if use_conf:
         per_joint += 1  # (conf)
 
@@ -408,10 +418,16 @@ def infer_input_dims(
         cfg = GCNConfig.from_dict(model_cfg)
         if cfg.two_stream:
             # Two-stream default in *this project*:
-            # - joints stream uses (x,y[,conf])
+            # - joints stream uses (x,y[,bone][,bone_len][,conf])
             # - motion stream uses (dx,dy)  (NO conf channel)
             # This must match models/train_gcn.py and all eval scripts.
-            in_feats_j = 2 + (1 if use_conf else 0)
+            in_feats_j = 2
+            if use_bone:
+                in_feats_j += 2
+            if use_bone_len:
+                in_feats_j += 1
+            if use_conf:
+                in_feats_j += 1
             in_feats_m = 2  # keep 2 even if motion disabled (we feed zeros)
             out["in_feats_j"] = int(in_feats_j)
             out["in_feats_m"] = int(in_feats_m)

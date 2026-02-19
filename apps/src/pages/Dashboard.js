@@ -1,75 +1,28 @@
-import React, { useEffect, useState } from "react";
+import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import styles from "./Dashboard.module.css";
 
 import { useMonitoring } from "../monitoring/MonitoringContext";
-
-// Prefer env var, fallback to localhost
-const API_BASE =
-  typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE
-    ? process.env.REACT_APP_API_BASE
-    : "http://localhost:8000";
+import { modelCodeToLabel } from "../lib/modelCodes";
+import { useDashboardSummary } from "./dashboard/hooks/useDashboardSummary";
 
 function Dashboard() {
   const navigate = useNavigate();
 
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
+  const { monitoringOn, toggleMonitoringOn, error: monitoringErr, settings, apiBase } = useMonitoring();
+  const { data, loading, error } = useDashboardSummary(apiBase);
 
-  const [status, setStatus] = useState("normal"); // normal|alert
-  const [fallsDetected, setFallsDetected] = useState(0);
-  const [falseAlarms, setFalseAlarms] = useState(0);
+  const status = data?.status || "normal";
+  const fallsDetected = Number(data?.today?.falls_detected ?? 0);
+  const falseAlarms = Number(data?.today?.false_alarms ?? 0);
+  const latencyMs = data?.system?.last_latency_ms == null ? null : Number(data.system.last_latency_ms);
+  const apiOnline = data?.system?.api_online == null ? null : Boolean(data.system.api_online);
 
-  const [modelName, setModelName] = useState("—");
-  const [latencyMs, setLatencyMs] = useState(null);
-  const [apiOnline, setApiOnline] = useState(null); // null/true/false
-
-  const { monitoringOn, toggleMonitoringOn, error: monitoringErr, settings } = useMonitoring();
-
-  async function loadSummary() {
-    try {
-      setErr(null);
-      const r = await fetch(`${API_BASE}/api/dashboard/summary`);
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
-
-      setStatus(data?.status || "normal");
-      setFallsDetected(Number(data?.today?.falls_detected ?? 0));
-      setFalseAlarms(Number(data?.today?.false_alarms ?? 0));
-
-      setModelName(data?.system?.model_name || "—");
-      setLatencyMs(
-        data?.system?.last_latency_ms == null ? null : Number(data.system.last_latency_ms)
-      );
-      setApiOnline(Boolean(data?.system?.api_online ?? true));
-      setLoading(false);
-    } catch (e) {
-      setErr(String(e?.message || e));
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadSummary();
-    const t = setInterval(loadSummary, 3000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function toggleMonitoring() {
-    await toggleMonitoringOn();
-  }
-
-  const activeModelCode = settings?.system?.active_model_code || null;
-
-const modelLabel = (() => {
-  if (!activeModelCode) return modelName; // fallback to dashboard summary
-  const s = String(activeModelCode).toUpperCase();
-  if (s === "HYBRID") return "Hybrid";
-  if (s === "TCN") return "TCN";
-  if (s === "GCN") return "GCN";
-  return activeModelCode;
-})();
+  const modelLabel = useMemo(() => {
+    const activeModelCode = settings?.system?.active_model_code;
+    if (activeModelCode) return modelCodeToLabel(activeModelCode);
+    return data?.system?.model_name || "—";
+  }, [settings, data]);
 
 
   const statusLabel = status === "alert" ? "Alert" : "Normal";
@@ -125,9 +78,9 @@ const modelLabel = (() => {
       <div className={styles.fullWidthCard}>
         <h3 className={styles.cardTitle}>System Status</h3>
 
-        {err && (
+        {error && (
           <div style={{ marginBottom: 12, color: "#B45309" }}>
-            Backend error: {err}
+            Backend error: {error}
           </div>
         )}
 
@@ -153,7 +106,7 @@ const modelLabel = (() => {
               {/* CSS-only Toggle Switch representation */}
               <div
                 className={styles.toggleSwitch}
-                onClick={toggleMonitoring}
+                onClick={toggleMonitoringOn}
                 title="Toggle monitoring"
                 style={{ backgroundColor: toggleBg }}
               >
