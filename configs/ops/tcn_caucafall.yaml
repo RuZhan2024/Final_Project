@@ -1,39 +1,39 @@
 ops:
   OP1:
-    tau_high: 0.8699999451637268
-    tau_low: 0.6785999536514282
+    tau_high: 0.949999988079071
+    tau_low: 0.7409999966621399
     precision: 1.0
     recall: 1.0
     f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 3.547826051712036
-    median_delay_s: 4.17391300201416
+    mean_delay_s: 2.6086955070495605
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
     n_alert_events: 5
     n_true_alerts: 5
     n_false_alerts: 0
   OP2:
-    tau_high: 0.8699999451637268
-    tau_low: 0.6785999536514282
+    tau_high: 0.949999988079071
+    tau_low: 0.7409999966621399
     precision: 1.0
     recall: 1.0
     f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 3.547826051712036
-    median_delay_s: 4.17391300201416
+    mean_delay_s: 2.6086955070495605
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
     n_alert_events: 5
     n_true_alerts: 5
     n_false_alerts: 0
   OP3:
-    tau_high: 0.8699999451637268
-    tau_low: 0.6785999536514282
+    tau_high: 0.949999988079071
+    tau_low: 0.7409999966621399
     precision: 1.0
     recall: 1.0
     f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 3.547826051712036
-    median_delay_s: 4.17391300201416
+    mean_delay_s: 2.6086955070495605
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
     n_alert_events: 5
     n_true_alerts: 5
@@ -45,11 +45,11 @@ ops_meta:
   op1_recall: 0.95
   op3_fa24h: 1.0
   idx:
-    OP1: 86
-    OP2: 86
-    OP3: 86
+    OP1: 94
+    OP2: 94
+    OP3: 94
 alert_cfg:
-  ema_alpha: 0.2
+  ema_alpha: 0.5
   k: 2
   n: 3
   tau_high: 0.5
@@ -61,7 +61,7 @@ alert_cfg:
   confirm_max_motion: 0.08
   confirm_require_low: true
 alert_base:
-  ema_alpha: 0.2
+  ema_alpha: 0.5
   k: 2
   n: 3
   tau_high: 0.5
@@ -88,12 +88,12 @@ sweep_cfg:
 sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.sweep.json"
 calibration:
   method: "temperature"
-  T: 1.180922269821167
+  T: 1.5897101163864136
   n_val: 144
-  nll_before: 0.05622426047921181
-  nll_after: 0.0549066960811615
-  ece_before: 0.025111629691758085
-  ece_after: 0.02256267373901249
+  nll_before: 0.07578566670417786
+  nll_after: 0.06457796692848206
+  ece_before: 0.025337964668099375
+  ece_after: 0.030393565117164033
 model:
   arch: "tcn"
   ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/caucafall_tcn_W48S12/best.pt"

@@ -393,6 +393,159 @@ make workflow-tcn-le2i
 make workflow-gcn-le2i
 ```
 
+Below is the **resolved running-order (dependency chain)** printed for **all four datasets**. I’m showing the same structure for each dataset:
+
+* **`pipeline-data-<ds>`** (data prep to training windows)
+* **`pipeline-<ds>`** (TCN end-to-end)
+* **`pipeline-gcn-<ds>`** (GCN end-to-end)
+* **Unlabeled** (only actually meaningful for **LE2i** in your setup)
+
 ---
 
-If you tell me which dataset you’re running **right now** (le2i/urfd/caucafall/muvim) and whether you’re using **W=48 S=12**, I can give you the exact “copy/paste” command block with no extras.
+## le2i
+
+### `pipeline-data-le2i`
+
+1. `extract-le2i`
+2. `preprocess-le2i`
+3. `labels-le2i`
+4. `splits-le2i`
+5. `windows-le2i`
+
+### `pipeline-le2i` (TCN)
+
+1. `pipeline-data-le2i` (chain above)
+2. `train-tcn-le2i`
+3. `windows-eval-le2i`
+4. `fit-ops-le2i` *(+ `fa-windows-le2i` only if `FITOPS_USE_FA=1`)*
+5. `eval-le2i`
+6. `plot-le2i`
+
+### `pipeline-gcn-le2i` (GCN)
+
+1. `pipeline-data-le2i`
+2. `train-gcn-le2i`
+3. `windows-eval-le2i`
+4. `fit-ops-gcn-le2i` *(+ `fa-windows-le2i` only if `FITOPS_USE_FA=1`)*
+5. `eval-gcn-le2i`
+6. `plot-gcn-le2i`
+
+### Unlabeled (LE2i)
+
+1. `preprocess-only-le2i` *(or `preprocess-le2i`)*
+2. `splits-unlabeled-le2i`
+3. `windows-unlabeled-le2i`
+
+---
+
+## urfd
+
+### `pipeline-data-urfd`
+
+1. `extract-urfd`
+2. `preprocess-urfd`
+3. `labels-urfd`
+4. `splits-urfd`
+5. `windows-urfd`
+
+### `pipeline-urfd` (TCN)
+
+1. `pipeline-data-urfd`
+2. `train-tcn-urfd`
+3. `windows-eval-urfd`
+4. `fit-ops-urfd` *(+ `fa-windows-urfd` if `FITOPS_USE_FA=1`)*
+5. `eval-urfd`
+6. `plot-urfd`
+
+### `pipeline-gcn-urfd` (GCN)
+
+1. `pipeline-data-urfd`
+2. `train-gcn-urfd`
+3. `windows-eval-urfd`
+4. `fit-ops-gcn-urfd` *(+ `fa-windows-urfd` if `FITOPS_USE_FA=1`)*
+5. `eval-gcn-urfd`
+6. `plot-gcn-urfd`
+
+### Unlabeled (URFD)
+
+* You *can* run `splits-unlabeled-urfd` → `windows-unlabeled-urfd`, but with empty/default scenes it’s effectively a no-op unless you configure `UNLABELED_SCENES_urfd`.
+
+---
+
+## caucafall
+
+*(Has the extra spans sanity requirement before any windows build.)*
+
+### `pipeline-data-caucafall`
+
+1. `extract-caucafall`
+2. `preprocess-caucafall`
+3. `labels-caucafall`
+4. `splits-caucafall`
+5. `check-spans-caucafall`
+6. `windows-caucafall`
+
+### `pipeline-caucafall` (TCN)
+
+1. `pipeline-data-caucafall`
+2. `train-tcn-caucafall`
+3. `windows-eval-caucafall` *(also depends on `check-spans-caucafall`)*
+4. `fit-ops-caucafall` *(+ `fa-windows-caucafall` if `FITOPS_USE_FA=1`)*
+5. `eval-caucafall`
+6. `plot-caucafall`
+
+### `pipeline-gcn-caucafall` (GCN)
+
+1. `pipeline-data-caucafall`
+2. `train-gcn-caucafall`
+3. `windows-eval-caucafall`
+4. `fit-ops-gcn-caucafall` *(+ `fa-windows-caucafall` if `FITOPS_USE_FA=1`)*
+5. `eval-gcn-caucafall`
+6. `plot-gcn-caucafall`
+
+### Unlabeled (CAUCAFall)
+
+* Same note as URFD: possible, but only useful if you define `UNLABELED_SCENES_caucafall` (you haven’t).
+
+---
+
+## muvim
+
+### `pipeline-data-muvim`
+
+1. `extract-muvim`
+2. `preprocess-muvim`
+3. `labels-muvim`
+4. `splits-muvim`
+5. `windows-muvim`
+
+### `pipeline-muvim` (TCN)
+
+1. `pipeline-data-muvim`
+2. `train-tcn-muvim`
+3. `windows-eval-muvim` *(has the eval fallback fix you added)*
+4. `fit-ops-muvim` *(+ `fa-windows-muvim` if `FITOPS_USE_FA=1`)*
+5. `eval-muvim`
+6. `plot-muvim`
+
+### `pipeline-gcn-muvim` (GCN)
+
+1. `pipeline-data-muvim`
+2. `train-gcn-muvim`
+3. `windows-eval-muvim`
+4. `fit-ops-gcn-muvim` *(+ `fa-windows-muvim` if `FITOPS_USE_FA=1`)*
+5. `eval-gcn-muvim`
+6. `plot-gcn-muvim`
+
+### Unlabeled (MUVIM)
+
+* Same as URFD/CAUCAFall: only meaningful if you define `UNLABELED_SCENES_muvim` (not defined).
+
+---
+
+### Bonus: “All datasets” one-liners (parallel-safe)
+
+* TCN end-to-end: `make -j pipeline-all`
+* GCN end-to-end: `make -j pipeline-all-gcn`
+* Data-only: `make -j $(addprefix pipeline-data-,$(DATASETS))` (or just call each explicitly)
+
