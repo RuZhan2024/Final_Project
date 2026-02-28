@@ -24,7 +24,7 @@ import glob
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -32,9 +32,9 @@ from torch.utils.data import DataLoader, Dataset
 
 from core.ckpt import load_ckpt, get_cfg
 from core.features import FeatCfg, read_window_npz, build_tcn_input, build_canonical_input, split_gcn_two_stream
-from core.models import build_model, pick_device, logits_1d
+from core.models import build_model, pick_device, logits_1d, validate_model_input_dims
 from core.confirm import confirm_scores_window
-from core.alerting import AlertCfg, detect_alert_events, classify_states, times_from_windows
+from core.alerting import AlertCfg, detect_alert_events_from_smoothed, ema_smooth, times_from_windows
 
 
 @dataclass
@@ -48,12 +48,22 @@ class MetaLite:
 
 
 class UnlabeledWindows(Dataset):
-    def __init__(self, win_dir: str, *, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
+    def __init__(
+        self,
+        win_dir: str,
+        *,
+        feat_cfg: FeatCfg,
+        fps_default: float,
+        arch: str,
+        two_stream: bool,
+        compute_confirm_scores: bool = True,
+    ):
         self.win_dir = win_dir
         self.feat_cfg = feat_cfg
         self.fps_default = float(fps_default)
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
+        self.compute_confirm_scores = bool(compute_confirm_scores)
 
         self.files = sorted(glob.glob(os.path.join(win_dir, "*.npz")))
         if not self.files:
@@ -77,16 +87,17 @@ class UnlabeledWindows(Dataset):
         )
 
         if self.arch == "tcn":
-            X = build_tcn_input(Xc, self.feat_cfg)
+            X = torch.from_numpy(build_tcn_input(Xc, self.feat_cfg))
         else:
-            X = Xc
+            X = torch.from_numpy(Xc)
             if self.two_stream:
-                X = split_gcn_two_stream(X, self.feat_cfg)
+                xj, xm = split_gcn_two_stream(Xc, self.feat_cfg)
+                X = (torch.from_numpy(xj), torch.from_numpy(xm))
 
         # Confirm scores (computed from window signal; used by alert policy if enabled).
         lying_score = float(getattr(meta, "lying_score", 0.0))
         motion_score = float(getattr(meta, "motion_score", 0.0))
-        if lying_score == 0.0 and motion_score == 0.0:
+        if self.compute_confirm_scores and lying_score == 0.0 and motion_score == 0.0:
             try:
                 ls, ms = confirm_scores_window(joints, mask_used, fps=float(fps))
                 lying_score = float(ls) if np.isfinite(ls) else 0.0
@@ -109,7 +120,15 @@ class UnlabeledWindows(Dataset):
 
 def _collate(batch):
     Xs, metas = zip(*batch)
-    return list(Xs), list(metas)
+    first = Xs[0]
+    if isinstance(first, tuple):
+        feats = Xs
+        xj, xm = zip(*feats)
+        xj = torch.stack(xj, 0)
+        xm = torch.stack(xm, 0)
+        return (xj, xm), list(metas)
+    xb = torch.stack(Xs, 0)
+    return xb, list(metas)
 
 
 def _times_from_windows(ws: np.ndarray, we: np.ndarray, fps: float) -> np.ndarray:
@@ -121,44 +140,134 @@ def _times_from_windows(ws: np.ndarray, we: np.ndarray, fps: float) -> np.ndarra
     return times_from_windows(ws, we, float(fps), mode="center")
 
 
-@torch.no_grad()
+def _build_video_groups(vids: Sequence[str], ws: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    vids_arr = np.asarray(vids, dtype=object)
+    if vids_arr.size == 0:
+        return []
+    uniq, first_idx, inv = np.unique(vids_arr, return_index=True, return_inverse=True)
+    order = np.argsort(first_idx, kind="mergesort")
+    inv_i64 = inv.astype(np.int64, copy=False)
+    by_group = np.argsort(inv_i64, kind="mergesort")
+    counts = np.bincount(inv_i64, minlength=uniq.size)
+    offsets = np.empty((counts.size + 1,), dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+    groups: list[tuple[str, np.ndarray]] = []
+    for u in order:
+        uu = int(u)
+        idx = by_group[int(offsets[uu]) : int(offsets[uu + 1])]
+        if idx.size == 0:
+            continue
+        sort_idx = np.argsort(ws[idx], kind="mergesort")
+        groups.append((str(uniq[u]), idx[sort_idx]))
+    return groups
+
+
+@torch.inference_mode()
 def infer_probs(model, loader, device, arch: str, two_stream: bool):
-    probs = []
-    vids, ws, we, fps = [], [], [], []
-    ls_list, ms_list = [], []
+    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
+    use_prealloc = n_total > 0
+    probs_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    vids_buf = np.empty((n_total,), dtype=object) if use_prealloc else None
+    ws_buf = np.empty((n_total,), dtype=np.int32) if use_prealloc else None
+    we_buf = np.empty((n_total,), dtype=np.int32) if use_prealloc else None
+    fps_buf = np.empty((n_total,), dtype=np.float64) if use_prealloc else None
+    ls_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ms_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ptr = 0
+
+    probs: list[np.ndarray] = []
+    vids: list[str] = []
+    ws: list[int] = []
+    we: list[int] = []
+    fps: list[float] = []
+    ls_list: list[float] = []
+    ms_list: list[float] = []
+    use_non_blocking = isinstance(device, torch.device) and device.type in {"cuda", "mps"}
 
     for Xs, metas in loader:
         if arch == "tcn":
-            xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
+            xb = Xs.to(device=device, dtype=torch.float32, non_blocking=use_non_blocking)
             logits = logits_1d(model(xb))
         else:
             if two_stream:
-                xj = torch.from_numpy(np.stack([x[0] for x in Xs], axis=0)).to(device)
-                xm = torch.from_numpy(np.stack([x[1] for x in Xs], axis=0)).to(device)
+                xj, xm = Xs
+                xj = xj.to(device=device, dtype=torch.float32, non_blocking=use_non_blocking)
+                xm = xm.to(device=device, dtype=torch.float32, non_blocking=use_non_blocking)
                 logits = logits_1d(model(xj, xm))
             else:
-                xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
+                xb = Xs.to(device=device, dtype=torch.float32, non_blocking=use_non_blocking)
                 logits = logits_1d(model(xb))
 
-        p = torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
-        probs.append(p)
+        p = torch.sigmoid(logits).cpu().numpy().reshape(-1)
+        bsz = p.size
+        if (
+            use_prealloc
+            and probs_buf is not None
+            and vids_buf is not None
+            and ws_buf is not None
+            and we_buf is not None
+            and fps_buf is not None
+            and ls_buf is not None
+            and ms_buf is not None
+            and (ptr + bsz) <= n_total
+        ):
+            probs_buf[ptr:ptr + bsz] = p
+            vids_buf[ptr:ptr + bsz] = np.asarray([m.video_id for m in metas], dtype=object)
+            ws_buf[ptr:ptr + bsz] = np.fromiter((int(m.w_start) for m in metas), dtype=np.int32, count=bsz)
+            we_buf[ptr:ptr + bsz] = np.fromiter((int(m.w_end) for m in metas), dtype=np.int32, count=bsz)
+            fps_buf[ptr:ptr + bsz] = np.fromiter((float(m.fps) for m in metas), dtype=np.float64, count=bsz)
+            ls_buf[ptr:ptr + bsz] = np.fromiter((float(m.lying_score) for m in metas), dtype=np.float32, count=bsz)
+            ms_buf[ptr:ptr + bsz] = np.fromiter((float(m.motion_score) for m in metas), dtype=np.float32, count=bsz)
+            ptr += bsz
+        else:
+            probs.append(p)
+            vids.extend(m.video_id for m in metas)
+            ws.extend(int(m.w_start) for m in metas)
+            we.extend(int(m.w_end) for m in metas)
+            fps.extend(float(m.fps) for m in metas)
+            ls_list.extend(float(m.lying_score) for m in metas)
+            ms_list.extend(float(m.motion_score) for m in metas)
 
-        for m in metas:
-            vids.append(m.video_id)
-            ws.append(int(m.w_start))
-            we.append(int(m.w_end))
-            fps.append(float(m.fps))
-            ls_list.append(float(m.lying_score))
-            ms_list.append(float(m.motion_score))
+    if use_prealloc and ptr > 0 and not probs:
+        probs_out = probs_buf[:ptr]
+        vids_out = vids_buf[:ptr]
+        ws_out = ws_buf[:ptr]
+        we_out = we_buf[:ptr]
+        fps_out = fps_buf[:ptr]
+        ls_out = ls_buf[:ptr]
+        ms_out = ms_buf[:ptr]
+    elif use_prealloc and ptr > 0:
+        vids_tail = np.asarray(vids, dtype=object)
+        ws_tail = np.asarray(ws, dtype=np.int32)
+        we_tail = np.asarray(we, dtype=np.int32)
+        fps_tail = np.asarray(fps, dtype=float)
+        ls_tail = np.asarray(ls_list, dtype=np.float32)
+        ms_tail = np.asarray(ms_list, dtype=np.float32)
+        probs_out = np.concatenate((probs_buf[:ptr], *probs), axis=0)
+        vids_out = np.concatenate([vids_buf[:ptr], vids_tail], axis=0)
+        ws_out = np.concatenate([ws_buf[:ptr], ws_tail], axis=0)
+        we_out = np.concatenate([we_buf[:ptr], we_tail], axis=0)
+        fps_out = np.concatenate([fps_buf[:ptr], fps_tail], axis=0)
+        ls_out = np.concatenate([ls_buf[:ptr], ls_tail], axis=0)
+        ms_out = np.concatenate([ms_buf[:ptr], ms_tail], axis=0)
+    else:
+        probs_out = np.concatenate(probs, axis=0) if probs else np.array([], dtype=np.float32)
+        vids_out = np.asarray(vids, dtype=object)
+        ws_out = np.asarray(ws, dtype=np.int32)
+        we_out = np.asarray(we, dtype=np.int32)
+        fps_out = np.asarray(fps, dtype=float)
+        ls_out = np.asarray(ls_list, dtype=np.float32)
+        ms_out = np.asarray(ms_list, dtype=np.float32)
 
     return (
-        (np.concatenate(probs) if probs else np.array([])),
-        vids,
-        np.asarray(ws),
-        np.asarray(we),
-        np.asarray(fps, dtype=float),
-        np.asarray(ls_list, dtype=np.float32),
-        np.asarray(ms_list, dtype=np.float32),
+        probs_out,
+        vids_out,
+        ws_out,
+        we_out,
+        fps_out,
+        ls_out,
+        ms_out,
     )
 
 
@@ -168,6 +277,7 @@ def main() -> None:
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out_json", required=True)
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--num_workers", type=int, default=0)
 
     # alert cfg
     ap.add_argument("--ema_alpha", type=float, default=0.20)
@@ -199,8 +309,44 @@ def main() -> None:
     model.load_state_dict(bundle["state_dict"], strict=True)
     model.eval()
 
-    ds = UnlabeledWindows(args.win_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
-    loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
+    need_confirm_scores = bool(int(args.confirm)) and (float(args.confirm_s) > 0.0)
+    ds = UnlabeledWindows(
+        args.win_dir,
+        feat_cfg=feat_cfg,
+        fps_default=fps_default,
+        arch=arch,
+        two_stream=two_stream,
+        compute_confirm_scores=need_confirm_scores,
+    )
+    if len(ds) > 0:
+        x0, _m0 = ds[0]
+        if arch == "gcn" and two_stream and isinstance(x0, tuple):
+            validate_model_input_dims(
+                "gcn",
+                model_cfg_d,
+                xj=np.asarray(x0[0]),
+                xm=np.asarray(x0[1]),
+            )
+        elif arch == "gcn":
+            validate_model_input_dims("gcn", model_cfg_d, x=np.asarray(x0))
+        else:
+            validate_model_input_dims("tcn", model_cfg_d, x=np.asarray(x0))
+    nw = max(0, int(args.num_workers))
+    pin_memory = isinstance(device, torch.device) and device.type == "cuda"
+    persistent_workers = nw > 0
+    if isinstance(device, torch.device) and device.type == "mps":
+        persistent_workers = False
+    loader_kwargs: Dict[str, Any] = {
+        "batch_size": int(args.batch),
+        "shuffle": False,
+        "num_workers": nw,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers,
+        "collate_fn": _collate,
+    }
+    if nw > 0:
+        loader_kwargs["prefetch_factor"] = 2
+    loader = DataLoader(ds, **loader_kwargs)
 
     probs, vids, ws, we, fps_arr, ls_arr, ms_arr = infer_probs(model, loader, device, arch, two_stream)
 
@@ -219,6 +365,7 @@ def main() -> None:
     )
 
     vids_arr = np.asarray(vids)
+    groups = _build_video_groups(vids_arr, ws)
     out: Dict[str, Any] = {
         "arch": arch,
         "ckpt": args.ckpt,
@@ -232,15 +379,16 @@ def main() -> None:
     total_dur_s = 0.0
     total_state = {"n_windows": 0, "clear": 0, "suspect": 0, "alert": 0, "suspect_time_s": 0.0, "alert_time_s": 0.0}
 
-    for v in list(dict.fromkeys(vids)):
-        mv = vids_arr == v
-        idx = np.argsort(ws[mv])
-        p_v = probs[mv][idx]
-        ws_v = ws[mv][idx]
-        we_v = we[mv][idx]
-        ls_v = ls_arr[mv][idx]
-        ms_v = ms_arr[mv][idx]
-        fps_v = float(np.median(fps_arr[mv])) if np.isfinite(fps_arr[mv]).any() else fps_default
+    for v, idx_full in groups:
+        if idx_full.size < 1:
+            continue
+        p_v = probs[idx_full]
+        ws_v = ws[idx_full]
+        we_v = we[idx_full]
+        ls_v = ls_arr[idx_full]
+        ms_v = ms_arr[idx_full]
+        fps_slice = fps_arr[idx_full]
+        fps_v = float(np.median(fps_slice)) if np.isfinite(fps_slice).any() else fps_default
 
         t_v = _times_from_windows(ws_v, we_v, fps_v)
 
@@ -256,8 +404,12 @@ def main() -> None:
             }
             continue
 
-        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
-        _alert_mask, events = detect_alert_events(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
+        ps_v = ema_smooth(p_v, alert_cfg.ema_alpha)
+        alert_mask, events = detect_alert_events_from_smoothed(
+            ps_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v
+        )
+        suspect_mask = (~alert_mask) & (ps_v >= float(alert_cfg.tau_low)) & (ps_v < float(alert_cfg.tau_high))
+        clear_mask = (~alert_mask) & (ps_v < float(alert_cfg.tau_low))
 
         n = int(len(events))
         fa_hour = float(n / (duration_s / 3600.0)) if duration_s > 0 else float("nan")
@@ -265,9 +417,9 @@ def main() -> None:
 
         # Approximate time in each state using median step in t_v.
         dt = float(np.median(np.diff(t_v))) if t_v.size >= 2 else 0.0
-        n_clear = int(np.sum(st["clear"]))
-        n_suspect = int(np.sum(st["suspect"]))
-        n_alert = int(np.sum(st["alert"]))
+        n_clear = int(np.sum(clear_mask))
+        n_suspect = int(np.sum(suspect_mask))
+        n_alert = int(np.sum(alert_mask))
         tot = int(t_v.size)
 
         out["per_video"][v] = {

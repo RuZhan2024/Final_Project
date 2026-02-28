@@ -65,24 +65,36 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
             today_false = 0
             with conn.cursor() as cur:
                 if _table_exists(conn, "events") and _col_exists(conn, "events", "event_type"):
+                    has_resident_id = _col_exists(conn, "events", "resident_id")
+                    resident_filter = " AND resident_id=%s" if has_resident_id else ""
+                    falls_params = (rid,) if has_resident_id else tuple()
                     cur.execute(
                         "SELECT COUNT(*) AS c FROM events "
                         "WHERE DATE(created_at)=CURDATE() AND UPPER(event_type) IN ('FALL','FALL_DETECTED','FALL_CONFIRMED')"
+                        + resident_filter,
+                        falls_params,
                     )
                     r = cur.fetchone() or {}
                     today_falls = int(r.get("c", 0)) if isinstance(r, dict) else int(list(r)[0])
+                    false_params = (rid,) if has_resident_id else tuple()
                     cur.execute(
                         "SELECT COUNT(*) AS c FROM events "
                         "WHERE DATE(created_at)=CURDATE() AND UPPER(event_type) IN ('FALSE_ALARM','FALSE','FALSE_POSITIVE')"
+                        + resident_filter,
+                        false_params,
                     )
                     r = cur.fetchone() or {}
                     today_false = int(r.get("c", 0)) if isinstance(r, dict) else int(list(r)[0])
                 elif _table_exists(conn, "fall_events"):
+                    has_resident_id = _col_exists(conn, "fall_events", "resident_id")
+                    resident_where = " AND resident_id=%s" if has_resident_id else ""
+                    params = (rid,) if has_resident_id else tuple()
                     cur.execute(
                         "SELECT "
                         "SUM(CASE WHEN event_type='fall_detected' THEN 1 ELSE 0 END) AS falls_detected, "
                         "SUM(CASE WHEN event_type='false_alarm' THEN 1 ELSE 0 END) AS false_alarms "
-                        "FROM fall_events WHERE DATE(created_at)=CURDATE()"
+                        "FROM fall_events WHERE DATE(created_at)=CURDATE()" + resident_where,
+                        params,
                     )
                     r = cur.fetchone() or {}
                     if isinstance(r, dict):

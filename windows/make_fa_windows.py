@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import shutil
+import re
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -95,7 +96,7 @@ def _read_y_and_vid(fp: Path) -> Tuple[Optional[int], Optional[str]]:
 
             # best-effort video id
             vid = None
-            for k in ("video_id", "vid", "video", "video_name", "name"):
+            for k in ("video_id", "vid", "video", "video_name", "name", "stem", "video_stem", "src_stem", "sequence", "seq"):
                 if k in md and md[k]:
                     vid = str(md[k])
                     break
@@ -103,12 +104,16 @@ def _read_y_and_vid(fp: Path) -> Tuple[Optional[int], Optional[str]]:
             if vid is None:
                 # heuristic from filename
                 stem = fp.stem
-                # common patterns: <vid>__wXXXX or <vid>_sXXXX, etc.
-                if "__" in stem:
-                    vid = stem.split("__", 1)[0]
-                else:
-                    vid = stem.split("_w", 1)[0].split("_s", 1)[0]
-
+                # Robust: strip trailing window indices like __w000123, _w000123, _s000123
+                vid = re.sub(r"(__w\d+)$", "", stem)
+                vid = re.sub(r"(_w\d+)$", "", vid)
+                vid = re.sub(r"(_s\d+)$", "", vid)
+                # Fallback: keep more context for names like Subject.6__ADL__w000123
+                if vid == stem and "__" in stem:
+                    parts = stem.split("__")
+                    vid = "__".join(parts[:-1]) if len(parts) > 1 else stem
+                if not vid:
+                    vid = stem
             return y, vid
     except Exception:
         return None, None

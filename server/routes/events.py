@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,19 @@ from ..db import get_conn_optional
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_ALLOWED_EVENT_MODELS = {"TCN", "GCN", "HYBRID"}
+_ALLOWED_EVENT_STATUSES = {
+    "pending_review",
+    "unreviewed",
+    "confirmed_fall",
+    "false_alarm",
+    "false_positive",
+    "dismissed",
+}
+_MAX_CLIP_FRAMES = 1200
+_MAX_CLIP_JOINTS = 64
 
 
 @router.get("/api/events")
@@ -83,6 +97,24 @@ def list_events(
     event_type = _norm(event_type)
     status = _norm(status)
     model = _norm(model)
+
+    if model is not None:
+        model_u = str(model).upper()
+        if model_u not in _ALLOWED_EVENT_MODELS:
+            raise HTTPException(status_code=400, detail="model must be one of: TCN, GCN, HYBRID")
+        model = model_u
+
+    if status is not None:
+        status_l = str(status).lower()
+        if status_l not in _ALLOWED_EVENT_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "status must be one of: "
+                    "pending_review, unreviewed, confirmed_fall, false_alarm, false_positive, dismissed"
+                ),
+            )
+        status = status_l
 
     # Convert date-only strings to datetime bounds (inclusive end_date by using < next_day)
     start_dt = None
@@ -290,9 +322,19 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
     with get_conn_optional() as conn:
         if conn is None:
             rid = int(resident_id or 1)
-            return {"resident_id": rid, "total_events": 0, "total_falls": 0, "events_last_24h": 0, "falls_last_24h": 0, "latest_event": None, "db_available": False}
+            return {
+                "resident_id": rid,
+                "total_events": 0,
+                "total_falls": 0,
+                "events_last_24h": 0,
+                "falls_last_24h": 0,
+                "latest_event": None,
+                "today": {"falls": 0, "pending": 0, "false_alarms": 0},
+                "db_available": False,
+            }
         rid = resident_id if resident_id and _resident_exists(conn, resident_id) else _one_resident_id(conn)
         time_col = _event_time_col(conn)
+        event_cols = _cols(conn, "events")
 
         since = datetime.utcnow() - timedelta(hours=24)
         with conn.cursor() as cur:
@@ -320,6 +362,33 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                     (rid,),
                 )
                 latest = cur.fetchone()
+
+                pending_24h = 0
+                false_alarms_24h = 0
+                if "status" in event_cols:
+                    cur.execute(
+                        f"""
+                        SELECT COUNT(*) AS n
+                        FROM events
+                        WHERE resident_id=%s
+                          AND `{time_col}` >= %s
+                          AND LOWER(`status`) IN ('pending_review', 'unreviewed')
+                        """,
+                        (rid, since),
+                    )
+                    pending_24h = int((cur.fetchone() or {}).get("n") or 0)
+
+                    cur.execute(
+                        f"""
+                        SELECT COUNT(*) AS n
+                        FROM events
+                        WHERE resident_id=%s
+                          AND `{time_col}` >= %s
+                          AND LOWER(`status`) IN ('false_alarm', 'false_positive')
+                        """,
+                        (rid, since),
+                    )
+                    false_alarms_24h = int((cur.fetchone() or {}).get("n") or 0)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to compute events summary: {e}")
 
@@ -331,6 +400,12 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
             "events_last_24h": events_24h,
             "falls_last_24h": falls_24h,
             "latest_event": latest,
+            "today": {
+                "falls": falls_24h,
+                "pending": pending_24h,
+                "false_alarms": false_alarms_24h,
+            },
+            "db_available": True,
         }
     )
 
@@ -422,8 +497,17 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
         if not store_event_clips:
             return {"ok": True, "skipped": True, "reason": "store_event_clips_disabled"}
 
+        event_cols = _cols(conn, "events")
+        meta_col = "meta" if "meta" in event_cols else ("payload_json" if "payload_json" in event_cols else None)
+
         with conn.cursor() as cur:
-            cur.execute("SELECT id, resident_id, meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
+            select_cols = ["id", "resident_id"]
+            if meta_col:
+                select_cols.append(meta_col)
+            cur.execute(
+                f"SELECT {', '.join('`'+c+'`' for c in select_cols)} FROM events WHERE id=%s LIMIT 1",
+                (int(event_id),),
+            )
             row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
@@ -431,33 +515,67 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
             raise HTTPException(status_code=403, detail="Event does not belong to resident")
 
         t_ms = np.asarray(payload.t_ms, dtype=np.float32)
-        xy = np.asarray(payload.xy, dtype=np.float32)
-        if xy.ndim != 3 or xy.shape[-1] != 2:
-            raise HTTPException(status_code=400, detail="xy must be shaped [T,J,2]")
-        T = int(xy.shape[0])
-        if t_ms.shape[0] != T:
-            m = int(min(t_ms.shape[0], T))
-            t_ms = t_ms[:m]
-            xy = xy[:m]
-            T = m
-
-        if payload.conf is None:
-            conf = np.ones((T, xy.shape[1]), dtype=np.float32)
+        if t_ms.ndim != 1 or t_ms.size < 2:
+            raise HTTPException(status_code=400, detail="t_ms must be a 1D array with at least 2 timestamps")
+        if t_ms.size > _MAX_CLIP_FRAMES:
+            raise HTTPException(status_code=413, detail=f"clip too long: max {_MAX_CLIP_FRAMES} frames")
+        if not np.all(np.isfinite(t_ms)):
+            raise HTTPException(status_code=400, detail="t_ms contains non-finite values")
+        if payload.xy is not None:
+            xy = np.asarray(payload.xy, dtype=np.float32)
+            if xy.ndim != 3 or xy.shape[-1] != 2:
+                raise HTTPException(status_code=400, detail="xy must be shaped [T,J,2]")
+        elif payload.xy_flat is not None:
+            xy_flat = np.asarray(payload.xy_flat, dtype=np.float32).reshape(-1)
+            n_joints = int(payload.raw_joints) if payload.raw_joints is not None else 33
+            if n_joints < 1 or n_joints > _MAX_CLIP_JOINTS:
+                raise HTTPException(status_code=400, detail=f"raw_joints must be in [1, {_MAX_CLIP_JOINTS}]")
+            t_len = int(t_ms.shape[0])
+            expected = int(t_len * n_joints * 2)
+            if xy_flat.size != expected:
+                raise HTTPException(status_code=400, detail="xy_flat size mismatch for [T,J,2]")
+            xy = xy_flat.reshape(t_len, n_joints, 2)
         else:
+            raise HTTPException(status_code=400, detail="provide either xy or xy_flat")
+        T = int(xy.shape[0])
+        if T < 2:
+            raise HTTPException(status_code=400, detail="clip must contain at least 2 frames")
+        if T > _MAX_CLIP_FRAMES:
+            raise HTTPException(status_code=413, detail=f"clip too long: max {_MAX_CLIP_FRAMES} frames")
+        if int(xy.shape[1]) < 1 or int(xy.shape[1]) > _MAX_CLIP_JOINTS:
+            raise HTTPException(status_code=400, detail=f"joint dimension must be in [1, {_MAX_CLIP_JOINTS}]")
+        if t_ms.shape[0] != T:
+            raise HTTPException(status_code=400, detail="t_ms and xy time dimensions must match")
+        if not bool(np.isfinite(xy).all()):
+            raise HTTPException(status_code=400, detail="xy contains non-finite values")
+        if t_ms.size > 1 and not bool(np.all(t_ms[1:] >= t_ms[:-1])):
+            raise HTTPException(status_code=400, detail="t_ms must be monotonically non-decreasing")
+
+        if payload.conf is not None:
             conf = np.asarray(payload.conf, dtype=np.float32)
             if conf.ndim != 2:
                 raise HTTPException(status_code=400, detail="conf must be shaped [T,J]")
             if conf.shape[0] != T:
-                m = int(min(conf.shape[0], T))
-                conf = conf[:m]
-                t_ms = t_ms[:m]
-                xy = xy[:m]
-                T = m
+                raise HTTPException(status_code=400, detail="conf and xy time dimensions must match")
+        elif payload.conf_flat is not None:
+            conf_flat = np.asarray(payload.conf_flat, dtype=np.float32).reshape(-1)
+            expected = int(T * xy.shape[1])
+            if conf_flat.size != expected:
+                raise HTTPException(status_code=400, detail="conf_flat size mismatch for [T,J]")
+            conf = conf_flat.reshape(T, xy.shape[1])
+        else:
+            conf = np.ones((T, xy.shape[1]), dtype=np.float32)
+        if conf.shape[1] != xy.shape[1]:
+            raise HTTPException(status_code=400, detail="conf and xy joint dimensions must match")
+        if not bool(np.isfinite(conf).all()):
+            raise HTTPException(status_code=400, detail="conf contains non-finite values")
+        np.clip(xy, 0.0, 1.0, out=xy)
+        np.clip(conf, 0.0, 1.0, out=conf)
 
         if anonymize:
             xy = _anonymize_xy_inplace(xy)
-            xy = np.round(xy, 4)
-            conf = np.round(conf, 4)
+            np.around(xy, 4, out=xy)
+            np.around(conf, 4, out=conf)
 
         clips_dir = _event_clips_dir()
         fname = f"event_{int(event_id)}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.npz"
@@ -469,7 +587,7 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
 
         clip_rel = f"server/event_clips/{fname}"
 
-        meta = row.get("meta")
+        meta = row.get(meta_col) if meta_col else {}
         if isinstance(meta, str):
             try:
                 meta = json.loads(meta)
@@ -489,16 +607,28 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
             "op_code": (payload.op_code or None),
             "use_mc": bool(payload.use_mc) if payload.use_mc is not None else None,
             "mc_M": int(payload.mc_M) if payload.mc_M is not None else None,
+            "mc_sigma_tol": float(payload.mc_sigma_tol) if payload.mc_sigma_tol is not None else None,
+            "mc_se_tol": float(payload.mc_se_tol) if payload.mc_se_tol is not None else None,
             "anonymized": bool(anonymize),
             "saved_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
         }
 
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
-            conn.commit()
-        except Exception:
-            pass
+        if meta_col:
+            try:
+                with conn.cursor() as cur:
+                    try:
+                        meta_json = json.dumps(meta, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                    except Exception:
+                        meta_json = json.dumps(meta, separators=(",", ":"), ensure_ascii=False)
+                    cur.execute(
+                        f"UPDATE events SET `{meta_col}`=%s WHERE id=%s",
+                        (meta_json, int(event_id)),
+                    )
+                conn.commit()
+            except Exception:
+                logger.warning("Failed to update event %s with skeleton_clip for event_id=%s", meta_col, event_id, exc_info=True)
+        else:
+            logger.warning("events table has no `meta`/`payload_json`; skeleton clip metadata not persisted for event_id=%s", event_id)
 
         return {
             "ok": True,

@@ -12,6 +12,7 @@ Safety + parity rules:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -19,7 +20,7 @@ import numpy as np
 import torch
 
 from core.ckpt import load_ckpt, get_cfg
-from core.models import build_model, logits_1d
+from core.models import build_model, logits_1d, fuse_conv_bn_eval_inplace
 from core.features import (
     FeatCfg,
     read_window_npz,
@@ -67,6 +68,24 @@ def load_model_bundle(
     model.load_state_dict(sd, strict=True)
     model.to(device)
     model.eval()
+    # Optional CPU-only dynamic quantization for on-device latency/memory.
+    # Disabled by default; enable with FD_DYNAMIC_QUANT_LINEAR=1.
+    if str(os.getenv("FD_DYNAMIC_QUANT_LINEAR", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            if getattr(device, "type", "") == "cpu":
+                model = torch.ao.quantization.quantize_dynamic(  # type: ignore[attr-defined]
+                    model,
+                    {torch.nn.Linear},
+                    dtype=torch.qint8,
+                )
+                model.eval()
+        except Exception:
+            pass
+    # Runtime-only optimization: fuse Conv1d+BN pairs for lower inference latency.
+    try:
+        fuse_conv_bn_eval_inplace(model)
+    except Exception:
+        pass
 
     return model, arch, model_cfg, FeatCfg.from_dict(feat_cfg_d), two_stream, fps_default
 
@@ -112,6 +131,37 @@ def build_input_from_raw(raw: WindowRaw, feat_cfg: FeatCfg, arch: str, *, two_st
         return X, m
 
     raise ValueError(f"Unknown arch: {arch}")
+
+
+def build_dual_inputs_from_raw(
+    raw: WindowRaw,
+    feat_cfg_tcn: FeatCfg,
+    feat_cfg_gcn: FeatCfg,
+    *,
+    two_stream_gcn: bool = False,
+):
+    """Build (Xt, Xg, mask) for dual-mode inference.
+
+    Fast path:
+    - If TCN and GCN use the same feature config, canonicalize once and fan-out
+      to both model inputs.
+    """
+    if feat_cfg_tcn == feat_cfg_gcn:
+        X_can, m = build_canonical_input(
+            joints_xy=raw.joints_xy,
+            motion_xy=raw.motion_xy,
+            conf=raw.conf,
+            mask=raw.mask,
+            fps=float(raw.fps),
+            feat_cfg=feat_cfg_tcn,
+        )
+        Xt = build_tcn_input(X_can, feat_cfg_tcn)
+        Xg = split_gcn_two_stream(X_can, feat_cfg_gcn) if two_stream_gcn else X_can
+        return Xt, Xg, m
+
+    Xt, m = build_input_from_raw(raw, feat_cfg_tcn, "tcn", two_stream=False)
+    Xg, _ = build_input_from_raw(raw, feat_cfg_gcn, "gcn", two_stream=two_stream_gcn)
+    return Xt, Xg, m
 
 
 def compute_confirm_scores(
@@ -209,8 +259,55 @@ def compute_confirm_scores(
     return lying_score, motion_score
 
 
-def _to_tensor(x: np.ndarray, device: torch.device) -> torch.Tensor:
-    return torch.from_numpy(np.asarray(x, dtype=np.float32))[None, ...].to(device)
+def _to_tensor(x: Any, device: torch.device) -> torch.Tensor:
+    use_non_blocking = isinstance(device, torch.device) and device.type in {"cuda", "mps"}
+    if isinstance(x, torch.Tensor):
+        return x.to(device=device, dtype=torch.float32, non_blocking=use_non_blocking).unsqueeze(0)
+    if isinstance(x, np.ndarray) and x.dtype == np.float32 and x.flags["C_CONTIGUOUS"]:
+        arr = x
+    else:
+        arr = np.ascontiguousarray(np.asarray(x, dtype=np.float32))
+    return torch.from_numpy(arr).unsqueeze(0).to(device=device, non_blocking=use_non_blocking)
+
+
+def _make_forward_fn(
+    model: torch.nn.Module,
+    arch: str,
+    X,
+    device: torch.device,
+    two_stream: bool,
+):
+    """Build a single callable returning probability tensor [B]."""
+    arch = str(arch).lower()
+    if arch == "tcn":
+        xb = _to_tensor(X, device)
+
+        def forward_fn() -> torch.Tensor:
+            logits = logits_1d(model(xb))
+            return torch.sigmoid(logits).view(-1)
+
+        return forward_fn
+
+    if arch == "gcn":
+        if two_stream:
+            xj = _to_tensor(X[0], device)
+            xm = _to_tensor(X[1], device)
+
+            def forward_fn() -> torch.Tensor:
+                logits = logits_1d(model(xj, xm))
+                return torch.sigmoid(logits).view(-1)
+
+            return forward_fn
+
+        xb = _to_tensor(X, device)
+
+        def forward_fn() -> torch.Tensor:
+            logits = logits_1d(model(xb))
+            return torch.sigmoid(logits).view(-1)
+
+        return forward_fn
+
+    raise ValueError(f"Unknown arch: {arch}")
 
 
 @torch.inference_mode()
@@ -219,19 +316,20 @@ def predict_prob(model: torch.nn.Module, arch: str, X, device: torch.device, two
     if arch == "tcn":
         xb = _to_tensor(X, device)
         logits = logits_1d(model(xb))
-    elif arch == "gcn":
+        return float(torch.sigmoid(logits).view(-1)[0].item())
+
+    if arch == "gcn":
         if two_stream:
             xj = _to_tensor(X[0], device)
             xm = _to_tensor(X[1], device)
             logits = logits_1d(model(xj, xm))
-        else:
-            xb = _to_tensor(X, device)
-            logits = logits_1d(model(xb))
-    else:
-        raise ValueError(f"Unknown arch: {arch}")
+            return float(torch.sigmoid(logits).view(-1)[0].item())
 
-    p = torch.sigmoid(logits).detach().float().cpu().numpy().reshape(-1)[0]
-    return float(p)
+        xb = _to_tensor(X, device)
+        logits = logits_1d(model(xb))
+        return float(torch.sigmoid(logits).view(-1)[0].item())
+
+    raise ValueError(f"Unknown arch: {arch}")
 
 
 def predict_mu_sigma(
@@ -242,30 +340,9 @@ def predict_mu_sigma(
     two_stream: bool,
     M: int,
 ) -> Tuple[float, float]:
-    """MC Dropout mean/std (dropout enabled via model.train(), no gradients)."""
-    arch = str(arch).lower()
+    """MC Dropout mean/std (dropout-only sampling, BN kept in eval mode)."""
+    from core.uncertainty import mc_predict_mu_sigma
 
-    def forward_one() -> float:
-        if arch == "tcn":
-            xb = _to_tensor(X, device)
-            logits = logits_1d(model(xb))
-        elif arch == "gcn":
-            if two_stream:
-                xj = _to_tensor(X[0], device)
-                xm = _to_tensor(X[1], device)
-                logits = logits_1d(model(xj, xm))
-            else:
-                xb = _to_tensor(X, device)
-                logits = logits_1d(model(xb))
-        else:
-            raise ValueError(f"Unknown arch: {arch}")
-        p = torch.sigmoid(logits).detach().float().cpu().numpy().reshape(-1)[0]
-        return float(p)
-
-    with torch.no_grad():
-        model.train()
-        ys = [forward_one() for _ in range(int(M))]
-        model.eval()
-
-    a = np.asarray(ys, dtype=np.float32)
-    return float(a.mean()), float(a.std(ddof=0))
+    forward_fn = _make_forward_fn(model=model, arch=arch, X=X, device=device, two_stream=two_stream)
+    mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(M))
+    return float(mu_t.detach().cpu().view(-1)[0].item()), float(sig_t.detach().cpu().view(-1)[0].item())

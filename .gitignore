@@ -1,7 +1,11 @@
 .venv/
+.env
 __pycache__/
 .DS_Store
+.coverage
+coverage.xml
 apps/node_modules/
+.make/
 *.mp4
 *.avi
 *.mov

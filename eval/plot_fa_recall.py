@@ -15,6 +15,8 @@ Makefile compatibility:
 import os, sys, json, glob
 import argparse
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # repo root bootstrap (so `from core.*` works)
@@ -36,17 +38,21 @@ def _extract_curve(obj):
     if isinstance(obj, dict):
         sweep = obj.get("sweep", None)
 
-    fa = []
-    rec = []
+    fa_arr = np.array([], dtype=float)
+    rec_arr = np.array([], dtype=float)
 
     # dict-of-arrays
     if isinstance(sweep, dict):
-        fa = list(sweep.get("fa24h") or sweep.get("fa_per_day") or sweep.get("fa") or [])
-        rec = list(sweep.get("recall") or sweep.get("avg_recall") or [])
-        return np.asarray(fa, dtype=float), np.asarray(rec, dtype=float)
+        fa_raw = sweep.get("fa24h") or sweep.get("fa_per_day") or sweep.get("fa") or []
+        rec_raw = sweep.get("recall") or sweep.get("avg_recall") or []
+        fa_arr = np.asarray(fa_raw, dtype=float).reshape(-1)
+        rec_arr = np.asarray(rec_raw, dtype=float).reshape(-1)
+        return fa_arr, rec_arr
 
     # list-of-dicts
     if isinstance(sweep, list):
+        fa = []
+        rec = []
         for r in sweep:
             if not isinstance(r, dict):
                 continue
@@ -78,9 +84,9 @@ def main():
 
     patterns = []
     if args.sweeps:
-        patterns.extend(list(args.sweeps))
+        patterns.extend(args.sweeps)
     if args.reports:
-        patterns.extend(list(args.reports))
+        patterns.extend(args.reports)
     if not patterns:
         ap.error("Provide --sweeps or --reports")
 
@@ -98,51 +104,57 @@ def main():
 
     out_path = args.out_fig or args.out
 
-    plt.figure(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5))
+    try:
+        for p, label in zip(sweep_paths, labels):
+            js = _load_json(p)
+            x, recall = _extract_curve(js)
 
-    for p, label in zip(sweep_paths, labels):
-        js = _load_json(p)
-        x, recall = _extract_curve(js)
+            if x.size == 0:
+                print(f"[warn] no sweep points in: {p}")
+                continue
 
-        if x.size == 0:
-            print(f"[warn] no sweep points in: {p}")
-            continue
+            if args.plot_pareto:
+                idx, rr_all, xx_all = pareto_frontier(recall, x)
+                xx = xx_all[idx]
+                rr = rr_all[idx]
+                order = np.argsort(xx)
 
-        if args.plot_pareto:
-            xx, rr = pareto_frontier(x, recall, minimize_x=True, maximize_y=True)
-            order = np.argsort(xx)
+                xx_plot = xx[order]
+                if args.xlog:
+                    pos = xx_plot[xx_plot > 0]
+                    eps = (float(pos.min()) * 0.1) if pos.size else 1e-6
+                    xx_plot = np.where(xx_plot > 0, xx_plot, eps)
 
-            xx_plot = xx[order]
-            if args.xlog:
-                pos = xx_plot[xx_plot > 0]
-                eps = (float(pos.min()) * 0.1) if pos.size else 1e-6
-                xx_plot = np.where(xx_plot > 0, xx_plot, eps)
+                ax.plot(xx_plot, rr[order], marker="o", linestyle="-", label=str(label))
+            else:
+                x_plot = x
+                if args.xlog:
+                    pos = x_plot[x_plot > 0]
+                    eps = (float(pos.min()) * 0.1) if pos.size else 1e-6
+                    x_plot = np.where(x_plot > 0, x_plot, eps)
+                ax.scatter(x_plot, recall, label=str(label), s=18)
 
-            plt.plot(xx_plot, rr[order], marker="o", linestyle="-", label=str(label))
+        ax.set_title(args.title)
+        ax.set_xlabel("False Alarms per 24h (FA/24h)")
+        ax.set_ylabel("Recall")
+        ax.grid(True, which="both", alpha=0.35)
+
+        if args.xlog:
+            ax.set_xscale("log")
+
+        ax.legend(loc="best", fontsize=9)
+        fig.tight_layout()
+
+        if out_path:
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+            fig.savefig(out_path, dpi=160, bbox_inches="tight")
+            print(f"[ok] saved: {out_path}")
         else:
-            x_plot = x
-            if args.xlog:
-                pos = x_plot[x_plot > 0]
-                eps = (float(pos.min()) * 0.1) if pos.size else 1e-6
-                x_plot = np.where(x_plot > 0, x_plot, eps)
-            plt.scatter(x_plot, recall, label=str(label), s=18)
-
-    plt.title(args.title)
-    plt.xlabel("False Alarms per 24h (FA/24h)")
-    plt.ylabel("Recall")
-    plt.grid(True, which="both", alpha=0.35)
-
-    if args.xlog:
-        plt.xscale("log")
-
-    plt.legend(loc="best", fontsize=9)
-
-    if out_path:
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-        plt.savefig(out_path, dpi=160, bbox_inches="tight")
-        print(f"[ok] saved: {out_path}")
-    else:
-        plt.show()
+            # Agg backend is non-interactive; avoid blocking or no-op GUI calls in headless runs.
+            print("[info] no --out provided; skipping interactive show on Agg backend")
+    finally:
+        plt.close(fig)
 
 
 if __name__ == "__main__":

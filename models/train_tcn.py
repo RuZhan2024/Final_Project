@@ -16,8 +16,10 @@ Key fixes vs older script:
 
 from __future__ import annotations
 
-def _to_f32(x, device: torch.device) -> torch.Tensor:
-    # Works for numpy arrays and torch tensors
+def _to_f32(x, device: torch.device, non_blocking: bool = False) -> torch.Tensor:
+    # Fast path for tensors: avoid re-wrapping via as_tensor each step.
+    if isinstance(x, torch.Tensor):
+        return x.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
 # ---- bootstrap: allow running as a script from repo root ----
@@ -76,7 +78,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
-    y = np.asarray(labels01).astype(int).reshape(-1)
+    y = np.asarray(labels01, dtype=np.int64).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
     return torch.tensor([neg / pos], dtype=torch.float32)
@@ -93,7 +95,7 @@ def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
 
 
 def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple[float, float, float, float]:
-    yb = (np.asarray(y_true).reshape(-1).astype(np.int64) > 0).astype(np.int64)
+    yb = (np.asarray(y_true, dtype=np.int64).reshape(-1) > 0).astype(np.int64, copy=False)
     pb = (np.asarray(p).reshape(-1) >= float(thr)).astype(np.int64)
 
     tp = int(((pb == 1) & (yb == 1)).sum())
@@ -109,7 +111,7 @@ def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple
 
 
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
-    m = np.asarray(mask).copy().astype(bool)
+    m = np.asarray(mask, dtype=bool).copy()
     T, V = m.shape
     if mask_joint_p > 0:
         drop_j = rng.random(V) < float(mask_joint_p)
@@ -135,47 +137,57 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
 
 
 
-def collect_probs(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    ema: Optional[EMA] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    model.eval()
-    ps: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    ctx = ema.use(model) if ema is not None else nullcontext()
-    with ctx, torch.no_grad():
-        for xb, yb in loader:
-            xb = _to_f32(xb, device)  # [B,T,C]
-            logits = logits_1d(model(xb))
-            p = torch.sigmoid(logits).detach().cpu().numpy()
-            y = yb.detach().cpu().numpy().reshape(-1)
-            ps.append(p)
-            ys.append(y)
-    return np.concatenate(ps, axis=0), np.concatenate(ys, axis=0)
-
-def compute_loss_on_loader(
+def collect_probs_and_loss(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
     ema: Optional[EMA] = None,
-) -> float:
-    """Compute mean loss on a loader with model in eval mode (no grad)."""
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Single-pass validation: collect probs/labels and mean loss together."""
     model.eval()
-    losses: List[float] = []
-    counts: List[int] = []
+    non_blocking = (device.type in {"cuda", "mps"})
+    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
+    use_prealloc = n_total > 0
+    probs_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    y_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ptr = 0
+    ps: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    loss_sum = 0.0
+    count_sum = 0
     ctx = ema.use(model) if ema is not None else nullcontext()
-    with ctx, torch.no_grad():
+    with ctx, torch.inference_mode():
         for xb, yb in loader:
-            xb = _to_f32(xb, device)
-            yb = _to_f32(yb, device).view(-1)
+            if isinstance(yb, torch.Tensor):
+                y_np = yb.numpy().reshape(-1).astype(np.float32, copy=False)
+            else:
+                y_np = np.asarray(yb, dtype=np.float32).reshape(-1)
+            xb = _to_f32(xb, device, non_blocking=non_blocking)
+            yb = _to_f32(yb, device, non_blocking=non_blocking).view(-1)
             logits = logits_1d(model(xb))
-            loss = criterion(logits, yb).detach()
-            losses.append(float(loss.cpu()) * xb.shape[0])
-            counts.append(int(xb.shape[0]))
-    return float(sum(losses) / max(1, sum(counts)))
+            p = torch.sigmoid(logits).cpu().numpy()
+            bsz = int(xb.shape[0])
+            if use_prealloc and probs_buf is not None and y_buf is not None and (ptr + bsz) <= n_total:
+                probs_buf[ptr:ptr + bsz] = p
+                y_buf[ptr:ptr + bsz] = y_np
+                ptr += bsz
+            else:
+                ps.append(p)
+                ys.append(y_np)
+            loss_sum += float(criterion(logits, yb).item()) * bsz
+            count_sum += bsz
+    if use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0 and not ps and not ys:
+        probs = probs_buf[:ptr]
+        y_true = y_buf[:ptr]
+    elif use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0:
+        probs = np.concatenate([probs_buf[:ptr]] + ps, axis=0)
+        y_true = np.concatenate([y_buf[:ptr]] + ys, axis=0)
+    else:
+        probs = np.concatenate(ps, axis=0) if ps else np.array([], dtype=np.float32)
+        y_true = np.concatenate(ys, axis=0) if ys else np.array([], dtype=np.float32)
+    val_loss = float(loss_sum / max(1, count_sum))
+    return probs, y_true, val_loss
 
 
 
@@ -297,7 +309,7 @@ class WindowDatasetTCN(Dataset):
         # NumPy -> Torch (explicit, no copy when possible)
         return (
             torch.as_tensor(Xt, dtype=torch.float32),
-            torch.as_tensor([y], dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32),
         )
 
 @dataclass
@@ -313,6 +325,7 @@ class TrainCfg:
     hard_neg_mult: int = 1
 
     epochs: int = 200
+    num_workers: int = 0
     batch: int = 128
     lr: float = 1e-3
     seed: int = 33724876
@@ -376,6 +389,7 @@ def main() -> None:
     ap.add_argument("--hard_neg_mult", type=int, default=1, help="Repeat hard negatives N times.")
 
     ap.add_argument("--epochs", type=int, default=200)
+    ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=33724876)
@@ -586,14 +600,24 @@ def main() -> None:
         opt, mode="max", factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
     )
 
-    pin = torch.cuda.is_available()
+    nw = int(cfg.num_workers)
+    if device.type == "mps":
+        nw = 0
+    pin = (device.type == "cuda")
+    loader_kwargs = {
+        "num_workers": nw,
+        "pin_memory": pin,
+        "persistent_workers": bool(nw > 0),
+    }
+    if nw > 0:
+        loader_kwargs["prefetch_factor"] = 2
     if cfg.balanced_sampler:
         sampler = make_balanced_sampler(train_ds.labels01)
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=0, pin_memory=pin)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs)
     else:
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, num_workers=0, pin_memory=pin)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs)
 
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=0, pin_memory=pin)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
 
     best_score = -1.0
     best_path = os.path.join(cfg.save_dir, "best.pt")
@@ -613,8 +637,8 @@ def main() -> None:
         seen = 0
 
         for xb, yb in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
-            xb = _to_f32(xb, device)         # [B,T,C]
-            yb = _to_f32(yb, device).view(-1)  # [B]
+            xb = _to_f32(xb, device, non_blocking=pin)         # [B,T,C]
+            yb = _to_f32(yb, device, non_blocking=pin).view(-1)  # [B]
 
             opt.zero_grad(set_to_none=True)
             logits = logits_1d(model(xb))
@@ -634,15 +658,12 @@ def main() -> None:
             if ema is not None:
                 ema.update(model)
 
-            running += float(loss.detach().cpu()) * xb.shape[0]
+            running += float(loss.item()) * xb.shape[0]
             seen += xb.shape[0]
 
         train_loss = running / max(1, seen)
 
-        probs, y_true = collect_probs(model, val_loader, device, ema=ema)
-
-        # compute val loss (for debugging divergence vs overfit)
-        val_loss = compute_loss_on_loader(model, val_loader, device, criterion, ema=ema)
+        probs, y_true, val_loss = collect_probs_and_loss(model, val_loader, device, criterion, ema=ema)
 
 
         best = best_threshold_by_f1(probs, y_true, thr_min=cfg.thr_min, thr_max=cfg.thr_max, thr_step=cfg.thr_step)

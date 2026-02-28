@@ -3,33 +3,55 @@ import os, argparse, glob, numpy as np
 
 NTU_J = 25
 
+
+def _read_body_block(fp):
+    """Read one NTU body block and return (arr[25,3], score)."""
+    # NTU variants in the wild encode body metadata as either:
+    # - one line with 10 fields (canonical)
+    # - ten lines (legacy/custom exports)
+    meta0 = next(fp).strip().split()
+    if len(meta0) == 1:
+        # Legacy style: 10 metadata lines, one scalar each.
+        for _ in range(9):
+            next(fp)
+    joints = int(next(fp).strip())
+
+    arr = np.zeros((NTU_J, 3), np.float32)
+    upto = min(int(joints), NTU_J)
+    for ji in range(int(joints)):
+        parts = next(fp).split()
+        if ji >= upto:
+            continue
+        try:
+            arr[ji, 0] = float(parts[0])
+            arr[ji, 1] = float(parts[1])
+            arr[ji, 2] = float(parts[2])
+        except Exception:
+            # Leave zeros for malformed rows.
+            pass
+    # Prefer non-empty body tracks when multiple bodies exist.
+    score = float(np.sum(np.abs(arr[:upto])))
+    return arr, score
+
+
 def read_ntu_skeleton(path):
     with open(path, 'r') as f:
-        lines = [l.strip() for l in f]
-    idx = 0
-    frames = int(lines[idx]); idx += 1
-    seq = []
-    for _ in range(frames):
-        bodies = int(lines[idx]); idx += 1
-        if bodies == 0:
-            seq.append(np.zeros((NTU_J, 3), np.float32))
-            continue
-        idx += 10  # skip body metadata
-        joints = int(lines[idx]); idx += 1
-        xyz = []
-        for _ in range(joints):
-            parts = list(map(float, lines[idx].split()))
-            x, y, z = parts[0], parts[1], parts[2]
-            xyz.append([x, y, z]); idx += 1
-        arr = np.array(xyz, dtype=np.float32)
-        if arr.shape[0] != NTU_J:
-            if arr.shape[0] < NTU_J:
-                pad = np.zeros((NTU_J - arr.shape[0], 3), np.float32)
-                arr = np.concatenate([arr, pad], 0)
-            else:
-                arr = arr[:NTU_J]
-        seq.append(arr)
-    return np.stack(seq)  # [T,25,3]
+        frames = int(next(f).strip())
+        seq = np.zeros((frames, NTU_J, 3), np.float32)
+        for fi in range(frames):
+            bodies = int(next(f).strip())
+            if bodies == 0:
+                continue
+            best_arr = None
+            best_score = -1.0
+            for _ in range(int(bodies)):
+                arr_b, score_b = _read_body_block(f)
+                if score_b > best_score:
+                    best_arr = arr_b
+                    best_score = score_b
+            if best_arr is not None:
+                seq[fi] = best_arr
+    return seq  # [T,25,3]
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

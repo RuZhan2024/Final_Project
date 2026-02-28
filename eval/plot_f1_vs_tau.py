@@ -66,15 +66,19 @@ def _extract_thr_f1(rep: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.nda
     """
     sweep = rep.get("sweep")
 
-    thr: List[float] = []
-    f1: List[float] = []
+    thr_arr = np.array([], dtype=float)
+    f1_arr = np.array([], dtype=float)
 
     # Format 1: dict-of-arrays
     if isinstance(sweep, dict):
-        thr = list(sweep.get("thr") or sweep.get("tau_high") or [])
-        f1 = list(sweep.get("f1") or sweep.get("event_f1") or [])
+        thr_raw = sweep.get("thr") or sweep.get("tau_high") or []
+        f1_raw = sweep.get("f1") or sweep.get("event_f1") or []
+        thr_arr = np.asarray(thr_raw, dtype=float).reshape(-1)
+        f1_arr = np.asarray(f1_raw, dtype=float).reshape(-1)
     # Format 2: list-of-dicts
     elif isinstance(sweep, list):
+        thr: List[float] = []
+        f1: List[float] = []
         for r in sweep:
             if not isinstance(r, dict):
                 continue
@@ -84,9 +88,8 @@ def _extract_thr_f1(rep: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.nda
                 continue
             thr.append(float(t))
             f1.append(float(v))
-
-    thr_arr = np.asarray(thr, dtype=float)
-    f1_arr = np.asarray(f1, dtype=float)
+        thr_arr = np.asarray(thr, dtype=float)
+        f1_arr = np.asarray(f1, dtype=float)
 
     # Pareto index extraction (supports idx list or bool mask)
     pareto_idx = np.array([], dtype=int)
@@ -124,47 +127,49 @@ def main() -> int:
     if len(labels) != len(args.reports):
         ap.error("--labels must have the same length as --reports")
 
-    plt.figure()
+    fig, ax = plt.subplots()
+    try:
+        for report_path, label in zip(args.reports, labels):
+            rep = _load_report(report_path)
+            thr, f1, pareto_idx = _extract_thr_f1(rep)
 
-    for report_path, label in zip(args.reports, labels):
-        rep = _load_report(report_path)
-        thr, f1, pareto_idx = _extract_thr_f1(rep)
+            if thr.size == 0 or f1.size == 0:
+                print(f"[warn] missing sweep thr/f1 in {report_path}")
+                continue
 
-        if thr.size == 0 or f1.size == 0:
-            print(f"[warn] missing sweep thr/f1 in {report_path}")
-            continue
+            # sort by threshold for a clean curve
+            order = np.argsort(thr)
+            thr = thr[order]
+            f1 = f1[order]
 
-        # sort by threshold for a clean curve
-        order = np.argsort(thr)
-        thr = thr[order]
-        f1 = f1[order]
+            ax.plot(thr, f1, marker="o", linestyle="-", label=str(label))
 
-        plt.plot(thr, f1, marker="o", linestyle="-", label=str(label))
+            if int(args.show_pareto) == 1 and pareto_idx.size > 0:
+                # If pareto indices were from pre-sort order, map them.
+                # Best-effort: assume pareto idx refer to the unsorted arrays, so convert.
+                try:
+                    inv = np.empty_like(order)
+                    inv[order] = np.arange(order.size)
+                    idx_sorted = inv[pareto_idx]
+                    idx_sorted = idx_sorted[(idx_sorted >= 0) & (idx_sorted < thr.size)]
+                    if idx_sorted.size > 0:
+                        ax.scatter(thr[idx_sorted], f1[idx_sorted], s=40, label=f"{label} pareto")
+                except Exception:
+                    pass
 
-        if int(args.show_pareto) == 1 and pareto_idx.size > 0:
-            # If pareto indices were from pre-sort order, map them.
-            # Best-effort: assume pareto idx refer to the unsorted arrays, so convert.
-            try:
-                inv = np.empty_like(order)
-                inv[order] = np.arange(order.size)
-                idx_sorted = inv[pareto_idx]
-                idx_sorted = idx_sorted[(idx_sorted >= 0) & (idx_sorted < thr.size)]
-                if idx_sorted.size > 0:
-                    plt.scatter(thr[idx_sorted], f1[idx_sorted], s=40, label=f"{label} pareto")
-            except Exception:
-                pass
+        ax.set_xlabel("tau_high (threshold)")
+        ax.set_ylabel("Event F1")
+        ax.set_ylim(0.0, 1.05)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
 
-    plt.xlabel("tau_high (threshold)")
-    plt.ylabel("Event F1")
-    plt.ylim(0.0, 1.05)
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-
-    out = Path(args.out_fig)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout()
-    plt.savefig(out, dpi=200)
-    print(f"[done] wrote: {out}")
+        out = Path(args.out_fig)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(out, dpi=200)
+        print(f"[done] wrote: {out}")
+    finally:
+        plt.close(fig)
     return 0
 
 

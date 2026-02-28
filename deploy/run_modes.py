@@ -11,23 +11,20 @@ Offline deploy-time runner for *triage state machines* (Mode 1/2/3):
 This script is used to sanity-check real-time behaviour on window streams.
 
 Key fixes vs previous version:
-- Single NPZ load per window in dual mode (no double I/O)
+- Single NPZ load per window across all modes (no double I/O)
 - Centralised two-stream splitting logic (shared with evaluation)
 - Optional lightweight confirm gate using skeleton-derived scores:
     - lying_score (torso horizontalness)
     - motion_score (post-impact stillness proxy)
-- Safer np.load usage (allow_pickle=False)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import glob
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
 
 from core.models import pick_device
@@ -47,38 +44,31 @@ from deploy.common import (
     load_model_bundle,
     load_window_raw,
     build_input_from_raw,
+    build_dual_inputs_from_raw,
     compute_confirm_scores,
     predict_prob,
     predict_mu_sigma,
 )
 
 
-def iter_windows(win_dir: str) -> Dict[str, List[str]]:
-    """Group window NPZs by video id and sort by w_start."""
-    # ✅ CHANGED: recursive glob so nested window dirs work
-    paths = sorted(glob.glob(os.path.join(win_dir, "**", "*.npz"), recursive=True))
+def iter_window_raws(win_dir: str, *, fps_default: float) -> Dict[str, List[Any]]:
+    """Group decoded window payloads by video id and sort by w_start."""
+    paths = sorted(glob.glob(f"{win_dir}/**/*.npz", recursive=True))
 
-    by_vid: Dict[str, List[Tuple[int, str]]] = {}
+    by_vid: Dict[str, List[Tuple[int, Any]]] = {}
     for p in paths:
-        vid = os.path.splitext(os.path.basename(p))[0]
-        ws = 0
         try:
-            z = np.load(p, allow_pickle=False)
-            with z:
-                v = z.get("video_id", None)
-                if v is not None:
-                    if isinstance(v, np.ndarray) and v.shape == ():
-                        v = v.item()
-                    vid = str(v)
-                ws = int(z.get("w_start", 0))
+            raw = load_window_raw(p, fps_default=fps_default)
+            vid = str(raw.meta.video_id)
+            ws = int(raw.meta.w_start)
         except Exception:
-            pass
-        by_vid.setdefault(vid, []).append((ws, p))
+            continue
+        by_vid.setdefault(vid, []).append((ws, raw))
 
-    out: Dict[str, List[str]] = {}
+    out: Dict[str, List[Any]] = {}
     for vid, lst in by_vid.items():
         lst_sorted = sorted(lst, key=lambda x: x[0])
-        out[vid] = [p for _, p in lst_sorted]
+        out[vid] = [raw for _, raw in lst_sorted]
     return out
 
 
@@ -195,10 +185,19 @@ def main() -> int:
         if arch_gcn != "gcn":
             print(f"[warn] ckpt_gcn arch={arch_gcn} (expected gcn)")
 
-    by_vid = iter_windows(args.win_dir)
+    def _score_window(model, arch: str, X, two_stream: bool, in_confirm: bool) -> Tuple[float, Optional[float]]:
+        """Return (p_or_mu, sigma_or_none) for one model/window."""
+        if mc_M_confirm > 1 and in_confirm:
+            mu, sigma = predict_mu_sigma(model, arch, X, device, two_stream, mc_M_confirm)
+            return float(mu), float(sigma)
+        p1 = predict_prob(model, arch, X, device, two_stream)
+        return float(p1), None
+
+    mode_fps_default = float(fps_tcn if args.mode in {"tcn", "dual"} else fps_gcn)
+    by_vid = iter_window_raws(args.win_dir, fps_default=mode_fps_default)
     events_out: List[Dict[str, Any]] = []
 
-    for vid, paths in by_vid.items():
+    for vid, raws in by_vid.items():
         if args.mode == "tcn":
             sm = SingleTriageStateMachine(tcn_tri, single_cfg)
         elif args.mode == "gcn":
@@ -206,12 +205,15 @@ def main() -> int:
         else:
             sm = DualTriageStateMachine(tcn_tri, gcn_tri, dual_cfg)
 
-        for p in paths:
+        for raw in raws:
             # In dual mode we load once and build both inputs from the same raw arrays.
             if args.mode == "dual":
-                raw = load_window_raw(p, fps_default=fps_tcn)
-                Xt, _ = build_input_from_raw(raw, feat_tcn, "tcn", two_stream=two_stream_tcn)
-                Xg, _ = build_input_from_raw(raw, feat_gcn, "gcn", two_stream=two_stream_gcn)
+                Xt, Xg, _ = build_dual_inputs_from_raw(
+                    raw,
+                    feat_tcn,
+                    feat_gcn,
+                    two_stream_gcn=two_stream_gcn,
+                )
                 t = _get_t(raw.meta, args.time_mode)
 
                 in_confirm = getattr(sm, "_state", "idle") == "confirm"
@@ -219,21 +221,15 @@ def main() -> int:
                 if in_confirm and bool(dual_cfg.confirm_use_scores):
                     lying, motion = compute_confirm_scores(raw)
 
-                if mc_M_confirm > 1 and in_confirm:
-                    mu_t, sig_t = predict_mu_sigma(model_tcn, "tcn", Xt, device, two_stream_tcn, mc_M_confirm)
-                    mu_g, sig_g = predict_mu_sigma(model_gcn, "gcn", Xg, device, two_stream_gcn, mc_M_confirm)
-                    evs = sm.step(t, mu_t, mu_g, sigma_tcn=sig_t, sigma_gcn=sig_g, lying=lying, motion=motion)
+                pt, sig_t = _score_window(model_tcn, "tcn", Xt, two_stream_tcn, in_confirm)
+                if gate_gcn and (not in_confirm) and (pt < gate_gcn_tau):
+                    pg, sig_g = 0.0, None
                 else:
-                    pt = predict_prob(model_tcn, "tcn", Xt, device, two_stream_tcn)
-                    if gate_gcn and (not in_confirm) and (pt < gate_gcn_tau):
-                        pg = 0.0
-                    else:
-                        pg = predict_prob(model_gcn, "gcn", Xg, device, two_stream_gcn)
-                    evs = sm.step(t, pt, pg, sigma_tcn=None, sigma_gcn=None, lying=lying, motion=motion)
+                    pg, sig_g = _score_window(model_gcn, "gcn", Xg, two_stream_gcn, in_confirm)
+                evs = sm.step(t, pt, pg, sigma_tcn=sig_t, sigma_gcn=sig_g, lying=lying, motion=motion)
 
             else:
                 # single-model modes
-                raw = load_window_raw(p, fps_default=(fps_tcn if args.mode == "tcn" else fps_gcn))
                 t = _get_t(raw.meta, args.time_mode)
 
                 in_confirm = getattr(sm, "_state", "idle") == "confirm"
@@ -243,20 +239,12 @@ def main() -> int:
 
                 if args.mode == "tcn":
                     X, _ = build_input_from_raw(raw, feat_tcn, "tcn", two_stream=two_stream_tcn)
-                    if mc_M_confirm > 1 and in_confirm:
-                        mu, sigma = predict_mu_sigma(model_tcn, "tcn", X, device, two_stream_tcn, mc_M_confirm)
-                        evs = sm.step(t, mu, sigma=sigma, lying=lying, motion=motion)
-                    else:
-                        p1 = predict_prob(model_tcn, "tcn", X, device, two_stream_tcn)
-                        evs = sm.step(t, p1, sigma=None, lying=lying, motion=motion)
+                    p1, sigma = _score_window(model_tcn, "tcn", X, two_stream_tcn, in_confirm)
+                    evs = sm.step(t, p1, sigma=sigma, lying=lying, motion=motion)
                 else:
                     X, _ = build_input_from_raw(raw, feat_gcn, "gcn", two_stream=two_stream_gcn)
-                    if mc_M_confirm > 1 and in_confirm:
-                        mu, sigma = predict_mu_sigma(model_gcn, "gcn", X, device, two_stream_gcn, mc_M_confirm)
-                        evs = sm.step(t, mu, sigma=sigma, lying=lying, motion=motion)
-                    else:
-                        p1 = predict_prob(model_gcn, "gcn", X, device, two_stream_gcn)
-                        evs = sm.step(t, p1, sigma=None, lying=lying, motion=motion)
+                    p1, sigma = _score_window(model_gcn, "gcn", X, two_stream_gcn, in_confirm)
+                    evs = sm.step(t, p1, sigma=sigma, lying=lying, motion=motion)
 
             for e in evs:
                 rec = {"video_id": vid, "kind": e.kind, "t_sec": e.t_sec, **e.info}

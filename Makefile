@@ -15,9 +15,15 @@ SHELL := /bin/bash
 # -------------------------
 PY      ?= python3
 VENV    ?= source ".venv/bin/activate"
+PIP     ?= pip
 PYTHONPATH := $(CURDIR)
 export PYTHONPATH
 RUN := $(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY)
+
+# -------------------------
+# Quality / Coverage
+# -------------------------
+COVERAGE_MIN ?= 70
 
 # -------------------------
 # Inventory
@@ -131,7 +137,7 @@ CAUCA_ANN_GLOB      ?= $(RAW_caucafall)/**/*.txt
 CAUCA_FALL_CLASS_ID ?= 0
 CAUCA_MIN_RUN       ?= 3
 CAUCA_GAP_FILL      ?= 2
-CAUCA_REQUIRE_SPANS ?= 1
+CAUCA_REQUIRE_SPANS ?= 0
 
 CAUCA_SPLIT_GROUP_MODE ?= caucafall_subject
 CAUCA_SPLIT_BALANCE_BY ?= groups
@@ -259,10 +265,10 @@ TCN_MASK_JOINT_P_muvim ?= 0.05
 TCN_MASK_FRAME_P ?= 0.10
 TCN_MASK_FRAME_P_muvim ?= 0.03
 
-TCN_MONITOR ?= f1
-TCN_MONITOR_le2i ?= ap
-TCN_MONITOR_caucafall ?= ap
-TCN_MONITOR_muvim ?= ap
+TCN_MONITOR ?= ap
+
+GCN_MONITOR ?= ap
+
 
 TCN_THR_MIN  ?= 0.05
 TCN_THR_MAX  ?= 0.95
@@ -332,10 +338,10 @@ ALERT_K ?= 2
 ALERT_N ?= 3
 ALERT_COOLDOWN_S ?= 30
 ALERT_CONFIRM ?= 1
-ALERT_CONFIRM_S ?= 2.0
-ALERT_CONFIRM_MIN_LYING ?= 0.65
-ALERT_CONFIRM_MAX_MOTION ?= 0.08
-ALERT_CONFIRM_REQUIRE_LOW ?= 1
+ALERT_CONFIRM_S ?= 3.0
+ALERT_CONFIRM_MIN_LYING ?= 0.55
+ALERT_CONFIRM_MAX_MOTION ?= 0.15
+ALERT_CONFIRM_REQUIRE_LOW ?= 0
 
 FITOPS_POLICY_FLAGS = \
   --ema_alpha "$(ALERT_EMA_ALPHA)" --k "$(ALERT_K)" --n "$(ALERT_N)" --cooldown_s "$(ALERT_COOLDOWN_S)" \
@@ -350,7 +356,7 @@ FITOPS_SWEEP_FLAGS = \
   --op1_recall "$(strip $(FIT_OP1_RECALL))" --op3_fa24h "$(strip $(FIT_OP3_FA24H))"
 
 FITOPS_PICKER ?= conservative
-FITOPS_TIE_BREAK ?= max_thr
+FITOPS_TIE_BREAK ?= min_thr
 FITOPS_TIE_EPS ?= 1e-3
 FITOPS_SAVE_SWEEP_JSON ?= 1
 FITOPS_PICKER_FLAGS = \
@@ -359,7 +365,7 @@ FITOPS_PICKER_FLAGS = \
   --tie_eps "$(strip $(FITOPS_TIE_EPS))" \
   --save_sweep_json "$(strip $(FITOPS_SAVE_SWEEP_JSON))"
 
-FITOPS_MIN_TAU_HIGH ?= 0.20
+FITOPS_MIN_TAU_HIGH ?= 0.05
 
 # Back-compat hooks (optional): allow old env vars to override without breaking defaults
 FITOPS_MIN_TAU_HIGH_le2i      ?= $(or $(strip $(FITOPS_MIN_TAU_HIGH_LE2I)),$(FITOPS_MIN_TAU_HIGH))
@@ -384,7 +390,12 @@ FITOPS_FA_ARG = $(if $(filter 1,$(strip $(FITOPS_USE_FA))),--fa_dir "$(FITOPS_FA
 METR_THR_MIN  ?= 0.001
 METR_THR_MAX  ?= 0.95
 METR_THR_STEP ?= 0.01
-METRICS_SWEEP_FLAGS = --thr_min "$(METR_THR_MIN)" --thr_max "$(METR_THR_MAX)" --thr_step "$(METR_THR_STEP)"
+
+# Eval split for metrics.py (val|test)
+EVAL_SPLIT ?= test
+
+METRICS_SWEEP_FLAGS = --thr_min "$(METR_THR_MIN)" --thr_max "$(METR_THR_MAX)" --thr_step "$(METR_THR_STEP)" --overlap_slack_s "$(FIT_OVERLAP_SLACK_S)"
+METRICS_FA_ARG = $(if $(filter 1,$(strip $(FITOPS_USE_FA))),--fa_dir "$(FITOPS_FA_DIR_EFF)",)
 
 # -------------------------
 # Server
@@ -400,7 +411,7 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
+.PHONY: help serve-dev install-dev test-server test-server-cov check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
         eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
@@ -411,6 +422,15 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 serve-dev:
 	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
+
+install-dev:
+	$(VENV) && $(PIP) install -r requirements-dev.txt
+
+test-server:
+	$(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY) -m pytest -q tests/server
+
+test-server-cov:
+	$(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY) -m pytest -q --cov=server --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml --cov-fail-under="$(COVERAGE_MIN)" tests/server
 
 clean-stamps:
 	@echo "[clean] removing stamps: $(STAMP_DIR)/"
@@ -443,6 +463,7 @@ debug-%:
 	@echo "LR_TCN(resolved)=$(call get,LR_TCN,$*)"
 	@echo "LR_GCN(resolved)=$(call get,LR_GCN,$*)"
 	@echo "TCN_MONITOR(resolved)=$(call get,TCN_MONITOR,$*)"
+	@echo "GCN_MONITOR(resolved)=$(call get,GCN_MONITOR,$*)"
 	@echo "TCN_DROPOUT(resolved)=$(call get,TCN_DROPOUT,$*)"
 	@echo "GCN_DROPOUT(resolved)=$(call get,GCN_DROPOUT,$*)"
 	@echo "SPLIT_MODE=$(if $(filter caucafall,$*),$(CAUCA_SPLIT_GROUP_MODE),n/a)"
@@ -475,6 +496,11 @@ help:
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
 	@echo "  make plot-<ds>    | plot-gcn-<ds>"
+	@echo ""
+	@echo "Quality:"
+	@echo "  make install-dev"
+	@echo "  make test-server"
+	@echo "  make test-server-cov"
 	@echo ""
 	@echo "Debug:"
 	@echo "  make debug-<ds>   (print resolved vars for dataset)"
@@ -727,7 +753,7 @@ $(STAMP_DIR)/fa_windows/%.stamp: $(STAMP_DIR)/windows_eval/%.stamp
 	$(RUN) windows/make_fa_windows.py \
 	  --in_root  "$(call win_eval_dir,$*)" \
 	  --out_root "$(call fa_win_dir,$*)" \
-	  --split "$(FA_SPLIT)" \
+	  --splits "$(FA_SPLIT)" \
 	  --mode "$(strip $(FA_MODE))" \
 	  --only_neg_videos "$(FA_ONLY_NEG_VIDEOS)"
 	@touch "$@"
@@ -750,7 +776,7 @@ $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	  --hidden "$(TCN_HIDDEN)" --num_blocks "$(TCN_NUM_BLOCKS)" --kernel "$(TCN_KERNEL)" \
 	  --grad_clip "$(TCN_GRAD_CLIP)" --patience "$(TCN_PATIENCE)" \
 	  --thr_min "$(TCN_THR_MIN)" --thr_max "$(TCN_THR_MAX)" --thr_step "$(TCN_THR_STEP)" \
-	  --monitor "$(call get,TCN_MONITOR,$*)" \
+	  --monitor "$(TCN_MONITOR)" \
 	  --dropout "$(call get,TCN_DROPOUT,$*)" \
 	  --mask_joint_p "$(call get,TCN_MASK_JOINT_P,$*)" --mask_frame_p "$(call get,TCN_MASK_FRAME_P,$*)" \
 	  --pos_weight "$(call get,TCN_POS_WEIGHT,$*)" $(if $(filter 1,$(call get,TCN_BALANCED_SAMPLER,$*)),--balanced_sampler,) \
@@ -769,6 +795,7 @@ $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	  --grad_clip "$(GCN_GRAD_CLIP)" --patience "$(GCN_PATIENCE)" --min_epochs "$(GCN_MIN_EPOCHS)" \
 	  --mask_joint_p "$(call get,MASK_JOINT_P,$*)" --mask_frame_p "$(call get,MASK_FRAME_P,$*)" \
 	  --thr_min "$(GCN_THR_MIN)" --thr_max "$(GCN_THR_MAX)" --thr_step "$(call get,GCN_THR_STEP,$*)" \
+	  --monitor "$(GCN_MONITOR)" \
 	  --dropout "$(call get,GCN_DROPOUT,$*)" \
 	  --pos_weight "$(call get,GCN_POS_WEIGHT,$*)" $(if $(filter 1,$(call get,GCN_BALANCED_SAMPLER,$*)),--balanced_sampler,) \
 	  --save_dir "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)"
@@ -829,22 +856,24 @@ $(addprefix eval-gcn-,$(DATASETS)): eval-gcn-%: $(MET_DIR)/gcn_%$(OUT_TAG).json
 $(MET_DIR)/tcn_%$(OUT_TAG).json: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)"
 	$(RUN) eval/metrics.py \
-	  --win_dir "$(call win_eval_dir,$*)/test" \
+	  --win_dir "$(call win_eval_dir,$*)/$(EVAL_SPLIT)" \
 	  --ckpt "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --ops_yaml "$(OPS_DIR)/tcn_$*$(OUT_TAG).yaml" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_$*)" \
-	  $(METRICS_SWEEP_FLAGS)
+	  $(METRICS_SWEEP_FLAGS) $(METRICS_FA_ARG)
+	@test -s "$@"
 
 $(MET_DIR)/gcn_%$(OUT_TAG).json: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)"
 	$(RUN) eval/metrics.py \
-	  --win_dir "$(call win_eval_dir,$*)/test" \
+	  --win_dir "$(call win_eval_dir,$*)/$(EVAL_SPLIT)" \
 	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --ops_yaml "$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_$*)" \
-	  $(METRICS_SWEEP_FLAGS)
+	  $(METRICS_SWEEP_FLAGS) $(METRICS_FA_ARG)
+	@test -s "$@"
 
 # ============================================================
 # Plot

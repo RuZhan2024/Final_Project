@@ -20,14 +20,22 @@ except Exception:  # pragma: no cover
 
 
 def prf_fpr_at_threshold(probs: np.ndarray, y_true: np.ndarray, thr: float) -> Dict[str, float]:
-    p = np.asarray(probs).reshape(-1)
-    y = np.asarray(y_true).reshape(-1).astype(np.int32)
-    pred = (p >= float(thr)).astype(np.int32)
+    if isinstance(probs, np.ndarray) and probs.ndim == 1:
+        p = probs
+    else:
+        p = np.asarray(probs).reshape(-1)
+    if isinstance(y_true, np.ndarray) and y_true.ndim == 1 and y_true.dtype == np.int32:
+        y = y_true
+    else:
+        y = np.asarray(y_true).reshape(-1).astype(np.int32, copy=False)
+    pred = (p >= float(thr))
+    y1 = (y == 1)
+    y0 = (y == 0)
 
-    tp = float(((pred == 1) & (y == 1)).sum())
-    fp = float(((pred == 1) & (y == 0)).sum())
-    fn = float(((pred == 0) & (y == 1)).sum())
-    tn = float(((pred == 0) & (y == 0)).sum())
+    tp = float((pred & y1).sum())
+    fp = float((pred & y0).sum())
+    fn = float(((~pred) & y1).sum())
+    tn = float(((~pred) & y0).sum())
 
     P = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     R = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -38,16 +46,56 @@ def prf_fpr_at_threshold(probs: np.ndarray, y_true: np.ndarray, thr: float) -> D
 
 
 def sweep_thresholds(probs: np.ndarray, y_true: np.ndarray, thr_min: float = 0.05, thr_max: float = 0.95, thr_step: float = 0.01) -> Dict[str, List[float]]:
+    if isinstance(probs, np.ndarray) and probs.ndim == 1:
+        p = probs
+    else:
+        p = np.asarray(probs).reshape(-1)
+    if isinstance(y_true, np.ndarray) and y_true.ndim == 1 and y_true.dtype == np.int32:
+        y = y_true
+    else:
+        y = np.asarray(y_true).reshape(-1).astype(np.int32, copy=False)
     thr_values = np.arange(float(thr_min), float(thr_max) + 1e-12, float(thr_step), dtype=np.float32)
-    out = {"thr": [], "precision": [], "recall": [], "f1": [], "fpr": []}
-    for thr in thr_values:
-        m = prf_fpr_at_threshold(probs, y_true, float(thr))
-        out["thr"].append(m["thr"])
-        out["precision"].append(m["precision"])
-        out["recall"].append(m["recall"])
-        out["f1"].append(m["f1"])
-        out["fpr"].append(m["fpr"])
-    return out
+    if p.size == 0 or thr_values.size == 0:
+        return {"thr": [], "precision": [], "recall": [], "f1": [], "fpr": []}
+
+    y1 = (y == 1).astype(np.int64, copy=False)
+    y0 = (y == 0).astype(np.int64, copy=False)
+    pos_total = int(y1.sum())
+    neg_total = int(y0.sum())
+
+    # Sort once by score ascending, then use cumulative counts and searchsorted.
+    # This avoids allocating [N,K] boolean matrices during sweeps.
+    order = np.argsort(p, kind="mergesort")
+    p_asc = p[order]
+    y1_asc = y1[order]
+    y0_asc = y0[order]
+    tp_suf = np.cumsum(y1_asc[::-1], dtype=np.int64)[::-1]
+    fp_suf = np.cumsum(y0_asc[::-1], dtype=np.int64)[::-1]
+
+    # idx_left[i] = first index with p >= thr_values[i].
+    idx_left = np.searchsorted(p_asc, thr_values, side="left").astype(np.int64, copy=False)
+    has_pos = idx_left < p_asc.size
+    tp = np.zeros_like(thr_values, dtype=np.float64)
+    fp = np.zeros_like(thr_values, dtype=np.float64)
+    if has_pos.any():
+        idx = idx_left[has_pos]
+        tp[has_pos] = tp_suf[idx]
+        fp[has_pos] = fp_suf[idx]
+    fn = float(pos_total) - tp
+    tn = float(neg_total) - fp
+
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
+    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
+    f1 = np.divide(2.0 * precision * recall, precision + recall, out=np.zeros_like(tp), where=(precision + recall) > 0)
+    fpr = np.divide(fp, fp + tn, out=np.zeros_like(tp), where=(fp + tn) > 0)
+
+    return {
+        "thr": thr_values.astype(float).tolist(),
+        "precision": precision.astype(float).tolist(),
+        "recall": recall.astype(float).tolist(),
+        "f1": f1.astype(float).tolist(),
+        "fpr": fpr.astype(float).tolist(),
+    }
 
 
 def best_threshold_by_f1(probs: np.ndarray, y_true: np.ndarray, thr_min: float = 0.05, thr_max: float = 0.95, thr_step: float = 0.01) -> Dict[str, float]:
@@ -66,8 +114,14 @@ def best_threshold_by_f1(probs: np.ndarray, y_true: np.ndarray, thr_min: float =
 
 
 def ap_auc(probs: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
-    p = np.asarray(probs).reshape(-1)
-    y = np.asarray(y_true).reshape(-1)
+    if isinstance(probs, np.ndarray) and probs.ndim == 1:
+        p = probs
+    else:
+        p = np.asarray(probs).reshape(-1)
+    if isinstance(y_true, np.ndarray) and y_true.ndim == 1:
+        y = y_true
+    else:
+        y = np.asarray(y_true).reshape(-1)
     out = {"ap": float("nan"), "auc": float("nan")}
     if average_precision_score is not None:
         try:
@@ -93,7 +147,13 @@ class SweepMeta:
     fa24h_method: str = "approx"         # "pose_npz" | "approx"
 
 
-def _group_fp_events_for_video(starts: np.ndarray, ends: np.ndarray, stride_frames: int) -> int:
+def _group_fp_events_for_video(
+    starts: np.ndarray,
+    ends: np.ndarray,
+    stride_frames: int,
+    *,
+    assume_sorted: bool = False,
+) -> int:
     """Count false-positive *events* from predicted-positive windows (already filtered to y==0).
 
     If two predicted windows overlap in time or are separated by <= stride_frames,
@@ -101,20 +161,101 @@ def _group_fp_events_for_video(starts: np.ndarray, ends: np.ndarray, stride_fram
     """
     if starts.size == 0:
         return 0
-    order = np.argsort(starts)
-    starts = starts[order]
-    ends = ends[order]
-    n_events = 1
-    cur_end = int(ends[0])
+    if not assume_sorted:
+        order = np.argsort(starts)
+        starts = starts[order]
+        ends = ends[order]
+    if starts.size == 1:
+        return 1
+
+    if isinstance(starts, np.ndarray) and starts.dtype == np.int64:
+        starts_i = starts
+    else:
+        starts_i = starts.astype(np.int64, copy=False)
+    if isinstance(ends, np.ndarray) and ends.dtype == np.int64:
+        ends_i = ends
+    else:
+        ends_i = ends.astype(np.int64, copy=False)
     gap = int(stride_frames)
-    for s, e in zip(starts[1:], ends[1:]):
-        s = int(s); e = int(e)
-        if s <= cur_end + gap:
-            cur_end = max(cur_end, e)
-        else:
-            n_events += 1
-            cur_end = e
-    return int(n_events)
+
+    # A new event starts at i>0 iff start_i is beyond the running merged end of prior windows.
+    prev_merged_end = np.maximum.accumulate(ends_i[:-1])
+    new_event = starts_i[1:] > (prev_merged_end + gap)
+    return int(1 + int(new_event.sum()))
+
+
+def _group_fp_events_for_video_from_scores(
+    p_sorted: np.ndarray,
+    starts_sorted: np.ndarray,
+    ends_sorted: np.ndarray,
+    thr: float,
+    stride_frames: int,
+) -> int:
+    """Count FP events for sorted windows without allocating masked ws/we slices."""
+    if p_sorted.size == 0:
+        return 0
+    if starts_sorted.size != p_sorted.size or ends_sorted.size != p_sorted.size:
+        raise ValueError("p_sorted, starts_sorted, ends_sorted must have the same length")
+
+    gap = int(stride_frames)
+    thr_f = float(thr)
+    active = (p_sorted >= thr_f)
+    n_active = int(np.count_nonzero(active))
+    if n_active == 0:
+        return 0
+    if n_active == 1:
+        return 1
+    if n_active == int(active.size):
+        return _group_fp_events_for_video(
+            starts_sorted,
+            ends_sorted,
+            gap,
+            assume_sorted=True,
+        )
+    starts_sel = starts_sorted[active]
+    ends_sel = ends_sorted[active]
+    if isinstance(starts_sel, np.ndarray) and starts_sel.dtype == np.int64:
+        starts_a = starts_sel
+    else:
+        starts_a = starts_sel.astype(np.int64, copy=False)
+    if isinstance(ends_sel, np.ndarray) and ends_sel.dtype == np.int64:
+        ends_a = ends_sel
+    else:
+        ends_a = ends_sel.astype(np.int64, copy=False)
+    if starts_a.size == 1:
+        return 1
+    prev_merged_end = np.maximum.accumulate(ends_a[:-1])
+    new_event = starts_a[1:] > (prev_merged_end + gap)
+    return int(1 + int(new_event.sum()))
+
+
+def _build_video_groups(vids: np.ndarray, ws: np.ndarray) -> List[Tuple[str, np.ndarray]]:
+    """Precompute per-video sorted indices once."""
+    vids_arr = np.asarray(vids).reshape(-1)
+    ws_arr = np.asarray(ws)
+    if vids_arr.size < 1:
+        return []
+
+    uniq, first_idx, inv = np.unique(vids_arr, return_index=True, return_inverse=True)
+    uniq_order = np.argsort(first_idx, kind="mergesort")
+    inv_i64 = inv.astype(np.int64, copy=False)
+    by_group = np.argsort(inv_i64, kind="mergesort")
+    counts = np.bincount(inv_i64, minlength=uniq.size)
+    offsets = np.empty((counts.size + 1,), dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+
+    groups: List[Tuple[str, np.ndarray]] = []
+    for u in uniq_order:
+        uu = int(u)
+        a = int(offsets[uu])
+        b = int(offsets[uu + 1])
+        idx = by_group[a:b]
+        if idx.size < 1:
+            continue
+        sort_idx = np.argsort(ws_arr[idx], kind="mergesort")
+        groups.append((str(uniq[u]), idx[sort_idx]))
+    return groups
 
 
 def sweep_with_fa24h(
@@ -138,19 +279,42 @@ def sweep_with_fa24h(
       - if pose_npz_dir is provided, we load each sequence npz and use its true length.
       - otherwise, use (max_end-min_start+1)/fps per video.
     """
-    p = np.asarray(probs).reshape(-1)
-    y = np.asarray(y_true).reshape(-1).astype(np.int32)
-    vids = np.asarray(list(video_ids))
-    ws = np.asarray(w_start).astype(np.int64)
-    we = np.asarray(w_end).astype(np.int64)
-    fps_arr = np.asarray(fps).astype(np.float32)
+    if isinstance(probs, np.ndarray) and probs.ndim == 1:
+        p = probs
+    else:
+        p = np.asarray(probs).reshape(-1)
+    if isinstance(y_true, np.ndarray) and y_true.ndim == 1 and y_true.dtype == np.int32:
+        y = y_true
+    else:
+        y = np.asarray(y_true).reshape(-1).astype(np.int32, copy=False)
+    vids = np.asarray(video_ids)
+    if isinstance(w_start, np.ndarray) and w_start.ndim == 1 and w_start.dtype == np.int64:
+        ws = w_start
+    else:
+        ws = np.asarray(w_start).astype(np.int64, copy=False)
+    if isinstance(w_end, np.ndarray) and w_end.ndim == 1 and w_end.dtype == np.int64:
+        we = w_end
+    else:
+        we = np.asarray(w_end).astype(np.int64, copy=False)
+    if isinstance(fps, np.ndarray) and fps.ndim == 1 and fps.dtype == np.float32:
+        fps_arr = fps
+    else:
+        fps_arr = np.asarray(fps).astype(np.float32, copy=False)
 
     thr_values = np.arange(float(thr_min), float(thr_max) + 1e-12, float(thr_step), dtype=np.float32)
-
-    out = {"thr": [], "precision": [], "recall": [], "f1": [], "fpr": [], "fa24h": []}
+    base = sweep_thresholds(p, y, thr_min=float(thr_min), thr_max=float(thr_max), thr_step=float(thr_step))
+    out = {
+        "thr": list(base["thr"]),
+        "precision": list(base["precision"]),
+        "recall": list(base["recall"]),
+        "f1": list(base["f1"]),
+        "fpr": list(base["fpr"]),
+        "fa24h": [],
+    }
 
     # duration per video
-    unique_vids = list(dict.fromkeys([str(v) for v in vids.tolist()]))
+    groups = _build_video_groups(vids, ws)
+    unique_vids = [v for v, _idx in groups]
     duration_sec: Dict[str, float] = {}
 
     fa24h_method = "approx"
@@ -181,19 +345,22 @@ def sweep_with_fa24h(
                 continue
 
     # fallback approx
-    for v in unique_vids:
+    for v, idx_full in groups:
         if v in duration_sec:
             continue
-        m = vids == v
-        if not m.any():
+        if idx_full.size < 1:
             continue
-        s0 = int(ws[m].min())
-        e0 = int(we[m].max())
-        fps_v = float(np.median(fps_arr[m])) if np.isfinite(fps_arr[m]).any() else float(fps_default)
+        s0 = int(ws[idx_full].min())
+        e0 = int(we[idx_full].max())
+        fps_slice = fps_arr[idx_full]
+        fps_v = float(np.median(fps_slice)) if np.isfinite(fps_slice).any() else float(fps_default)
+        if fps_v <= 0:
+            fps_v = float(fps_default)
         duration_sec[v] = float(e0 - s0 + 1) / max(1e-6, fps_v)
 
     total_sec = float(sum(duration_sec.values()))
     total_days = total_sec / 86400.0 if total_sec > 0 else float("nan")
+    inv_total_days = (86400.0 / total_sec) if total_sec > 0 else float("nan")
 
     # stride estimate for event grouping
     stride_frames = int(stride_frames_hint) if (stride_frames_hint and stride_frames_hint > 0) else None
@@ -206,29 +373,71 @@ def sweep_with_fa24h(
         else:
             stride_frames = 1
 
+    # Cache per-video negative windows once (already sorted by w_start).
+    neg_groups: List[Tuple[np.ndarray, np.ndarray, np.ndarray, float, float, int]] = []
+    empty_p = np.asarray([], dtype=np.float32)
+    empty_w = np.asarray([], dtype=np.int64)
+    for _v, idx_full in groups:
+        if idx_full.size < 1:
+            neg_groups.append(
+                (
+                    empty_p,
+                    empty_w,
+                    empty_w,
+                    float("-inf"),
+                    float("inf"),
+                    0,
+                )
+            )
+            continue
+        idx_neg = idx_full[y[idx_full] == 0]
+        if idx_neg.size < 1:
+            neg_groups.append(
+                (
+                    empty_p,
+                    empty_w,
+                    empty_w,
+                    float("-inf"),
+                    float("inf"),
+                    0,
+                )
+            )
+            continue
+        p_neg = p[idx_neg].astype(np.float32, copy=False)
+        ws_neg = ws[idx_neg].astype(np.int64, copy=False)
+        we_neg = we[idx_neg].astype(np.int64, copy=False)
+        full_events = _group_fp_events_for_video(
+            ws_neg,
+            we_neg,
+            stride_frames,
+            assume_sorted=True,
+        )
+        neg_groups.append((p_neg, ws_neg, we_neg, float(np.max(p_neg)), float(np.min(p_neg)), int(full_events)))
+
+    stride_i = int(stride_frames)
     # threshold loop
     for thr in thr_values:
-        pred = (p >= float(thr)).astype(np.int32)
-        # window-level metrics
-        m = prf_fpr_at_threshold(p, y, float(thr))
-        out["thr"].append(m["thr"])
-        out["precision"].append(m["precision"])
-        out["recall"].append(m["recall"])
-        out["f1"].append(m["f1"])
-        out["fpr"].append(m["fpr"])
+        thr_f = float(thr)
 
         # fp events per video (only y==0)
         fp_events = 0
-        for v in unique_vids:
-            mv = vids == v
-            if not mv.any():
+        for p_neg, ws_neg, we_neg, p_max, p_min, full_events in neg_groups:
+            if p_neg.size < 1:
                 continue
-            fp = mv & (y == 0) & (pred == 1)
-            if not fp.any():
+            if p_max < thr_f:
                 continue
-            fp_events += _group_fp_events_for_video(ws[fp], we[fp], stride_frames)
+            if thr_f <= p_min:
+                fp_events += int(full_events)
+                continue
+            fp_events += _group_fp_events_for_video_from_scores(
+                p_neg,
+                ws_neg,
+                we_neg,
+                thr_f,
+                stride_i,
+            )
 
-        fa24h = float(fp_events / total_days) if (total_days and total_days > 0) else float("nan")
+        fa24h = float(fp_events * inv_total_days) if np.isfinite(inv_total_days) else float("nan")
         out["fa24h"].append(fa24h)
 
     meta = {

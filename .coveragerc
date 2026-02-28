@@ -1,0 +1,13 @@
+[run]
+branch = True
+source =
+    server
+omit =
+    */__init__.py
+    */__pycache__/*
+    server/deploy_runtime.py
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 1

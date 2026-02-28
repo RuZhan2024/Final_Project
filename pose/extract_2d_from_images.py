@@ -24,11 +24,16 @@ import hashlib
 from pathlib import Path
 from collections import defaultdict
 
+# Silence verbose logs BEFORE importing mediapipe backends (best effort)
+os.environ.setdefault("GLOG_minloglevel", "2")     # 0=DEBUG,1=INFO,2=WARNING,3=ERROR
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import numpy as np
 import cv2
 import mediapipe as mp
 
 J = 33  # MediaPipe Pose landmarks
+_DIGIT_SPLIT_RE = re.compile(r"(\d+)")
 
 DEFAULT_FPS = {
     "urfd": 30.0,
@@ -36,18 +41,47 @@ DEFAULT_FPS = {
     "muvim": 30.0,
 }
 
-# Silence verbose logs BEFORE importing mediapipe backends (best effort)
-os.environ.setdefault("GLOG_minloglevel", "2")     # 0=DEBUG,1=INFO,2=WARNING,3=ERROR
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-
-
 def _natural_key(s: str):
     """Natural sort key: frame_2.png < frame_10.png."""
-    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+    return [int(t) if t.isdigit() else t.lower() for t in _DIGIT_SPLIT_RE.split(s)]
 
 
 def _sanitize_stem(stem: str) -> str:
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in stem)
+
+
+def _write_landmarks_xy_conf(lm, xy_out: np.ndarray, conf_out: np.ndarray) -> None:
+    # Fixed-size path with upfront zero fill keeps missing semantics consistent
+    # and avoids per-index bounds branches on every frame.
+    isfinite = np.isfinite
+    xy_out.fill(0.0)
+    conf_out.fill(0.0)
+    n_lm = min(J, int(len(lm)) if lm is not None else 0)
+    for i in range(n_lm):
+        p = lm[i]
+        x = float(p.x)
+        y = float(p.y)
+        v = float(p.visibility)
+        if not (isfinite(x) and isfinite(y) and isfinite(v)):
+            continue
+        if x <= 0.0:
+            xy_out[i, 0] = 0.0
+        elif x >= 1.0:
+            xy_out[i, 0] = 1.0
+        else:
+            xy_out[i, 0] = x
+        if y <= 0.0:
+            xy_out[i, 1] = 0.0
+        elif y >= 1.0:
+            xy_out[i, 1] = 1.0
+        else:
+            xy_out[i, 1] = y
+        if v <= 0.0:
+            conf_out[i] = 0.0
+        elif v >= 1.0:
+            conf_out[i] = 1.0
+        else:
+            conf_out[i] = v
 
 
 def list_sequences(image_globs, sequence_id_depth: int):
@@ -57,15 +91,16 @@ def list_sequences(image_globs, sequence_id_depth: int):
       all_paths: list[str]
     """
     frames_by_seq = defaultdict(list)
-    all_paths = []
+    all_paths_set = set()
 
     globs_list = image_globs if isinstance(image_globs, list) else [image_globs]
 
     for g in globs_list:
-        all_paths.extend(glob.glob(g, recursive=True))
+        for p in glob.glob(g, recursive=True):
+            if os.path.isfile(p):
+                all_paths_set.add(p)
 
-    all_paths = [p for p in all_paths if os.path.isfile(p)]
-    all_paths.sort(key=_natural_key)
+    all_paths = sorted(all_paths_set)
 
     for f in all_paths:
         parts = os.path.normpath(f).split(os.sep)
@@ -81,7 +116,13 @@ def list_sequences(image_globs, sequence_id_depth: int):
         seq_id = "/".join(seq_parts) if seq_parts else "sequence"
         frames_by_seq[seq_id].append(f)
 
-    return dict(frames_by_seq), all_paths
+    # Sort frame order within each sequence only (natural order by filename).
+    for seq_id, frames in frames_by_seq.items():
+        frames.sort(key=lambda p: _natural_key(os.path.basename(p)))
+
+    # Stable sequence iteration order for deterministic output.
+    seq_sorted = {k: frames_by_seq[k] for k in sorted(frames_by_seq.keys())}
+    return seq_sorted, all_paths
 
 
 def _safe_out_name(seq_id: str, src_rel: str) -> str:
@@ -103,52 +144,47 @@ def extract_sequence(frames, pose, out_npz: str, fps: float, src: str, seq_id: s
       conf[T,33]
       fps, size, src, seq_id
     """
-    xy_list, conf_list = [], []
+    n_frames = len(frames)
+    xy = np.zeros((n_frames, J, 2), dtype=np.float32)
+    cf = np.zeros((n_frames, J), dtype=np.float32)
     size = np.array([0, 0], dtype=np.int32)  # [w,h]
+    imread = cv2.imread
+    cvt_color = cv2.cvtColor
+    bgr2rgb = cv2.COLOR_BGR2RGB
+    pose_process = pose.process
 
-    for f in frames:
-        img = cv2.imread(f)
+    for i, f in enumerate(frames):
+        img = imread(f)
         if img is None:
-            xy_list.append(np.zeros((J, 2), np.float32))
-            conf_list.append(np.zeros((J,), np.float32))
             continue
 
         if size[0] == 0 and size[1] == 0:
             h, w = img.shape[:2]
-            size = np.array([w, h], dtype=np.int32)
+            size[0] = w
+            size[1] = h
 
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        res = pose.process(rgb)
+        rgb = cvt_color(img, bgr2rgb)
+        rgb.flags.writeable = False
+        res = pose_process(rgb)
 
-        if not res.pose_landmarks:
-            xy_list.append(np.zeros((J, 2), np.float32))
-            conf_list.append(np.zeros((J,), np.float32))
-        else:
-            lm = res.pose_landmarks.landmark
-            xy = np.array([[p.x, p.y] for p in lm[:J]], dtype=np.float32)
-            cf = np.array([p.visibility for p in lm[:J]], dtype=np.float32)
-            xy_list.append(xy)
-            conf_list.append(cf)
-
-    if xy_list:
-        xy = np.stack(xy_list, axis=0)
-        cf = np.stack(conf_list, axis=0)
-    else:
-        xy = np.zeros((0, J, 2), np.float32)
-        cf = np.zeros((0, J), np.float32)
+        if not res.pose_landmarks or not res.pose_landmarks.landmark:
+            continue
+        lm = res.pose_landmarks.landmark
+        _write_landmarks_xy_conf(lm, xy[i], cf[i])
 
     Path(out_npz).parent.mkdir(parents=True, exist_ok=True)
 
     payload = dict(
-        xy=xy.astype(np.float32),
-        conf=cf.astype(np.float32),
+        xy=xy.astype(np.float32, copy=False),
+        conf=cf.astype(np.float32, copy=False),
         fps=np.float32(fps),
         size=size,
         src=np.str_(src),
         seq_id=np.str_(seq_id),
     )
     if store_frames:
-        payload["frames"] = np.array(frames, dtype=np.str_)
+        max_len = max((len(str(p)) for p in frames), default=1)
+        payload["frames"] = np.asarray(frames, dtype=f"<U{max_len}")
 
     # Atomic write: avoid partially-written files being "skipped" forever.
     tmp_npz = out_npz + ".tmp.npz"
@@ -216,6 +252,22 @@ def main():
 
     print(f"[INFO] Found {len(frames_by_seq)} sequences, using {len(seq_items)} sequences")
 
+    # Precompute per-sequence source dir + relative source for stable naming/logging.
+    seq_src_rel: dict[str, str] = {}
+    for seq_id, frames in seq_items:
+        if not frames:
+            seq_src_rel[seq_id] = ""
+            continue
+        try:
+            seq_src_dir = os.path.commonpath(frames)
+        except Exception:
+            seq_src_dir = os.path.dirname(frames[0])
+        try:
+            src_rel = os.path.relpath(seq_src_dir, common_root)
+        except Exception:
+            src_rel = seq_src_dir
+        seq_src_rel[seq_id] = src_rel
+
     mp_pose = mp.solutions.pose
     with mp_pose.Pose(
         static_image_mode=args.static_image_mode,
@@ -226,11 +278,7 @@ def main():
     ) as pose:
 
         for i, (seq_id, frames) in enumerate(seq_items, start=1):
-            seq_src_dir = os.path.commonpath(frames) if frames else ""
-            try:
-                src_rel = os.path.relpath(seq_src_dir, common_root)
-            except Exception:
-                src_rel = seq_src_dir
+            src_rel = seq_src_rel.get(seq_id, "")
 
             out_name = _safe_out_name(seq_id, src_rel)
             out_npz = os.path.join(args.out_dir, out_name)

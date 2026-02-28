@@ -31,7 +31,7 @@ import os
 import json
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -43,7 +43,7 @@ from core.calibration import fit_temperature, sigmoid
 from core.ckpt import load_ckpt
 from core.confirm import confirm_scores_window
 from core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_gcn_two_stream
-from core.models import build_model
+from core.models import build_model, validate_model_input_dims
 from core.yamlio import yaml_dump_simple, yaml_load_simple
 
 
@@ -267,6 +267,7 @@ class WindowDirDataset(Dataset):
         two_stream: bool,
         fps_default: float,
         recursive: bool = False,
+        compute_confirm_scores: bool = True,
     ) -> None:
         self.root = str(root)
         self.paths: List[str] = []
@@ -291,6 +292,7 @@ class WindowDirDataset(Dataset):
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
         self.fps_default = float(fps_default)
+        self.compute_confirm_scores = bool(compute_confirm_scores)
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -308,10 +310,13 @@ class WindowDirDataset(Dataset):
             fps=fps,
             feat_cfg=self.feat_cfg,
         )
-        ls, ms = confirm_scores_window(joints_xy, m, fps, tail_s=1.0)
-        # Clamp non-finite scores to safe values (never confirm by accident)
-        ls = float(ls) if np.isfinite(ls) else 0.0
-        ms = float(ms) if np.isfinite(ms) else float('inf')
+        ls = float(getattr(meta, "lying_score", 0.0))
+        ms = float(getattr(meta, "motion_score", 0.0))
+        if self.compute_confirm_scores and (ls == 0.0 and ms == 0.0):
+            ls_c, ms_c = confirm_scores_window(joints_xy, m, fps, tail_s=1.0)
+            # Clamp non-finite scores to safe values (never confirm by accident)
+            ls = float(ls_c) if np.isfinite(ls_c) else 0.0
+            ms = float(ms_c) if np.isfinite(ms_c) else float("inf")
 
         y = int(meta.y) if meta.y is not None else -1
         row = MetaRow(
@@ -327,23 +332,26 @@ class WindowDirDataset(Dataset):
         if self.arch == "gcn":
             if self.two_stream:
                 xj, xm = split_gcn_two_stream(X, self.feat_cfg)
+                yv = float(0.0 if y < 0 else y)
                 return (
-                    torch.from_numpy(xj).to(torch.float32),
-                    torch.from_numpy(xm).to(torch.float32),
-                    torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+                    torch.from_numpy(xj),
+                    torch.from_numpy(xm),
+                    yv,
                     row,
                 )
+            yv = float(0.0 if y < 0 else y)
             return (
-                torch.from_numpy(X).to(torch.float32),
-                torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+                torch.from_numpy(X),
+                yv,
                 row,
             )
 
         # tcn
         x = build_tcn_input(X, self.feat_cfg)
+        yv = float(0.0 if y < 0 else y)
         return (
-            torch.from_numpy(x).to(torch.float32),
-            torch.tensor(float(0.0 if y < 0 else y), dtype=torch.float32),
+            torch.from_numpy(x),
+            yv,
             row,
         )
 
@@ -352,12 +360,12 @@ def _collate(batch):
     # Keep MetaRow objects as a list.
     if len(batch[0]) == 4:
         xj, xm, y, meta = zip(*batch)
-        return torch.stack(list(xj)), torch.stack(list(xm)), torch.stack(list(y)), list(meta)
+        return torch.stack(xj), torch.stack(xm), torch.tensor(y, dtype=torch.float32), list(meta)
     xb, y, meta = zip(*batch)
-    return torch.stack(list(xb)), torch.stack(list(y)), list(meta)
+    return torch.stack(xb), torch.tensor(y, dtype=torch.float32), list(meta)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def infer_logits(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -365,41 +373,115 @@ def infer_logits(
     *,
     arch: str,
     two_stream: bool,
-) -> Tuple[np.ndarray, np.ndarray, List[MetaRow]]:
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     model.eval()
+    non_blocking = (device.type in {"cuda", "mps"})
+    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
+    use_prealloc = n_total > 0
+    logits_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    vids_buf = np.empty((n_total,), dtype=object) if use_prealloc else None
+    ws_buf = np.empty((n_total,), dtype=np.int32) if use_prealloc else None
+    we_buf = np.empty((n_total,), dtype=np.int32) if use_prealloc else None
+    fps_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    y_buf = np.empty((n_total,), dtype=np.int32) if use_prealloc else None
+    ls_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ms_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ptr = 0
+
     logits_all: List[np.ndarray] = []
-    y_all: List[np.ndarray] = []
-    metas_all: List[MetaRow] = []
+    vids: List[str] = []
+    ws: List[int] = []
+    we: List[int] = []
+    fps: List[float] = []
+    y_meta: List[int] = []
+    ls: List[float] = []
+    ms: List[float] = []
 
     for batch in tqdm(loader, desc="infer", leave=False):
         if arch == "gcn" and two_stream:
             xj, xm, yb, meta = batch
-            xj = xj.to(device).float()
-            xm = xm.to(device).float()
-            yb = yb.to(device).view(-1)
-            logits = logits_1d(model(xj, xm)).detach().cpu().numpy()
+            xj = xj.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            xm = xm.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            logits = logits_1d(model(xj, xm)).cpu().numpy()
         else:
             xb, yb, meta = batch
-            xb = xb.to(device).float()
-            yb = yb.to(device).view(-1)
-            logits = logits_1d(model(xb)).detach().cpu().numpy()
+            xb = xb.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            logits = logits_1d(model(xb)).cpu().numpy()
 
-        logits_all.append(logits.astype(np.float32, copy=False))
-        y_all.append(yb.detach().cpu().numpy().astype(np.float32, copy=False))
-        metas_all.extend(list(meta))
+        bsz = int(logits.shape[0])
+        if (
+            use_prealloc
+            and logits_buf is not None
+            and vids_buf is not None
+            and ws_buf is not None
+            and we_buf is not None
+            and fps_buf is not None
+            and y_buf is not None
+            and ls_buf is not None
+            and ms_buf is not None
+            and (ptr + bsz) <= n_total
+        ):
+            logits_buf[ptr:ptr + bsz] = logits
+            vids_buf[ptr:ptr + bsz] = np.asarray([m.video_id for m in meta], dtype=object)
+            ws_buf[ptr:ptr + bsz] = np.fromiter((int(m.w_start) for m in meta), dtype=np.int32, count=bsz)
+            we_buf[ptr:ptr + bsz] = np.fromiter((int(m.w_end) for m in meta), dtype=np.int32, count=bsz)
+            fps_buf[ptr:ptr + bsz] = np.fromiter((float(m.fps) for m in meta), dtype=np.float32, count=bsz)
+            y_buf[ptr:ptr + bsz] = np.fromiter((int(m.y) for m in meta), dtype=np.int32, count=bsz)
+            ls_buf[ptr:ptr + bsz] = np.fromiter((float(m.lying_score) for m in meta), dtype=np.float32, count=bsz)
+            ms_buf[ptr:ptr + bsz] = np.fromiter((float(m.motion_score) for m in meta), dtype=np.float32, count=bsz)
+            ptr += bsz
+        else:
+            logits_all.append(logits)
+            vids.extend(m.video_id for m in meta)
+            ws.extend(int(m.w_start) for m in meta)
+            we.extend(int(m.w_end) for m in meta)
+            fps.extend(float(m.fps) for m in meta)
+            y_meta.extend(int(m.y) for m in meta)
+            ls.extend(float(m.lying_score) for m in meta)
+            ms.extend(float(m.motion_score) for m in meta)
 
-    return np.concatenate(logits_all), np.concatenate(y_all), metas_all
+    if use_prealloc and ptr > 0 and not logits_all:
+        logits_out = logits_buf[:ptr]
+        arr = {
+            "video_id": vids_buf[:ptr],
+            "w_start": ws_buf[:ptr],
+            "w_end": we_buf[:ptr],
+            "fps": fps_buf[:ptr],
+            "y": y_buf[:ptr],
+            "lying": ls_buf[:ptr],
+            "motion": ms_buf[:ptr],
+        }
+    elif use_prealloc and ptr > 0:
+        vids_tail = np.asarray(vids, dtype=object)
+        ws_tail = np.asarray(ws, dtype=np.int32)
+        we_tail = np.asarray(we, dtype=np.int32)
+        fps_tail = np.asarray(fps, dtype=np.float32)
+        y_tail = np.asarray(y_meta, dtype=np.int32)
+        ls_tail = np.asarray(ls, dtype=np.float32)
+        ms_tail = np.asarray(ms, dtype=np.float32)
+        logits_out = np.concatenate((logits_buf[:ptr], *logits_all), axis=0)
+        arr = {
+            "video_id": np.concatenate([vids_buf[:ptr], vids_tail], axis=0),
+            "w_start": np.concatenate([ws_buf[:ptr], ws_tail], axis=0),
+            "w_end": np.concatenate([we_buf[:ptr], we_tail], axis=0),
+            "fps": np.concatenate([fps_buf[:ptr], fps_tail], axis=0),
+            "y": np.concatenate([y_buf[:ptr], y_tail], axis=0),
+            "lying": np.concatenate([ls_buf[:ptr], ls_tail], axis=0),
+            "motion": np.concatenate([ms_buf[:ptr], ms_tail], axis=0),
+        }
+    else:
+        logits_out = np.concatenate(logits_all) if logits_all else np.array([], dtype=np.float32)
+        arr = {
+            "video_id": np.asarray(vids, dtype=object),
+            "w_start": np.asarray(ws, dtype=np.int32),
+            "w_end": np.asarray(we, dtype=np.int32),
+            "fps": np.asarray(fps, dtype=np.float32),
+            "y": np.asarray(y_meta, dtype=np.int32),
+            "lying": np.asarray(ls, dtype=np.float32),
+            "motion": np.asarray(ms, dtype=np.float32),
+        }
 
-
-def _extract_arrays(metas: Sequence[MetaRow]) -> Dict[str, np.ndarray]:
-    vids = np.asarray([m.video_id for m in metas], dtype=object)
-    ws = np.asarray([m.w_start for m in metas], dtype=np.int32)
-    we = np.asarray([m.w_end for m in metas], dtype=np.int32)
-    fps = np.asarray([m.fps for m in metas], dtype=np.float32)
-    y = np.asarray([m.y for m in metas], dtype=np.int32)
-    ls = np.asarray([m.lying_score for m in metas], dtype=np.float32)
-    ms = np.asarray([m.motion_score for m in metas], dtype=np.float32)
-    return {"video_id": vids, "w_start": ws, "w_end": we, "fps": fps, "y": y, "lying": ls, "motion": ms}
+    return logits_out, arr
 
 
 def _override_feat_cfg(base: FeatCfg, args: argparse.Namespace) -> FeatCfg:
@@ -486,6 +568,8 @@ def main() -> None:
 
     args = ap.parse_args()
 
+    need_confirm_scores = bool(int(args.confirm)) and (float(args.confirm_s) > 0.0)
+
     device = torch.device(args.device)
 
     bundle = load_ckpt(args.ckpt, map_location="cpu")
@@ -495,6 +579,17 @@ def main() -> None:
 
     # Determine two-stream for GCN
     two_stream = bool(model_cfg.get("two_stream", False))
+    nw = max(0, int(args.num_workers))
+    if device.type == "mps":
+        nw = 0
+    loader_kwargs = {
+        "num_workers": nw,
+        "pin_memory": bool(device.type == "cuda"),
+        "persistent_workers": bool(nw > 0),
+        "collate_fn": _collate,
+    }
+    if nw > 0:
+        loader_kwargs["prefetch_factor"] = 2
 
     model = build_model(args.arch, model_cfg, feat_cfg.to_dict(), fps_default=float(args.fps_default))
     model.load_state_dict(bundle["state_dict"], strict=False)
@@ -509,18 +604,32 @@ def main() -> None:
         two_stream=two_stream,
         fps_default=float(args.fps_default),
         recursive=bool(int(args.recursive)),
+        compute_confirm_scores=need_confirm_scores,
     )
+    if len(val_ds) > 0:
+        sample = val_ds[0]
+        if args.arch == "gcn" and two_stream:
+            xj0, xm0 = sample[0], sample[1]
+            validate_model_input_dims(
+                "gcn",
+                model_cfg,
+                xj=np.asarray(xj0),
+                xm=np.asarray(xm0),
+            )
+        elif args.arch == "gcn":
+            x0 = sample[0]
+            validate_model_input_dims("gcn", model_cfg, x=np.asarray(x0))
+        else:
+            x0 = sample[0]
+            validate_model_input_dims("tcn", model_cfg, x=np.asarray(x0))
     val_loader = DataLoader(
         val_ds,
         batch_size=int(args.batch),
         shuffle=False,
-        num_workers=max(0, int(args.num_workers)),
-        pin_memory=torch.cuda.is_available(),
-        collate_fn=_collate,
+        **loader_kwargs,
     )
 
-    logits_val, y_val_float, metas_val = infer_logits(model, val_loader, device, arch=args.arch, two_stream=two_stream)
-    arr_val = _extract_arrays(metas_val)
+    logits_val, arr_val = infer_logits(model, val_loader, device, arch=args.arch, two_stream=two_stream)
 
     # Fit temperature T on labeled windows only.
     y_val = arr_val["y"].astype(np.int32)
@@ -570,18 +679,16 @@ def main() -> None:
             two_stream=two_stream,
             fps_default=float(args.fps_default),
             recursive=bool(int(args.recursive)),
+            compute_confirm_scores=need_confirm_scores,
         )
         fa_loader = DataLoader(
             fa_ds,
             batch_size=int(args.batch),
             shuffle=False,
-            num_workers=max(0, int(args.num_workers)),
-            pin_memory=torch.cuda.is_available(),
-            collate_fn=_collate,
+            **loader_kwargs,
         )
-        logits_fa, _y_fa_float, metas_fa = infer_logits(model, fa_loader, device, arch=args.arch, two_stream=two_stream)
+        logits_fa, arr_fa = infer_logits(model, fa_loader, device, arch=args.arch, two_stream=two_stream)
         probs_fa = sigmoid(logits_fa / max(1e-6, T)).astype(np.float32)
-        arr_fa = _extract_arrays(metas_fa)
         fa_payload = {
             "fa_probs": probs_fa,
             "fa_video_ids": arr_fa["video_id"],

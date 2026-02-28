@@ -1,0 +1,45 @@
+name: Server Tests
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  test-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Create virtualenv
+        run: python -m venv .venv
+
+      - name: Install dev dependencies
+        run: make install-dev
+
+      - name: Set coverage threshold
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            cov=81
+          else
+            cov=75
+          fi
+          echo "COVERAGE_MIN=${cov}" >> "$GITHUB_ENV"
+          echo "Using COVERAGE_MIN=${cov} for ref=${{ github.ref }}"
+
+      - name: Run server tests with coverage gate
+        run: make test-server-cov COVERAGE_MIN="${{ env.COVERAGE_MIN }}"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-coverage-xml
+          path: coverage.xml

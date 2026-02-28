@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+
+# Dry-run first:
+
+# python3 tools/urfall_strip_rf.py --root data/raw/UR_Fall --dry_run
+
+# python3 tools/urfall_strip_rf.py --root data/raw/UR_Fall
+# python3 tools/urfall_group_by_prefix.py --in_root data/raw/UR_Fall --out_root data/raw/UR_Fall_seq
+# python3 tools/urfall_merge_seq_splits.py --in_root data/raw/UR_Fall_seq --out_root data/raw/UR_Fall_clips
+
 from __future__ import annotations
 import argparse
 from pathlib import Path

@@ -50,7 +50,7 @@ from core.features import (
     build_canonical_input,
     split_gcn_two_stream,
 )
-from core.models import build_model, pick_device, logits_1d
+from core.models import build_model, pick_device, logits_1d, validate_model_input_dims
 
 
 def _warn(msg: str) -> None:
@@ -125,42 +125,26 @@ class WindowsForMining(Dataset):
 
         w_start = int(getattr(meta, "w_start", -1))
         w_end = int(getattr(meta, "w_end", -1))
-        fps_v = float(fps) if fps and float(fps) > 0 else float(self.fps_default)
-
         if self.arch == "tcn":
             x = build_tcn_input(Xc, self.feat_cfg)  # [T, V*F]
-            return torch.from_numpy(x).float(), p, clip, w_start, w_end, fps_v
+            return torch.from_numpy(x), p, clip, w_start, w_end
 
         if self.two_stream:
             xj, xm = split_gcn_two_stream(Xc, self.feat_cfg)
-            return (torch.from_numpy(xj).float(), torch.from_numpy(xm).float()), p, clip, w_start, w_end, fps_v
+            return (torch.from_numpy(xj), torch.from_numpy(xm)), p, clip, w_start, w_end
 
-        return torch.from_numpy(Xc).float(), p, clip, w_start, w_end, fps_v
+        return torch.from_numpy(Xc), p, clip, w_start, w_end
 
 
 def collate(batch):
-    # two-stream: ((xj,xm), path, clip, ws, we, fps)
+    # two-stream: ((xj,xm), path, clip, ws, we)
     if isinstance(batch[0][0], tuple):
-        xj, xm, ps, clips, ws, we, fps = [], [], [], [], [], [], []
-        for (a, b), p, c, s, e, f in batch:
-            xj.append(a)
-            xm.append(b)
-            ps.append(p)
-            clips.append(c)
-            ws.append(s)
-            we.append(e)
-            fps.append(f)
-        return (torch.stack(xj, 0), torch.stack(xm, 0)), ps, clips, ws, we, fps
+        feats, ps, clips, ws, we = zip(*batch)
+        xj, xm = zip(*feats)
+        return (torch.stack(xj, 0), torch.stack(xm, 0)), ps, clips, ws, we
 
-    xs, ps, clips, ws, we, fps = [], [], [], [], [], []
-    for x, p, c, s, e, f in batch:
-        xs.append(x)
-        ps.append(p)
-        clips.append(c)
-        ws.append(s)
-        we.append(e)
-        fps.append(f)
-    return torch.stack(xs, 0), ps, clips, ws, we, fps
+    xs, ps, clips, ws, we = zip(*batch)
+    return torch.stack(xs, 0), ps, clips, ws, we
 
 
 def _dedup_keep(rows_sorted, dedup_shift_frames: int):
@@ -175,20 +159,20 @@ def _dedup_keep(rows_sorted, dedup_shift_frames: int):
 
     kept = []
     centers_by_clip: Dict[str, List[float]] = {}
-    for p, clip, pr, ws, we, _fps in rows_sorted:
+    for p, clip, pr, ws, we in rows_sorted:
         c = 0.5 * (float(ws) + float(we)) if (ws >= 0 and we >= 0) else None
         if c is None:
-            kept.append((p, clip, pr, ws, we, _fps))
+            kept.append((p, clip, pr, ws, we))
             continue
         prev = centers_by_clip.setdefault(clip, [])
         if any(abs(c - pc) < dedup_shift_frames for pc in prev):
             continue
         prev.append(c)
-        kept.append((p, clip, pr, ws, we, _fps))
+        kept.append((p, clip, pr, ws, we))
     return kept
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
@@ -198,6 +182,7 @@ def main() -> None:
     ap.add_argument("--min_p", type=float, default=0.20)
     ap.add_argument("--top_k", type=int, default=5000)
     ap.add_argument("--max_per_clip", type=int, default=50)
+    ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--neg_only", type=int, default=1)
     ap.add_argument("--dedup_shift_frames", type=int, default=12,
                     help="Within each clip, suppress windows whose center is within this many frames of an already-kept window. Set 0 to disable.")
@@ -222,35 +207,77 @@ def main() -> None:
         neg_only=bool(args.neg_only),
         verbose=bool(args.verbose),
     )
+    if len(ds) > 0:
+        sample = ds[0]
+        x0 = sample[0]
+        if str(arch).lower() == "gcn" and two_stream and isinstance(x0, tuple):
+            validate_model_input_dims(
+                "gcn",
+                model_cfg,
+                xj=np.asarray(x0[0]),
+                xm=np.asarray(x0[1]),
+            )
+        elif str(arch).lower() == "gcn":
+            validate_model_input_dims("gcn", model_cfg, x=np.asarray(x0))
+        else:
+            validate_model_input_dims("tcn", model_cfg, x=np.asarray(x0))
 
     model = build_model(str(arch), model_cfg, feat_cfg, fps_default=fps_default).to(device)
     model.load_state_dict(bundle["state_dict"], strict=True)
     model.eval()
 
-    dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=0, pin_memory=False, collate_fn=collate)
+    nw = max(0, int(args.num_workers))
+    pin_memory = isinstance(device, torch.device) and device.type == "cuda"
+    persistent_workers = nw > 0
+    if isinstance(device, torch.device) and device.type == "mps":
+        persistent_workers = False
+    dl = DataLoader(
+        ds,
+        batch_size=args.batch,
+        shuffle=False,
+        num_workers=nw,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        **({"prefetch_factor": 2} if nw > 0 else {}),
+        collate_fn=collate,
+    )
 
-    # rows_all: (path, clip, prob, ws, we, fps)
-    rows_all: List[Tuple[str, str, float, int, int, float]] = []
-    rows: List[Tuple[str, str, float, int, int, float]] = []
+    # rows_all: (path, clip, prob, ws, we)
+    rows_all: List[Tuple[str, str, float, int, int]] = []
+    rows_above: List[Tuple[str, str, float, int, int]] = []
+    has_any_above = False
 
-    for X, paths, clips, ws_list, we_list, fps_list in dl:
-        if isinstance(X, tuple):
-            X0, M0 = X
-            logits = model(X0.to(device), M0.to(device))
-        else:
-            logits = model(X.to(device))
+    use_non_blocking = isinstance(device, torch.device) and device.type in {"cuda", "mps"}
+    min_p = float(args.min_p)
+    with torch.inference_mode():
+        for X, paths, clips, ws_list, we_list in dl:
+            if isinstance(X, tuple):
+                X0, M0 = X
+                logits = model(
+                    X0.to(device=device, non_blocking=use_non_blocking),
+                    M0.to(device=device, non_blocking=use_non_blocking),
+                )
+            else:
+                logits = model(X.to(device=device, non_blocking=use_non_blocking))
 
-        probs = torch.sigmoid(logits_1d(logits)).detach().cpu().numpy().reshape(-1)
+            probs = torch.sigmoid(logits_1d(logits)).cpu().numpy().reshape(-1)
 
-        for p, c, pr, ws, we, f in zip(paths, clips, probs, ws_list, we_list, fps_list):
-            row = (str(p), str(c), float(pr), int(ws), int(we), float(f))
-            rows_all.append(row)
-            if float(pr) >= float(args.min_p):
-                rows.append(row)
+            for p, c, pr, ws, we in zip(paths, clips, probs, ws_list, we_list):
+                prf = float(pr)
+                row = (str(p), str(c), prf, int(ws), int(we))
+                if prf >= min_p:
+                    if not has_any_above:
+                        has_any_above = True
+                        rows_all.clear()
+                    rows_above.append(row)
+                elif not has_any_above:
+                    rows_all.append(row)
 
-    if not rows:
+    if not rows_above:
         _warn("[warn] No windows met min_p; falling back to top_k highest-scoring windows (ignoring min_p).")
         rows = rows_all
+    else:
+        rows = rows_above
 
     # Sort by prob desc
     rows.sort(key=lambda r: r[2], reverse=True)
@@ -259,7 +286,7 @@ def main() -> None:
     rows = _dedup_keep(rows, dedup_shift_frames=int(args.dedup_shift_frames))
 
     # Cap per clip
-    capped: List[Tuple[str, str, float, int, int, float]] = []
+    capped: List[Tuple[str, str, float, int, int]] = []
     per_clip: Dict[str, int] = {}
     for r in rows:
         clip = r[1]
@@ -273,7 +300,7 @@ def main() -> None:
     # Write NPZ paths only (train_* loaders expect this)
     os.makedirs(os.path.dirname(os.path.abspath(args.out_txt)) or ".", exist_ok=True)
     with open(args.out_txt, "w", encoding="utf-8") as f:
-        for p, _c, pr, _ws, _we, _fps in capped:
+        for p, _c, pr, _ws, _we in capped:
             f.write(f"{p}\n")
 
     print(f"[ok] wrote {len(capped)} hard negatives to: {args.out_txt}")

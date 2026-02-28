@@ -37,9 +37,14 @@ Note:
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+
+_TORSO4_IDX = np.asarray([11, 12, 23, 24], dtype=np.int64)
+_FALLBACK_PELVIS_IDX = [23, 11, 12]
+_FALLBACK_SHOULDERS_IDX = [11, 12]
 
 
 # ---------------- config + meta ----------------
@@ -127,6 +132,25 @@ def _safe_int(z, key: str, default: int) -> int:
         return int(default)
 
 
+def _masked_center_from_indices(joints_xy: np.ndarray, mask: np.ndarray, idxs: list[int]) -> np.ndarray:
+    """Return mask-aware center[T,1,2] for the selected joint indices."""
+    T, V, _ = joints_xy.shape
+    use = [int(i) for i in idxs if 0 <= int(i) < V]
+    if not use:
+        return np.zeros((T, 1, 2), dtype=np.float32)
+    sub = joints_xy[:, use, :]                         # [T,K,2]
+    vm = mask[:, use].astype(np.float32, copy=False)  # [T,K]
+    cnt = vm.sum(axis=1)                               # [T]
+    weighted = np.empty_like(sub, dtype=np.float32)
+    np.multiply(sub, vm[..., None], out=weighted)
+    num = weighted.sum(axis=1)            # [T,2]
+    out = np.zeros((T, 2), dtype=np.float32)
+    ok = cnt > 0.0
+    if bool(np.any(ok)):
+        out[ok] = num[ok] / cnt[ok, None]
+    return out[:, None, :]
+
+
 def _pelvis_center(joints_xy: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Mask-aware pelvis center.
 
@@ -135,25 +159,14 @@ def _pelvis_center(joints_xy: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
     Returns: center[T,1,2] float32.
     """
-    joints_xy = joints_xy.astype(np.float32, copy=False)
-    m = mask.astype(bool, copy=False)
+    if not (isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32):
+        joints_xy = np.asarray(joints_xy, dtype=np.float32)
+    if isinstance(mask, np.ndarray) and mask.dtype == np.bool_:
+        m = mask
+    else:
+        m = np.asarray(mask, dtype=bool)
 
     T, V = int(joints_xy.shape[0]), int(joints_xy.shape[1])
-
-    def _masked_mean(idxs):
-        idxs = [int(i) for i in idxs if int(i) < V]
-        if not idxs:
-            return np.zeros((T, 1, 2), dtype=np.float32), np.zeros((T,), dtype=bool)
-
-        sub = joints_xy[:, idxs, :]                     # [T,K,2]
-        vm = m[:, idxs].astype(np.float32, copy=False)  # [T,K]
-        cnt = vm.sum(axis=1)                            # [T]
-        s = (sub * vm[..., None]).sum(axis=1)           # [T,2]
-
-        out = np.zeros((T, 2), dtype=np.float32)
-        ok = cnt > 0
-        out[ok] = s[ok] / cnt[ok, None]
-        return out[:, None, :], ok
 
     # Preferred: average hips when valid.
     if V > 24:
@@ -173,15 +186,25 @@ def _pelvis_center(joints_xy: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
         # Fallback for frames with no valid hips: average shoulders/hips.
         if (~ok).any():
-            fb, fb_ok = _masked_mean([11, 12, 23, 24])
-            use = (~ok) & fb_ok
-            center[use] = fb[:, 0, :][use]
+            miss_idx = np.flatnonzero(~ok).astype(np.int64, copy=False)
+            sub = np.take(joints_xy[miss_idx], _TORSO4_IDX, axis=1)  # [M,4,2]
+            vm = np.take(m[miss_idx], _TORSO4_IDX, axis=1).astype(np.float32, copy=False)  # [M,4]
+            cnt = vm.sum(axis=1)  # [M]
+            use = cnt > 0
+            if bool(np.any(use)):
+                weighted = np.empty_like(sub, dtype=np.float32)
+                np.multiply(sub, vm[..., None], out=weighted)
+                num = weighted.sum(axis=1)  # [M,2]
+                center[miss_idx[use]] = num[use] / cnt[use, None]
 
-        return center[:, None, :].astype(np.float32, copy=False)
+        return center[:, None, :]
 
     # Fallbacks for other skeleton layouts.
-    fb, _ = _masked_mean([23, 11, 12] if V > 23 else [11, 12])
-    return fb
+    return _masked_center_from_indices(
+        joints_xy,
+        m,
+        _FALLBACK_PELVIS_IDX if V > 23 else _FALLBACK_SHOULDERS_IDX,
+    )
 
 
 def _derive_mask(joints_xy: np.ndarray, conf: Optional[np.ndarray], conf_gate: float) -> np.ndarray:
@@ -192,12 +215,16 @@ def _derive_mask(joints_xy: np.ndarray, conf: Optional[np.ndarray], conf_gate: f
 
 
 def _compute_motion(joints_xy: np.ndarray, fps: float, scale_by_fps: bool) -> np.ndarray:
-    m = np.zeros_like(joints_xy, dtype=np.float32)
-    m[1:] = joints_xy[1:] - joints_xy[:-1]
+    if not (isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32):
+        joints_xy = np.asarray(joints_xy, dtype=np.float32)
+    if joints_xy.shape[0] == 0:
+        return np.empty_like(joints_xy, dtype=np.float32)
+    m = np.empty_like(joints_xy, dtype=np.float32)
+    np.subtract(joints_xy[1:], joints_xy[:-1], out=m[1:])
     m[0] = 0.0
     if scale_by_fps and fps > 0:
-        m = m * float(fps)  # per-second velocity
-    return m.astype(np.float32, copy=False)
+        m *= float(fps)  # per-second velocity
+    return m
 
 
 # ---------------- layout ----------------
@@ -205,30 +232,48 @@ def _compute_motion(joints_xy: np.ndarray, fps: float, scale_by_fps: bool) -> np
 
 def channel_layout(cfg: FeatCfg) -> Dict[str, Tuple[int, int]]:
     """Return a dict of {name: (start, stop)} slices for X[..., start:stop]."""
+    return dict(
+        _channel_layout_cached(
+            bool(cfg.use_motion),
+            bool(cfg.use_bone),
+            bool(cfg.use_bone_length),
+            bool(cfg.use_conf_channel),
+        )
+    )
+
+
+@lru_cache(maxsize=16)
+def _channel_layout_cached(
+    use_motion: bool,
+    use_bone: bool,
+    use_bone_length: bool,
+    use_conf_channel: bool,
+) -> Tuple[Tuple[str, Tuple[int, int]], ...]:
+    """Cached channel layout tuple to reduce repeated dict rebuilds."""
     i = 0
     out: Dict[str, Tuple[int, int]] = {}
 
     out["xy"] = (i, i + 2)
     i += 2
 
-    if bool(cfg.use_motion):
+    if use_motion:
         out["motion"] = (i, i + 2)
         i += 2
 
-    if bool(cfg.use_bone):
+    if use_bone:
         out["bone"] = (i, i + 2)
         i += 2
 
-    if bool(cfg.use_bone_length):
+    if use_bone_length:
         out["bone_len"] = (i, i + 1)
         i += 1
 
-    if bool(cfg.use_conf_channel):
+    if use_conf_channel:
         out["conf"] = (i, i + 1)
         i += 1
 
     out["F"] = (0, i)
-    return out
+    return tuple(out.items())
 
 
 def feature_dim_per_joint(cfg: FeatCfg) -> int:
@@ -240,6 +285,7 @@ def feature_dim_per_joint(cfg: FeatCfg) -> int:
 # ---------------- bones ----------------
 
 
+@lru_cache(maxsize=8)
 def _default_parents(V: int) -> np.ndarray:
     """Return a parent index array of length V.
 
@@ -287,30 +333,40 @@ def _default_parents(V: int) -> np.ndarray:
 
     p = np.arange(V, dtype=np.int64)
     p[0] = 0
-    for i in range(1, V):
-        p[i] = i - 1
+    if V > 1:
+        p[1:] -= 1
     return p
 
 
-def _compute_bones(joints_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute bone vectors + lengths for a sequence.
+def _compute_bones(joints_xy: np.ndarray, *, compute_len: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Compute bone vectors and (optionally) lengths for a sequence.
 
     Args:
       joints_xy: [T,V,2]
 
     Returns:
       bone_xy:  [T,V,2]
-      bone_len: [T,V]
+      bone_len: [T,V] or None when compute_len=False
     """
-    joints_xy = np.asarray(joints_xy, dtype=np.float32)
+    if not (isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32):
+        joints_xy = np.asarray(joints_xy, dtype=np.float32)
     T, V, _ = joints_xy.shape
     parents = _default_parents(V)
 
-    parent_xy = joints_xy[:, parents, :]  # [T,V,2]
-    bone_xy = joints_xy - parent_xy
+    # `np.take(..., axis=1)` is faster than advanced indexing for this hot path.
+    parent_xy = np.take(joints_xy, parents, axis=1)  # [T,V,2]
+    bone_xy = np.empty_like(joints_xy, dtype=np.float32)
+    np.subtract(joints_xy, parent_xy, out=bone_xy)
 
-    bone_len = np.sqrt(np.sum(bone_xy ** 2, axis=-1) + 1e-12).astype(np.float32, copy=False)
-    return bone_xy.astype(np.float32, copy=False), bone_len
+    bone_len: Optional[np.ndarray]
+    if compute_len:
+        # `hypot` is faster than sum+sqrt for 2D vectors and keeps numerical stability.
+        bone_len = np.empty((T, V), dtype=np.float32)
+        np.hypot(bone_xy[..., 0], bone_xy[..., 1], out=bone_len)
+        np.maximum(bone_len, np.float32(1e-6), out=bone_len)
+    else:
+        bone_len = None
+    return bone_xy, bone_len
 
 
 # ---------------- IO ----------------
@@ -384,75 +440,191 @@ def build_canonical_input(
     mask: Optional[np.ndarray],
     fps: float,
     feat_cfg: FeatCfg,
+    *,
+    assume_finite_xy: bool = False,
+    assume_finite_conf: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build canonical X[T,V,F] and mask[T,V] from raw arrays."""
-    joints_xy = np.asarray(joints_xy, dtype=np.float32)
+    if isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32:
+        joints_xy = joints_xy
+    else:
+        joints_xy = np.asarray(joints_xy, dtype=np.float32)
+    if joints_xy.ndim != 3 or joints_xy.shape[-1] != 2:
+        raise ValueError(f"joints_xy must have shape [T,V,2], got {tuple(joints_xy.shape)}")
     T, V, _ = joints_xy.shape
+    use_motion = bool(feat_cfg.use_motion)
+    use_bone = bool(feat_cfg.use_bone)
+    use_bone_len = bool(feat_cfg.use_bone_length)
+    use_conf_ch = bool(feat_cfg.use_conf_channel)
+    conf_gate_f = float(feat_cfg.conf_gate)
+    conf_arr_opt: Optional[np.ndarray] = None
+    conf_fin: Optional[np.ndarray] = None
+    conf_fin_all: Optional[bool] = None
+    if conf is not None:
+        if isinstance(conf, np.ndarray) and conf.dtype == np.float32:
+            conf_arr_opt = conf
+        else:
+            conf_arr_opt = np.asarray(conf, dtype=np.float32)
+        if conf_arr_opt.shape != (T, V):
+            if int(conf_arr_opt.size) != int(T * V):
+                raise ValueError(
+                    f"conf must have shape [T,V]=({T},{V}) or equivalent size {T*V}, got {tuple(conf_arr_opt.shape)}"
+                )
+            conf_arr_opt = conf_arr_opt.reshape(T, V)
+
+    # Joint finite mask is used to guard against extractor noise/occlusion artifacts.
+    if assume_finite_xy:
+        finite_xy = None
+    else:
+        finite_xy = np.isfinite(joints_xy[..., 0]) & np.isfinite(joints_xy[..., 1])
 
     # Choose a mask (precomputed mask preferred, otherwise derive from conf/finite).
     if bool(feat_cfg.use_precomputed_mask) and mask is not None:
-        m = np.asarray(mask, dtype=bool)
-    else:
-        m = _derive_mask(joints_xy, conf, feat_cfg.conf_gate)
-
-    # Build a conf array for the conf-channel.
-    conf_ch: Optional[np.ndarray] = None
-    if bool(feat_cfg.use_conf_channel):
-        if conf is None:
-            conf_ch = m.astype(np.float32)
+        if isinstance(mask, np.ndarray) and mask.dtype == np.bool_:
+            m = mask
         else:
-            conf_ch = np.asarray(conf, dtype=np.float32)
-            if conf_ch.shape != (T, V):
-                conf_ch = conf_ch.reshape(T, V)
-            conf_ch = np.where(m, conf_ch, 0.0).astype(np.float32, copy=False)
+            m = np.asarray(mask, dtype=bool)
+        if m.shape != (T, V):
+            if int(m.size) != int(T * V):
+                raise ValueError(
+                    f"mask must have shape [T,V]=({T},{V}) or equivalent size {T*V}, got {tuple(m.shape)}"
+                )
+            m = m.reshape(T, V)
+        # Never trust precomputed masks over invalid coordinates.
+        if finite_xy is not None:
+            m = m & finite_xy
+    else:
+        if conf is None or conf_gate_f <= 0.0:
+            if finite_xy is None:
+                m = np.ones((T, V), dtype=bool)
+            else:
+                m = finite_xy
+        else:
+            assert conf_arr_opt is not None
+            if assume_finite_conf:
+                conf_fin = None
+                conf_fin_all = True
+                if finite_xy is None:
+                    m = conf_arr_opt >= conf_gate_f
+                else:
+                    m = finite_xy & (conf_arr_opt >= conf_gate_f)
+            else:
+                conf_fin = np.isfinite(conf_arr_opt)
+                conf_fin_all = bool(conf_fin.all())
+                if finite_xy is None:
+                    m = conf_fin & (conf_arr_opt >= conf_gate_f)
+                else:
+                    m = finite_xy & conf_fin & (conf_arr_opt >= conf_gate_f)
+    m_all = bool(m.all())
+    m_f: Optional[np.ndarray] = None
+    m_f3: Optional[np.ndarray] = None
+    if not m_all:
+        m_f = m.astype(np.float32, copy=False)
+        m_f3 = m_f[..., None]
+
+    # Reuse a contiguous float32 confidence buffer once when possible to avoid
+    # repeated temporary arrays in the output assembly path.
+    conf_arr_clean: Optional[np.ndarray] = None
+    if use_conf_ch and conf_arr_opt is not None:
+        conf_arr_clean = conf_arr_opt
+        if conf_fin_all is None:
+            if assume_finite_conf:
+                conf_fin_all = True
+            else:
+                conf_fin = np.isfinite(conf_arr_opt)
+                conf_fin_all = bool(conf_fin.all())
+        if not bool(conf_fin_all):
+            conf_arr_clean = np.nan_to_num(conf_arr_opt, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Centering
-    xy = joints_xy.copy()
     if str(feat_cfg.center) == "pelvis":
-        xy = xy - _pelvis_center(xy, m)
+        # Common fast path for MediaPipe-33 with fully valid masks.
+        if m_all and V > 24:
+            center = 0.5 * (joints_xy[:, 23:24, :] + joints_xy[:, 24:25, :])
+        else:
+            center = _pelvis_center(joints_xy, m)
+        xy = joints_xy - center
+        xy_is_new = True
+    else:
+        xy = joints_xy
+        xy_is_new = False
 
     # Apply mask by zeroing invalid joints.
-    xy = np.where(m[..., None], xy, 0.0).astype(np.float32, copy=False)
+    if not m_all:
+        if not xy_is_new:
+            xy = xy.copy()
+        xy *= m_f3
 
     # Motion
     mot: Optional[np.ndarray] = None
-    if bool(feat_cfg.use_motion):
+    if use_motion:
         if motion_xy is None:
             mot = _compute_motion(xy, float(fps), bool(feat_cfg.motion_scale_by_fps))
+            mot_is_new = True
         else:
-            mot = np.asarray(motion_xy, dtype=np.float32)
+            if isinstance(motion_xy, np.ndarray) and motion_xy.dtype == np.float32:
+                mot = motion_xy
+            else:
+                mot = np.asarray(motion_xy, dtype=np.float32)
             if mot.shape != xy.shape:
+                if int(mot.size) != int(xy.size):
+                    raise ValueError(
+                        f"motion_xy must match joints shape [T,V,2]={tuple(xy.shape)} or equivalent size {xy.size}, got {tuple(mot.shape)}"
+                    )
                 mot = mot.reshape(xy.shape)
+            mot_is_new = False
             if bool(feat_cfg.motion_scale_by_fps) and float(fps) > 0:
                 mot = mot * float(fps)
-        mot = np.where(m[..., None], mot, 0.0).astype(np.float32, copy=False)
+                mot_is_new = True
+        if not m_all:
+            if not mot_is_new:
+                mot = mot.copy()
+            mot *= m_f3
 
     # Bones
     bone_xy: Optional[np.ndarray] = None
     bone_len: Optional[np.ndarray] = None
-    if bool(feat_cfg.use_bone) or bool(feat_cfg.use_bone_length):
-        bone_xy0, bone_len0 = _compute_bones(xy)
+    if use_bone or use_bone_len:
+        bone_xy0, bone_len0 = _compute_bones(xy, compute_len=use_bone_len)
         # Mask: if a joint is invalid, its bone features are treated as zero.
-        bone_xy0 = np.where(m[..., None], bone_xy0, 0.0)
-        bone_len0 = np.where(m, bone_len0, 0.0)
-        if bool(feat_cfg.use_bone):
-            bone_xy = bone_xy0.astype(np.float32, copy=False)
-        if bool(feat_cfg.use_bone_length):
-            bone_len = bone_len0.astype(np.float32, copy=False)
+        if not m_all:
+            bone_xy0 *= m_f3
+            if bone_len0 is not None:
+                bone_len0 *= m_f
+        if use_bone:
+            bone_xy = bone_xy0
+        if use_bone_len:
+            assert bone_len0 is not None
+            bone_len = bone_len0
 
-    # Concatenate channels in the canonical order.
-    feats = [xy]
+    # Assemble directly into a preallocated output tensor to avoid temporary
+    # arrays from concatenate() on the critical inference path.
+    F = 2 + (2 if use_motion else 0) + (2 if use_bone else 0) + (1 if use_bone_len else 0) + (1 if use_conf_ch else 0)
+    X = np.empty((T, V, F), dtype=np.float32)
+    off = 0
+    X[..., off:off + 2] = xy
+    off += 2
     if mot is not None:
-        feats.append(mot)
+        X[..., off:off + 2] = mot
+        off += 2
     if bone_xy is not None:
-        feats.append(bone_xy)
+        X[..., off:off + 2] = bone_xy
+        off += 2
     if bone_len is not None:
-        feats.append(bone_len[..., None])
-    if conf_ch is not None:
-        feats.append(conf_ch[..., None])
-
-    X = np.concatenate(feats, axis=-1).astype(np.float32, copy=False)
-    return X, m.astype(bool, copy=False)
+        X[..., off] = bone_len
+        off += 1
+    if use_conf_ch:
+        if conf is None:
+            if m_all:
+                X[..., off] = 1.0
+            else:
+                X[..., off] = m_f
+        else:
+            assert conf_arr_clean is not None
+            X[..., off] = conf_arr_clean
+            if not m_all:
+                X[..., off] *= m_f
+    return X, m
 
 
 def split_gcn_two_stream(X: np.ndarray, feat_cfg: FeatCfg) -> Tuple[np.ndarray, np.ndarray]:
@@ -461,23 +633,42 @@ def split_gcn_two_stream(X: np.ndarray, feat_cfg: FeatCfg) -> Tuple[np.ndarray, 
     Joint stream includes: xy (+ bone/bone_len) (+ conf)
     Motion stream includes: motion_xy if enabled, otherwise zeros.
     """
-    X = np.asarray(X, dtype=np.float32)
+    if isinstance(X, np.ndarray) and X.dtype == np.float32:
+        X = X
+    else:
+        X = np.asarray(X, dtype=np.float32)
     T, V, F = X.shape
 
     lo = channel_layout(feat_cfg)
+    xy_sl = slice(*lo["xy"])
+    has_bone = "bone" in lo
+    has_bone_len = "bone_len" in lo
+    has_conf = "conf" in lo
+    has_motion = "motion" in lo
 
-    joint_parts = [X[..., slice(*lo["xy"])]]
-    if "bone" in lo:
-        joint_parts.append(X[..., slice(*lo["bone"])])
-    if "bone_len" in lo:
-        joint_parts.append(X[..., slice(*lo["bone_len"])])
-    if "conf" in lo:
-        joint_parts.append(X[..., slice(*lo["conf"])])
+    if not has_motion:
+        # Fast path: no motion channel configured, so full tensor is joint stream.
+        xj = X
+    elif not has_bone and not has_bone_len and not has_conf:
+        # Fast path: joint stream is xy only (view/no-op cast).
+        xj = X[..., xy_sl]
+    else:
+        jF = 2 + (2 if has_bone else 0) + (1 if has_bone_len else 0) + (1 if has_conf else 0)
+        xj = np.empty((T, V, jF), dtype=np.float32)
+        off = 0
+        xj[..., off:off + 2] = X[..., xy_sl]
+        off += 2
+        if has_bone:
+            xj[..., off:off + 2] = X[..., slice(*lo["bone"])]
+            off += 2
+        if has_bone_len:
+            xj[..., off:off + 1] = X[..., slice(*lo["bone_len"])]
+            off += 1
+        if has_conf:
+            xj[..., off:off + 1] = X[..., slice(*lo["conf"])]
 
-    xj = np.concatenate(joint_parts, axis=-1).astype(np.float32, copy=False)
-
-    if "motion" in lo:
-        xm = X[..., slice(*lo["motion"])].astype(np.float32, copy=False)
+    if has_motion:
+        xm = X[..., slice(*lo["motion"])]
     else:
         xm = np.zeros((T, V, 2), dtype=np.float32)
 
@@ -486,7 +677,10 @@ def split_gcn_two_stream(X: np.ndarray, feat_cfg: FeatCfg) -> Tuple[np.ndarray, 
 
 def build_tcn_input(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
     """Flatten canonical X[T,V,F] into TCN input x[T, V*F]."""
-    X = np.asarray(X, dtype=np.float32)
+    if isinstance(X, np.ndarray) and X.dtype == np.float32:
+        X = X
+    else:
+        X = np.asarray(X, dtype=np.float32)
     T, V, F = X.shape
     _ = feat_cfg  # kept for signature symmetry; flatten includes all channels.
-    return X.reshape(T, V * F).astype(np.float32, copy=False)
+    return X.reshape(T, V * F)

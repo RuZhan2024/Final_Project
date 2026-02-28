@@ -78,6 +78,54 @@ def p_fall_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return torch.sigmoid(logits_1d(logits))
 
 
+def fuse_conv_bn_eval_inplace(model: nn.Module) -> bool:
+    """Fuse Conv1d+BatchNorm1d pairs in-place for eval-time inference speed.
+
+    This is intended for deployment/runtime only. It is safe to call multiple
+    times; already-fused modules (or missing fusion support) are skipped.
+    """
+    try:
+        from torch.nn.utils.fusion import fuse_conv_bn_eval
+    except Exception:
+        return False
+
+    if model is None:
+        return False
+
+    model.eval()
+    changed = False
+
+    # Fuse common Conv1d->BatchNorm1d patterns in Sequential blocks.
+    for mod in model.modules():
+        if isinstance(mod, nn.Sequential):
+            i = 0
+            n = len(mod)
+            while i + 1 < n:
+                c = mod[i]
+                b = mod[i + 1]
+                if isinstance(c, nn.Conv1d) and isinstance(b, nn.BatchNorm1d):
+                    mod[i] = fuse_conv_bn_eval(c, b)
+                    mod[i + 1] = nn.Identity()
+                    changed = True
+                    i += 2
+                    continue
+                i += 1
+
+    # Fuse explicit `conv` / `bn` attributes used by residual blocks.
+    for mod in model.modules():
+        c = getattr(mod, "conv", None)
+        b = getattr(mod, "bn", None)
+        if isinstance(c, nn.Conv1d) and isinstance(b, nn.BatchNorm1d):
+            try:
+                mod.conv = fuse_conv_bn_eval(c, b)
+                mod.bn = nn.Identity()
+                changed = True
+            except Exception:
+                continue
+
+    return changed
+
+
 # ---------------------------
 # TCN
 # ---------------------------
@@ -203,11 +251,10 @@ class GCNLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
         # x: [B,T,V,C]
-        # x: [B,T,V,C], A_hat: [V,V]
-        # Use matmul instead of einsum for better backend stability (e.g., MPS).
-        x = x.permute(0, 1, 3, 2)              # [B,T,C,V]
-        x = torch.matmul(x, A_hat.t())         # [B,T,C,V]
-        x = x.permute(0, 1, 3, 2)              # [B,T,V,C]
+        # Apply graph mixing directly over the joint axis:
+        #   out[..., v, c] = sum_u A_hat[v, u] * x[..., u, c]
+        # This avoids two permute ops per layer in the inference hot path.
+        x = torch.matmul(A_hat, x)             # [B,T,V,C]
         x = self.lin(x)
         x = self.drop(self.act(self.ln(x)))
         return x
@@ -434,6 +481,79 @@ def infer_input_dims(
         else:
             out["in_feats"] = int(per_joint)
         return out
+
+    raise ValueError(f"Unknown arch: {arch}")
+
+
+def validate_model_input_dims(
+    arch: str,
+    model_cfg: Dict[str, Any],
+    *,
+    x: Optional[np.ndarray] = None,
+    xj: Optional[np.ndarray] = None,
+    xm: Optional[np.ndarray] = None,
+) -> None:
+    """Validate feature dimensions against checkpoint model_cfg.
+
+    This catches train/eval/deploy drift early (e.g., changed feat_cfg flags).
+    """
+    a = str(arch).lower()
+    cfg = _cfg_to_dict(model_cfg)
+
+    if a == "tcn":
+        if x is None:
+            return
+        arr = np.asarray(x)
+        if arr.ndim != 2:
+            raise ValueError(f"TCN input must be [T,C], got shape={tuple(arr.shape)}")
+        exp_in_ch = int(cfg.get("in_ch", 0) or 0)
+        if exp_in_ch > 0 and int(arr.shape[1]) != exp_in_ch:
+            raise ValueError(
+                f"TCN input dimension mismatch: built C={int(arr.shape[1])}, checkpoint in_ch={exp_in_ch}. "
+                "Likely feat_cfg/model_cfg drift."
+            )
+        return
+
+    if a == "gcn":
+        if xj is not None and xm is not None:
+            arr_j = np.asarray(xj)
+            arr_m = np.asarray(xm)
+            if arr_j.ndim != 3 or arr_m.ndim != 3:
+                raise ValueError(
+                    f"Two-stream GCN inputs must be [T,V,F]; got xj={tuple(arr_j.shape)} xm={tuple(arr_m.shape)}"
+                )
+            exp_j = int(cfg.get("in_feats_j", 0) or 0)
+            exp_m = int(cfg.get("in_feats_m", 0) or 0)
+            if exp_j > 0 and int(arr_j.shape[2]) != exp_j:
+                raise ValueError(
+                    f"Two-stream GCN joint feature mismatch: built F_j={int(arr_j.shape[2])}, "
+                    f"checkpoint in_feats_j={exp_j}. Likely feat_cfg/model_cfg drift."
+                )
+            if exp_m > 0 and int(arr_m.shape[2]) != exp_m:
+                raise ValueError(
+                    f"Two-stream GCN motion feature mismatch: built F_m={int(arr_m.shape[2])}, "
+                    f"checkpoint in_feats_m={exp_m}. Likely feat_cfg/model_cfg drift."
+                )
+            return
+
+        if x is None:
+            return
+        arr = np.asarray(x)
+        if arr.ndim != 3:
+            raise ValueError(f"GCN input must be [T,V,F], got shape={tuple(arr.shape)}")
+        exp_f = int(cfg.get("in_feats", 0) or 0)
+        if exp_f > 0 and int(arr.shape[2]) != exp_f:
+            raise ValueError(
+                f"GCN feature mismatch: built F={int(arr.shape[2])}, checkpoint in_feats={exp_f}. "
+                "Likely feat_cfg/model_cfg drift."
+            )
+        exp_v = int(cfg.get("num_joints", 0) or 0)
+        if exp_v > 0 and int(arr.shape[1]) != exp_v:
+            raise ValueError(
+                f"GCN joint-count mismatch: built V={int(arr.shape[1])}, checkpoint num_joints={exp_v}. "
+                "Likely data/model config drift."
+            )
+        return
 
     raise ValueError(f"Unknown arch: {arch}")
 

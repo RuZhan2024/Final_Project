@@ -7,10 +7,16 @@ import { CLIP_POST_S, CLIP_PRE_S, MAX_PROC_FPS, NUM_JOINTS } from "../constants"
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
+const XY_DIM = NUM_JOINTS * 2;
 
 function safeNumber(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
+}
+
+function positiveNumberOrUndef(x) {
+  const n = Number(x);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function getClipFlags(settingsPayload) {
@@ -19,6 +25,67 @@ function getClipFlags(settingsPayload) {
     storeEventClips: Boolean(sys?.store_event_clips),
     anonymize: Boolean(sys?.anonymize_skeleton_data ?? true),
   };
+}
+
+function stripNilFields(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v !== null && typeof v !== "undefined") out[k] = v;
+  }
+  return out;
+}
+
+function packFrameSlice(raw, startIdx, endIdx) {
+  const n = endIdx - startIdx + 1;
+  const t_ms = new Array(n);
+  // Build JSON-ready dense arrays directly to avoid an extra Array.from copy pass.
+  const xyFlat = new Array(n * XY_DIM).fill(0);
+  const confFlat = new Array(n * NUM_JOINTS).fill(0);
+  let j = 0;
+  for (let i = startIdx; i <= endIdx; i += 1, j += 1) {
+    const fr = raw[i];
+    const t = Number(fr?.t);
+    t_ms[j] = Number.isFinite(t) ? Math.round(t) : 0;
+    const xySrc = fr?.xyFlat;
+    const confSrc = fr?.confFlat;
+    const xyBase = j * XY_DIM;
+    const confBase = j * NUM_JOINTS;
+    if (xySrc && xySrc.length === XY_DIM) {
+      for (let k = 0; k < XY_DIM; k += 1) xyFlat[xyBase + k] = xySrc[k];
+    }
+    if (confSrc && confSrc.length === NUM_JOINTS) {
+      for (let k = 0; k < NUM_JOINTS; k += 1) confFlat[confBase + k] = confSrc[k];
+    }
+  }
+  return {
+    t_ms,
+    xy_flat: xyFlat,
+    conf_flat: confFlat,
+  };
+}
+
+function lowerBoundFrameTs(raw, targetTs) {
+  let lo = 0;
+  let hi = raw.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const t = raw[mid]?.t;
+    if (typeof t !== "number" || !Number.isFinite(t) || t < targetTs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function upperBoundFrameTs(raw, targetTs) {
+  let lo = 0;
+  let hi = raw.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const t = raw[mid]?.t;
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= targetTs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -60,6 +127,8 @@ export function usePoseMonitor({
 
   // Cap pose processing rate to reduce CPU.
   const lastProcMsRef = useRef(0);
+  const lastClockMsRef = useRef(0);
+  const clockTextRef = useRef("");
 
   // Live state
   const [liveRunning, setLiveRunning] = useState(false);
@@ -74,15 +143,21 @@ export function usePoseMonitor({
   const [timeline, setTimeline] = useState([]); // [{kind:'fall'|'uncertain', t: number}]
 
   // Frame buffer for windowing
-  const rawFramesRef = useRef([]); // [{t,xy,conf}]
+  const rawFramesRef = useRef([]); // [{t,xyFlat,confFlat}]
   const lastPoseTsRef = useRef(null);
   const fpsDeltasRef = useRef([]);
+  const fpsDeltaSumRef = useRef(0);
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
   const uploadedClipIdsRef = useRef(new Set());
+  const clipUploadInFlightRef = useRef(false);
+  const predictInFlightRef = useRef(false);
+  const bgTickScheduledRef = useRef(false);
+  const bgTaskIdRef = useRef(null);
+  const bgTaskTypeRef = useRef(null);
 
   // Session id for server-side state machine
   const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
@@ -157,11 +232,22 @@ export function usePoseMonitor({
     rawFramesRef.current = [];
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
+    fpsDeltaSumRef.current = 0;
     lastSentRef.current = 0;
 
     // Clip upload state
     pendingClipRef.current = null;
     uploadedClipIdsRef.current = new Set();
+    bgTickScheduledRef.current = false;
+    if (bgTaskIdRef.current != null) {
+      if (bgTaskTypeRef.current === "idle" && typeof window !== "undefined" && window.cancelIdleCallback) {
+        window.cancelIdleCallback(bgTaskIdRef.current);
+      } else if (bgTaskTypeRef.current === "timeout" && typeof window !== "undefined") {
+        window.clearTimeout(bgTaskIdRef.current);
+      }
+    }
+    bgTaskIdRef.current = null;
+    bgTaskTypeRef.current = null;
 
     // Reset UI
     setPFall(null);
@@ -187,6 +273,7 @@ export function usePoseMonitor({
 
     const pending = pendingClipRef.current;
     if (!pending) return;
+    if (clipUploadInFlightRef.current) return;
 
     const raw = rawFramesRef.current;
     if (!raw || raw.length < 2) return;
@@ -203,26 +290,35 @@ export function usePoseMonitor({
 
     const startTs = pending.triggerEndTs - pending.preMs;
     const endTs = pending.triggerEndTs + pending.postMs;
-    const frames = raw.filter((fr) => fr && typeof fr.t === "number" && fr.t >= startTs && fr.t <= endTs);
-    if (!frames || frames.length < 2) {
+    const startIdx = lowerBoundFrameTs(raw, startTs);
+    const endExclusive = upperBoundFrameTs(raw, endTs);
+    const endIdx = endExclusive - 1;
+
+    if (startIdx < 0 || endIdx <= startIdx || startIdx >= raw.length) {
       pendingClipRef.current = null;
       return;
     }
 
     try {
-      const clipPayload = {
+      clipUploadInFlightRef.current = true;
+      const { t_ms, xy_flat, conf_flat } = packFrameSlice(raw, startIdx, endIdx);
+
+      const clipPayload = stripNilFields({
         resident_id: 1,
         dataset_code: pending.ctx?.dataset_code,
         mode: pending.ctx?.mode,
         op_code: pending.ctx?.op_code,
         use_mc: pending.ctx?.use_mc,
         mc_M: pending.ctx?.mc_M,
+        mc_sigma_tol: pending.ctx?.mc_sigma_tol,
+        mc_se_tol: pending.ctx?.mc_se_tol,
         pre_s: pending.preMs / 1000,
         post_s: pending.postMs / 1000,
-        t_ms: frames.map((fr) => fr.t),
-        xy: frames.map((fr) => fr.xy),
-        conf: frames.map((fr) => fr.conf),
-      };
+        t_ms,
+        xy_flat,
+        conf_flat,
+        raw_joints: NUM_JOINTS,
+      });
 
       const data = await apiRequest(
         apiBase,
@@ -232,10 +328,17 @@ export function usePoseMonitor({
 
       if (data?.ok) {
         sent.add(String(pending.eventId));
+        // Bound memory in very long monitoring sessions.
+        while (sent.size > 512) {
+          const first = sent.values().next().value;
+          if (first == null) break;
+          sent.delete(first);
+        }
       }
     } catch (err) {
       console.error("Failed to upload skeleton clip", err);
     } finally {
+      clipUploadInFlightRef.current = false;
       pendingClipRef.current = null;
     }
   }, [apiBase, settingsPayload]);
@@ -244,6 +347,7 @@ export function usePoseMonitor({
     const now = performance.now();
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     if (now - lastSentRef.current < minGapMs) return;
+    if (predictInFlightRef.current) return;
 
     const raw = rawFramesRef.current;
     if (!raw || raw.length < 2) return;
@@ -257,50 +361,51 @@ export function usePoseMonitor({
     if (raw[0].t > startNeed) return;
 
     // Include one frame before startNeed for interpolation on the server.
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
+    const i0 = lowerBoundFrameTs(raw, startNeed);
     const startIdx = Math.max(0, i0 - 1);
-    const slice = raw.slice(startIdx);
+    const { t_ms: raw_t_ms, xy_flat: raw_xy_flat, conf_flat: raw_conf_flat } = packFrameSlice(
+      raw,
+      startIdx,
+      raw.length - 1
+    );
 
     lastSentRef.current = now;
 
     const { storeEventClips } = getClipFlags(settingsPayload);
+    const mcSigmaTol = positiveNumberOrUndef(settingsPayload?.deploy?.mc?.sigma_tol);
+    const mcSeTol = positiveNumberOrUndef(settingsPayload?.deploy?.mc?.se_tol);
 
-    const payload = {
+    const payload = stripNilFields({
       session_id: sessionIdRef.current,
-      resident_id: 1,
       mode,
       dataset_code: activeDatasetCode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
 
       model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
       model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
-      model_id: mode === "dual" ? null : mode === "tcn" ? chosen.tcn : chosen.gcn,
 
       // The model expects this FPS after resampling.
-      fps: targetFps,
       target_fps: targetFps,
       target_T: deployW,
-
-      // Useful for debugging / dashboards (does NOT affect inference)
-      capture_fps: streamFps || fpsEstimateRef.current || null,
-
-      timestamp_ms: Date.now(),
       use_mc: Boolean(mcEnabled),
       mc_M: mcCfg?.M,
+      mc_sigma_tol: mcSigmaTol,
+      mc_se_tol: mcSeTol,
 
       // Persist events when monitoring is on OR when we need an event_id for clip saving.
       persist: Boolean(monitoringOn || storeEventClips),
 
       // Raw pose samples (variable FPS)
-      raw_t_ms: slice.map((fr) => fr.t),
-      raw_xy: slice.map((fr) => fr.xy),
-      raw_conf: slice.map((fr) => fr.conf),
+      raw_t_ms,
+      raw_xy_flat,
+      raw_conf_flat,
+      raw_joints: NUM_JOINTS,
 
       window_end_t_ms: endTs,
-    };
+    });
 
     try {
+      predictInFlightRef.current = true;
       const data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
 
       const tri = data?.triage_state || data?.triageState || "not_fall";
@@ -327,6 +432,8 @@ export function usePoseMonitor({
                 op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
                 use_mc: Boolean(mcEnabled),
                 mc_M: mcCfg?.M,
+                mc_sigma_tol: mcSigmaTol,
+                mc_se_tol: mcSeTol,
               },
             };
           }
@@ -370,6 +477,8 @@ export function usePoseMonitor({
       else if (triNorm === "uncertain") addTimelineMarker("uncertain");
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
+    } finally {
+      predictInFlightRef.current = false;
     }
   }, [
     activeDatasetCode,
@@ -388,12 +497,32 @@ export function usePoseMonitor({
     targetFps,
   ]);
 
+  const scheduleBackgroundTick = useCallback(() => {
+    if (bgTickScheduledRef.current) return;
+    bgTickScheduledRef.current = true;
+    const run = () => {
+      bgTickScheduledRef.current = false;
+      bgTaskIdRef.current = null;
+      bgTaskTypeRef.current = null;
+      void maybeFinalizeClipUpload();
+      void maybeSendWindow();
+    };
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      bgTaskTypeRef.current = "idle";
+      bgTaskIdRef.current = window.requestIdleCallback(run, { timeout: 50 });
+      return;
+    }
+    bgTaskTypeRef.current = "timeout";
+    bgTaskIdRef.current = setTimeout(run, 0);
+  }, [maybeFinalizeClipUpload, maybeSendWindow]);
+
   const handlePoseResults = useCallback(
     (results) => {
       // Cap processing rate.
       const nowMs = performance.now();
       if (nowMs - lastProcMsRef.current < 1000 / MAX_PROC_FPS) return;
       lastProcMsRef.current = nowMs;
+      const tNow = Math.round(nowMs);
 
       const canvasEl = canvasRef.current;
       if (!canvasEl) return;
@@ -430,27 +559,32 @@ export function usePoseMonitor({
         });
         drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
 
+        if (tNow - lastClockMsRef.current >= 500 || !clockTextRef.current) {
+          clockTextRef.current = new Date().toLocaleTimeString();
+          lastClockMsRef.current = tNow;
+        }
         ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
         ctx.fillStyle = "#94a3b8";
-        ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
+        ctx.fillText(clockTextRef.current, 16, h - 16);
       }
 
       // Build raw frame
-      const xyFrame = new Array(NUM_JOINTS);
-      const confFrame = new Array(NUM_JOINTS);
+      const xyFlat = new Float32Array(NUM_JOINTS * 2);
+      const confFlat = new Float32Array(NUM_JOINTS);
 
       for (let i = 0; i < NUM_JOINTS; i++) {
         const lm = landmarks[i];
+        const b = i * 2;
         if (!lm) {
-          xyFrame[i] = [0, 0];
-          confFrame[i] = 0;
+          xyFlat[b] = 0;
+          xyFlat[b + 1] = 0;
+          confFlat[i] = 0;
         } else {
-          xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
-          confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
+          xyFlat[b] = clamp01(lm.x);
+          xyFlat[b + 1] = clamp01(lm.y);
+          confFlat[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
         }
       }
-
-      const tNow = performance.now();
 
       // Estimate FPS from callback timing (smoothed)
       const last = lastPoseTsRef.current;
@@ -459,9 +593,13 @@ export function usePoseMonitor({
         if (dt > 0 && dt < 5000) {
           const arr = fpsDeltasRef.current;
           arr.push(dt);
-          if (arr.length > 30) arr.shift();
+          fpsDeltaSumRef.current += dt;
+          if (arr.length > 30) {
+            const dropped = arr.shift();
+            if (typeof dropped === "number") fpsDeltaSumRef.current -= dropped;
+          }
 
-          const meanDt = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
+          const meanDt = fpsDeltaSumRef.current / Math.max(1, arr.length);
           const estFps = meanDt > 0 ? 1000 / meanDt : null;
           if (estFps && Number.isFinite(estFps)) {
             const prev = fpsEstimateRef.current;
@@ -473,17 +611,17 @@ export function usePoseMonitor({
 
       // Push raw
       const raw = rawFramesRef.current;
-      raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
+      raw.push({ t: tNow, xyFlat, confFlat });
 
-      // Keep ~12s max
+      // Keep ~12s max. Trim in batches to avoid O(n) shifts on every frame.
       const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
-      if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
+      const trimChunk = Math.max(32, Math.ceil(targetFps));
+      if (raw.length > maxRaw + trimChunk) raw.splice(0, raw.length - maxRaw);
 
-      // Clip upload + inference
-      void maybeFinalizeClipUpload();
-      void maybeSendWindow();
+      // Clip upload + inference run on a deferred tick to keep pose callback light.
+      scheduleBackgroundTick();
     },
-    [ensureCanvasMatchesVideo, maybeFinalizeClipUpload, maybeSendWindow, targetFps]
+    [ensureCanvasMatchesVideo, scheduleBackgroundTick, targetFps]
   );
 
   const startLive = useCallback(async () => {

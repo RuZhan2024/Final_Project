@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import glob
+from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -32,29 +32,9 @@ from deploy.common import (
 )
 
 
-def iter_windows(win_dir: str) -> Dict[str, List[Tuple[int, str]]]:
+def list_windows(win_dir: str) -> List[str]:
     # Recursive so nested window dirs work.
-    paths = sorted(glob.glob(os.path.join(win_dir, "**", "*.npz"), recursive=True))
-    by_vid: Dict[str, List[Tuple[int, str]]] = {}
-    for p in paths:
-        vid = os.path.splitext(os.path.basename(p))[0]
-        ws = 0
-        try:
-            z = np.load(p, allow_pickle=False)
-            with z:
-                v = z.get("video_id", None)
-                if v is not None:
-                    if isinstance(v, np.ndarray) and v.shape == ():
-                        v = v.item()
-                    vid = str(v)
-                ws = int(z.get("w_start", 0))
-        except Exception:
-            pass
-        by_vid.setdefault(vid, []).append((ws, p))
-
-    for vid in list(by_vid.keys()):
-        by_vid[vid] = sorted(by_vid[vid], key=lambda x: x[0])
-    return by_vid
+    return sorted(glob.glob(f"{win_dir}/**/*.npz", recursive=True))
 
 
 def _get_t(meta, time_mode: str) -> float:
@@ -93,44 +73,44 @@ def main() -> int:
     if arch_ckpt != args.arch:
         print(f"[warn] ckpt arch={arch_ckpt} (expected {args.arch})")
 
-    by_vid = iter_windows(args.win_dir)
+    paths = list_windows(args.win_dir)
     events_out: List[Dict[str, Any]] = []
+    # Single-pass inference + grouping to avoid opening each NPZ twice.
+    by_vid: Dict[str, List[Tuple[Any, ...]]] = defaultdict(list)
+    for p in paths:
+        raw = load_window_raw(p, fps_default=fps_default)
+        X, _ = build_input_from_raw(raw, feat_cfg, args.arch, two_stream=two_stream)
+        t = _get_t(raw.meta, args.time_mode)
+        prob = predict_prob(model, args.arch, X, device, two_stream)
+        ws = int(raw.meta.w_start)
+        vid = str(raw.meta.video_id)
 
-    for vid, lst in by_vid.items():
-        ts: List[float] = []
-        ps: List[float] = []
-        lying: List[float] = []
-        motion: List[float] = []
-
-        for _, p in lst:
-            raw = load_window_raw(p, fps_default=fps_default)
-            X, _ = build_input_from_raw(raw, feat_cfg, args.arch, two_stream=two_stream)
-            t = _get_t(raw.meta, args.time_mode)
-            prob = predict_prob(model, args.arch, X, device, two_stream)
-
-            ts.append(t)
-            ps.append(prob)
-
-            ls, ms = compute_confirm_scores(raw)
-            lying.append(np.nan if ls is None else float(ls))
-            motion.append(np.nan if ms is None else float(ms))
-
-        ts_a = np.asarray(ts, dtype=np.float32)
-        ps_a = np.asarray(ps, dtype=np.float32)
-        lying_a = np.asarray(lying, dtype=np.float32)
-        motion_a = np.asarray(motion, dtype=np.float32)
-
-        # Correct order + correct unpack
         if alert_cfg.confirm:
-            _active, evs = detect_alert_events(ps_a, ts_a, alert_cfg, lying_score=lying_a, motion_score=motion_a)
+            ls, ms = compute_confirm_scores(raw)
+            ls_v = np.nan if ls is None else float(ls)
+            ms_v = np.nan if ms is None else float(ms)
+            by_vid[vid].append((ws, t, float(prob), float(ls_v), float(ms_v)))
+        else:
+            by_vid[vid].append((ws, t, float(prob)))
+
+    for vid, rows in by_vid.items():
+        if not rows:
+            continue
+        rows.sort(key=lambda r: r[0])
+        n = len(rows)
+        ts_a = np.fromiter((r[1] for r in rows), dtype=np.float32, count=n)
+        ps_a = np.fromiter((r[2] for r in rows), dtype=np.float32, count=n)
+        if alert_cfg.confirm:
+            ls_a = np.fromiter((r[3] for r in rows), dtype=np.float32, count=n)
+            ms_a = np.fromiter((r[4] for r in rows), dtype=np.float32, count=n)
+            _active, evs = detect_alert_events(ps_a, ts_a, alert_cfg, lying_score=ls_a, motion_score=ms_a)
         else:
             _active, evs = detect_alert_events(ps_a, ts_a, alert_cfg, lying_score=None, motion_score=None)
 
         for e in evs:
-            rec = {"video_id": vid, "kind": e.kind, "t_sec": e.t_sec, **e.info}
+            rec = {"video_id": vid, **e.to_dict()}
             events_out.append(rec)
-            info_str = ", ".join([f"{k}={v}" for k, v in e.info.items()])
-            print(f"[{e.kind}] vid={vid} t={e.t_sec:.2f}s {info_str}")
+            print(f"[ALERT] vid={vid} start={rec['start_time_s']:.2f}s end={rec['end_time_s']:.2f}s peak_p={rec['peak_p']:.3f}")
 
     if args.out_json:
         with open(args.out_json, "w", encoding="utf-8") as f:

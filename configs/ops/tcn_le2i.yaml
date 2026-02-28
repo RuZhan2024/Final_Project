@@ -1,77 +1,77 @@
 ops:
   OP1:
-    tau_high: 0.8399999737739563
-    tau_low: 0.6552000045776367
-    precision: 0.9090909361839294
-    recall: 1.0
-    f1: 0.9523809552192688
-    fa24h: 440.0999450683594
-    mean_delay_s: 1.4739863872528076
-    median_delay_s: 1.4999756813049316
-    n_gt_events: 10
-    n_alert_events: 11
-    n_true_alerts: 10
-    n_false_alerts: 1
-  OP2:
-    tau_high: 0.8399999737739563
-    tau_low: 0.6552000045776367
-    precision: 0.9090909361839294
-    recall: 1.0
-    f1: 0.9523809552192688
-    fa24h: 440.0999450683594
-    mean_delay_s: 1.4739863872528076
-    median_delay_s: 1.4999756813049316
-    n_gt_events: 10
-    n_alert_events: 11
-    n_true_alerts: 10
-    n_false_alerts: 1
-  OP3:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
+    tau_high: 0.059999994933605194
+    tau_low: 0.04679999500513077
     precision: 1.0
-    recall: 0.20000000298023224
-    f1: 0.3333333432674408
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
     fa24h: 0.0
-    mean_delay_s: 2.209980010986328
-    median_delay_s: 2.209980010986328
+    mean_delay_s: 0.4914240837097168
+    median_delay_s: 0.49999189376831055
     n_gt_events: 10
-    n_alert_events: 2
-    n_true_alerts: 2
+    n_alert_events: 7
+    n_true_alerts: 7
+    n_false_alerts: 0
+  OP2:
+    tau_high: 0.059999994933605194
+    tau_low: 0.04679999500513077
+    precision: 1.0
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
+    fa24h: 0.0
+    mean_delay_s: 0.4914240837097168
+    median_delay_s: 0.49999189376831055
+    n_gt_events: 10
+    n_alert_events: 7
+    n_true_alerts: 7
+    n_false_alerts: 0
+  OP3:
+    tau_high: 0.059999994933605194
+    tau_low: 0.04679999500513077
+    precision: 1.0
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
+    fa24h: 0.0
+    mean_delay_s: 0.4914240837097168
+    median_delay_s: 0.49999189376831055
+    n_gt_events: 10
+    n_alert_events: 7
+    n_true_alerts: 7
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
-  tie_break: "max_thr"
-  min_tau_high: 0.2
+  tie_break: "min_thr"
+  min_tau_high: 0.05
   op1_recall: 0.95
   op3_fa24h: 1.0
   idx:
-    OP1: 83
-    OP2: 83
-    OP3: 94
+    OP1: 5
+    OP2: 5
+    OP3: 5
 alert_cfg:
-  ema_alpha: 0.5
+  ema_alpha: 0.2
   k: 2
   n: 3
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: false
-  confirm_s: 2.0
-  confirm_min_lying: 0.65
-  confirm_max_motion: 0.08
-  confirm_require_low: true
+  confirm: true
+  confirm_s: 3.0
+  confirm_min_lying: 0.55
+  confirm_max_motion: 0.15
+  confirm_require_low: false
 alert_base:
-  ema_alpha: 0.5
+  ema_alpha: 0.2
   k: 2
   n: 3
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: false
-  confirm_s: 2.0
-  confirm_min_lying: 0.65
-  confirm_max_motion: 0.08
-  confirm_require_low: true
+  confirm: true
+  confirm_s: 3.0
+  confirm_min_lying: 0.55
+  confirm_max_motion: 0.15
+  confirm_require_low: false
 sweep_meta:
   n_videos: 13
   total_duration_s: 196.319041572622
@@ -88,12 +88,12 @@ sweep_cfg:
 sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_le2i.sweep.json"
 calibration:
   method: "temperature"
-  T: 1.431118369102478
+  T: 1.1649079322814941
   n_val: 365
-  nll_before: 0.2563750743865967
-  nll_after: 0.2393532544374466
-  ece_before: 0.09253410232524854
-  ece_after: 0.11025709388563572
+  nll_before: 0.20148266851902008
+  nll_after: 0.1988118439912796
+  ece_before: 0.07425602791380333
+  ece_after: 0.08211197409119565
 model:
   arch: "tcn"
   ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/le2i_tcn_W48S12/best.pt"

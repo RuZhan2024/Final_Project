@@ -57,7 +57,9 @@ from core.models import GCNConfig, build_model, pick_device
 # -------------------------
 # Utilities
 # -------------------------
-def _to_f32(x, device: torch.device) -> torch.Tensor:
+def _to_f32(x, device: torch.device, non_blocking: bool = False) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
 def set_seed(seed: int) -> None:
@@ -79,7 +81,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
-    y = np.asarray(labels01).astype(int).reshape(-1)
+    y = np.asarray(labels01, dtype=np.int64).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
     return torch.tensor([neg / pos], dtype=torch.float32)
@@ -96,7 +98,7 @@ def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
 
 
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
-    m = np.asarray(mask).copy().astype(bool)
+    m = np.asarray(mask, dtype=bool).copy()
     T, V = m.shape
     if mask_joint_p > 0:
         drop_j = rng.random(V) < float(mask_joint_p)
@@ -231,7 +233,7 @@ class WindowDatasetGCN(Dataset):
             # NumPy -> Torch
             return (
                 torch.as_tensor(X, dtype=torch.float32),
-                torch.as_tensor([y], dtype=torch.float32),
+                torch.tensor(y, dtype=torch.float32),
             )
 
         if not self.feat_cfg.use_motion:
@@ -243,71 +245,73 @@ class WindowDatasetGCN(Dataset):
         return (
             torch.as_tensor(xj, dtype=torch.float32),
             torch.as_tensor(xm, dtype=torch.float32),
-            torch.as_tensor([y], dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32),
         )
 
-def collect_probs(
-    model: nn.Module, loader: DataLoader, device: torch.device, two_stream: bool
-) -> Tuple[np.ndarray, np.ndarray]:
-    model.eval()
-    ps: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    with torch.no_grad():
-        for batch in loader:
-            if two_stream:
-                xj, xm, yb = batch
-                xj = _to_f32(xj, device)
-                xm = _to_f32(xm, device)
-                logits = logits_1d(model(xj, xm))
-                bsz = int(xj.shape[0])
-            else:
-                xb, yb = batch
-                xb = _to_f32(xb, device)
-                logits = logits_1d(model(xb))
-                bsz = int(xb.shape[0])
-
-            yb = _to_f32(yb, device).view(-1)
-
-            p = torch.sigmoid(logits).detach().cpu().numpy()
-            y = yb.detach().cpu().numpy().reshape(-1)
-            ps.append(p)
-            ys.append(y)
-    return np.concatenate(ps, axis=0), np.concatenate(ys, axis=0)
-
-def compute_loss_on_loader(
+def collect_probs_and_loss(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
     two_stream: bool = False,
     ema: Optional[EMA] = None,
-) -> float:
-    """Compute mean loss on a loader with model in eval mode (no grad)."""
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Single-pass validation: collect probs/labels and mean loss together."""
     model.eval()
-    losses: List[float] = []
-    counts: List[int] = []
+    non_blocking = (device.type in {"cuda", "mps"})
+    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
+    use_prealloc = n_total > 0
+    probs_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    y_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
+    ptr = 0
+    ps: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    loss_sum = 0.0
+    count_sum = 0
 
     ctx = ema.use(model) if ema is not None else nullcontext()
-    with ctx, torch.no_grad():
+    with ctx, torch.inference_mode():
         for batch in loader:
             if two_stream:
-                xj, xm, yb = batch
-                xj = _to_f32(xj, device)  # numpy OR torch -> torch.float32 on device
-                xm = _to_f32(xm, device)
+                xj, xm, yb_cpu = batch
+                xj = _to_f32(xj, device, non_blocking=non_blocking)
+                xm = _to_f32(xm, device, non_blocking=non_blocking)
                 logits = logits_1d(model(xj, xm))
                 bsz = int(xj.shape[0])
             else:
-                xb, yb = batch
-                xb = _to_f32(xb, device)
+                xb, yb_cpu = batch
+                xb = _to_f32(xb, device, non_blocking=non_blocking)
                 logits = logits_1d(model(xb))
                 bsz = int(xb.shape[0])
 
-            yb = _to_f32(yb, device).view(-1)
-            loss = criterion(logits, yb).detach()
-            losses.append(float(loss.cpu()) * bsz)
-            counts.append(bsz)
+            if isinstance(yb_cpu, torch.Tensor):
+                y_np = yb_cpu.numpy().reshape(-1).astype(np.float32, copy=False)
+            else:
+                y_np = np.asarray(yb_cpu, dtype=np.float32).reshape(-1)
 
-    return float(sum(losses) / max(1, sum(counts)))
+            yb = _to_f32(yb_cpu, device, non_blocking=non_blocking).view(-1)
+            p = torch.sigmoid(logits).cpu().numpy()
+            if use_prealloc and probs_buf is not None and y_buf is not None and (ptr + bsz) <= n_total:
+                probs_buf[ptr:ptr + bsz] = p
+                y_buf[ptr:ptr + bsz] = y_np
+                ptr += bsz
+            else:
+                ps.append(p)
+                ys.append(y_np)
+            loss_sum += float(criterion(logits, yb).item()) * bsz
+            count_sum += bsz
+
+    if use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0 and not ps and not ys:
+        probs = probs_buf[:ptr]
+        y_true = y_buf[:ptr]
+    elif use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0:
+        probs = np.concatenate([probs_buf[:ptr]] + ps, axis=0)
+        y_true = np.concatenate([y_buf[:ptr]] + ys, axis=0)
+    else:
+        probs = np.concatenate(ps, axis=0) if ps else np.array([], dtype=np.float32)
+        y_true = np.concatenate(ys, axis=0) if ys else np.array([], dtype=np.float32)
+    val_loss = float(loss_sum / max(1, count_sum))
+    return probs, y_true, val_loss
 
 
 @dataclass
@@ -644,15 +648,22 @@ def main() -> None:
     )
 
     pin = (device.type == "cuda")
+    loader_kwargs = {
+        "num_workers": nw,
+        "pin_memory": pin,
+        "persistent_workers": bool(nw > 0),
+    }
+    if nw > 0:
+        loader_kwargs["prefetch_factor"] = 2
     if sampler is not None:
         train_loader = DataLoader(
-            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=nw, pin_memory=pin
+            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs
         )
     else:
         train_loader = DataLoader(
-            train_ds, batch_size=cfg.batch, shuffle=True, num_workers=nw, pin_memory=pin
+            train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs
         )
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=nw, pin_memory=pin)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
 
     best_score = -1.0
     tag = (cfg.save_tag.strip() + "_") if cfg.save_tag.strip() else ""
@@ -676,15 +687,15 @@ def main() -> None:
         for batch in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
             if bool(cfg.two_stream):
                 xj, xm, yb = batch
-                xj = _to_f32(xj, device)
-                xm = _to_f32(xm, device)
-                yb = _to_f32(yb, device).view(-1)
+                xj = _to_f32(xj, device, non_blocking=pin)
+                xm = _to_f32(xm, device, non_blocking=pin)
+                yb = _to_f32(yb, device, non_blocking=pin).view(-1)
                 logits = logits_1d(model(xj, xm))
                 bsz = int(xj.shape[0])
             else:
                 xb, yb = batch
-                xb = _to_f32(xb, device)
-                yb = _to_f32(yb, device).view(-1)
+                xb = _to_f32(xb, device, non_blocking=pin)
+                yb = _to_f32(yb, device, non_blocking=pin).view(-1)
                 logits = logits_1d(model(xb))
                 bsz = int(xb.shape[0])
 
@@ -703,12 +714,12 @@ def main() -> None:
             if ema is not None:
                 ema.update(model)
 
-            running += float(loss.detach().cpu()) * bsz
+            running += float(loss.item()) * bsz
             seen += bsz
 
         train_loss = running / max(1, seen)
 
-        val_loss = compute_loss_on_loader(
+        probs, y_true, val_loss = collect_probs_and_loss(
             model,
             val_loader,
             device,
@@ -716,10 +727,6 @@ def main() -> None:
             two_stream=bool(cfg.two_stream),
             ema=ema,
         )
-
-        ctx_eval = ema.use(model) if ema is not None else nullcontext()
-        with ctx_eval:
-            probs, y_true = collect_probs(model, val_loader, device, two_stream=bool(cfg.two_stream))
 
         best = best_threshold_by_f1(
             probs, y_true, thr_min=cfg.thr_min, thr_max=cfg.thr_max, thr_step=cfg.thr_step

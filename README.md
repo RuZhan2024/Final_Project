@@ -12,10 +12,10 @@ This repo contains:
 2. Run the schema:
 
 ```sql
-SOURCE create_db.sql;
+SOURCE server/create_db.sql;
 ```
 
-> Note: `create_db.sql` includes an `event_metadata` column (JSON).  
+> Note: `server/create_db.sql` uses a `meta` JSON column on `events`.  
 > If you already created tables earlier, the backend will also try a **best-effort migration** on startup.
 
 ### Recommended seed rows (model codes)
@@ -24,8 +24,8 @@ The backend uses stable **model codes**: `TCN`, `GCN`, `HYBRID`.
 You can insert them once (optional — backend will auto-create rows if missing):
 
 ```sql
-INSERT INTO models (code, name, family)
-VALUES ('TCN','TCN','TCN'),('GCN','GCN','GCN'),('HYBRID','HYBRID','Hybrid');
+INSERT INTO models (code, name)
+VALUES ('TCN','TCN'),('GCN','GCN'),('HYBRID','Hybrid');
 ```
 
 ## 2) Backend (FastAPI)
@@ -35,34 +35,59 @@ VALUES ('TCN','TCN','TCN'),('GCN','GCN','GCN'),('HYBRID','HYBRID','Hybrid');
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r server/requirements.txt
+pip install -r requirements_server.txt
 ```
 
 ### Configure env
 
-Set MySQL connection via env vars (see `server/db.py`):
+Create local env file, then adjust values:
 
 ```bash
-export DB_HOST=127.0.0.1
-export DB_PORT=3306
-export DB_NAME=fallguard
-export DB_USER=root
-export DB_PASS=your_password
+cp .env.example .env
 ```
 
+Optional inference/runtime optimization flags:
+
+- `FD_DYNAMIC_QUANT_LINEAR=1`  
+  Enable CPU dynamic quantization for `nn.Linear` layers at deploy load time.
+- `FD_TORCH_COMPILE=1`  
+  Enable `torch.compile(..., mode="reduce-overhead")` for steady-state inference.
+
+Both are best-effort: if unsupported by the local PyTorch/runtime, server falls back automatically.
+
 ### Run
-source .venv/bin/activate
+
 ```bash
 # Preferred:
 uvicorn server.app:app --reload --port 8000
 
-# Or, via the root wrapper (same server):
-uvicorn app:app --reload --port 8000
+# Smoke test
+curl http://localhost:8000/api/health
 ```
 
 Health check:
 
 - `GET http://localhost:8000/api/health`
+
+Backend tests:
+
+```bash
+make install-dev
+make test-server
+make test-server-cov
+```
+
+Override coverage gate (default `70`) when needed:
+
+```bash
+make test-server-cov COVERAGE_MIN=75
+```
+
+`make test-server-cov` also writes `coverage.xml` (used by CI artifacts/reporting).
+
+CI coverage policy:
+- Pull requests and non-`main` branches require at least `75%`.
+- Pushes to `main` require at least `81%`.
 
 ## 3) Frontend (React)
 
@@ -95,7 +120,7 @@ Frontend **Monitor** supports:
 When `Persist events to DB` is enabled:
 
 - `models.code` is stored as: `TCN` / `GCN` / `HYBRID`
-- The *runner/spec id* (e.g. `muvim_gcn_W48S12`) is stored in `events.event_metadata`:
+- The *runner/spec id* (e.g. `muvim_gcn_W48S12`) is stored in `events.meta`:
 
 Examples:
 
@@ -114,6 +139,28 @@ Triage timing settings are in:
 - `configs/deploy_modes.yaml`
 
 These targets control how quickly the state machine emits **POSSIBLE** and **CONFIRMED** alerts.
+
+## 6) Pose Preprocess Robustness Flags
+
+`pose/preprocess_pose_npz.py` now supports extra guards for noisy skeleton extraction:
+
+- `--clip_xy --clip_xy_min 0.0 --clip_xy_max 1.0`  
+  Clip finite coordinates to a bounded range before downstream processing.
+- `--max_step 0.0` (disabled by default)  
+  Limit per-frame joint displacement to suppress extraction spikes.
+
+These options are recorded in each output NPZ `preprocess` metadata JSON.
+
+## 7) Uncertainty Telemetry (Live Monitor)
+
+`/api/monitor/predict_window` accepts optional:
+
+- `mc_sigma_tol` (positive float): adaptive MC-dropout early-stop tolerance.
+- `mc_se_tol` (positive float): adaptive MC-dropout standard-error early-stop tolerance.
+
+Response now includes:
+
+- `mc_n_used`: per-model MC samples actually consumed (useful to quantify adaptive compute savings).
 
 
 
@@ -548,4 +595,3 @@ Below is the **resolved running-order (dependency chain)** printed for **all fou
 * TCN end-to-end: `make -j pipeline-all`
 * GCN end-to-end: `make -j pipeline-all-gcn`
 * Data-only: `make -j $(addprefix pipeline-data-,$(DATASETS))` (or just call each explicitly)
-
