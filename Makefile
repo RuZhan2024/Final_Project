@@ -1112,6 +1112,8 @@ $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
 	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-tcn-$*
+	@$(MAKE) ADAPTER_USE=1 fit-ops-$*
+	@$(MAKE) ADAPTER_USE=1 eval-$*
 	# Optional future step (when standardized):
 	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-tcn-$*
 	@$(MAKE) ADAPTER_USE=1 plot-$*
@@ -1120,6 +1122,8 @@ $(addprefix pipeline-auto-gcn-,$(DATASETS)): pipeline-auto-gcn-%:
 	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 fit-ops-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 eval-gcn-$*
 	# Optional future step (when standardized):
 	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-gcn-$*
 	@$(MAKE) ADAPTER_USE=1 plot-gcn-$*
