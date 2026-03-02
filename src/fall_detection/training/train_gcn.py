@@ -96,6 +96,22 @@ def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
     return WeightedRandomSampler(weights=torch.from_numpy(w), num_samples=len(w), replacement=True)
 
 
+def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple[float, float, float, float]:
+    yb = (np.asarray(y_true).reshape(-1).astype(np.int64) > 0).astype(np.int64)
+    pb = (np.asarray(p).reshape(-1) >= float(thr)).astype(np.int64)
+
+    tp = int(((pb == 1) & (yb == 1)).sum())
+    fp = int(((pb == 1) & (yb == 0)).sum())
+    fn = int(((pb == 0) & (yb == 1)).sum())
+    tn = int(((pb == 0) & (yb == 0)).sum())
+
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2.0 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    return float(prec), float(rec), float(f1), float(fpr)
+
+
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
     m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
@@ -848,6 +864,7 @@ def main() -> None:
         extras = ap_auc(probs, y_true)
         apv = float(extras.get("ap", float("nan")))
         auc = float(extras.get("auc", float("nan")))
+        p_fixed, r_fixed, f1_fixed, fpr_fixed = prf_fpr_at_threshold(y_true, probs, cfg.fixed_thr)
 
         score = float(f1) if cfg.monitor == "f1" else float(apv)
         lr_now = float(opt.param_groups[0]["lr"])
@@ -857,7 +874,8 @@ def main() -> None:
 
         print(
             f"[val] ep={ep:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"F1={f1:.3f} P={prec:.3f} R={rec:.3f} FPR={fpr:.3f} thr={thr:.2f} "
+            f"F1={f1:.3f} (F1@{cfg.fixed_thr:.2f}={f1_fixed:.3f}) "
+            f"P={prec:.3f} R={rec:.3f} FPR={fpr:.3f} thr={thr:.2f} "
             f"AP={apv:.3f} AUC={auc:.3f} lr={lr_now:.5g}"
         )
 
@@ -870,6 +888,11 @@ def main() -> None:
             "val_recall": float(rec),
             "val_fpr": float(fpr),
             "val_thr": float(thr),
+            "val_f1_fixed": float(f1_fixed),
+            "val_p_fixed": float(p_fixed),
+            "val_r_fixed": float(r_fixed),
+            "val_fpr_fixed": float(fpr_fixed),
+            "val_thr_fixed": float(cfg.fixed_thr),
             "ap": float(apv),
             "auc": float(auc),
             "lr": float(lr_now),
