@@ -1,0 +1,15 @@
+{
+  "commit": "58813e8",
+  "le2i_eval": {
+    "total": 3076,
+    "pos": 543,
+    "neg": 2533,
+    "fps_mean": 24.66690278332317
+  },
+  "cauc_eval": {
+    "total": 1314,
+    "pos": 533,
+    "neg": 781,
+    "fps_mean": 23.0
+  }
+}

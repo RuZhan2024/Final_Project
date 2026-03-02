@@ -331,13 +331,13 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     device = _pick_device(torch)
 
     try:
-        from core.ckpt import load_ckpt
-        from core.models import build_model
-        from core.features import FeatCfg
+        from fall_detection.core.ckpt import load_ckpt
+        from fall_detection.core.models import build_model
+        from fall_detection.core.features import FeatCfg
     except Exception as e:
         raise RuntimeError(
-            "Missing ML runtime package 'core'. "
-            "Make sure you run the server from the repo root (so 'core/' is on PYTHONPATH), "
+            "Missing ML runtime package 'fall_detection'. "
+            "Make sure the package is installed (e.g. pip install -e .), "
             "or install the ML package into this environment."
         ) from e
 
@@ -415,7 +415,7 @@ def predict_spec(
     # resamples/pads to target_T). Our feature builders operate on that window.
     import numpy as np
 
-    from core.features import build_tcn_input, build_canonical_input
+    from fall_detection.core.features import build_tcn_input, build_canonical_input
 
     j = np.asarray(joints_xy, dtype=np.float32)
     c = np.asarray(conf, dtype=np.float32) if conf is not None else None
@@ -487,7 +487,7 @@ def predict_spec(
     mu, sigma = float(p_det), 0.0
     if use_mc:
         try:
-            from core.uncertainty import mc_predict_mu_sigma
+            from fall_detection.core.uncertainty import mc_predict_mu_sigma
 
             mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
             mu = float(mu_t.detach().cpu().view(-1)[0].item())

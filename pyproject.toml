@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fall-detection"
+version = "0.1.0"
+description = "Fall detection pipeline (staged refactor scaffold)"
+requires-python = ">=3.10"
+
+[project.scripts]
+fd-train-tcn = "fall_detection.training.train_tcn:main"
+fd-train-gcn = "fall_detection.training.train_gcn:main"
+fd-make-windows = "fall_detection.data.windowing.make_windows_impl:main"
+fd-make-unlabeled-windows = "fall_detection.data.windowing.make_unlabeled_windows_impl:main"
+fd-make-fa-windows = "fall_detection.data.windowing.make_fa_windows_impl:main"
+fd-fit-ops = "fall_detection.evaluation.fit_ops:main"
+fd-eval-metrics = "fall_detection.evaluation.metrics_eval:main"
+fd-preprocess-pose = "fall_detection.pose.preprocess_pose_npz:main"
+fd-extract-pose-videos = "fall_detection.pose.extract_2d_videos:main"
+fd-extract-pose-images = "fall_detection.pose.extract_2d_images:main"
+fd-make-splits = "fall_detection.data.splits.make_splits:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fall_detection*"]

@@ -1,0 +1,1 @@
+"""Pose namespace scaffold."""

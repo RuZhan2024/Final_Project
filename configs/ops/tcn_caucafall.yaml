@@ -2,41 +2,41 @@ ops:
   OP1:
     tau_high: 0.949999988079071
     tau_low: 0.7409999966621399
-    precision: 1.0
-    recall: 1.0
-    f1: 1.0
+    precision: null
+    recall: 0.0
+    f1: null
     fa24h: 0.0
-    mean_delay_s: 2.6086955070495605
-    median_delay_s: 2.6086955070495605
+    mean_delay_s: null
+    median_delay_s: null
     n_gt_events: 5
-    n_alert_events: 5
-    n_true_alerts: 5
+    n_alert_events: 0
+    n_true_alerts: 0
     n_false_alerts: 0
   OP2:
     tau_high: 0.949999988079071
     tau_low: 0.7409999966621399
-    precision: 1.0
-    recall: 1.0
-    f1: 1.0
+    precision: null
+    recall: 0.0
+    f1: null
     fa24h: 0.0
-    mean_delay_s: 2.6086955070495605
-    median_delay_s: 2.6086955070495605
+    mean_delay_s: null
+    median_delay_s: null
     n_gt_events: 5
-    n_alert_events: 5
-    n_true_alerts: 5
+    n_alert_events: 0
+    n_true_alerts: 0
     n_false_alerts: 0
   OP3:
     tau_high: 0.949999988079071
     tau_low: 0.7409999966621399
-    precision: 1.0
-    recall: 1.0
-    f1: 1.0
+    precision: null
+    recall: 0.0
+    f1: null
     fa24h: 0.0
-    mean_delay_s: 2.6086955070495605
-    median_delay_s: 2.6086955070495605
+    mean_delay_s: null
+    median_delay_s: null
     n_gt_events: 5
-    n_alert_events: 5
-    n_true_alerts: 5
+    n_alert_events: 0
+    n_true_alerts: 0
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
@@ -49,25 +49,25 @@ ops_meta:
     OP2: 94
     OP3: 94
 alert_cfg:
-  ema_alpha: 0.5
+  ema_alpha: 0.2
   k: 2
   n: 3
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: false
+  confirm: true
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
   confirm_require_low: true
 alert_base:
-  ema_alpha: 0.5
+  ema_alpha: 0.2
   k: 2
   n: 3
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: false
+  confirm: true
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
@@ -88,12 +88,12 @@ sweep_cfg:
 sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.sweep.json"
 calibration:
   method: "temperature"
-  T: 1.5897101163864136
+  T: 0.9199805855751038
   n_val: 144
-  nll_before: 0.07578566670417786
-  nll_after: 0.06457796692848206
-  ece_before: 0.025337964668099375
-  ece_after: 0.030393565117164033
+  nll_before: 0.05672435089945793
+  nll_after: 0.056369900703430176
+  ece_before: 0.031402931933876575
+  ece_after: 0.02984852299646768
 model:
   arch: "tcn"
   ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/caucafall_tcn_W48S12/best.pt"
@@ -102,8 +102,8 @@ model:
     dropout: 0.3
     num_blocks: 4
     kernel: 3
-    in_ch: 264
-    num_joints: 33
+    in_ch: 136
+    num_joints: 17
   feat_cfg:
     center: "pelvis"
     use_motion: true
