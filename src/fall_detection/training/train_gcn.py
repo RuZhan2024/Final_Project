@@ -412,6 +412,8 @@ class TrainCfg:
     lr_plateau_patience: int = 3
     lr_plateau_factor: float = 0.5
     lr_plateau_min_lr: float = 1e-6
+    scheduler_metric: str = "val_loss"
+    scheduler_ema_beta: float = 0.0
 
     weight_decay: float = 1e-4
     label_smoothing: float = 0.0
@@ -524,6 +526,8 @@ def main() -> None:
     ap.add_argument("--lr_plateau_patience", type=int, default=3)
     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+    ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
+    ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
 
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--label_smoothing", type=float, default=0.0)
@@ -744,9 +748,10 @@ def main() -> None:
             criterion = nn.BCEWithLogitsLoss()
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         opt,
-        mode="max",
+        mode=sched_mode,
         patience=int(cfg.lr_plateau_patience),
         factor=float(cfg.lr_plateau_factor),
         min_lr=float(cfg.lr_plateau_min_lr),
@@ -777,6 +782,7 @@ def main() -> None:
             f.write(json.dumps(row) + "\n")
 
     no_improve = 0
+    scheduler_metric_ema: Optional[float] = None
 
     for ep in range(1, cfg.epochs + 1):
         model.train()
@@ -903,7 +909,24 @@ def main() -> None:
         }
         log_row(row)
 
-        scheduler.step(score)
+        sched_metric_raw = float(
+            val_loss if str(cfg.scheduler_metric) == "val_loss"
+            else (apv if str(cfg.scheduler_metric) == "val_ap" else f1)
+        )
+        beta = float(cfg.scheduler_ema_beta)
+        if beta > 0.0:
+            scheduler_metric_ema = (
+                sched_metric_raw if scheduler_metric_ema is None
+                else (beta * scheduler_metric_ema + (1.0 - beta) * sched_metric_raw)
+            )
+            sched_metric_step = float(scheduler_metric_ema)
+        else:
+            sched_metric_step = sched_metric_raw
+        if np.isfinite(sched_metric_step):
+            scheduler.step(sched_metric_step)
+        else:
+            fallback_metric = float(val_loss if sched_mode == "min" else f1)
+            scheduler.step(fallback_metric)
 
         improved = score > best_score + 1e-12
         if improved:
