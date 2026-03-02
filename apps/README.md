@@ -42,7 +42,7 @@ Open `http://localhost:3000`.
 Health:
 
 ```bash
-curl -s http://localhost:8000/health
+curl -s http://localhost:8000/api/health
 ```
 
 Deploy specs:
