@@ -534,6 +534,7 @@ help:
 	@echo "Single-command auto pipelines (adapter enforced):"
 	@echo "  make pipeline-auto-tcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
 	@echo "  make pipeline-auto-gcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
+	@echo "  knob: AUTO_DO_EXTRACT=0|1 (default 0; set 1 to force raw extraction)"
 	@echo "  make pipeline-all | pipeline-all-gcn"
 	@echo ""
 	@echo "Audit gates:"
@@ -1107,9 +1108,10 @@ pipeline-all-gcn-noextract: $(addsuffix -noextract,$(addprefix pipeline-gcn-,$(D
 # Enforces adapter-mode window generation for sampling parity.
 # ============================================================
 .PHONY: $(addprefix pipeline-auto-tcn-,$(DATASETS)) $(addprefix pipeline-auto-gcn-,$(DATASETS))
+AUTO_DO_EXTRACT ?= 0
 
 $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
-	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@$(MAKE) -B DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-tcn-$*
 	@$(MAKE) ADAPTER_USE=1 fit-ops-$*
@@ -1119,7 +1121,7 @@ $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
 	@$(MAKE) ADAPTER_USE=1 plot-$*
 
 $(addprefix pipeline-auto-gcn-,$(DATASETS)): pipeline-auto-gcn-%:
-	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@$(MAKE) -B DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-gcn-$*
 	@$(MAKE) ADAPTER_USE=1 fit-ops-gcn-$*
