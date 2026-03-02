@@ -106,7 +106,7 @@ def _run_command(cmd: str, cwd: Path, log_dir: Path) -> Dict[str, Any]:
         "started_utc": ts,
         "duration_s": round(ended - started, 3),
         "returncode": int(p.returncode),
-        "log": str(log_file),
+        "log": os.path.relpath(str(log_file), start=str(cwd)),
     }
 
 
@@ -119,12 +119,23 @@ def build_manifest(
     metric_globs: List[str],
     run_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    def _rel_repo_path(p: Path) -> str:
+        rp = p.resolve()
+        try:
+            return os.path.relpath(str(rp), start=str(repo_root.resolve()))
+        except Exception:
+            return str(rp)
+
     metric_files: List[str] = []
     for pat in metric_globs:
         metric_files.extend(sorted(glob.glob(str(repo_root / pat))))
-    metric_rows = [_extract_metric_row(Path(p), op) for p in metric_files]
+    metric_rows = []
+    for p in metric_files:
+        row = _extract_metric_row(Path(p), op)
+        row["path"] = _rel_repo_path(Path(p))
+        metric_rows.append(row)
 
-    ckpt_info: Dict[str, Any] = {"path": str(checkpoint), "exists": checkpoint.is_file(), "sha256": None}
+    ckpt_info: Dict[str, Any] = {"path": _rel_repo_path(checkpoint), "exists": checkpoint.is_file(), "sha256": None}
     if checkpoint.is_file():
         ckpt_info["sha256"] = _sha256(checkpoint)
 
@@ -206,4 +217,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
