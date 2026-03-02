@@ -53,6 +53,37 @@ def _smooth_1d(x: np.ndarray, how: str) -> float:
     return float(np.median(x))
 
 
+def _tail_finite_median(x: np.ndarray, sl: slice, *, default: float) -> float:
+    """Median over finite tail values with an explicit fallback."""
+    xx = np.asarray(x, dtype=np.float32).reshape(-1)
+    tail = xx[sl]
+    tail = tail[np.isfinite(tail)]
+    if tail.size == 0:
+        return float(default)
+    return float(np.median(tail))
+
+
+def _rowwise_nanmedian_or_default(x: np.ndarray, *, default: float) -> np.ndarray:
+    """Row-wise nanmedian without warnings; all-NaN rows fall back to `default`."""
+    arr = np.asarray(x, dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError("expected 2D array for row-wise nanmedian")
+    out = np.full((arr.shape[0],), float(default), dtype=np.float32)
+    finite = np.isfinite(arr)
+    valid = finite.any(axis=1)
+    if valid.any():
+        out[valid] = np.nanmedian(arr[valid], axis=1).astype(np.float32)
+    return out
+
+
+def _finite_or_default(x: float, *, default: float) -> float:
+    """Return finite scalar x, otherwise default."""
+    xv = float(x)
+    if not np.isfinite(xv):
+        return float(default)
+    return xv
+
+
 def _bbox_hw(j: np.ndarray, m: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Per-frame bbox height/width from visible joints.
 
@@ -109,12 +140,13 @@ def _mean_of(j: np.ndarray, m: np.ndarray, ids: Iterable[int]) -> np.ndarray:
         axis=1,
     ).astype(bool)
     Mm = Mm & np.isfinite(P).all(axis=2)
-    P = np.where(Mm[..., None], P, np.nan)
 
     out = np.full((T, 2), np.nan, dtype=np.float32)
-    valid = Mm.any(axis=1)
+    cnt = Mm.sum(axis=1).astype(np.float32)  # [T]
+    valid = cnt > 0
     if valid.any():
-        out[valid] = np.nanmean(P[valid], axis=1).astype(np.float32)
+        summed = np.where(Mm[..., None], P, 0.0).sum(axis=1)  # [T,2]
+        out[valid] = (summed[valid] / cnt[valid, None]).astype(np.float32)
     return out
 
 
@@ -134,7 +166,8 @@ def lying_score_window(
 
     T, V, _ = j.shape
     if not m.any():
-        return 0.0
+        # No observable joints in this window: signal is unavailable.
+        return float("nan")
     n_tail = _tail_n(T, fps, tail_s)
     sl = slice(T - n_tail, T)
 
@@ -162,7 +195,7 @@ def lying_score_window(
     score = 0.6 * torso_h + 0.4 * bbox_h
     s = _smooth_1d(score[sl], smooth)
     if not np.isfinite(s):
-        return 0.0
+        return float("nan")
     return float(np.clip(s, 0.0, 1.0))
 
 
@@ -199,7 +232,7 @@ def motion_score_window(
         hip = _mean_of(j, m, [11, 12])
 
     torso_len = np.sqrt(np.sum((sh - hip) ** 2, axis=1)) + 1e-6
-    torso_len = np.nanmedian(torso_len[sl])
+    torso_len = _tail_finite_median(torso_len, sl, default=1.0)
     if not np.isfinite(torso_len) or torso_len <= 0:
         torso_len = 1.0
 
@@ -212,10 +245,13 @@ def motion_score_window(
         pts.append(j[:, kk, :])
         valid.append(m[:, kk])
     if not pts:
-        return float("inf")
+        # No stable joints detected: treat as no detectable motion.
+        return 0.0
 
     P = np.stack(pts, axis=1)  # [T,K,2]
     Vm = np.stack(valid, axis=1).astype(bool)  # [T,K]
+    P_finite = np.isfinite(P).all(axis=2)
+    Vm = Vm & P_finite
 
     # per-frame speed for each joint (masked)
     d = np.zeros_like(P, dtype=np.float32)
@@ -226,14 +262,13 @@ def motion_score_window(
     Vm_pair[1:] = Vm[1:] & Vm[:-1]
     speed = np.where(Vm_pair, speed, np.nan)
 
-    # aggregate per frame, then tail smoothing (safe for all-missing frames)
-    frame_speed = np.full((T,), np.nan, dtype=np.float32)
-    valid_f = Vm.any(axis=1)
-    if valid_f.any():
-        frame_speed[valid_f] = np.nanmedian(speed[valid_f], axis=1).astype(np.float32)
+    # Aggregate per frame safely:
+    # frames with no valid joints default to 0.0 motion instead of NaN veto.
+    frame_speed = _rowwise_nanmedian_or_default(speed, default=0.0)
+    frame_speed = np.nan_to_num(frame_speed, nan=0.0, posinf=0.0, neginf=0.0)
     ms = _smooth_1d(frame_speed[sl], smooth)
     if not np.isfinite(ms):
-        return float("inf")
+        return 0.0
 
     # normalize and scale by fps to get per-second-ish
     ms = float(ms * fps / torso_len)
@@ -251,4 +286,8 @@ def confirm_scores_window(
     """Compute (lying_score, motion_score) for a single window."""
     ls = lying_score_window(joints_xy, mask, fps, tail_s=tail_s, smooth=smooth)
     ms = motion_score_window(joints_xy, mask, fps, tail_s=tail_s, smooth=smooth)
+    # Preserve "unavailable" signals as NaN so alert logic can ignore them
+    # instead of treating them as hard vetoes.
+    ls = _finite_or_default(ls, default=float("nan"))
+    ms = _finite_or_default(ms, default=float("nan"))
     return ls, ms

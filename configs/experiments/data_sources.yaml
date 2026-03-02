@@ -1,0 +1,17 @@
+schema_version: data_sources.v1
+data_root: ../../data
+datasets:
+  le2i:
+    raw_dir: LE2i
+    processed_dir: le2i
+    splits:
+      train: []
+      val: []
+      test: []
+  caucafall:
+    raw_dir: CAUCAFall
+    processed_dir: caucafall
+    splits:
+      train: []
+      val: []
+      test: []

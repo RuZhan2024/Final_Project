@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import random
+from pathlib import Path
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -117,6 +118,49 @@ def list_npz_files(root: str) -> List[str]:
     files = glob.glob(pat, recursive=True)
     files.sort()
     return files
+
+
+def _validate_hard_neg_paths(
+    paths: List[str],
+    *,
+    train_dir: str,
+    allow_nontrain: bool,
+) -> None:
+    """Guard against val/test leakage through hard-negative lists."""
+    if allow_nontrain or not paths:
+        return
+
+    train_root = Path(train_dir).expanduser().resolve()
+    bad_valtest: List[str] = []
+    bad_unknown: List[str] = []
+
+    for raw in paths:
+        rp = Path(raw).expanduser().resolve()
+        parts_l = {p.lower() for p in rp.parts}
+        if "val" in parts_l or "test" in parts_l:
+            bad_valtest.append(str(rp))
+            continue
+        in_train_root = False
+        try:
+            rp.relative_to(train_root)
+            in_train_root = True
+        except ValueError:
+            in_train_root = False
+        has_train_component = "train" in parts_l
+        if not (in_train_root or has_train_component):
+            bad_unknown.append(str(rp))
+
+    if bad_valtest or bad_unknown:
+        lines = [
+            "hard_neg_list safety guard rejected candidate paths.",
+            "By default, hard negatives must come from train split paths.",
+            "Use --allow_hard_neg_nontrain 1 only if you explicitly accept leakage risk.",
+        ]
+        if bad_valtest:
+            lines.append(f"val/test-like paths (showing up to 5): {bad_valtest[:5]}")
+        if bad_unknown:
+            lines.append(f"non-train paths (showing up to 5): {bad_unknown[:5]}")
+        raise ValueError(" ".join(lines))
 
 
 class WindowDatasetGCN(Dataset):
@@ -203,13 +247,33 @@ class WindowDatasetGCN(Dataset):
         self.labels01 = np.asarray(self.labels01, dtype=np.int64)
         base = int(seed) + (11 if split == "train" else 22)
         self.rng = np.random.default_rng(base)
+        self._missing_warned: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.files)
 
+    def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        n = len(self.files)
+        if n <= 0:
+            raise RuntimeError("[err] empty dataset")
+        max_probe = min(n, 32)
+        for off in range(max_probe):
+            j = (int(i) + off) % n
+            fp = self.files[j]
+            try:
+                return read_window_npz(fp, fps_default=self.fps_default)
+            except FileNotFoundError:
+                if fp not in self._missing_warned:
+                    self._missing_warned.add(fp)
+                    print(f"[warn] missing window file during training; skipping: {fp}")
+                continue
+        raise FileNotFoundError(
+            f"[err] unable to read any nearby window files around index={i} "
+            f"(probed={max_probe}). Check for concurrent cleanup under: {self.root}"
+        )
+
     def __getitem__(self, i: int):
-        fp = self.files[i]
-        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
+        joints, motion, conf, mask, fps, meta = self._read_window_with_fallback(i)
 
         X, mask_used = build_canonical_input(
             joints_xy=joints,
@@ -320,6 +384,7 @@ class TrainCfg:
     resume: Optional[str] = None
     hard_neg_list: Optional[str] = None
     hard_neg_mult: int = 1
+    allow_hard_neg_nontrain: int = 0
 
     epochs: int = 200
     min_epochs: int = 0
@@ -356,7 +421,13 @@ class TrainCfg:
     temporal_kernel: int = 9
     base_channels: int = 48
     two_stream: int = 1
-    fuse: str = "concat"        # "concat" | "sum"
+    fuse: str = "concat"        # "concat" | "sum" | "joint_only" | "motion_only"
+    use_adaptive_adj: int = 0
+    adaptive_adj_embed: int = 16
+    use_ctr_gcn_lite: int = 0
+    ctr_rank: int = 4
+    stream_drop_joint_p: float = 0.0
+    stream_drop_motion_p: float = 0.0
 
     # --- feature knobs (mapped into core.features.FeatCfg) ---
     center: str = "pelvis"      # keep for parity with core.features.FeatCfg
@@ -420,6 +491,12 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--hard_neg_list", default=None)
     ap.add_argument("--hard_neg_mult", type=int, default=1)
+    ap.add_argument(
+        "--allow_hard_neg_nontrain",
+        type=int,
+        default=0,
+        help="Set to 1 to disable hard-negative split safety guard (risk: leakage from val/test).",
+    )
 
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--min_epochs", type=int, default=0)
@@ -460,7 +537,13 @@ def main() -> None:
     ap.add_argument("--base_channels", type=int, default=48)
 
     ap.add_argument("--two_stream", type=int, default=1)
-    ap.add_argument("--fuse", type=str, default="concat", choices=["concat", "sum"])
+    ap.add_argument("--fuse", type=str, default="concat", choices=["concat", "sum", "joint_only", "motion_only"])
+    ap.add_argument("--use_adaptive_adj", type=int, default=0)
+    ap.add_argument("--adaptive_adj_embed", type=int, default=16)
+    ap.add_argument("--use_ctr_gcn_lite", type=int, default=0)
+    ap.add_argument("--ctr_rank", type=int, default=4)
+    ap.add_argument("--stream_drop_joint_p", type=float, default=0.0)
+    ap.add_argument("--stream_drop_motion_p", type=float, default=0.0)
 
     ap.add_argument("--use_conf", type=int, default=1)
     ap.add_argument("--use_motion", type=int, default=1)
@@ -504,6 +587,11 @@ def main() -> None:
         try:
             with open(cfg.hard_neg_list, "r", encoding="utf-8", errors="ignore") as f:
                 extra_neg_files = [ln.strip() for ln in f if ln.strip()]
+            _validate_hard_neg_paths(
+                extra_neg_files,
+                train_dir=cfg.train_dir,
+                allow_nontrain=bool(int(cfg.allow_hard_neg_nontrain)),
+            )
             print(f"[hard_neg] loaded {len(extra_neg_files)} paths from: {cfg.hard_neg_list}")
         except Exception as e:
             print(f"[warn] cannot read hard_neg_list={cfg.hard_neg_list}: {type(e).__name__}: {e}")
@@ -567,6 +655,12 @@ def main() -> None:
         "use_se": bool(use_se),
         "two_stream": bool(cfg.two_stream),
         "fuse": str(cfg.fuse),
+        "use_adaptive_adj": bool(int(cfg.use_adaptive_adj)),
+        "adaptive_adj_embed": int(cfg.adaptive_adj_embed),
+        "use_ctr_gcn_lite": bool(int(cfg.use_ctr_gcn_lite)),
+        "ctr_rank": int(cfg.ctr_rank),
+        "stream_drop_joint_p": float(cfg.stream_drop_joint_p),
+        "stream_drop_motion_p": float(cfg.stream_drop_motion_p),
     }
     if bool(cfg.two_stream):
         model_cfg_save["in_feats_j"] = int(in_feats_j)  # type: ignore[arg-type]

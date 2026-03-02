@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -8,8 +9,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 from .. import core
-from ..core import _detect_variants, _ensure_system_settings_schema, _table_exists
+from ..core import MonitorPredictPayload, _detect_variants, _ensure_system_settings_schema, _table_exists
 from ..db import get_conn
 from ..deploy_runtime import (
     fuse_hybrid as _fuse_hybrid,
@@ -20,6 +27,7 @@ from ..online_alert import OnlineAlertTracker
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 
@@ -55,7 +63,7 @@ def _resample_pose_window(
     for ti, xyi, ci in zip(raw_t_ms, raw_xy, raw_conf):
         try:
             tf = float(ti)
-        except Exception:
+        except (TypeError, ValueError):
             continue
         if last_t is not None and tf <= last_t:
             continue
@@ -103,7 +111,7 @@ def _resample_pose_window(
                 try:
                     x0, y0 = float(p0[0]), float(p0[1])
                     x1, y1 = float(p1[0]), float(p1[1])
-                except Exception:
+                except (TypeError, ValueError):
                     x0 = y0 = x1 = y1 = 0.0
                 out.append([lerp(x0, x1, alpha), lerp(y0, y1, alpha)])
             if len(frame0) > n:
@@ -116,11 +124,11 @@ def _resample_pose_window(
         for k in range(n):
             try:
                 v0 = float(frame0[k])
-            except Exception:
+            except (TypeError, ValueError):
                 v0 = 0.0
             try:
                 v1 = float(frame1[k])
-            except Exception:
+            except (TypeError, ValueError):
                 v1 = v0
             out.append(lerp(v0, v1, alpha))
         if len(frame0) > n:
@@ -166,41 +174,45 @@ def _resample_pose_window(
 
 
 @router.post("/api/monitor/reset_session")
+@router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
     core._SESSION_STATE.pop(session_id, None)
     return {"ok": True, "session_id": session_id}
 
 
 @router.post("/api/monitor/predict_window")
-def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+@router.post("/api/v1/monitor/predict_window")
+def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one window from the live monitor UI."""
+    payload_d = payload.model_dump()
 
     t0 = time.time()
 
     # -------------
     # Inputs
     # -------------
-    session_id = str(payload.get("session_id") or "default")
+    session_id = str(payload_d.get("session_id") or "default")
 
-    mode = str(payload.get("mode") or "hybrid").lower().strip()
+    mode = str(payload_d.get("mode") or "hybrid").lower().strip()
     if mode in {"hyb", "hybrid", "dual"}:
         mode = "dual"
     elif mode not in {"tcn", "gcn"}:
         mode = "dual"
+    requested_mode = mode
 
-    dataset_code = str(payload.get("dataset_code") or payload.get("dataset") or "").lower().strip()
-    op_code = str(payload.get("op_code") or payload.get("op") or "").upper().strip()
+    dataset_code = str(payload_d.get("dataset_code") or payload_d.get("dataset") or "").lower().strip()
+    op_code = str(payload_d.get("op_code") or payload_d.get("op") or "").upper().strip()
 
-    use_mc = payload.get("use_mc")
-    mc_M = payload.get("mc_M")
+    use_mc = payload_d.get("use_mc")
+    mc_M = payload_d.get("mc_M")
 
-    persist = bool(payload.get("persist", False))
+    persist = bool(payload_d.get("persist", False))
 
-    target_T = int(payload.get("target_T") or 48)
-    raw_xy = payload.get("raw_xy")
-    raw_conf = payload.get("raw_conf")
-    raw_t_ms = payload.get("raw_t_ms")
-    window_end_t_ms = payload.get("window_end_t_ms", None)
+    target_T = int(payload_d.get("target_T") or 48)
+    raw_xy = payload_d.get("raw_xy")
+    raw_conf = payload_d.get("raw_conf")
+    raw_t_ms = payload_d.get("raw_t_ms")
+    window_end_t_ms = payload_d.get("window_end_t_ms", None)
 
     xy: List[Any] = []
     conf: List[Any] = []
@@ -209,7 +221,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     # -------------
     # Defaults from DB (if available)
     # -------------
-    resident_id = int(payload.get("resident_id") or 1)
+    resident_id = int(payload_d.get("resident_id") or 1)
     active_model_code = "HYBRID" if mode == "dual" else mode.upper()
 
     try:
@@ -256,8 +268,15 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
                         r = cur.fetchone() or {}
                         if isinstance(r, dict) and r.get("code"):
                             op_code = str(r.get("code") or "").upper()
-    except Exception:
-        pass
+    except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
+            resident_id,
+            session_id,
+            mode,
+            dataset_code or "unset",
+            exc,
+        )
 
     if not dataset_code:
         dataset_code = "muvim"
@@ -273,7 +292,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         "urfd": 30,
         "caucafall": 23,
         "muvim": 30,
-    }.get(dataset_code, int(payload.get("target_fps") or payload.get("fps") or 30))
+    }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 30))
 
     if raw_xy is not None and raw_t_ms is not None:
         xy, conf, _, _, cap_fps_est = _resample_pose_window(
@@ -286,8 +305,8 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         )
 
     if not xy:
-        xy = payload.get("xy") or []
-        conf = payload.get("conf") or []
+        xy = payload_d.get("xy") or []
+        conf = payload_d.get("conf") or []
 
     if not xy:
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
@@ -299,7 +318,7 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             _now_ms = float(raw_t_ms[-1])
         else:
             _now_ms = time.time() * 1000.0
-    except Exception:
+    except (TypeError, ValueError):
         _now_ms = time.time() * 1000.0
     _t_s = float(_now_ms) / 1000.0
 
@@ -314,13 +333,37 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     # -------------
     specs = _get_deploy_specs()
 
+    def resolve_spec_key(arch: str, preferred: str) -> str:
+        if preferred in specs:
+            return preferred
+        ds_prefix = f"{dataset_code}_"
+        suffix = f"_{arch}"
+        candidates = [k for k in specs.keys() if k.startswith(ds_prefix) and k.endswith(suffix)]
+        if not candidates:
+            return preferred
+        candidates.sort(key=lambda x: (len(x), x))
+        return candidates[0]
+
     def spec_key_for(arch: str) -> str:
         return f"{dataset_code}_{arch}".lower()
 
-    tcn_key = str(payload.get("model_tcn") or spec_key_for("tcn")).lower()
-    gcn_key = str(payload.get("model_gcn") or spec_key_for("gcn")).lower()
-    if tcn_key not in specs or gcn_key not in specs:
-        raise HTTPException(status_code=404, detail=f"No deploy specs found for dataset '{dataset_code}'.")
+    tcn_key = resolve_spec_key("tcn", str(payload_d.get("model_tcn") or spec_key_for("tcn")).lower())
+    gcn_key = resolve_spec_key("gcn", str(payload_d.get("model_gcn") or spec_key_for("gcn")).lower())
+    has_tcn = tcn_key in specs
+    has_gcn = gcn_key in specs
+    if mode == "tcn":
+        if not has_tcn:
+            raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
+    elif mode == "gcn":
+        if not has_gcn:
+            raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
+    else:
+        if not has_tcn and not has_gcn:
+            raise HTTPException(status_code=404, detail=f"No deploy specs found for dataset '{dataset_code}'.")
+        if has_tcn and not has_gcn:
+            mode = "tcn"
+        elif has_gcn and not has_tcn:
+            mode = "gcn"
 
     models_out: Dict[str, Any] = {}
     tri_tcn = None
@@ -460,8 +503,15 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
                         )
                         saved_event_id = cur.lastrowid
                     conn.commit()
-        except Exception:
-            pass
+        except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
+                resident_id,
+                session_id,
+                mode,
+                dataset_code,
+                exc,
+            )
 
     latency_ms = int((time.time() - t0) * 1000)
     core.LAST_PRED_LATENCY_MS = latency_ms
@@ -478,6 +528,8 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         "target_fps": expected_fps,
         "target_T": target_T,
         "dataset_code": dataset_code,
+        "requested_mode": requested_mode,
+        "effective_mode": mode,
         "op_code": op_code,
         "use_mc": bool(use_mc),
         "event_id": saved_event_id,

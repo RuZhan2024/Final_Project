@@ -4,6 +4,12 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 from ..core import _derive_ops_params_from_yaml, _detect_variants, _ensure_system_settings_schema, _table_exists
 from ..db import get_conn
 
@@ -11,6 +17,7 @@ router = APIRouter()
 
 
 @router.get("/api/operating_points")
+@router.get("/api/v1/operating_points")
 def operating_points(
     model_code: str = Query(..., description="TCN | GCN | HYBRID"),
     dataset_code: str = Query("muvim", description="Dataset code (optional, for YAML fallback)"),
@@ -116,7 +123,7 @@ def operating_points(
                 }
     except HTTPException:
         raise
-    except Exception:
+    except (MySQLError, RuntimeError, TypeError, ValueError):
         # YAML fallback
         ops = []
         for oc in ["OP-1", "OP-2", "OP-3"]:

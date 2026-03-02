@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import random
+from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -187,6 +188,49 @@ def list_npz_files(root: str) -> List[str]:
     return files
 
 
+def _validate_hard_neg_paths(
+    paths: List[str],
+    *,
+    train_dir: str,
+    allow_nontrain: bool,
+) -> None:
+    """Guard against val/test leakage through hard-negative lists."""
+    if allow_nontrain or not paths:
+        return
+
+    train_root = Path(train_dir).expanduser().resolve()
+    bad_valtest: List[str] = []
+    bad_unknown: List[str] = []
+
+    for raw in paths:
+        rp = Path(raw).expanduser().resolve()
+        parts_l = {p.lower() for p in rp.parts}
+        if "val" in parts_l or "test" in parts_l:
+            bad_valtest.append(str(rp))
+            continue
+        in_train_root = False
+        try:
+            rp.relative_to(train_root)
+            in_train_root = True
+        except ValueError:
+            in_train_root = False
+        has_train_component = "train" in parts_l
+        if not (in_train_root or has_train_component):
+            bad_unknown.append(str(rp))
+
+    if bad_valtest or bad_unknown:
+        lines = [
+            "hard_neg_list safety guard rejected candidate paths.",
+            "By default, hard negatives must come from train split paths.",
+            "Use --allow_hard_neg_nontrain 1 only if you explicitly accept leakage risk.",
+        ]
+        if bad_valtest:
+            lines.append(f"val/test-like paths (showing up to 5): {bad_valtest[:5]}")
+        if bad_unknown:
+            lines.append(f"non-train paths (showing up to 5): {bad_unknown[:5]}")
+        raise ValueError(" ".join(lines))
+
+
 class WindowDatasetTCN(Dataset):
     def __init__(
         self,
@@ -201,6 +245,8 @@ class WindowDatasetTCN(Dataset):
         seed: int,
         extra_neg_files: Optional[List[str]] = None,
         extra_neg_mult: int = 1,
+        extra_neg_prefixes: Optional[List[str]] = None,
+        extra_neg_prefix_mult: int = 1,
     ) -> None:
         self.root = str(root)
         self.split = str(split)
@@ -235,8 +281,9 @@ class WindowDatasetTCN(Dataset):
         # extra hard negatives (treated as y=0 unless y==1, which is skipped)
         if extra_neg_files:
             mult = max(1, int(extra_neg_mult))
-            extra = list(extra_neg_files) * mult
-            for fp in extra:
+            prefix_mult = max(1, int(extra_neg_prefix_mult))
+            prefixes = [str(p).strip() for p in (extra_neg_prefixes or []) if str(p).strip()]
+            for fp in list(extra_neg_files):
                 fp = fp.strip()
                 if not fp:
                     continue
@@ -250,8 +297,14 @@ class WindowDatasetTCN(Dataset):
                 y = int(meta.y)
                 if y == 1:
                     continue
-                self.files.append(fp)
-                self.labels01.append(0)
+                rep = mult
+                if prefixes:
+                    bname = os.path.basename(fp)
+                    if any(bname.startswith(pref) for pref in prefixes):
+                        rep *= prefix_mult
+                for _ in range(rep):
+                    self.files.append(fp)
+                    self.labels01.append(0)
 
         if fail:
             print(f"[warn] skipped {fail} unreadable windows under: {self.root}")
@@ -268,13 +321,33 @@ class WindowDatasetTCN(Dataset):
         self.labels01 = np.asarray(self.labels01, dtype=np.int64)
         base = int(seed) + (11 if split == "train" else 22)
         self.rng = np.random.default_rng(base)
+        self._missing_warned: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.files)
 
+    def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        n = len(self.files)
+        if n <= 0:
+            raise RuntimeError("[err] empty dataset")
+        max_probe = min(n, 32)
+        for off in range(max_probe):
+            j = (int(i) + off) % n
+            fp = self.files[j]
+            try:
+                return read_window_npz(fp, fps_default=self.fps_default)
+            except FileNotFoundError:
+                if fp not in self._missing_warned:
+                    self._missing_warned.add(fp)
+                    print(f"[warn] missing window file during training; skipping: {fp}")
+                continue
+        raise FileNotFoundError(
+            f"[err] unable to read any nearby window files around index={i} "
+            f"(probed={max_probe}). Check for concurrent cleanup under: {self.root}"
+        )
+
     def __getitem__(self, i: int):
-        fp = self.files[i]
-        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
+        joints, motion, conf, mask, fps, meta = self._read_window_with_fallback(i)
 
         # Build [T,V,F] first; get mask_used after conf gating.
         Xg, mask_used = build_canonical_input(
@@ -311,6 +384,9 @@ class TrainCfg:
     resume: Optional[str] = None
     hard_neg_list: Optional[str] = None
     hard_neg_mult: int = 1
+    hard_neg_prefixes: str = ""
+    hard_neg_prefix_mult: int = 1
+    allow_hard_neg_nontrain: int = 0
 
     epochs: int = 200
     batch: int = 128
@@ -351,6 +427,8 @@ class TrainCfg:
     dropout: float = 0.30
     num_blocks: int = 4
     kernel: int = 3
+    use_tsm: int = 0
+    tsm_fold_div: int = 8
 
     # feature flags (must match fit/eval)
     center: str = "pelvis"
@@ -374,6 +452,24 @@ def main() -> None:
     ap.add_argument("--resume", default=None, help="Optional checkpoint to init weights from.")
     ap.add_argument("--hard_neg_list", default=None, help="Optional text file listing extra negative window NPZ paths.")
     ap.add_argument("--hard_neg_mult", type=int, default=1, help="Repeat hard negatives N times.")
+    ap.add_argument(
+        "--allow_hard_neg_nontrain",
+        type=int,
+        default=0,
+        help="Set to 1 to disable hard-negative split safety guard (risk: leakage from val/test).",
+    )
+    ap.add_argument(
+        "--hard_neg_prefixes",
+        type=str,
+        default="",
+        help="Optional comma-separated video filename prefixes to upweight among hard negatives.",
+    )
+    ap.add_argument(
+        "--hard_neg_prefix_mult",
+        type=int,
+        default=1,
+        help="Additional multiplier for hard negatives whose basename matches --hard_neg_prefixes.",
+    )
 
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--batch", type=int, default=128)
@@ -414,6 +510,8 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.30)
     ap.add_argument("--num_blocks", type=int, default=4)
     ap.add_argument("--kernel", type=int, default=3)
+    ap.add_argument("--use_tsm", type=int, default=0)
+    ap.add_argument("--tsm_fold_div", type=int, default=8)
 
     ap.add_argument("--center", choices=["pelvis", "none"], default="pelvis")
     ap.add_argument("--use_motion", type=int, default=1)
@@ -454,6 +552,8 @@ def main() -> None:
             cfg.dropout = float(model_cfg_d0.get("dropout", cfg.dropout))
             cfg.num_blocks = int(model_cfg_d0.get("num_blocks", model_cfg_d0.get("blocks", cfg.num_blocks)))
             cfg.kernel = int(model_cfg_d0.get("kernel", cfg.kernel))
+            cfg.use_tsm = 1 if bool(model_cfg_d0.get("use_tsm", cfg.use_tsm)) else 0
+            cfg.tsm_fold_div = int(model_cfg_d0.get("tsm_fold_div", cfg.tsm_fold_div))
 
         if isinstance(data_cfg0, dict) and "fps_default" in data_cfg0:
             cfg.fps_default = float(data_cfg0["fps_default"])
@@ -476,10 +576,22 @@ def main() -> None:
     )
 
     extra_neg_files: Optional[List[str]] = None
+    extra_neg_prefixes: List[str] = []
     if cfg.hard_neg_list:
         with open(cfg.hard_neg_list, "r", encoding="utf-8") as f:
             extra_neg_files = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+        _validate_hard_neg_paths(
+            extra_neg_files,
+            train_dir=cfg.train_dir,
+            allow_nontrain=bool(int(cfg.allow_hard_neg_nontrain)),
+        )
         print(f"[info] hard_neg_list: {cfg.hard_neg_list} (n={len(extra_neg_files)}) mult={cfg.hard_neg_mult}")
+        extra_neg_prefixes = [x.strip() for x in str(cfg.hard_neg_prefixes).split(",") if x.strip()]
+        if extra_neg_prefixes and int(cfg.hard_neg_prefix_mult) > 1:
+            print(
+                "[info] hard_neg_prefix boost: "
+                f"prefixes={extra_neg_prefixes} x{int(cfg.hard_neg_prefix_mult)}"
+            )
 
     train_ds = WindowDatasetTCN(
         cfg.train_dir,
@@ -492,6 +604,8 @@ def main() -> None:
         seed=cfg.seed,
         extra_neg_files=extra_neg_files,
         extra_neg_mult=cfg.hard_neg_mult,
+        extra_neg_prefixes=extra_neg_prefixes,
+        extra_neg_prefix_mult=cfg.hard_neg_prefix_mult,
     )
     val_ds = WindowDatasetTCN(
         cfg.val_dir,
@@ -516,7 +630,14 @@ def main() -> None:
         raise ValueError(f"Flattened C={C} not divisible by F={F}. Check feature layout / flatten.")
     V = C // F
 
-    model_cfg = TCNConfig(hidden=cfg.hidden, dropout=cfg.dropout, num_blocks=cfg.num_blocks, kernel=cfg.kernel)
+    model_cfg = TCNConfig(
+        hidden=cfg.hidden,
+        dropout=cfg.dropout,
+        num_blocks=cfg.num_blocks,
+        kernel=cfg.kernel,
+        use_tsm=bool(cfg.use_tsm),
+        tsm_fold_div=int(cfg.tsm_fold_div),
+    )
     model = build_model("tcn", model_cfg.to_dict(), in_ch=C).to(device)
 
     model_cfg_save = model_cfg.to_dict()

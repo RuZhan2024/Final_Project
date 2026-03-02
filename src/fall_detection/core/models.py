@@ -82,22 +82,65 @@ def p_fall_from_logits(logits: torch.Tensor) -> torch.Tensor:
 # TCN
 # ---------------------------
 
+class TemporalShift1D(nn.Module):
+    """Channel-wise temporal shift for [B,C,T] tensors with no extra parameters."""
+
+    def __init__(self, fold_div: int = 8):
+        super().__init__()
+        self.fold_div = max(2, int(fold_div))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B,C,T]
+        if x.ndim != 3:
+            return x
+        b, c, t = x.shape
+        fold = c // self.fold_div
+        if fold <= 0 or t <= 1:
+            return x
+        out = x.clone()
+        # shift first fold left (use previous time), second fold right (use next time)
+        out[:, :fold, :-1] = x[:, :fold, 1:]
+        out[:, :fold, -1] = 0.0
+        out[:, fold : 2 * fold, 1:] = x[:, fold : 2 * fold, :-1]
+        out[:, fold : 2 * fold, 0] = 0.0
+        return out
+
+
 class ResTCNBlock(nn.Module):
-    def __init__(self, ch: int, kernel_size: int = 3, dilation: int = 1, dropout: float = 0.30):
+    def __init__(
+        self,
+        ch: int,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        dropout: float = 0.30,
+        use_tsm: bool = False,
+        tsm_fold_div: int = 8,
+    ):
         super().__init__()
         padding = dilation * (kernel_size - 1) // 2
+        self.tsm = TemporalShift1D(fold_div=tsm_fold_div) if bool(use_tsm) else nn.Identity()
         self.conv = nn.Conv1d(ch, ch, kernel_size=kernel_size, padding=padding, dilation=dilation)
         self.bn = nn.BatchNorm1d(ch)
         self.act = nn.ReLU(inplace=True)
         self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.drop(self.act(self.bn(self.conv(x))))
+        y = self.tsm(x)
+        y = self.drop(self.act(self.bn(self.conv(y))))
         return x + y
 
 
 class TCN(nn.Module):
-    def __init__(self, in_ch: int, hidden: int = 128, dropout: float = 0.30, num_blocks: int = 4, kernel: int = 3):
+    def __init__(
+        self,
+        in_ch: int,
+        hidden: int = 128,
+        dropout: float = 0.30,
+        num_blocks: int = 4,
+        kernel: int = 3,
+        use_tsm: bool = False,
+        tsm_fold_div: int = 8,
+    ):
         super().__init__()
         self.conv_in = nn.Sequential(
             nn.Conv1d(in_ch, hidden, kernel_size=3, padding=1),
@@ -105,7 +148,19 @@ class TCN(nn.Module):
             nn.ReLU(inplace=True),
         )
         dilations = [2 ** i for i in range(max(1, int(num_blocks)))]
-        self.blocks = nn.ModuleList([ResTCNBlock(hidden, kernel_size=kernel, dilation=d, dropout=dropout) for d in dilations])
+        self.blocks = nn.ModuleList(
+            [
+                ResTCNBlock(
+                    hidden,
+                    kernel_size=kernel,
+                    dilation=d,
+                    dropout=dropout,
+                    use_tsm=bool(use_tsm),
+                    tsm_fold_div=int(tsm_fold_div),
+                )
+                for d in dilations
+            ]
+        )
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.head = nn.Linear(hidden, 1)
 
@@ -125,6 +180,8 @@ class TCNConfig:
     dropout: float = 0.30
     num_blocks: int = 4
     kernel: int = 3
+    use_tsm: bool = False
+    tsm_fold_div: int = 8
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -138,6 +195,8 @@ class TCNConfig:
             dropout=float(d.get("dropout", d.get("p", 0.30))),
             num_blocks=int(d.get("num_blocks", 4)),
             kernel=int(d.get("kernel", 3)),
+            use_tsm=bool(d.get("use_tsm", False)),
+            tsm_fold_div=int(d.get("tsm_fold_div", 8)),
         )
 
 
@@ -194,21 +253,74 @@ class SEBlock(nn.Module):
 
 
 class GCNLayer(nn.Module):
-    def __init__(self, in_feats: int, out_feats: int, dropout: float):
+    def __init__(
+        self,
+        in_feats: int,
+        out_feats: int,
+        dropout: float,
+        *,
+        num_joints: int,
+        use_adaptive_adj: bool = False,
+        adaptive_embed: int = 16,
+        use_ctr_gcn_lite: bool = False,
+        ctr_rank: int = 4,
+    ):
         super().__init__()
         self.lin = nn.Linear(in_feats, out_feats)
         self.ln = nn.LayerNorm(out_feats)
         self.act = nn.ReLU(inplace=True)
         self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
+        self.use_adaptive_adj = bool(use_adaptive_adj)
+        self.adaptive_embed = max(4, int(adaptive_embed))
+        self.use_ctr_gcn_lite = bool(use_ctr_gcn_lite)
+        self.ctr_rank = max(1, int(ctr_rank))
+        if self.use_adaptive_adj:
+            # 2s-AGCN style decomposition: A (fixed) + B (learnable) + C (data-dependent)
+            self.A_res = nn.Parameter(torch.zeros((int(num_joints), int(num_joints)), dtype=torch.float32))
+            self.theta = nn.Linear(in_feats, self.adaptive_embed, bias=False)
+            self.phi = nn.Linear(in_feats, self.adaptive_embed, bias=False)
+        else:
+            self.register_parameter("A_res", None)
+            self.theta = None
+            self.phi = None
+        if self.use_ctr_gcn_lite:
+            # Lightweight channel-wise topology refinement:
+            # per-channel adjacency is low-rank (C x V x r, C x r x V).
+            c = int(out_feats)
+            v = int(num_joints)
+            r = int(self.ctr_rank)
+            self.ctr_u = nn.Parameter(torch.zeros((c, v, r), dtype=torch.float32))
+            self.ctr_v = nn.Parameter(torch.zeros((c, r, v), dtype=torch.float32))
+            self.ctr_alpha = nn.Parameter(torch.zeros((c,), dtype=torch.float32))
+            nn.init.xavier_uniform_(self.ctr_u)
+            nn.init.xavier_uniform_(self.ctr_v)
+        else:
+            self.register_parameter("ctr_u", None)
+            self.register_parameter("ctr_v", None)
+            self.register_parameter("ctr_alpha", None)
 
     def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
         # x: [B,T,V,C]
         # x: [B,T,V,C], A_hat: [V,V]
+        A_use = A_hat
+        if self.use_adaptive_adj:
+            A_use = A_use + self.A_res
+            x_vc = x.mean(dim=(0, 1))  # [V,C]
+            theta = self.theta(x_vc)   # [V,d]
+            phi = self.phi(x_vc)       # [V,d]
+            scale = float(max(1, theta.shape[-1])) ** 0.5
+            C = torch.softmax((theta @ phi.transpose(0, 1)) / scale, dim=-1)
+            A_use = A_use + C
         # Use matmul instead of einsum for better backend stability (e.g., MPS).
         x = x.permute(0, 1, 3, 2)              # [B,T,C,V]
-        x = torch.matmul(x, A_hat.t())         # [B,T,C,V]
+        x = torch.matmul(x, A_use.t())         # [B,T,C,V]
         x = x.permute(0, 1, 3, 2)              # [B,T,V,C]
         x = self.lin(x)
+        if self.use_ctr_gcn_lite:
+            A_ctr = torch.matmul(self.ctr_u, self.ctr_v)           # [C,V,V]
+            A_ctr = torch.softmax(A_ctr, dim=-1)
+            x_ctr = torch.einsum("btvc,cvw->btwc", x, A_ctr)
+            x = x + self.ctr_alpha.view(1, 1, 1, -1) * x_ctr
         x = self.drop(self.act(self.ln(x)))
         return x
 
@@ -244,13 +356,43 @@ class TemporalConv(nn.Module):
 
 
 class GCNEncoder(nn.Module):
-    def __init__(self, num_joints: int, in_feats: int, gcn_hidden: int, tcn_hidden: int, dropout: float, use_se: bool):
+    def __init__(
+        self,
+        num_joints: int,
+        in_feats: int,
+        gcn_hidden: int,
+        tcn_hidden: int,
+        dropout: float,
+        use_se: bool,
+        use_adaptive_adj: bool = False,
+        adaptive_adj_embed: int = 16,
+        use_ctr_gcn_lite: bool = False,
+        ctr_rank: int = 4,
+    ):
         super().__init__()
         A_hat = normalize_adjacency(build_mediapipe_adjacency(num_joints))
         self.register_buffer("A_hat", torch.from_numpy(A_hat))
 
-        self.g1 = GCNLayer(in_feats, gcn_hidden, dropout=dropout)
-        self.g2 = GCNLayer(gcn_hidden, gcn_hidden, dropout=dropout)
+        self.g1 = GCNLayer(
+            in_feats,
+            gcn_hidden,
+            dropout=dropout,
+            num_joints=num_joints,
+            use_adaptive_adj=use_adaptive_adj,
+            adaptive_embed=adaptive_adj_embed,
+            use_ctr_gcn_lite=use_ctr_gcn_lite,
+            ctr_rank=ctr_rank,
+        )
+        self.g2 = GCNLayer(
+            gcn_hidden,
+            gcn_hidden,
+            dropout=dropout,
+            num_joints=num_joints,
+            use_adaptive_adj=use_adaptive_adj,
+            adaptive_embed=adaptive_adj_embed,
+            use_ctr_gcn_lite=use_ctr_gcn_lite,
+            ctr_rank=ctr_rank,
+        )
         self.se = SEBlock(gcn_hidden) if use_se else nn.Identity()
         self.temporal = TemporalConv(gcn_hidden, tcn_hidden, dropout=dropout, num_blocks=3)
 
@@ -273,9 +415,24 @@ class GCN(nn.Module):
         tcn_hidden: int = 192,
         dropout: float = 0.35,
         use_se: bool = True,
+        use_adaptive_adj: bool = False,
+        adaptive_adj_embed: int = 16,
+        use_ctr_gcn_lite: bool = False,
+        ctr_rank: int = 4,
     ):
         super().__init__()
-        self.encoder = GCNEncoder(num_joints, in_feats, gcn_hidden, tcn_hidden, dropout, use_se)
+        self.encoder = GCNEncoder(
+            num_joints,
+            in_feats,
+            gcn_hidden,
+            tcn_hidden,
+            dropout,
+            use_se,
+            use_adaptive_adj=use_adaptive_adj,
+            adaptive_adj_embed=adaptive_adj_embed,
+            use_ctr_gcn_lite=use_ctr_gcn_lite,
+            ctr_rank=ctr_rank,
+        )
         self.head = nn.Linear(tcn_hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -293,20 +450,63 @@ class TwoStreamGCN(nn.Module):
         tcn_hidden: int = 192,
         dropout: float = 0.35,
         use_se: bool = True,
-        fuse: str = "concat",   # "concat" | "sum"
+        use_adaptive_adj: bool = False,
+        adaptive_adj_embed: int = 16,
+        use_ctr_gcn_lite: bool = False,
+        ctr_rank: int = 4,
+        fuse: str = "concat",   # "concat" | "sum" | "joint_only" | "motion_only"
+        stream_drop_joint_p: float = 0.0,
+        stream_drop_motion_p: float = 0.0,
     ):
         super().__init__()
-        self.j_enc = GCNEncoder(num_joints, in_feats_j, gcn_hidden, tcn_hidden, dropout, use_se)
-        self.m_enc = GCNEncoder(num_joints, in_feats_m, gcn_hidden, tcn_hidden, dropout, use_se)
+        self.j_enc = GCNEncoder(
+            num_joints,
+            in_feats_j,
+            gcn_hidden,
+            tcn_hidden,
+            dropout,
+            use_se,
+            use_adaptive_adj=use_adaptive_adj,
+            adaptive_adj_embed=adaptive_adj_embed,
+            use_ctr_gcn_lite=use_ctr_gcn_lite,
+            ctr_rank=ctr_rank,
+        )
+        self.m_enc = GCNEncoder(
+            num_joints,
+            in_feats_m,
+            gcn_hidden,
+            tcn_hidden,
+            dropout,
+            use_se,
+            use_adaptive_adj=use_adaptive_adj,
+            adaptive_adj_embed=adaptive_adj_embed,
+            use_ctr_gcn_lite=use_ctr_gcn_lite,
+            ctr_rank=ctr_rank,
+        )
         self.fuse = str(fuse).lower()
+        self.stream_drop_joint_p = float(stream_drop_joint_p)
+        self.stream_drop_motion_p = float(stream_drop_motion_p)
         out_dim = (2 * tcn_hidden) if self.fuse == "concat" else tcn_hidden
         self.head = nn.Linear(out_dim, 1)
 
     def forward(self, xj: torch.Tensor, xm: torch.Tensor) -> torch.Tensor:
         zj = self.j_enc(xj)
         zm = self.m_enc(xm)
+        if self.training and (self.stream_drop_joint_p > 0.0 or self.stream_drop_motion_p > 0.0):
+            b = zj.shape[0]
+            kj = (torch.rand(b, device=zj.device) >= self.stream_drop_joint_p).to(zj.dtype).view(b, 1)
+            km = (torch.rand(b, device=zm.device) >= self.stream_drop_motion_p).to(zm.dtype).view(b, 1)
+            both_off = (kj <= 0.0) & (km <= 0.0)
+            if both_off.any():
+                kj[both_off] = 1.0
+            zj = zj * kj
+            zm = zm * km
         if self.fuse == "sum":
             z = zj + zm
+        elif self.fuse == "joint_only":
+            z = zj
+        elif self.fuse == "motion_only":
+            z = zm
         else:
             z = torch.cat([zj, zm], dim=-1)
         return self.head(z).squeeze(-1)
@@ -319,8 +519,14 @@ class GCNConfig:
     tcn_hidden: int = 192
     dropout: float = 0.35
     use_se: bool = True
+    use_adaptive_adj: bool = False
+    adaptive_adj_embed: int = 16
+    use_ctr_gcn_lite: bool = False
+    ctr_rank: int = 4
     two_stream: bool = False
     fuse: str = "concat"  # concat|sum
+    stream_drop_joint_p: float = 0.0
+    stream_drop_motion_p: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -335,8 +541,14 @@ class GCNConfig:
             tcn_hidden=int(d.get("tcn_hidden", 192)),
             dropout=float(d.get("dropout", 0.35)),
             use_se=bool(d.get("use_se", True)),
+            use_adaptive_adj=bool(d.get("use_adaptive_adj", False)),
+            adaptive_adj_embed=int(d.get("adaptive_adj_embed", 16)),
+            use_ctr_gcn_lite=bool(d.get("use_ctr_gcn_lite", False)),
+            ctr_rank=int(d.get("ctr_rank", 4)),
             two_stream=bool(d.get("two_stream", False)),
             fuse=str(d.get("fuse", "concat")),
+            stream_drop_joint_p=float(d.get("stream_drop_joint_p", 0.0)),
+            stream_drop_motion_p=float(d.get("stream_drop_motion_p", 0.0)),
         )
 
 
@@ -495,7 +707,15 @@ def build_model(
                 "Store in_ch in model_cfg when saving checkpoints, or provide a valid feat_cfg."
             )
         cfg = TCNConfig.from_dict(model_cfg)
-        return TCN(in_ch=int(in_ch), hidden=cfg.hidden, dropout=cfg.dropout, num_blocks=cfg.num_blocks, kernel=cfg.kernel)
+        return TCN(
+            in_ch=int(in_ch),
+            hidden=cfg.hidden,
+            dropout=cfg.dropout,
+            num_blocks=cfg.num_blocks,
+            kernel=cfg.kernel,
+            use_tsm=cfg.use_tsm,
+            tsm_fold_div=cfg.tsm_fold_div,
+        )
 
     if arch == "gcn":
         cfg = GCNConfig.from_dict(model_cfg)
@@ -513,7 +733,13 @@ def build_model(
                 tcn_hidden=cfg.tcn_hidden,
                 dropout=cfg.dropout,
                 use_se=cfg.use_se,
+                use_adaptive_adj=cfg.use_adaptive_adj,
+                adaptive_adj_embed=cfg.adaptive_adj_embed,
+                use_ctr_gcn_lite=cfg.use_ctr_gcn_lite,
+                ctr_rank=cfg.ctr_rank,
                 fuse=cfg.fuse,
+                stream_drop_joint_p=cfg.stream_drop_joint_p,
+                stream_drop_motion_p=cfg.stream_drop_motion_p,
             )
 
         if not in_feats or in_feats <= 0:
@@ -528,6 +754,10 @@ def build_model(
             tcn_hidden=cfg.tcn_hidden,
             dropout=cfg.dropout,
             use_se=cfg.use_se,
+            use_adaptive_adj=cfg.use_adaptive_adj,
+            adaptive_adj_embed=cfg.adaptive_adj_embed,
+            use_ctr_gcn_lite=cfg.use_ctr_gcn_lite,
+            ctr_rank=cfg.ctr_rank,
         )
 
     raise ValueError(f"Unknown arch: {arch}")

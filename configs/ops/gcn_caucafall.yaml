@@ -1,42 +1,42 @@
 ops:
   OP1:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
+    tau_high: 0.8799999952316284
+    tau_low: 0.6863999962806702
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    mean_delay_s: 2.921739101409912
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
-    n_alert_events: 0
-    n_true_alerts: 0
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
   OP2:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
+    tau_high: 0.8799999952316284
+    tau_low: 0.6863999962806702
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    mean_delay_s: 2.921739101409912
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
-    n_alert_events: 0
-    n_true_alerts: 0
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
   OP3:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
+    tau_high: 0.8799999952316284
+    tau_low: 0.6863999962806702
+    precision: 1.0
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    mean_delay_s: 2.921739101409912
+    median_delay_s: 2.6086955070495605
     n_gt_events: 5
-    n_alert_events: 0
-    n_true_alerts: 0
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
@@ -44,10 +44,14 @@ ops_meta:
   min_tau_high: 0.2
   op1_recall: 0.95
   op3_fa24h: 1.0
+  op2_objective: "f1"
+  cost_fn: 5.0
+  cost_fp: 1.0
   idx:
-    OP1: 94
-    OP2: 94
-    OP3: 94
+    OP1: 87
+    OP2: 87
+    OP3: 87
+  confirm_fallback: "disabled_confirm_after_degenerate_sweep"
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -55,11 +59,13 @@ alert_cfg:
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: true
+  confirm: false
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
   confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
 alert_base:
   ema_alpha: 0.2
   k: 2
@@ -67,11 +73,13 @@ alert_base:
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: true
+  confirm: false
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
   confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
 sweep_meta:
   n_videos: 10
   total_duration_s: 90.78260869565219
@@ -85,18 +93,18 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/gcn_caucafall.sweep.json"
+sweep_json: "gcn_caucafall.sweep.json"
 calibration:
   method: "temperature"
-  T: 0.4261292815208435
+  T: 0.3051197826862335
   n_val: 144
-  nll_before: 0.3531810939311981
-  nll_after: 0.2543420195579529
-  ece_before: 0.23267177202635342
-  ece_after: 0.13995902753797254
+  nll_before: 0.2150597870349884
+  nll_after: 0.10479721426963806
+  ece_before: 0.14897182904597783
+  ece_after: 0.046224551846130967
 model:
   arch: "gcn"
-  ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/caucafall_gcn_W48S12/best.pt"
+  ckpt: "../../outputs/caucafall_gcn_W48S12/best.pt"
   model_cfg:
     num_joints: 17
     gcn_hidden: 96
@@ -105,6 +113,12 @@ model:
     use_se: true
     two_stream: true
     fuse: "concat"
+    use_adaptive_adj: false
+    adaptive_adj_embed: 16
+    use_ctr_gcn_lite: false
+    ctr_rank: 4
+    stream_drop_joint_p: 0.0
+    stream_drop_motion_p: 0.0
     in_feats_j: 6
     in_feats_m: 2
   feat_cfg:

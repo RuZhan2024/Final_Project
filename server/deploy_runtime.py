@@ -50,7 +50,7 @@ def _safe_float(x: Any, default: float) -> float:
         if v != v:  # NaN
             return default
         return v
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -62,7 +62,7 @@ def _repo_root() -> Path:
 def _load_json(path: Path) -> Dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
 
 
@@ -71,7 +71,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return {}
 
 
@@ -125,6 +125,7 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
         data = _load_yaml(p)
         if not data:
             continue
+        model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
 
         # Filename pattern: <arch>_<dataset>.yaml (e.g. gcn_muvim.yaml)
         stem = p.stem.lower().strip()
@@ -133,7 +134,7 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
             continue
         arch_guess, dataset_guess = parts[0], "_".join(parts[1:])
 
-        arch = str(data.get("arch") or arch_guess).lower().strip()
+        arch = str(data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
         dataset = dataset_guess.lower().strip()
         if arch not in {"tcn", "gcn"}:
             continue
@@ -141,17 +142,22 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
             # allow other datasets, but keep the key stable
             dataset = dataset_guess.lower().strip()
 
-        ckpt_rel = str(data.get("ckpt") or "").strip()
+        ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
         if not ckpt_rel:
             continue
-        ckpt_path = (root / ckpt_rel).resolve() if not os.path.isabs(ckpt_rel) else Path(ckpt_rel)
+        if os.path.isabs(ckpt_rel):
+            ckpt_path = Path(ckpt_rel)
+        else:
+            ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
+            ckpt_from_root = (root / ckpt_rel).resolve()
+            ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
         if not ckpt_path.exists():
             # Skip broken configs
             continue
 
         spec_key = f"{dataset}_{arch}"
 
-        feat_cfg = data.get("feat_cfg") or {}
+        feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
         alert_cfg = data.get("alert_cfg") or {}
         ops = _standardise_ops(data.get("ops") or {})
 
@@ -300,7 +306,7 @@ def _torch() -> Any:
     try:
         import torch  # type: ignore
         return torch
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         raise RuntimeError("PyTorch is required for real model inference.") from e
 
 
@@ -309,12 +315,12 @@ def _pick_device(torch: Any) -> Any:
     try:
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             return torch.device("cuda")
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError):
         pass
     try:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError):
         pass
     return torch.device("cpu")
 
@@ -334,7 +340,7 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
         from fall_detection.core.ckpt import load_ckpt
         from fall_detection.core.models import build_model
         from fall_detection.core.features import FeatCfg
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         raise RuntimeError(
             "Missing ML runtime package 'fall_detection'. "
             "Make sure the package is installed (e.g. pip install -e .), "
@@ -373,7 +379,7 @@ def _match_in_ch_tcn(torch: Any, model: Any, x: Any) -> Any:
     """Pad/trim to match conv_in channels (TCN)."""
     try:
         expected = int(getattr(model, "conv_in")[0].in_channels)  # type: ignore[index]
-    except Exception:
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return x
     c = int(x.shape[-1])
     if c == expected:
@@ -492,7 +498,7 @@ def predict_spec(
             mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
             mu = float(mu_t.detach().cpu().view(-1)[0].item())
             sigma = float(sig_t.detach().cpu().view(-1)[0].item())
-        except Exception:
+        except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, TypeError, ValueError):
             mu, sigma = float(p_det), 0.0
 
     tau_low, tau_high = get_op_taus(spec_key, op_code)

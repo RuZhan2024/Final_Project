@@ -252,6 +252,8 @@ LR_TCN_muvim ?= 3e-4
 TCN_HIDDEN ?= 128
 TCN_NUM_BLOCKS ?= 4
 TCN_KERNEL ?= 3
+TCN_USE_TSM ?= 0
+TCN_TSM_FOLD_DIV ?= 8
 TCN_PATIENCE ?= 30
 TCN_GRAD_CLIP ?= 1.0
 
@@ -279,6 +281,11 @@ TCN_THR_STEP ?= 0.01
 TCN_LOSS ?= bce
 TCN_FOCAL_ALPHA ?= 0.25
 TCN_FOCAL_GAMMA ?= 2.0
+TCN_RESUME ?=
+TCN_HARD_NEG_LIST ?=
+TCN_HARD_NEG_MULT ?= 1
+TCN_HARD_NEG_PREFIXES ?=
+TCN_HARD_NEG_PREFIX_MULT ?= 1
 
 EPOCHS_GCN ?= $(EPOCHS)
 BATCH_GCN  ?= $(BATCH)
@@ -301,6 +308,8 @@ GCN_BALANCED_SAMPLER_muvim ?= 1
 
 GCN_TWO_STREAM ?= 1
 GCN_FUSE ?= concat
+GCN_USE_ADAPTIVE_ADJ ?= 0
+GCN_ADAPTIVE_ADJ_EMBED ?= 16
 
 GCN_GRAD_CLIP ?= 1.0
 GCN_PATIENCE  ?= 30
@@ -319,6 +328,9 @@ GCN_THR_STEP_muvim ?= 0.01
 GCN_LOSS ?= bce
 GCN_FOCAL_ALPHA ?= 0.25
 GCN_FOCAL_GAMMA ?= 2.0
+GCN_RESUME ?=
+GCN_HARD_NEG_LIST ?=
+GCN_HARD_NEG_MULT ?= 1
 
 # -------------------------
 # fit_ops knobs
@@ -334,6 +346,11 @@ FIT_OVERLAP_SLACK_S ?= 0.5
 
 FIT_OP1_RECALL ?= 0.95
 FIT_OP3_FA24H  ?= 1.0
+FIT_OP2_OBJECTIVE ?= f1
+FIT_COST_FN ?= 5.0
+FIT_COST_FP ?= 1.0
+FITOPS_ALLOW_DEGENERATE ?= 0
+FITOPS_EMIT_ABSOLUTE_PATHS ?= 0
 
 ALERT_EMA_ALPHA ?= 0.20
 ALERT_K ?= 2
@@ -344,18 +361,27 @@ ALERT_CONFIRM_S ?= 2.0
 ALERT_CONFIRM_MIN_LYING ?= 0.65
 ALERT_CONFIRM_MAX_MOTION ?= 0.08
 ALERT_CONFIRM_REQUIRE_LOW ?= 1
+ALERT_START_GUARD_MAX_LYING ?= -1
+ALERT_START_GUARD_PREFIXES ?=
 
 FITOPS_POLICY_FLAGS = \
   --ema_alpha "$(ALERT_EMA_ALPHA)" --k "$(ALERT_K)" --n "$(ALERT_N)" --cooldown_s "$(ALERT_COOLDOWN_S)" \
-  --tau_low_ratio "$(FIT_TAU_LOW_RATIO)" \
-  --confirm "$(ALERT_CONFIRM)" --confirm_s "$(ALERT_CONFIRM_S)" \
-  --confirm_min_lying "$(ALERT_CONFIRM_MIN_LYING)" --confirm_max_motion "$(ALERT_CONFIRM_MAX_MOTION)" \
-  --confirm_require_low "$(ALERT_CONFIRM_REQUIRE_LOW)"
+	--tau_low_ratio "$(FIT_TAU_LOW_RATIO)" \
+	--confirm "$(ALERT_CONFIRM)" --confirm_s "$(ALERT_CONFIRM_S)" \
+	--confirm_min_lying "$(ALERT_CONFIRM_MIN_LYING)" --confirm_max_motion "$(ALERT_CONFIRM_MAX_MOTION)" \
+	--confirm_require_low "$(ALERT_CONFIRM_REQUIRE_LOW)" \
+	--start_guard_max_lying "$(ALERT_START_GUARD_MAX_LYING)" \
+	--start_guard_prefixes "$(ALERT_START_GUARD_PREFIXES)"
 
 FITOPS_SWEEP_FLAGS = \
   --thr_min "$(FIT_THR_MIN)" --thr_max "$(FIT_THR_MAX)" --thr_step "$(FIT_THR_STEP)" \
   --time_mode "$(strip $(FIT_TIME_MODE))" --merge_gap_s "$(strip $(FIT_MERGE_GAP_S))" --overlap_slack_s "$(strip $(FIT_OVERLAP_SLACK_S))" \
-  --op1_recall "$(strip $(FIT_OP1_RECALL))" --op3_fa24h "$(strip $(FIT_OP3_FA24H))"
+  --op1_recall "$(strip $(FIT_OP1_RECALL))" --op3_fa24h "$(strip $(FIT_OP3_FA24H))" \
+  --op2_objective "$(strip $(FIT_OP2_OBJECTIVE))" --cost_fn "$(strip $(FIT_COST_FN))" --cost_fp "$(strip $(FIT_COST_FP))"
+
+FITOPS_GUARD_FLAGS = \
+  --allow_degenerate_sweep "$(FITOPS_ALLOW_DEGENERATE)" \
+  --emit_absolute_paths "$(FITOPS_EMIT_ABSOLUTE_PATHS)"
 
 FITOPS_PICKER ?= conservative
 FITOPS_TIE_BREAK ?= max_thr
@@ -452,6 +478,8 @@ debug-%:
 	@echo "LR_GCN(resolved)=$(call get,LR_GCN,$*)"
 	@echo "TCN_MONITOR(resolved)=$(call get,TCN_MONITOR,$*)"
 	@echo "GCN_MONITOR(resolved)=$(call get,GCN_MONITOR,$*)"
+	@echo "TCN_USE_TSM=$(TCN_USE_TSM) TCN_TSM_FOLD_DIV=$(TCN_TSM_FOLD_DIV)"
+	@echo "GCN_USE_ADAPTIVE_ADJ=$(GCN_USE_ADAPTIVE_ADJ) GCN_ADAPTIVE_ADJ_EMBED=$(GCN_ADAPTIVE_ADJ_EMBED)"
 	@echo "TCN_DROPOUT(resolved)=$(call get,TCN_DROPOUT,$*)"
 	@echo "GCN_DROPOUT(resolved)=$(call get,GCN_DROPOUT,$*)"
 	@echo "SPLIT_MODE=$(if $(filter caucafall,$*),$(CAUCA_SPLIT_GROUP_MODE),n/a)"
@@ -483,6 +511,7 @@ help:
 	@echo ""
 	@echo "OP fitting / evaluation:"
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
+	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
 	@echo "  make plot-<ds>    | plot-gcn-<ds>"
 	@echo ""
@@ -503,8 +532,8 @@ help:
 	@echo "  make pipeline-gcn-<ds>    (GCN: train+fit_ops+eval+plot)"
 	@echo ""
 	@echo "Single-command auto pipelines (adapter enforced):"
-	@echo "  make pipeline-auto-tcn-<ds>  (windows-eval -> fa-windows -> train -> fit-ops -> plot)"
-	@echo "  make pipeline-auto-gcn-<ds>  (windows-eval -> fa-windows -> train -> fit-ops -> plot)"
+	@echo "  make pipeline-auto-tcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
+	@echo "  make pipeline-auto-gcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
 	@echo "  make pipeline-all | pipeline-all-gcn"
 	@echo ""
 	@echo "Audit gates:"
@@ -512,6 +541,13 @@ help:
 	@echo "  make audit-ci     (CI-safe: smoke+static+runtime-imports+pytest)"
 	@echo "  make audit-static"
 	@echo "  make audit-runtime-imports"
+	@echo "  make audit-api-contract"
+	@echo "  make audit-api-v1-parity"
+	@echo "  make audit-api-smoke"
+	@echo "  make audit-integration-contract"
+	@echo "  make audit-ops-sanity"
+	@echo "  make audit-artifact-bundle"
+	@echo "  make audit-promoted-profiles"
 	@echo "  make audit-numeric [DATASETS='le2i,caucafall']"
 	@echo "  make audit-temporal [DATASETS='le2i,caucafall']"
 	@echo "  make audit-parity-le2i MODEL=tcn|gcn"
@@ -781,8 +817,14 @@ $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	$(RUN) scripts/train_tcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
 	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(call get,LR_TCN,$*)" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_$*)" \
 	  $(FEAT_FLAGS_TCN) \
+	  $(if $(strip $(TCN_RESUME)),--resume "$(strip $(TCN_RESUME))",) \
+	  $(if $(strip $(TCN_HARD_NEG_LIST)),--hard_neg_list "$(strip $(TCN_HARD_NEG_LIST))",) \
+	  --hard_neg_mult "$(TCN_HARD_NEG_MULT)" \
+	  --hard_neg_prefixes "$(TCN_HARD_NEG_PREFIXES)" \
+	  --hard_neg_prefix_mult "$(TCN_HARD_NEG_PREFIX_MULT)" \
 	  --loss "$(TCN_LOSS)" --focal_alpha "$(TCN_FOCAL_ALPHA)" --focal_gamma "$(TCN_FOCAL_GAMMA)" \
 	  --hidden "$(TCN_HIDDEN)" --num_blocks "$(TCN_NUM_BLOCKS)" --kernel "$(TCN_KERNEL)" \
+	  --use_tsm "$(TCN_USE_TSM)" --tsm_fold_div "$(TCN_TSM_FOLD_DIV)" \
 	  --grad_clip "$(TCN_GRAD_CLIP)" --patience "$(TCN_PATIENCE)" \
 	  --thr_min "$(TCN_THR_MIN)" --thr_max "$(TCN_THR_MAX)" --thr_step "$(TCN_THR_STEP)" \
 	  --monitor "$(call get,TCN_MONITOR,$*)" \
@@ -797,10 +839,14 @@ $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
 	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(call get,LR_GCN,$*)" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_$*)" \
 	  $(FEAT_FLAGS_GCN) \
+	  $(if $(strip $(GCN_RESUME)),--resume "$(strip $(GCN_RESUME))",) \
+	  $(if $(strip $(GCN_HARD_NEG_LIST)),--hard_neg_list "$(strip $(GCN_HARD_NEG_LIST))",) \
+	  --hard_neg_mult "$(GCN_HARD_NEG_MULT)" \
 	  --loss "$(GCN_LOSS)" --focal_alpha "$(GCN_FOCAL_ALPHA)" --focal_gamma "$(GCN_FOCAL_GAMMA)" \
 	  --hidden "$(GCN_HIDDEN)" \
 	  --num_blocks "$(GCN_NUM_BLOCKS)" --temporal_kernel "$(GCN_TEMPORAL_KERNEL)" --base_channels "$(GCN_BASE_CHANNELS)" \
 	  --two_stream "$(GCN_TWO_STREAM)" --fuse "$(GCN_FUSE)" \
+	  --use_adaptive_adj "$(GCN_USE_ADAPTIVE_ADJ)" --adaptive_adj_embed "$(GCN_ADAPTIVE_ADJ_EMBED)" \
 	  --grad_clip "$(GCN_GRAD_CLIP)" --patience "$(GCN_PATIENCE)" --min_epochs "$(GCN_MIN_EPOCHS)" \
 	  --monitor "$(call get,GCN_MONITOR,$*)" \
 	  --mask_joint_p "$(call get,MASK_JOINT_P,$*)" --mask_frame_p "$(call get,MASK_FRAME_P,$*)" \
@@ -833,7 +879,7 @@ $(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/b
 	  --out "$@" \
 	  --fps_default "$(FPS_$*)" \
 	  $(FITOPS_FEAT_FLAGS) \
-	  $(FITOPS_POLICY_FLAGS) $(FITOPS_SWEEP_FLAGS) $(FITOPS_PICKER_FLAGS) \
+	  $(FITOPS_POLICY_FLAGS) $(FITOPS_SWEEP_FLAGS) $(FITOPS_PICKER_FLAGS) $(FITOPS_GUARD_FLAGS) \
 	  --min_tau_high "$(call get,FITOPS_MIN_TAU_HIGH,$*)" \
 	  $(FITOPS_FA_ARG)
 
@@ -845,7 +891,7 @@ $(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/b
 	  --out "$@" \
 	  --fps_default "$(FPS_$*)" \
 	  $(FITOPS_FEAT_FLAGS) \
-	  $(FITOPS_POLICY_FLAGS) $(FITOPS_SWEEP_FLAGS) $(FITOPS_PICKER_FLAGS) \
+	  $(FITOPS_POLICY_FLAGS) $(FITOPS_SWEEP_FLAGS) $(FITOPS_PICKER_FLAGS) $(FITOPS_GUARD_FLAGS) \
 	  --min_tau_high "$(call get,FITOPS_MIN_TAU_HIGH,$*)" \
 	  $(FITOPS_FA_ARG)
 
@@ -932,29 +978,57 @@ DS ?= le2i
 MODEL ?= tcn
 PROFILE_IO_ONLY ?= 1
 
-.PHONY: audit-smoke audit-ci audit-static audit-runtime-imports audit-numeric audit-temporal audit-parity-le2i audit-parity-le2i-strict baseline-capture-le2i audit-all profile-infer
+.PHONY: audit-smoke audit-ci audit-static audit-runtime-imports audit-api-contract audit-api-v1-parity audit-api-smoke audit-integration-contract audit-ops-sanity audit-artifact-bundle audit-promoted-profiles audit-numeric audit-temporal audit-parity-le2i audit-parity-le2i-strict baseline-capture-le2i audit-all profile-infer
 
 audit-smoke:
 	$(RUN) scripts/audit_smoke.py --root "."
 
-audit-ci: audit-smoke audit-static audit-runtime-imports
-	$(RUN) -m pytest -q tests/test_import_smoke.py tests/test_data_sources_config.py tests/test_windows_contract.py tests/test_adapter_contract.py
+audit-ci: audit-smoke audit-static audit-runtime-imports audit-api-contract audit-api-v1-parity audit-api-smoke
+	$(RUN) -m pytest -q tests/test_import_smoke.py tests/test_data_sources_config.py tests/test_windows_contract.py tests/test_adapter_contract.py tests/test_event_time_semantics.py tests/test_audit_api_contract.py tests/test_audit_api_v1_parity.py tests/test_server_integration_contract.py tests/test_repro_manifest_schema.py tests/test_monitor_benchmark_schema.py tests/test_monitor_fault_injection.py tests/test_split_group_leakage.py
 	@echo "[ok] audit-ci passed"
 
 audit-static:
-	$(RUN) scripts/audit_static.py --roots "src,scripts,server,configs"
+	$(RUN) scripts/audit_static.py --roots "src,scripts,server,configs,baselines,artifacts"
 
 audit-runtime-imports:
 	$(RUN) scripts/audit_runtime_imports.py --paths "src/fall_detection/deploy,server/deploy_runtime.py"
 
+audit-api-contract:
+	$(RUN) scripts/audit_api_contract.py
+
+audit-api-v1-parity:
+	$(RUN) scripts/audit_api_v1_parity.py
+
+audit-api-smoke:
+	$(RUN) scripts/smoke_api_contract.py
+
+audit-integration-contract: audit-api-contract audit-api-v1-parity audit-api-smoke
+	$(RUN) -m pytest -q tests/test_server_integration_contract.py
+	@echo "[ok] integration-contract audit passed"
+
+audit-ops-sanity:
+	$(RUN) scripts/audit_ops_sanity.py --ops_dir "configs/ops"
+
+audit-artifact-bundle:
+	$(RUN) scripts/audit_artifact_bundle.py --bundle_json "artifacts/artifact_bundle.json"
+
+audit-promoted-profiles:
+	$(RUN) scripts/audit_promoted_profiles.py \
+	  --check "le2i_tcn|outputs/metrics/tcn_le2i_hneg_pack_tsm_promoted.json|artifacts/reports/hneg_cycle/tcn_le2i_hneg_pack_tsm_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
+	  --check "caucafall_tcn|outputs/metrics/tcn_caucafall_promoted.json|artifacts/reports/hneg_cycle/caucafall_tcn_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
+	  --check "caucafall_gcn|outputs/metrics/gcn_caucafall_promoted2.json|artifacts/reports/hneg_cycle/gcn_caucafall_promoted2_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
+	  --out_json "artifacts/reports/promoted_profiles_$(shell date +%Y%m%d).json"
+
 audit-numeric:
 	$(RUN) scripts/audit_numeric.py \
+	  --gates_json "configs/audit_gates.json" \
 	  --processed_root "$(PROCESSED)" \
 	  --datasets "$(AUDIT_DATASETS)" \
 	  --out_json "artifacts/reports/numeric_fingerprint_$(shell date +%Y%m%d).json"
 
 audit-temporal:
 	$(RUN) scripts/audit_temporal.py \
+	  --gates_json "configs/audit_gates.json" \
 	  --processed_root "$(PROCESSED)" \
 	  --datasets "$(AUDIT_DATASETS)" \
 	  --stride_frames "$(WIN_S)" \
@@ -986,7 +1060,7 @@ baseline-capture-le2i:
 	  --op "op2" \
 	  --notes "Captured via Make baseline-capture-le2i on $(shell date +%Y-%m-%d)"
 
-audit-all: audit-smoke audit-static audit-runtime-imports audit-numeric audit-temporal audit-parity-le2i-strict
+audit-all: audit-smoke audit-static audit-runtime-imports audit-integration-contract audit-ops-sanity audit-artifact-bundle audit-promoted-profiles audit-numeric audit-temporal audit-parity-le2i-strict
 	@echo "[ok] audit-all passed"
 
 profile-infer:
@@ -1035,21 +1109,19 @@ pipeline-all-gcn-noextract: $(addsuffix -noextract,$(addprefix pipeline-gcn-,$(D
 .PHONY: $(addprefix pipeline-auto-tcn-,$(DATASETS)) $(addprefix pipeline-auto-gcn-,$(DATASETS))
 
 $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
-	@$(MAKE) ADAPTER_USE=1 windows-eval-$*
-	@$(MAKE) ADAPTER_USE=1 fa-windows-$*
+	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-tcn-$*
 	# Optional future step (when standardized):
 	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-tcn-$*
-	@$(MAKE) ADAPTER_USE=1 fit-ops-$*
 	@$(MAKE) ADAPTER_USE=1 plot-$*
 
 $(addprefix pipeline-auto-gcn-,$(DATASETS)): pipeline-auto-gcn-%:
-	@$(MAKE) ADAPTER_USE=1 windows-eval-$*
-	@$(MAKE) ADAPTER_USE=1 fa-windows-$*
+	@$(MAKE) -B DO_EXTRACT=1 ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-gcn-$*
 	# Optional future step (when standardized):
 	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-gcn-$*
-	@$(MAKE) ADAPTER_USE=1 fit-ops-gcn-$*
 	@$(MAKE) ADAPTER_USE=1 plot-gcn-$*
 
 eval-all: $(addprefix eval-,$(DATASETS))

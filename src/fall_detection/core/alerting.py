@@ -21,6 +21,7 @@ Event metrics (per video, then aggregated):
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -51,6 +52,12 @@ class AlertCfg:
     confirm_min_lying: float = 0.65
     confirm_max_motion: float = 0.08
     confirm_require_low: bool = True
+    # Optional start guard: block alert starts when lying_score exceeds this.
+    # Set to None to disable.
+    start_guard_max_lying: Optional[float] = None
+    # Optional scene/video scope for start guard. If provided, start guard applies
+    # only when video_id starts with one of these prefixes.
+    start_guard_prefixes: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -58,6 +65,32 @@ class AlertCfg:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "AlertCfg":
         d = dict(d or {})
+        raw_prefixes = d.get("start_guard_prefixes", None)
+        prefixes: Optional[List[str]]
+        if raw_prefixes is None:
+            prefixes = None
+        elif isinstance(raw_prefixes, str):
+            raw_s = raw_prefixes.strip()
+            vals: List[str] = []
+            # Accept stringified list forms emitted by simple YAML writer,
+            # e.g. "['SceneA__', 'SceneB__']".
+            if raw_s.startswith("[") and raw_s.endswith("]"):
+                try:
+                    parsed = ast.literal_eval(raw_s)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, (list, tuple)):
+                    vals = [str(x).strip() for x in parsed if str(x).strip()]
+                elif isinstance(parsed, str) and parsed.strip():
+                    vals = [parsed.strip()]
+            if not vals:
+                vals = [x.strip() for x in raw_s.split(",") if x.strip()]
+            prefixes = vals or None
+        elif isinstance(raw_prefixes, (list, tuple)):
+            vals = [str(x).strip() for x in raw_prefixes if str(x).strip()]
+            prefixes = vals or None
+        else:
+            prefixes = None
         return AlertCfg(
             ema_alpha=float(d.get("ema_alpha", 0.20)),
             k=int(d.get("k", 2)),
@@ -71,6 +104,10 @@ class AlertCfg:
             confirm_min_lying=float(d.get("confirm_min_lying", 0.65)),
             confirm_max_motion=float(d.get("confirm_max_motion", 0.08)),
             confirm_require_low=bool(d.get("confirm_require_low", True)),
+            start_guard_max_lying=(
+                None if d.get("start_guard_max_lying", None) is None else float(d.get("start_guard_max_lying"))
+            ),
+            start_guard_prefixes=prefixes,
         )
 
 
@@ -177,6 +214,12 @@ def times_from_windows(ws: Sequence[int], we: Sequence[int], fps: float, *, mode
     return (ws + we) * 0.5 / f
 
 
+def window_span_seconds(w_start: float, w_end: float, fps: float) -> float:
+    """Compute clip duration in seconds using inclusive frame indices."""
+    f = float(fps) if float(fps) > 0 else 30.0
+    return float((float(w_end) - float(w_start) + 1.0) / max(1e-6, f))
+
+
 # ---------------- alert detection ----------------
 
 def detect_alert_events(
@@ -186,6 +229,7 @@ def detect_alert_events(
     *,
     lying_score: Optional[Sequence[float]] = None,
     motion_score: Optional[Sequence[float]] = None,
+    video_id: Optional[str] = None,
 ) -> Tuple[np.ndarray, List[AlertEvent]]:
     """Run alert policy on a probability sequence.
 
@@ -233,8 +277,20 @@ def detect_alert_events(
     ms = None
     if lying_score is not None:
         ls = np.asarray(lying_score, dtype=np.float32).reshape(-1)
+        if ls.size != p.size:
+            if ls.size < p.size:
+                pad = np.full((p.size - ls.size,), np.nan, dtype=np.float32)
+                ls = np.concatenate([ls, pad], axis=0)
+            else:
+                ls = ls[: p.size]
     if motion_score is not None:
         ms = np.asarray(motion_score, dtype=np.float32).reshape(-1)
+        if ms.size != p.size:
+            if ms.size < p.size:
+                pad = np.full((p.size - ms.size,), np.nan, dtype=np.float32)
+                ms = np.concatenate([ms, pad], axis=0)
+            else:
+                ms = ms[: p.size]
 
     for i in range(pers.size):
         ti = float(t[i])
@@ -279,10 +335,11 @@ def detect_alert_events(
             ok_lying = True
             ok_motion = True
 
-            # If we have heuristics, apply them.
-            if ls is not None:
+            # If heuristic signals are finite, apply them.
+            # Non-finite values are treated as unavailable (no veto).
+            if ls is not None and np.isfinite(ls[i]):
                 ok_lying = float(ls[i]) >= float(cfg.confirm_min_lying)
-            if ms is not None:
+            if ms is not None and np.isfinite(ms[i]):
                 ok_motion = float(ms[i]) <= float(cfg.confirm_max_motion)
 
             if ok_prob and ok_lying and ok_motion:
@@ -299,6 +356,17 @@ def detect_alert_events(
             continue
 
         if pers[i]:
+            apply_start_guard = bool(ls is not None and cfg.start_guard_max_lying is not None)
+            if apply_start_guard and cfg.start_guard_prefixes:
+                if video_id is None:
+                    apply_start_guard = False
+                else:
+                    vid = str(video_id)
+                    apply_start_guard = any(vid.startswith(str(pref)) for pref in cfg.start_guard_prefixes)
+            if apply_start_guard:
+                ls_i = float(ls[i]) if ls is not None else float("nan")
+                if np.isfinite(ls_i) and ls_i > float(cfg.start_guard_max_lying):
+                    continue
             # Optional "require low": only start after coming from below tau_low.
             # We only apply this when the confirm stage is actually using extra signals.
             if bool(cfg.confirm) and (ls is not None or ms is not None) and bool(cfg.confirm_require_low) and i > 0:
@@ -340,6 +408,7 @@ def classify_states(
     *,
     lying_score: Optional[Sequence[float]] = None,
     motion_score: Optional[Sequence[float]] = None,
+    video_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Classify each time step into {clear, suspect, alert}.
 
@@ -376,9 +445,12 @@ def classify_states(
             confirm_min_lying=float(cfg.confirm_min_lying),
             confirm_max_motion=float(cfg.confirm_max_motion),
             confirm_require_low=bool(cfg.confirm_require_low),
+            start_guard_max_lying=cfg.start_guard_max_lying,
+            start_guard_prefixes=cfg.start_guard_prefixes,
         ),
         lying_score=lying_score,
         motion_score=motion_score,
+        video_id=video_id,
     )
     suspect = (~alert_mask) & (ps >= float(cfg.tau_low)) & (ps < float(cfg.tau_high))
     clear = (~alert_mask) & (ps < float(cfg.tau_low))
@@ -431,6 +503,7 @@ def event_metrics_from_windows(
     *,
     lying_score: Optional[Sequence[float]] = None,
     motion_score: Optional[Sequence[float]] = None,
+    video_id: Optional[str] = None,
     duration_s: Optional[float] = None,
     merge_gap_s: float = 2.0,
     overlap_slack_s: float = 0.0,
@@ -480,6 +553,7 @@ def event_metrics_from_windows(
         alert_cfg,
         lying_score=lying_score,
         motion_score=motion_score,
+        video_id=video_id,
     )
     alert_intervals = [(ev.start_time_s, ev.end_time_s) for ev in alert_events]
 
@@ -712,6 +786,8 @@ def sweep_alert_policy_from_windows(
             confirm_min_lying=float(alert_base.confirm_min_lying),
             confirm_max_motion=float(alert_base.confirm_max_motion),
             confirm_require_low=bool(alert_base.confirm_require_low),
+            start_guard_max_lying=alert_base.start_guard_max_lying,
+            start_guard_prefixes=alert_base.start_guard_prefixes,
         )
 
         gt_total = 0
@@ -735,6 +811,7 @@ def sweep_alert_policy_from_windows(
                 duration_s=float(dur_s),
                 merge_gap_s=float(merge_gap_s),
                 overlap_slack_s=float(overlap_slack_s),
+                video_id=str(_v),
             )
             gt_total += int(em.n_gt_events)
             matched_gt_total += int(em.n_matched_gt)
@@ -759,6 +836,7 @@ def sweep_alert_policy_from_windows(
                     duration_s=float(dur_s),
                     merge_gap_s=float(merge_gap_s),
                     overlap_slack_s=float(overlap_slack_s),
+                    video_id=str(_v),
                 )
                 false_alert_total_fa += int(em.n_false_alerts)
 

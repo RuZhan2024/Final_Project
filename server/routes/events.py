@@ -9,6 +9,12 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from fastapi import APIRouter, Body, HTTPException
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 from ..core import (
     SkeletonClipPayload,
     _anonymize_xy_inplace,
@@ -30,6 +36,7 @@ router = APIRouter()
 
 
 @router.get("/api/events")
+@router.get("/api/v1/events")
 def list_events(
     resident_id: Optional[int] = None,
     page: int = 1,
@@ -49,21 +56,21 @@ def list_events(
     # Basic guardrails
     try:
         page = int(page)
-    except Exception:
+    except (TypeError, ValueError):
         page = 1
     page = max(1, page)
 
     # page_size: prefer explicit page_size; but accept legacy `limit` for page 1
     try:
         page_size = int(page_size)
-    except Exception:
+    except (TypeError, ValueError):
         page_size = 50
 
     if limit is not None and page == 1 and page_size == 50:
         # Old clients pass limit=500; keep behaviour similar but cap at 200.
         try:
             page_size = int(limit)
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     page_size = min(200, max(1, page_size))
@@ -90,12 +97,12 @@ def list_events(
     try:
         if start_date:
             start_dt = datetime.fromisoformat(start_date)
-    except Exception:
+    except (TypeError, ValueError):
         start_dt = None
     try:
         if end_date:
             end_excl_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-    except Exception:
+    except (TypeError, ValueError):
         end_excl_dt = None
 
     with get_conn_optional() as conn:
@@ -256,7 +263,7 @@ def list_events(
                 if isinstance(meta, str):
                     try:
                         meta = json.loads(meta)
-                    except Exception:
+                    except (TypeError, json.JSONDecodeError):
                         meta = {"raw": meta}
 
                 ts = r.get("ts")
@@ -286,15 +293,28 @@ def list_events(
 
 
 @router.get("/api/events/summary")
+@router.get("/api/v1/events/summary")
 def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
     with get_conn_optional() as conn:
         if conn is None:
             rid = int(resident_id or 1)
-            return {"resident_id": rid, "total_events": 0, "total_falls": 0, "events_last_24h": 0, "falls_last_24h": 0, "latest_event": None, "db_available": False}
+            return {
+                "resident_id": rid,
+                "total_events": 0,
+                "total_falls": 0,
+                "events_last_24h": 0,
+                "falls_last_24h": 0,
+                "latest_event": None,
+                "today": {"falls": 0, "pending": 0, "false_alarms": 0},
+                "db_available": False,
+            }
         rid = resident_id if resident_id and _resident_exists(conn, resident_id) else _one_resident_id(conn)
         time_col = _event_time_col(conn)
+        has_status = _has_col(conn, "events", "status")
 
         since = datetime.utcnow() - timedelta(hours=24)
+        pending_24h = 0
+        false_alarms_24h = 0
         with conn.cursor() as cur:
             try:
                 cur.execute("SELECT COUNT(*) AS n FROM events WHERE resident_id=%s", (rid,))
@@ -320,7 +340,20 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                     (rid,),
                 )
                 latest = cur.fetchone()
-            except Exception as e:
+
+                if has_status:
+                    cur.execute(
+                        f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND LOWER(`status`) IN ('unreviewed','pending_review') AND `{time_col}` >= %s",
+                        (rid, since),
+                    )
+                    pending_24h = int((cur.fetchone() or {}).get("n") or 0)
+
+                    cur.execute(
+                        f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND LOWER(`status`) IN ('false_alarm','false_positive') AND `{time_col}` >= %s",
+                        (rid, since),
+                    )
+                    false_alarms_24h = int((cur.fetchone() or {}).get("n") or 0)
+            except (MySQLError, RuntimeError, TypeError, ValueError) as e:
                 raise HTTPException(status_code=500, detail=f"Failed to compute events summary: {e}")
 
     return _jsonable(
@@ -331,11 +364,64 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
             "events_last_24h": events_24h,
             "falls_last_24h": falls_24h,
             "latest_event": latest,
+            "today": {
+                "falls": falls_24h,
+                "pending": pending_24h,
+                "false_alarms": false_alarms_24h,
+            },
         }
     )
 
 
+@router.put("/api/events/{event_id}/status")
+@router.put("/api/v1/events/{event_id}/status")
+def update_event_status(event_id: int, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Update event status for UI review flow."""
+    status = str((payload or {}).get("status") or "").strip().lower()
+    if not status:
+        raise HTTPException(status_code=400, detail="Missing status")
+
+    with get_conn_optional() as conn:
+        if conn is None:
+            return {
+                "ok": True,
+                "persisted": False,
+                "reason": "db_unavailable",
+                "event_id": int(event_id),
+                "status": status,
+            }
+
+        variants = _detect_variants(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM events WHERE id=%s LIMIT 1", (int(event_id),))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+
+            if variants.get("events") == "v2" and _has_col(conn, "events", "status"):
+                cur.execute("UPDATE events SET status=%s WHERE id=%s", (status, int(event_id)))
+            elif _has_col(conn, "events", "meta"):
+                cur.execute("SELECT meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
+                meta_row = cur.fetchone() or {}
+                meta = meta_row.get("meta")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except (TypeError, json.JSONDecodeError):
+                        meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["status"] = status
+                cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
+            else:
+                raise HTTPException(status_code=409, detail="Event status update unsupported for current schema")
+        conn.commit()
+
+    return {"ok": True, "persisted": True, "event_id": int(event_id), "status": status}
+
+
 @router.post("/api/events/test_fall")
+@router.post("/api/v1/events/test_fall")
 def test_fall() -> Dict[str, Any]:
     """Insert a synthetic 'fall' event for UI testing."""
     with get_conn_optional() as conn:
@@ -411,6 +497,7 @@ def test_fall() -> Dict[str, Any]:
 
 
 @router.post("/api/events/{event_id}/skeleton_clip")
+@router.post("/api/v1/events/{event_id}/skeleton_clip")
 def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)) -> Dict[str, Any]:
     """Persist a short skeleton-only clip and attach it to an existing event."""
     rid = int(payload.resident_id or 1)
@@ -464,7 +551,7 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
         fpath = clips_dir / fname
         try:
             np.savez_compressed(fpath, t_ms=t_ms, xy=xy, conf=conf)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             raise HTTPException(status_code=500, detail=f"Failed to save clip: {e}")
 
         clip_rel = f"server/event_clips/{fname}"
@@ -473,7 +560,7 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
         if isinstance(meta, str):
             try:
                 meta = json.loads(meta)
-            except Exception:
+            except (TypeError, json.JSONDecodeError):
                 meta = {}
         if not isinstance(meta, dict):
             meta = {}
@@ -497,7 +584,7 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
             with conn.cursor() as cur:
                 cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
             conn.commit()
-        except Exception:
+        except (MySQLError, RuntimeError, TypeError, ValueError):
             pass
 
         return {

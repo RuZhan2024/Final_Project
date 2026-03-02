@@ -12,6 +12,7 @@ router = APIRouter()
 
 
 @router.get("/api/caregivers")
+@router.get("/api/v1/caregivers")
 def get_caregivers(resident_id: int = Query(1, description="Resident ID")) -> Dict[str, Any]:
     with get_conn_optional() as conn:
         if conn is None:
@@ -30,7 +31,9 @@ def get_caregivers(resident_id: int = Query(1, description="Resident ID")) -> Di
 
 
 @router.put("/api/caregivers")
+@router.put("/api/v1/caregivers")
 @router.post("/api/caregivers")
+@router.post("/api/v1/caregivers")
 def upsert_caregiver(payload: CaregiverUpsertPayload = Body(...)) -> Dict[str, Any]:
     resident_id = int(payload.resident_id or 1)
     with get_conn_optional() as conn:

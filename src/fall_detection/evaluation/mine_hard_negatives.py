@@ -223,6 +223,19 @@ def main() -> None:
         verbose=bool(args.verbose),
     )
 
+    # Preflight contract check for TCN: window feature channels must match checkpoint config.
+    if str(arch).lower() == "tcn" and len(ds) > 0:
+        x0, *_rest = ds[0]
+        got_in = int(x0.shape[-1])
+        exp_in = int(model_cfg.get("in_ch", got_in))
+        if got_in != exp_in:
+            raise RuntimeError(
+                f"Input feature mismatch for mining: ckpt expects in_ch={exp_in}, "
+                f"but windows from '{args.windows_dir}' produce in_ch={got_in}. "
+                "Use windows generated with the same canonical contract as the checkpoint "
+                "(for current LE2i runs this is typically windows_eval_W48_S12/*)."
+            )
+
     model = build_model(str(arch), model_cfg, feat_cfg, fps_default=fps_default).to(device)
     model.load_state_dict(bundle["state_dict"], strict=True)
     model.eval()

@@ -4,6 +4,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 from ..core import (
     SettingsUpdatePayload,
     apply_settings_update_inmem,
@@ -34,11 +40,12 @@ def _apply_yaml_override(system: Dict[str, Any]) -> None:
         system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
         system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-2")))
         system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
-    except Exception:
+    except (RuntimeError, OSError, TypeError, ValueError, KeyError):
         return
 
 
 @router.get("/api/settings")
+@router.get("/api/v1/settings")
 def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict[str, Any]:
     """Return UI settings (nested + legacy flat fields).
 
@@ -123,7 +130,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
                     if isinstance(sys_row, dict) and col in sys_row and sys_row.get(col) is not None:
                         try:
                             setter(sys_row[col])
-                        except Exception:
+                        except (TypeError, ValueError):
                             pass
 
                 system["active_operating_point"] = (
@@ -131,7 +138,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
                 )
 
                 # keep consistent with variants setting schema if needed
-    except Exception:
+    except (MySQLError, RuntimeError, OSError, TypeError, ValueError):
         db_available = False
 
     _apply_yaml_override(system)
@@ -155,6 +162,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
 
 
 @router.put("/api/settings")
+@router.put("/api/v1/settings")
 def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] = None) -> Dict[str, Any]:
     """Update settings.
 
@@ -168,7 +176,7 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
             v = float(payload.fall_threshold)
             if 1.0 < v <= 100.0:
                 payload.fall_threshold = v / 100.0
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     try:
@@ -318,6 +326,6 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
 
             return {"ok": True, "persisted": True}
 
-    except Exception:
+    except (MySQLError, RuntimeError, OSError, TypeError, ValueError):
         apply_settings_update_inmem(payload, resident_id=rid)
         return {"ok": True, "persisted": False, "reason": "db_unavailable"}
