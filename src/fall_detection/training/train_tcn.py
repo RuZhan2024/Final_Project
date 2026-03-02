@@ -399,6 +399,8 @@ class TrainCfg:
     lr_plateau_min_lr: float = 1e-6
     scheduler_metric: str = "val_loss"
     scheduler_ema_beta: float = 0.0
+    scheduler: str = "plateau"
+    max_lr: Optional[float] = None
 
     weight_decay: float = 1e-4
     label_smoothing: float = 0.0
@@ -488,6 +490,8 @@ def main() -> None:
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
     ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
     ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
+    ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
+    ap.add_argument("--max_lr", type=float, default=None)
 
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--label_smoothing", type=float, default=0.0)
@@ -720,10 +724,8 @@ def main() -> None:
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     use_amp = bool(int(cfg.amp)) and (device.type == "cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    sched_kind = str(cfg.scheduler).lower()
     sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode=sched_mode, factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
-    )
 
     pin = torch.cuda.is_available()
     loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
@@ -739,6 +741,22 @@ def main() -> None:
         train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs)
 
     val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
+    if sched_kind == "plateau":
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode=sched_mode, factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
+        )
+    elif sched_kind == "cosine":
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(1, int(cfg.epochs)), eta_min=float(cfg.lr_plateau_min_lr)
+        )
+    else:
+        onecycle_max_lr = float(cfg.max_lr) if cfg.max_lr is not None else float(cfg.lr)
+        sched = torch.optim.lr_scheduler.OneCycleLR(
+            opt,
+            max_lr=onecycle_max_lr,
+            epochs=int(cfg.epochs),
+            steps_per_epoch=max(1, len(train_loader)),
+        )
 
     best_score = -1.0
     best_path = os.path.join(cfg.save_dir, "best.pt")
@@ -804,6 +822,8 @@ def main() -> None:
                 scaler.update()
             else:
                 opt.step()
+            if sched_kind == "onecycle":
+                sched.step()
 
             if ema is not None:
                 ema.update(model)
@@ -869,24 +889,29 @@ def main() -> None:
         }
         log_row(row)
 
-        sched_metric_raw = float(
-            val_loss if str(cfg.scheduler_metric) == "val_loss"
-            else (apv if str(cfg.scheduler_metric) == "val_ap" else f1)
-        )
-        beta = float(cfg.scheduler_ema_beta)
-        if beta > 0.0:
-            scheduler_metric_ema = (
-                sched_metric_raw if scheduler_metric_ema is None
-                else (beta * scheduler_metric_ema + (1.0 - beta) * sched_metric_raw)
+        if sched_kind == "plateau":
+            sched_metric_raw = float(
+                val_loss if str(cfg.scheduler_metric) == "val_loss"
+                else (apv if str(cfg.scheduler_metric) == "val_ap" else f1)
             )
-            sched_metric_step = float(scheduler_metric_ema)
+            beta = float(cfg.scheduler_ema_beta)
+            if beta > 0.0:
+                scheduler_metric_ema = (
+                    sched_metric_raw if scheduler_metric_ema is None
+                    else (beta * scheduler_metric_ema + (1.0 - beta) * sched_metric_raw)
+                )
+                sched_metric_step = float(scheduler_metric_ema)
+            else:
+                sched_metric_step = sched_metric_raw
+            if np.isfinite(sched_metric_step):
+                sched.step(sched_metric_step)
+            else:
+                fallback_metric = float(val_loss if sched_mode == "min" else f1)
+                sched.step(fallback_metric)
+        elif sched_kind == "cosine":
+            sched.step()
         else:
-            sched_metric_step = sched_metric_raw
-        if np.isfinite(sched_metric_step):
-            sched.step(sched_metric_step)
-        else:
-            fallback_metric = float(val_loss if sched_mode == "min" else f1)
-            sched.step(fallback_metric)
+            pass
 
         if score > best_score + 1e-6:
             best_score = float(score)
