@@ -411,6 +411,9 @@ class TrainCfg:
 
     patience: int = 30
     fps_default: float = 30.0
+    num_workers: int = 0
+    persistent_workers: int = 0
+    prefetch_factor: Optional[int] = None
 
     loss: str = "bce"
     focal_alpha: float = 0.25
@@ -494,6 +497,9 @@ def main() -> None:
 
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--fps_default", type=float, default=30.0)
+    ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--persistent_workers", type=int, default=0)
+    ap.add_argument("--prefetch_factor", type=int, default=None)
 
     ap.add_argument("--monitor", choices=["f1", "ap"], default="f1")
     ap.add_argument("--pos_weight", default="auto")
@@ -563,6 +569,9 @@ def main() -> None:
 
     device = pick_device()
     print(f"[info] device: {device.type}")
+    nw = int(cfg.num_workers)
+    if device.type == "mps":
+        nw = 0
 
     feat_cfg = FeatCfg(
         center=cfg.center,
@@ -708,13 +717,19 @@ def main() -> None:
     )
 
     pin = torch.cuda.is_available()
+    loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
+    if nw > 0:
+        if bool(int(cfg.persistent_workers)):
+            loader_kwargs["persistent_workers"] = True
+        if cfg.prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
     if cfg.balanced_sampler:
         sampler = make_balanced_sampler(train_ds.labels01)
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=0, pin_memory=pin)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs)
     else:
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, num_workers=0, pin_memory=pin)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs)
 
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=0, pin_memory=pin)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
 
     best_score = -1.0
     best_path = os.path.join(cfg.save_dir, "best.pt")
