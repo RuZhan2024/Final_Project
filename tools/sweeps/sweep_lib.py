@@ -174,6 +174,12 @@ def read_history_best(history_path: Path, metric: str = "monitor_score") -> Tupl
                 continue
             row = json.loads(line)
             v = row.get(metric, None)
+            if v is None and metric == "monitor_score":
+                # Back-compat fallback: some trainers log val_f1/ap but not monitor_score.
+                v = row.get("val_f1", row.get("ap", None))
+            if v is None and metric == "val_ap":
+                # Harmonize metric naming across trainers.
+                v = row.get("ap", None)
             if v is None:
                 continue
             try:
@@ -418,12 +424,13 @@ def run_sweep(
 
         def _rank_key(report: Dict[str, Any]) -> Tuple[Any, ...]:
             ops_eval = report.get("ops_eval", {}) or {}
-            op1 = ops_eval.get("op1", {}) or {}
-            op2 = ops_eval.get("op2", {}) or {}
-            op3 = ops_eval.get("op3", {}) or {}
+            ops = report.get("ops", {}) or {}
+            op1 = (ops_eval.get("op1", {}) or ops.get("op1", {}) or {})
+            op2 = (ops_eval.get("op2", {}) or ops.get("op2", {}) or {})
+            op3 = (ops_eval.get("op3", {}) or ops.get("op3", {}) or {})
 
-            r1 = _safe_f(op1.get("micro_event_recall"), default=float("nan"))
-            f2 = _safe_f(op2.get("micro_event_f1"), default=float("nan"))
+            r1 = _safe_f(op1.get("micro_event_recall", op1.get("recall")), default=float("nan"))
+            f2 = _safe_f(op2.get("micro_event_f1", op2.get("f1")), default=float("nan"))
             fa3 = _safe_f(op3.get("fa24h"), default=float("inf"))
 
             feasible = (math.isfinite(r1) and r1 >= float(stage2_op1_target))
@@ -465,7 +472,7 @@ def run_sweep(
             # 1) fit_ops (val)
             if not ops_yaml.exists():
                 cmd_fit = [
-                    sys.executable, "-u", "eval/fit_ops.py",
+                    sys.executable, "-u", "scripts/fit_ops.py",
                     "--arch", run.arch,
                     "--val_dir", str(win_eval_dir / "val"),
                     "--ckpt", str(ckpt),
@@ -499,7 +506,7 @@ def run_sweep(
             # 2) metrics on requested split
             if not report_json.exists():
                 cmd_met = [
-                    sys.executable, "-u", "eval/metrics.py",
+                    sys.executable, "-u", "scripts/eval_metrics.py",
                     "--win_dir", str(win_eval_dir / stage2_split),
                     "--ckpt", str(ckpt),
                     "--ops_yaml", str(ops_yaml),
@@ -522,20 +529,21 @@ def run_sweep(
                 continue
 
             ops_eval = report.get("ops_eval", {}) or {}
-            op1 = ops_eval.get("op1", {}) or {}
-            op2 = ops_eval.get("op2", {}) or {}
-            op3 = ops_eval.get("op3", {}) or {}
+            ops = report.get("ops", {}) or {}
+            op1 = (ops_eval.get("op1", {}) or ops.get("op1", {}) or {})
+            op2 = (ops_eval.get("op2", {}) or ops.get("op2", {}) or {})
+            op3 = (ops_eval.get("op3", {}) or ops.get("op3", {}) or {})
 
             row2 = {
                 "trial": r["trial"],
                 "tag": tag,
                 "score_stage1": float(r.get("score", float("-inf"))),
                 "split": stage2_split,
-                "op1_recall": _safe_f(op1.get("micro_event_recall")),
+                "op1_recall": _safe_f(op1.get("micro_event_recall", op1.get("recall"))),
                 "op1_fa24h": _safe_f(op1.get("fa24h"), default=float("nan")),
-                "op2_f1": _safe_f(op2.get("micro_event_f1")),
+                "op2_f1": _safe_f(op2.get("micro_event_f1", op2.get("f1"))),
                 "op2_fa24h": _safe_f(op2.get("fa24h"), default=float("nan")),
-                "op3_recall": _safe_f(op3.get("micro_event_recall")),
+                "op3_recall": _safe_f(op3.get("micro_event_recall", op3.get("recall"))),
                 "op3_fa24h": _safe_f(op3.get("fa24h"), default=float("inf")),
                 "ckpt": str(ckpt),
                 "ops_yaml": str(ops_yaml),
