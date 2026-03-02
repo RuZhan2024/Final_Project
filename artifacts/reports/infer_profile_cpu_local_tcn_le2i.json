@@ -1,0 +1,16 @@
+{
+  "arch": "tcn",
+  "latency_ms": {
+    "max": 2.958607001346536,
+    "mean": 2.2035009402316064,
+    "median": 2.150338053703308,
+    "min": 1.9969620007032063,
+    "p95": 2.4880464911460876
+  },
+  "n_windows_available": 269,
+  "profile": "cpu_local",
+  "runs": 50,
+  "warmup": 10,
+  "window_dir": "data/processed/le2i/windows_eval_W48_S12/test",
+  "with_model": false
+}

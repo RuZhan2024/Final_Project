@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import yaml
 
 
@@ -321,45 +320,6 @@ def _pick_device(torch: Any) -> Any:
 
 
 _MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
-_MC_PREDICT_FN: Any = None
-_MC_PREDICT_MOD: Any = None
-
-
-def _mc_predict_fn() -> Any:
-    global _MC_PREDICT_FN, _MC_PREDICT_MOD
-    if _MC_PREDICT_FN is not None and _MC_PREDICT_MOD is not None:
-        try:
-            import sys as _sys
-            mod_live = _sys.modules.get("core.uncertainty")
-            if mod_live is _MC_PREDICT_MOD and getattr(mod_live, "mc_predict_mu_sigma", None) is _MC_PREDICT_FN:
-                return _MC_PREDICT_FN
-        except Exception:
-            pass
-    try:
-        import sys as _sys
-        _unc = _sys.modules.get("core.uncertainty")
-        if _unc is None:
-            import core.uncertainty as _unc  # type: ignore
-        _MC_PREDICT_MOD = _unc
-        _MC_PREDICT_FN = getattr(_unc, "mc_predict_mu_sigma")
-        return _MC_PREDICT_FN
-    except Exception:
-        _MC_PREDICT_MOD = None
-        _MC_PREDICT_FN = None
-        raise
-
-
-def _sample_fp(a: Optional[np.ndarray]) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    if a is None:
-        return None, None, None
-    n = int(a.size)
-    if n < 1:
-        return 0.0, 0.0, 0.0
-    flat = a.ravel()
-    v0 = float(flat[0])
-    v1 = float(flat[-1])
-    vm = float(flat[n // 2])
-    return v0, v1, vm
 
 
 def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
@@ -371,13 +331,13 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     device = _pick_device(torch)
 
     try:
-        from core.ckpt import load_ckpt
-        from core.models import build_model, fuse_conv_bn_eval_inplace
-        from core.features import FeatCfg
+        from fall_detection.core.ckpt import load_ckpt
+        from fall_detection.core.models import build_model
+        from fall_detection.core.features import FeatCfg
     except Exception as e:
         raise RuntimeError(
-            "Missing ML runtime package 'core'. "
-            "Make sure you run the server from the repo root (so 'core/' is on PYTHONPATH), "
+            "Missing ML runtime package 'fall_detection'. "
+            "Make sure the package is installed (e.g. pip install -e .), "
             "or install the ML package into this environment."
         ) from e
 
@@ -396,51 +356,14 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     model.load_state_dict(bundle["state_dict"], strict=True)
     model.to(device)
     model.eval()
-    # Optional CPU-only dynamic quantization for on-device latency/memory.
-    # Disabled by default; enable with FD_DYNAMIC_QUANT_LINEAR=1.
-    if str(os.getenv("FD_DYNAMIC_QUANT_LINEAR", "0")).strip().lower() in {"1", "true", "yes", "on"}:
-        try:
-            if getattr(device, "type", "") == "cpu":
-                model = torch.ao.quantization.quantize_dynamic(  # type: ignore[attr-defined]
-                    model,
-                    {torch.nn.Linear},
-                    dtype=torch.qint8,
-                )
-                model.eval()
-        except Exception:
-            pass
-    # Runtime-only optimization: fuse Conv1d+BN pairs for lower inference latency.
-    try:
-        fuse_conv_bn_eval_inplace(model)
-    except Exception:
-        pass
-    # Optional graph compile for steady-state on-device latency.
-    # Disabled by default; enable with FD_TORCH_COMPILE=1.
-    if str(os.getenv("FD_TORCH_COMPILE", "0")).strip().lower() in {"1", "true", "yes", "on"}:
-        try:
-            model = torch.compile(model, mode="reduce-overhead")  # type: ignore[attr-defined]
-            model.eval()
-        except Exception:
-            pass
 
     cached = {
         "model": model,
         "device": device,
         "feat_cfg": feat_cfg,
         "feat_cfg_dict": feat_cfg_dict,
-        "feat_cfg_sig": (
-            str(getattr(feat_cfg, "center", "pelvis")),
-            bool(getattr(feat_cfg, "use_motion", True)),
-            bool(getattr(feat_cfg, "use_bone", False)),
-            bool(getattr(feat_cfg, "use_bone_length", False)),
-            bool(getattr(feat_cfg, "use_conf_channel", True)),
-            bool(getattr(feat_cfg, "motion_scale_by_fps", True)),
-            float(getattr(feat_cfg, "conf_gate", 0.2)),
-            bool(getattr(feat_cfg, "use_precomputed_mask", True)),
-        ),
         "model_cfg": model_cfg_dict,
         "data_cfg": data_cfg_dict,
-        "is_two_stream": ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False)),
     }
     _MODEL_CACHE[spec.key] = cached
     return cached
@@ -461,85 +384,6 @@ def _match_in_ch_tcn(torch: Any, model: Any, x: Any) -> Any:
     return torch.cat([x, pad], dim=-1)
 
 
-def _make_forward_fn(
-    *,
-    torch: Any,
-    model: Any,
-    device: Any,
-    arch: str,
-    Xg: Any,
-    feat_cfg: Any,
-    model_cfg: Optional[Dict[str, Any]] = None,
-    is_two_stream: bool = False,
-):
-    """Build a single forward callable that returns probability tensor [B]."""
-    from core.features import build_tcn_input, split_gcn_two_stream
-    use_non_blocking = hasattr(device, "type") and getattr(device, "type", "") in {"cuda", "mps"}
-    cfg = model_cfg if isinstance(model_cfg, dict) else {}
-
-    def _as_batch1_f32(x_np: Any) -> Any:
-        if isinstance(x_np, np.ndarray) and x_np.dtype == np.float32 and x_np.flags.c_contiguous:
-            t = torch.from_numpy(x_np)
-        else:
-            t = torch.as_tensor(x_np, dtype=torch.float32)
-        return t.unsqueeze(0).to(device=device, non_blocking=use_non_blocking)
-
-    if str(arch).lower() == "tcn":
-        Xt = build_tcn_input(Xg, feat_cfg)
-        exp_in_ch = int(cfg.get("in_ch", 0) or 0)
-        if exp_in_ch > 0 and int(Xt.shape[1]) != exp_in_ch:
-            raise RuntimeError(
-                f"TCN input dimension mismatch: built C={int(Xt.shape[1])}, checkpoint in_ch={exp_in_ch}. "
-                "Likely feat_cfg/model_cfg drift between training and deploy."
-            )
-        x_t = _as_batch1_f32(Xt)  # [1,T,C]
-        x_t = _match_in_ch_tcn(torch, model, x_t)
-
-        def forward_fn():
-            logits = model(x_t)
-            return torch.sigmoid(logits).view(-1)
-
-        return forward_fn
-
-    if is_two_stream:
-        xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
-        exp_j = int(cfg.get("in_feats_j", 0) or 0)
-        exp_m = int(cfg.get("in_feats_m", 0) or 0)
-        if exp_j > 0 and int(xj_np.shape[2]) != exp_j:
-            raise RuntimeError(
-                f"Two-stream GCN joint feature mismatch: built F_j={int(xj_np.shape[2])}, checkpoint in_feats_j={exp_j}. "
-                "Likely feat_cfg/model_cfg drift between training and deploy."
-            )
-        if exp_m > 0 and int(xm_np.shape[2]) != exp_m:
-            raise RuntimeError(
-                f"Two-stream GCN motion feature mismatch: built F_m={int(xm_np.shape[2])}, checkpoint in_feats_m={exp_m}. "
-                "Likely feat_cfg/model_cfg drift between training and deploy."
-            )
-        xj_t = _as_batch1_f32(xj_np)
-        xm_t = _as_batch1_f32(xm_np)
-
-        def forward_fn():
-            logits = model(xj_t, xm_t)
-            return torch.sigmoid(logits).view(-1)
-
-        return forward_fn
-
-    arr_g = np.asarray(Xg)
-    exp_f = int(cfg.get("in_feats", 0) or 0)
-    if exp_f > 0 and int(arr_g.shape[2]) != exp_f:
-        raise RuntimeError(
-            f"GCN feature mismatch: built F={int(arr_g.shape[2])}, checkpoint in_feats={exp_f}. "
-            "Likely feat_cfg/model_cfg drift between training and deploy."
-        )
-    xb = _as_batch1_f32(arr_g)  # [1,T,V,F]
-
-    def forward_fn():
-        logits = model(xb)
-        return torch.sigmoid(logits).view(-1)
-
-    return forward_fn
-
-
 def predict_spec(
     *,
     spec_key: str,
@@ -550,10 +394,6 @@ def predict_spec(
     op_code: str = "OP-2",
     use_mc: bool = True,
     mc_M: int = 16,
-    mc_sigma_tol: Optional[float] = None,
-    mc_se_tol: Optional[float] = None,
-    feature_cache: Optional[Dict[Any, Any]] = None,
-    assume_sanitized_inputs: bool = False,
 ) -> Dict[str, Any]:
     """Run inference for one deploy spec and return p/mu/sigma.
 
@@ -569,176 +409,93 @@ def predict_spec(
     model = cached["model"]
     device = cached["device"]
     feat_cfg = cached["feat_cfg"]
+    data_cfg = cached["data_cfg"] or {}
 
     # NOTE: `joints_xy` is expected to already be a fixed-length window (server/app.py
     # resamples/pads to target_T). Our feature builders operate on that window.
-    from core.features import build_canonical_input
+    import numpy as np
 
-    if isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32:
-        j = joints_xy
-    else:
-        j = np.asarray(joints_xy, dtype=np.float32)
-    if j.ndim != 3 or int(j.shape[2]) < 2:
-        raise ValueError(f"joints_xy must be shaped [T,J,2], got {tuple(j.shape)}")
-    j = j[..., :2]
-    if not assume_sanitized_inputs:
-        j = np.nan_to_num(j, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-        np.clip(j, 0.0, 1.0, out=j)
-    t_win = int(j.shape[0])
-    if int(target_T) > 0 and t_win != int(target_T):
-        raise ValueError(f"joints_xy time length mismatch ({t_win}); expected target_T={int(target_T)}")
+    from fall_detection.core.features import build_tcn_input, build_canonical_input
 
-    if conf is None:
-        c = None
-    elif isinstance(conf, np.ndarray) and conf.dtype == np.float32:
-        c = conf
-    else:
-        c = np.asarray(conf, dtype=np.float32)
-    if c is not None:
-        if c.ndim != 2:
-            raise ValueError(f"conf must be shaped [T,J], got {tuple(c.shape)}")
-        j_joints = int(j.shape[1])
-        if c.shape != (t_win, j_joints):
-            if int(c.size) == int(t_win * j_joints):
-                c = c.reshape(t_win, j_joints)
-            else:
-                raise ValueError(f"conf shape mismatch {tuple(c.shape)} for joints {(t_win, j_joints)}")
-        if not assume_sanitized_inputs:
-            c = np.nan_to_num(c, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-            np.clip(c, 0.0, 1.0, out=c)
+    j = np.asarray(joints_xy, dtype=np.float32)
+    c = np.asarray(conf, dtype=np.float32) if conf is not None else None
 
-    def _scalar_first(t: Any) -> float:
-        return float(t.view(-1)[0].item())
-
-    # Prepare inputs (optionally reuse per-request cache across dual-model inference).
-    cache_key = None
-    if feature_cache is not None:
-        # Request-local cache only lives for one predict_window request where
-        # joints/conf/fps are shared across model variants.
-        try:
-            j_ptr = int(j.__array_interface__["data"][0])
-        except Exception:
-            j_ptr = id(j)
-        if c is None:
-            c_ptr = None
-        else:
-            try:
-                c_ptr = int(c.__array_interface__["data"][0])
-            except Exception:
-                c_ptr = id(c)
-        j_fp = _sample_fp(j)
-        c_fp = _sample_fp(c)
-        feat_cfg_sig = cached.get("feat_cfg_sig")
-        if not isinstance(feat_cfg_sig, tuple):
-            feat_cfg_sig = (
-                str(getattr(feat_cfg, "center", "pelvis")),
-                bool(getattr(feat_cfg, "use_motion", True)),
-                bool(getattr(feat_cfg, "use_bone", False)),
-                bool(getattr(feat_cfg, "use_bone_length", False)),
-                bool(getattr(feat_cfg, "use_conf_channel", True)),
-                bool(getattr(feat_cfg, "motion_scale_by_fps", True)),
-                float(getattr(feat_cfg, "conf_gate", 0.2)),
-                bool(getattr(feat_cfg, "use_precomputed_mask", True)),
-            )
-        cache_key = (*feat_cfg_sig, float(fps), int(target_T), j_ptr, c_ptr, *j_fp, *c_fp)
-        cached_xg = feature_cache.get(cache_key)
-    else:
-        cached_xg = None
-
-    if cached_xg is None:
-        Xg, _mask = build_canonical_input(
-            joints_xy=j,
-            motion_xy=None,
-            conf=c,
-            mask=None,
-            fps=float(fps),
-            feat_cfg=feat_cfg,
-            assume_finite_xy=True,
-            assume_finite_conf=(c is not None),
-        )
-        if feature_cache is not None and cache_key is not None:
-            feature_cache[cache_key] = Xg
-    else:
-        Xg = cached_xg
-
-    forward_fn = _make_forward_fn(
-        torch=torch,
-        model=model,
-        device=device,
-        arch=spec.arch,
-        Xg=Xg,
+    # Prepare inputs.
+    Xg, _mask = build_canonical_input(
+        joints_xy=j,
+        motion_xy=None,
+        conf=c,
+        mask=None,
+        fps=float(fps),
         feat_cfg=feat_cfg,
-        model_cfg=(cached.get("model_cfg") if isinstance(cached, dict) else None),
-        is_two_stream=bool(cached.get("is_two_stream", False)),
     )
 
-    p_det: Optional[float] = None
-    mu = 0.0
-    sigma = 0.0
-    mc_n_used: Optional[int] = None
+    if spec.arch == "tcn":
+        
+        Xt = build_tcn_input(Xg, feat_cfg)
+        x_t = torch.from_numpy(Xt).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,C]
+        x_t = _match_in_ch_tcn(torch, model, x_t)
+
+        def forward_fn():
+            with torch.no_grad():
+                logits = model(x_t)
+                return torch.sigmoid(logits).view(-1)
+    else:
+        xb = torch.from_numpy(Xg).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,V,F]
+
+        # Two-stream models expect (xj, xm). We follow the same split logic as deploy/run_modes.py.
+        is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
+        if is_two_stream:
+            # build_canonical_input() produces features in the order:
+            #   [x, y] + ([dx, dy] if use_motion) + ([conf] if use_conf_channel)
+            # Motion stream for TwoStreamGCN is **dx,dy only** (no conf).
+            f = int(xb.shape[-1])
+            if f == 5:
+                # [x,y,dx,dy,conf] -> xj=[x,y,conf], xm=[dx,dy]
+                xj_t = torch.cat([xb[..., 0:2], xb[..., 4:5]], dim=-1)
+                xm_t = xb[..., 2:4]
+            elif f == 4:
+                # [x,y,dx,dy] -> xj=[x,y], xm=[dx,dy]
+                xj_t = xb[..., 0:2]
+                xm_t = xb[..., 2:4]
+            elif f == 3:
+                # [x,y,conf] but model expects motion too; keep xj as-is and pad xm
+                xj_t = xb
+                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
+            elif f == 2:
+                # [x,y] but model expects motion too; keep xj as-is and pad xm
+                xj_t = xb
+                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
+            else:
+                raise RuntimeError(f"Unexpected GCN feature dim F={f} for two-stream model")
+
+            def forward_fn():
+                with torch.no_grad():
+                    logits = model(xj_t, xm_t)
+                    return torch.sigmoid(logits).view(-1)
+
+        else:
+
+            def forward_fn():
+                with torch.no_grad():
+                    logits = model(xb)
+                    return torch.sigmoid(logits).view(-1)
+
+    # Deterministic probability.
+    p_det = float(forward_fn().detach().cpu().view(-1)[0].item())
+
+    mu, sigma = float(p_det), 0.0
     if use_mc:
         try:
-            mc_predict_mu_sigma = _mc_predict_fn()
+            from fall_detection.core.uncertainty import mc_predict_mu_sigma
 
-            mc_kwargs: Dict[str, Any] = {"M": int(mc_M)}
-            if mc_sigma_tol is not None:
-                try:
-                    sigma_tol = float(mc_sigma_tol)
-                    if sigma_tol > 0.0:
-                        mc_kwargs["max_sigma_for_early_stop"] = sigma_tol
-                        mc_kwargs["return_n_used"] = True
-                except Exception:
-                    pass
-            if mc_se_tol is not None:
-                try:
-                    se_tol = float(mc_se_tol)
-                    if se_tol > 0.0:
-                        mc_kwargs["max_se_for_early_stop"] = se_tol
-                        mc_kwargs["return_n_used"] = True
-                except Exception:
-                    pass
-            try:
-                mc_out = mc_predict_mu_sigma(model, forward_fn=forward_fn, **mc_kwargs)
-            except TypeError:
-                mc_kwargs.pop("max_sigma_for_early_stop", None)
-                mc_kwargs.pop("max_se_for_early_stop", None)
-                mc_kwargs.pop("return_n_used", None)
-                mc_out = mc_predict_mu_sigma(model, forward_fn=forward_fn, **mc_kwargs)
-
-            if isinstance(mc_out, tuple) and len(mc_out) >= 3 and isinstance(mc_out[2], (int, np.integer)):
-                mu_t = mc_out[0]
-                sig_t = mc_out[1]
-                mc_n_used = int(mc_out[2])
-            else:
-                mu_t = mc_out[0]
-                sig_t = mc_out[1]
-                mc_n_used = int(mc_M)
-            mu = _scalar_first(mu_t)
-            sigma = _scalar_first(sig_t)
-            # In MC mode, use predictive mean as display/telemetry probability.
-            p_det = float(mu)
+            mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
+            mu = float(mu_t.detach().cpu().view(-1)[0].item())
+            sigma = float(sig_t.detach().cpu().view(-1)[0].item())
         except Exception:
-            with torch.inference_mode():
-                p_det = _scalar_first(forward_fn())
-            mu = float(p_det)
-            sigma = 0.0
-            mc_n_used = 1
-    else:
-        with torch.inference_mode():
-            p_det = _scalar_first(forward_fn())
-        mu = float(p_det)
-        sigma = 0.0
+            mu, sigma = float(p_det), 0.0
 
-    op_norm = _norm_op_code(op_code)
-    alert_cfg_eff: Dict[str, Any] = dict(spec.alert_cfg or {})
-    op_entry = (spec.ops or {}).get(op_norm) or {}
-    if isinstance(op_entry, dict):
-        if "tau_low" in op_entry:
-            alert_cfg_eff["tau_low"] = _safe_float(op_entry.get("tau_low"), _safe_float(alert_cfg_eff.get("tau_low"), 0.5))
-        if "tau_high" in op_entry:
-            alert_cfg_eff["tau_high"] = _safe_float(op_entry.get("tau_high"), _safe_float(alert_cfg_eff.get("tau_high"), 0.85))
-    tau_low = _safe_float(alert_cfg_eff.get("tau_low"), 0.5)
-    tau_high = _safe_float(alert_cfg_eff.get("tau_high"), 0.85)
+    tau_low, tau_high = get_op_taus(spec_key, op_code)
 
     return {
         "spec_key": spec_key,
@@ -747,11 +504,10 @@ def predict_spec(
         "p_det": float(p_det),
         "mu": float(mu),
         "sigma": float(sigma),
-        "mc_n_used": int(mc_n_used) if mc_n_used is not None else None,
         "tau_low": float(tau_low),
         "tau_high": float(tau_high),
         "ops": spec.ops,
-        "alert_cfg": alert_cfg_eff,
+        "alert_cfg": get_alert_cfg(spec_key, op_code),
     }
 
 
