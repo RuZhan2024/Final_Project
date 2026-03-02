@@ -733,6 +733,7 @@ def main() -> None:
         running = 0.0
         seen = 0
         nonfinite_skips_ep = 0
+        grad_norm_vals: List[float] = []
 
         for step, (xb, yb) in enumerate(tqdm(train_loader, desc=f"train ep{ep}", leave=False), start=1):
             xb = _to_f32(xb, device)         # [B,T,C]
@@ -758,6 +759,14 @@ def main() -> None:
                 opt.zero_grad(set_to_none=True)
                 continue
             loss.backward()
+            grad_sq = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    g = p.grad.detach()
+                    grad_sq += float(torch.sum(g * g).item())
+            grad_norm = grad_sq ** 0.5
+            if np.isfinite(grad_norm):
+                grad_norm_vals.append(float(grad_norm))
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             opt.step()
@@ -785,6 +794,9 @@ def main() -> None:
 
         score = float(f1) if cfg.monitor == "f1" else float(apv)
         lr_now = float(opt.param_groups[0]["lr"])
+        grad_norm_mean = float(np.mean(grad_norm_vals)) if grad_norm_vals else None
+        grad_norm_p95 = float(np.percentile(grad_norm_vals, 95.0)) if grad_norm_vals else None
+        grad_norm_max = float(np.max(grad_norm_vals)) if grad_norm_vals else None
 
         print(
             f"[val] ep={ep:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
@@ -817,6 +829,9 @@ def main() -> None:
             "monitor_score": float(score),
             "lr": lr_now,
             "nonfinite_skips": int(nonfinite_skips_ep),
+            "train_grad_norm_mean": grad_norm_mean,
+            "train_grad_norm_p95": grad_norm_p95,
+            "train_grad_norm_max": grad_norm_max,
         }
         log_row(row)
 
