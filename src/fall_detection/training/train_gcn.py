@@ -472,6 +472,7 @@ class TrainCfg:
     use_ema: int = 0
     ema_decay: float = 0.995
     save_tag: str = ""
+    amp: int = 0
 
     num_workers: int = 0
 
@@ -584,6 +585,7 @@ def main() -> None:
     ap.add_argument("--use_ema", type=int, default=0)
     ap.add_argument("--ema_decay", type=float, default=0.995)
     ap.add_argument("--save_tag", type=str, default="")
+    ap.add_argument("--amp", type=int, default=0)
 
     ap.add_argument("--num_workers", type=int, default=0)
 
@@ -748,6 +750,8 @@ def main() -> None:
             criterion = nn.BCEWithLogitsLoss()
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    use_amp = bool(int(cfg.amp)) and (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         opt,
@@ -797,22 +801,24 @@ def main() -> None:
                 xj = _to_f32(xj, device)
                 xm = _to_f32(xm, device)
                 yb = _to_f32(yb, device).view(-1)
-                logits = logits_1d(model(xj, xm))
                 bsz = int(xj.shape[0])
             else:
                 xb, yb = batch
                 xb = _to_f32(xb, device)
                 yb = _to_f32(yb, device).view(-1)
-                logits = logits_1d(model(xb))
                 bsz = int(xb.shape[0])
 
-            yb_loss = yb
-            if cfg.label_smoothing > 0:
-                eps = float(cfg.label_smoothing)
-                yb_loss = yb * (1.0 - eps) + 0.5 * eps
-
             opt.zero_grad(set_to_none=True)
-            loss = criterion(logits, yb_loss)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                if bool(cfg.two_stream):
+                    logits = logits_1d(model(xj, xm))
+                else:
+                    logits = logits_1d(model(xb))
+                yb_loss = yb
+                if cfg.label_smoothing > 0:
+                    eps = float(cfg.label_smoothing)
+                    yb_loss = yb * (1.0 - eps) + 0.5 * eps
+                loss = criterion(logits, yb_loss)
             if not torch.isfinite(loss):
                 lr_now = float(opt.param_groups[0]["lr"])
                 print(
@@ -822,7 +828,11 @@ def main() -> None:
                 nonfinite_skips_ep += 1
                 opt.zero_grad(set_to_none=True)
                 continue
-            loss.backward()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+            else:
+                loss.backward()
             grad_sq = 0.0
             for p in model.parameters():
                 if p.grad is not None:
@@ -833,7 +843,11 @@ def main() -> None:
                 grad_norm_vals.append(float(grad_norm))
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            opt.step()
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
 
             if ema is not None:
                 ema.update(model)
