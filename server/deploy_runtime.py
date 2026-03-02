@@ -421,7 +421,7 @@ def predict_spec(
     # resamples/pads to target_T). Our feature builders operate on that window.
     import numpy as np
 
-    from fall_detection.core.features import build_tcn_input, build_canonical_input
+    from fall_detection.core.features import build_tcn_input, build_canonical_input, split_gcn_two_stream
 
     j = np.asarray(joints_xy, dtype=np.float32)
     c = np.asarray(conf, dtype=np.float32) if conf is not None else None
@@ -449,31 +449,12 @@ def predict_spec(
     else:
         xb = torch.from_numpy(Xg).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,V,F]
 
-        # Two-stream models expect (xj, xm). We follow the same split logic as deploy/run_modes.py.
+        # Two-stream models must use canonical channel-layout split for train/runtime parity.
         is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
         if is_two_stream:
-            # build_canonical_input() produces features in the order:
-            #   [x, y] + ([dx, dy] if use_motion) + ([conf] if use_conf_channel)
-            # Motion stream for TwoStreamGCN is **dx,dy only** (no conf).
-            f = int(xb.shape[-1])
-            if f == 5:
-                # [x,y,dx,dy,conf] -> xj=[x,y,conf], xm=[dx,dy]
-                xj_t = torch.cat([xb[..., 0:2], xb[..., 4:5]], dim=-1)
-                xm_t = xb[..., 2:4]
-            elif f == 4:
-                # [x,y,dx,dy] -> xj=[x,y], xm=[dx,dy]
-                xj_t = xb[..., 0:2]
-                xm_t = xb[..., 2:4]
-            elif f == 3:
-                # [x,y,conf] but model expects motion too; keep xj as-is and pad xm
-                xj_t = xb
-                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
-            elif f == 2:
-                # [x,y] but model expects motion too; keep xj as-is and pad xm
-                xj_t = xb
-                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
-            else:
-                raise RuntimeError(f"Unexpected GCN feature dim F={f} for two-stream model")
+            xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
+            xj_t = torch.from_numpy(xj_np).to(device=device, dtype=torch.float32).unsqueeze(0)
+            xm_t = torch.from_numpy(xm_np).to(device=device, dtype=torch.float32).unsqueeze(0)
 
             def forward_fn():
                 with torch.no_grad():
