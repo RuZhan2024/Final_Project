@@ -766,8 +766,9 @@ def main() -> None:
         model.train()
         running = 0.0
         seen = 0
+        nonfinite_skips_ep = 0
 
-        for batch in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
+        for step, batch in enumerate(tqdm(train_loader, desc=f"train ep{ep}", leave=False), start=1):
             if bool(cfg.two_stream):
                 xj, xm, yb = batch
                 xj = _to_f32(xj, device)
@@ -789,6 +790,15 @@ def main() -> None:
 
             opt.zero_grad(set_to_none=True)
             loss = criterion(logits, yb_loss)
+            if not torch.isfinite(loss):
+                lr_now = float(opt.param_groups[0]["lr"])
+                print(
+                    f"[warn] non-finite loss; skipping step "
+                    f"ep={ep} step={step} lr={lr_now:.5g} loss={float(loss.detach().cpu()):.6g}"
+                )
+                nonfinite_skips_ep += 1
+                opt.zero_grad(set_to_none=True)
+                continue
             loss.backward()
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -851,6 +861,7 @@ def main() -> None:
             "ap": float(apv),
             "auc": float(auc),
             "lr": float(lr_now),
+            "nonfinite_skips": int(nonfinite_skips_ep),
         }
         log_row(row)
 

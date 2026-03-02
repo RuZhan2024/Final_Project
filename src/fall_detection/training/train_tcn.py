@@ -732,8 +732,9 @@ def main() -> None:
         model.train()
         running = 0.0
         seen = 0
+        nonfinite_skips_ep = 0
 
-        for xb, yb in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
+        for step, (xb, yb) in enumerate(tqdm(train_loader, desc=f"train ep{ep}", leave=False), start=1):
             xb = _to_f32(xb, device)         # [B,T,C]
             yb = _to_f32(yb, device).view(-1)  # [B]
 
@@ -747,6 +748,15 @@ def main() -> None:
                 yb_loss = yb * (1.0 - eps) + 0.5 * eps
 
             loss = criterion(logits, yb_loss)
+            if not torch.isfinite(loss):
+                lr_now = float(opt.param_groups[0]["lr"])
+                print(
+                    f"[warn] non-finite loss; skipping step "
+                    f"ep={ep} step={step} lr={lr_now:.5g} loss={float(loss.detach().cpu()):.6g}"
+                )
+                nonfinite_skips_ep += 1
+                opt.zero_grad(set_to_none=True)
+                continue
             loss.backward()
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -806,6 +816,7 @@ def main() -> None:
             "monitor": cfg.monitor,
             "monitor_score": float(score),
             "lr": lr_now,
+            "nonfinite_skips": int(nonfinite_skips_ep),
         }
         log_row(row)
 
