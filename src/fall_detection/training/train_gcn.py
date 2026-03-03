@@ -61,14 +61,18 @@ from fall_detection.core.models import GCNConfig, build_model, pick_device
 def _to_f32(x, device: torch.device) -> torch.Tensor:
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, *, deterministic: int = 1) -> None:
     seed = int(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if bool(int(deterministic)):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def logits_1d(out: torch.Tensor) -> torch.Tensor:
@@ -412,7 +416,7 @@ class TrainCfg:
     lr_plateau_patience: int = 3
     lr_plateau_factor: float = 0.5
     lr_plateau_min_lr: float = 1e-6
-    scheduler_metric: str = "val_loss"
+    scheduler_metric: Optional[str] = None
     scheduler_ema_beta: float = 0.0
     scheduler: str = "plateau"
     max_lr: Optional[float] = None
@@ -477,6 +481,9 @@ class TrainCfg:
     amp: int = 0
 
     num_workers: int = 0
+    prefetch_factor: Optional[int] = 2
+    persistent_workers: int = 1
+    deterministic: int = 1
 
 def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
     """
@@ -529,7 +536,12 @@ def main() -> None:
     ap.add_argument("--lr_plateau_patience", type=int, default=3)
     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
-    ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
+    ap.add_argument(
+        "--scheduler_metric",
+        choices=["val_loss", "val_ap", "val_f1"],
+        default=None,
+        help="default: auto (resolved from --monitor)",
+    )
     ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
     ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
     ap.add_argument("--max_lr", type=float, default=None)
@@ -592,13 +604,19 @@ def main() -> None:
     ap.add_argument("--amp", type=int, default=0)
 
     ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--prefetch_factor", type=int, default=2)
+    ap.add_argument("--persistent_workers", type=int, default=1)
+    ap.add_argument("--deterministic", type=int, default=1)
 
     args = ap.parse_args()
     cfg = TrainCfg(**vars(args))
 
     os.makedirs(cfg.save_dir, exist_ok=True)
 
-    set_seed(cfg.seed)
+    if cfg.scheduler_metric is None:
+        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
+
+    set_seed(cfg.seed, deterministic=cfg.deterministic)
     device = pick_device()
     feat_cfg = build_feat_cfg(cfg)
 
@@ -715,18 +733,28 @@ def main() -> None:
             in_feats=int(in_feats),      # type: ignore[arg-type]
         ).to(device)
 
+    resume_bundle: Optional[Dict[str, Any]] = None
     if cfg.resume:
         bundle = load_ckpt(cfg.resume, map_location="cpu")
         if isinstance(bundle, dict) and "state_dict" in bundle:
             model.load_state_dict(bundle["state_dict"], strict=True)
         elif isinstance(bundle, dict):
             model.load_state_dict(bundle, strict=True)
+        if isinstance(bundle, dict):
+            resume_bundle = bundle
         print(f"[resume] loaded: {cfg.resume}")
+        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
 
     ema: Optional[EMA] = None
     if int(cfg.use_ema) == 1:
         ema = EMA(model, decay=float(cfg.ema_decay))
         print(f"[ema] enabled decay={cfg.ema_decay}")
+        if resume_bundle is not None and isinstance(resume_bundle, dict) and "ema_state" in resume_bundle:
+            try:
+                ema.load_state_dict(resume_bundle["ema_state"])
+                print("[info] resumed EMA state")
+            except Exception as e:
+                print(f"[warn] failed to load EMA state: {type(e).__name__}: {e}")
 
     sampler = None
     pos_w = None
@@ -760,15 +788,21 @@ def main() -> None:
     sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
 
     pin = (device.type == "cuda")
+    loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
+    if nw > 0:
+        if bool(int(cfg.persistent_workers)):
+            loader_kwargs["persistent_workers"] = True
+        if cfg.prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
     if sampler is not None:
         train_loader = DataLoader(
-            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=nw, pin_memory=pin
+            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs
         )
     else:
         train_loader = DataLoader(
-            train_ds, batch_size=cfg.batch, shuffle=True, num_workers=nw, pin_memory=pin
+            train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs
         )
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=nw, pin_memory=pin)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
     if sched_kind == "plateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt,
@@ -794,6 +828,7 @@ def main() -> None:
     best_score = -1.0
     tag = (cfg.save_tag.strip() + "_") if cfg.save_tag.strip() else ""
     best_path = os.path.join(cfg.save_dir, f"{tag}best.pt")
+    last_path = os.path.join(cfg.save_dir, f"{tag}last.pt")
     history_path = os.path.join(cfg.save_dir, f"{tag}history.jsonl")
 
     if os.path.exists(history_path):
@@ -971,20 +1006,36 @@ def main() -> None:
         if improved:
             best_score = score
             no_improve = 0
-            best_bundle = {
-                "arch": "gcn",
-                "state_dict": model.state_dict(),
-                "model_cfg": dict(model_cfg_save),
-                "feat_cfg": feat_cfg.to_dict(),
-                "data_cfg": {"fps_default": float(cfg.fps_default)},
-                "best": {"val_best": row, "best_thr": float(thr)},
-                "meta": {"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
-                "train_cfg": asdict(cfg),
-            }
-            save_ckpt(best_path, best_bundle)
+            ctx_save = ema.use(model) if ema is not None else nullcontext()
+            with ctx_save:
+                save_ckpt(
+                    best_path,
+                    arch="gcn",
+                    state_dict=model.state_dict(),
+                    model_cfg=dict(model_cfg_save),
+                    feat_cfg=feat_cfg.to_dict(),
+                    data_cfg={"fps_default": float(cfg.fps_default)},
+                    best={"val_best": row, "best_thr": float(thr)},
+                    meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
+                    train_cfg=asdict(cfg),
+                    **({"ema_state": ema.state_dict()} if ema is not None else {}),
+                )
             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
         else:
             no_improve += 1
+
+        save_ckpt(
+            last_path,
+            arch="gcn",
+            state_dict=model.state_dict(),
+            model_cfg=dict(model_cfg_save),
+            feat_cfg=feat_cfg.to_dict(),
+            data_cfg={"fps_default": float(cfg.fps_default)},
+            best={"val_best": row, "best_thr": float(thr)},
+            meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V), "is_last": True},
+            train_cfg=asdict(cfg),
+            **({"ema_state": ema.state_dict()} if ema is not None else {}),
+        )
 
         if ep >= int(cfg.min_epochs) and no_improve >= int(cfg.patience):
             print(f"[early_stop] no improvement for {cfg.patience} epochs")
