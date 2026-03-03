@@ -58,14 +58,18 @@ from fall_detection.core.ema import EMA
 # -------------------------
 # Utilities
 # -------------------------
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, *, deterministic: int = 1) -> None:
     seed = int(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if bool(int(deterministic)):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def logits_1d(out: torch.Tensor) -> torch.Tensor:
@@ -397,7 +401,7 @@ class TrainCfg:
     lr_plateau_patience: int = 5
     lr_plateau_factor: float = 0.5
     lr_plateau_min_lr: float = 1e-6
-    scheduler_metric: str = "val_loss"
+    scheduler_metric: Optional[str] = None
     scheduler_ema_beta: float = 0.0
     scheduler: str = "plateau"
     max_lr: Optional[float] = None
@@ -415,6 +419,7 @@ class TrainCfg:
     amp: int = 0
 
     patience: int = 30
+    min_epochs: int = 0
     fps_default: float = 30.0
     num_workers: int = 0
     persistent_workers: int = 0
@@ -447,6 +452,7 @@ class TrainCfg:
     motion_scale_by_fps: int = 1
     conf_gate: float = 0.20
     use_precomputed_mask: int = 1
+    deterministic: int = 1
 
 
 def main() -> None:
@@ -488,7 +494,12 @@ def main() -> None:
     ap.add_argument("--lr_plateau_patience", type=int, default=5)
     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
-    ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
+    ap.add_argument(
+        "--scheduler_metric",
+        choices=["val_loss", "val_ap", "val_f1"],
+        default=None,
+        help="default: auto (resolved from --monitor)",
+    )
     ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
     ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
     ap.add_argument("--max_lr", type=float, default=None)
@@ -506,6 +517,7 @@ def main() -> None:
     ap.add_argument("--amp", type=int, default=0)
 
     ap.add_argument("--patience", type=int, default=30)
+    ap.add_argument("--min_epochs", type=int, default=0)
     ap.add_argument("--fps_default", type=float, default=30.0)
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--persistent_workers", type=int, default=0)
@@ -537,11 +549,15 @@ def main() -> None:
     ap.add_argument("--motion_scale_by_fps", type=int, default=1)
     ap.add_argument("--conf_gate", type=float, default=0.20)
     ap.add_argument("--use_precomputed_mask", type=int, default=1)
+    ap.add_argument("--deterministic", type=int, default=1)
 
     args = ap.parse_args()
     cfg = TrainCfg(**vars(args))
 
-    set_seed(cfg.seed)
+    if cfg.scheduler_metric is None:
+        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
+
+    set_seed(cfg.seed, deterministic=cfg.deterministic)
     os.makedirs(cfg.save_dir, exist_ok=True)
 
     # If resuming, load cfg from checkpoint (single source of truth).
@@ -573,6 +589,7 @@ def main() -> None:
 
         if isinstance(data_cfg0, dict) and "fps_default" in data_cfg0:
             cfg.fps_default = float(data_cfg0["fps_default"])
+        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
 
     with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
@@ -933,7 +950,7 @@ def main() -> None:
             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
         else:
             no_improve += 1
-            if cfg.patience > 0 and no_improve >= cfg.patience:
+            if cfg.patience > 0 and ep >= int(cfg.min_epochs) and no_improve >= cfg.patience:
                 print(f"[early stop] patience={cfg.patience} reached at ep={ep}")
                 break
 
