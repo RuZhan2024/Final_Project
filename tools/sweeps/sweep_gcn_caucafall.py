@@ -61,6 +61,9 @@ def main() -> None:
     base_overrides = {
     "WIN_W": 48,
     "WIN_S": 12,
+    "ADAPTER_USE": 1,
+    "DO_EXTRACT": 0,
+    "AUTO_DO_EXTRACT": 0,
     "EPOCHS_GCN": 200,
     "BATCH_GCN": 64,
     "FEAT_USE_MOTION": 1,

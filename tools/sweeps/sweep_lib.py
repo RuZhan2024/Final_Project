@@ -451,7 +451,13 @@ def run_sweep(
 
             # Ensure eval windows exist (cheap when --skip_existing).
             if stage2_run_windows_eval:
-                mk_ov = {"WIN_W": W, "WIN_S": S}
+                mk_ov = {
+                    "WIN_W": W,
+                    "WIN_S": S,
+                    "ADAPTER_USE": 1,
+                    "DO_EXTRACT": 0,
+                    "AUTO_DO_EXTRACT": 0,
+                }
                 cmd_win = make_cmd(f"windows-eval-{run.dataset}", mk_ov, silent=silent_make)
                 log_win = stage2_logs_dir / f"{tag}.windows_eval.log"
                 if not (win_eval_dir / stage2_split).exists():
