@@ -24,10 +24,28 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 import os
+import tempfile
 import torch
 
 
 Bundle = Dict[str, Any]
+CKPT_VERSION = 2
+
+
+def _normalize_bundle(bundle: Bundle) -> Bundle:
+    """Normalize bundle fields to a stable schema."""
+    b = dict(bundle or {})
+    v = int(b.get("ckpt_version", b.get("version", CKPT_VERSION)))
+    b["ckpt_version"] = v
+    b["version"] = v  # keep legacy alias for older readers
+    b["arch"] = str(b.get("arch", "unknown"))
+    b["model_cfg"] = dict(b.get("model_cfg", {}) or {})
+    b["feat_cfg"] = dict(b.get("feat_cfg", {}) or {})
+    b["data_cfg"] = dict(b.get("data_cfg", {}) or {})
+    b["meta"] = dict(b.get("meta", {}) or {})
+    if "best" in b and b["best"] is None:
+        b["best"] = {}
+    return b
 
 
 def _as_bundle(obj: Any) -> Bundle:
@@ -42,19 +60,12 @@ def _as_bundle(obj: Any) -> Bundle:
     if isinstance(obj, dict):
         # New style: already a bundle
         if "state_dict" in obj and isinstance(obj["state_dict"], dict):
-            b = dict(obj)
-            b.setdefault("version", 2)
-            b.setdefault("arch", b.get("arch", "unknown"))
-            b.setdefault("model_cfg", b.get("model_cfg", {}) or {})
-            b.setdefault("feat_cfg", b.get("feat_cfg", {}) or {})
-            b.setdefault("data_cfg", b.get("data_cfg", {}) or {})
-            b.setdefault("meta", b.get("meta", {}) or {})
-            return b
+            return _normalize_bundle(dict(obj))
 
         # Some trainers saved {"model": state_dict, ...}
         if "model" in obj and isinstance(obj["model"], dict):
             b = {
-                "version": 1,
+                "ckpt_version": 1,
                 "arch": obj.get("arch", obj.get("model_arch", "unknown")),
                 "state_dict": obj["model"],
                 "model_cfg": obj.get("model_cfg", obj.get("cfg", {})) or {},
@@ -62,7 +73,7 @@ def _as_bundle(obj: Any) -> Bundle:
                 "data_cfg": obj.get("data_cfg", {}) or {},
                 "meta": obj.get("meta", {}) or {},
             }
-            return b
+            return _normalize_bundle(b)
 
         # It might itself be a raw state_dict (parameter tensors)
         if obj and all(isinstance(k, str) for k in obj.keys()):
@@ -70,7 +81,7 @@ def _as_bundle(obj: Any) -> Bundle:
             sample_keys = list(obj.keys())[:5]
             if any("." in k for k in sample_keys) or any(k.endswith(("weight", "bias")) for k in sample_keys):
                 return {
-                    "version": 0,
+                    "ckpt_version": 0,
                     "arch": "unknown",
                     "state_dict": obj,
                     "model_cfg": {},
@@ -114,18 +125,26 @@ def save_ckpt(
     else:
         raise TypeError("bundle_or_state_dict must be a dict or None")
 
-    # Normalize bundle fields
-    bundle.setdefault("version", 2)
-    bundle.setdefault("arch", bundle.get("arch", "unknown"))
-    bundle.setdefault("model_cfg", bundle.get("model_cfg", {}) or {})
-    bundle.setdefault("feat_cfg", bundle.get("feat_cfg", {}) or {})
-    bundle.setdefault("data_cfg", bundle.get("data_cfg", {}) or {})
-    bundle.setdefault("meta", bundle.get("meta", {}) or {})
+    bundle = _normalize_bundle(bundle)
 
     if "state_dict" not in bundle or not isinstance(bundle["state_dict"], dict):
         raise ValueError("Checkpoint bundle must contain a dict 'state_dict'.")
 
-    torch.save(bundle, path)
+    # Atomic write: write to temp file in the same directory then replace.
+    out_dir = os.path.dirname(path) or "."
+    base = os.path.basename(path)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{base}.", suffix=".tmp", dir=out_dir)
+    os.close(fd)
+    try:
+        torch.save(bundle, tmp_path)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_ckpt(path: str, map_location: Union[str, torch.device] = "cpu") -> Bundle:
@@ -133,7 +152,7 @@ def load_ckpt(path: str, map_location: Union[str, torch.device] = "cpu") -> Bund
     Load a checkpoint and return a canonical bundle dict.
     """
     obj = torch.load(path, map_location=map_location)
-    return _as_bundle(obj)
+    return _normalize_bundle(_as_bundle(obj))
 
 
 def get_cfg(bundle: Bundle, key: Optional[str] = None, default: Any = None) -> Any:
