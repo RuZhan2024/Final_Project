@@ -24,7 +24,7 @@ def _sf(x: Any, d: float) -> float:
         if v != v:  # NaN
             return d
         return v
-    except Exception:
+    except (TypeError, ValueError):
         return d
 
 

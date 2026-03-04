@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import random
+from pathlib import Path
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,19 +58,21 @@ from fall_detection.core.models import GCNConfig, build_model, pick_device
 # -------------------------
 # Utilities
 # -------------------------
-def _to_f32(x, device: torch.device, non_blocking: bool = False) -> torch.Tensor:
-    if isinstance(x, torch.Tensor):
-        return x.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+def _to_f32(x, device: torch.device) -> torch.Tensor:
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, *, deterministic: int = 1) -> None:
     seed = int(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if bool(int(deterministic)):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def logits_1d(out: torch.Tensor) -> torch.Tensor:
@@ -81,7 +84,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
-    y = np.asarray(labels01, dtype=np.int64).reshape(-1)
+    y = np.asarray(labels01).astype(int).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
     return torch.tensor([neg / pos], dtype=torch.float32)
@@ -97,8 +100,24 @@ def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
     return WeightedRandomSampler(weights=torch.from_numpy(w), num_samples=len(w), replacement=True)
 
 
+def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple[float, float, float, float]:
+    yb = (np.asarray(y_true).reshape(-1).astype(np.int64) > 0).astype(np.int64)
+    pb = (np.asarray(p).reshape(-1) >= float(thr)).astype(np.int64)
+
+    tp = int(((pb == 1) & (yb == 1)).sum())
+    fp = int(((pb == 1) & (yb == 0)).sum())
+    fn = int(((pb == 0) & (yb == 1)).sum())
+    tn = int(((pb == 0) & (yb == 0)).sum())
+
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2.0 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    return float(prec), float(rec), float(f1), float(fpr)
+
+
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
-    m = np.asarray(mask, dtype=bool).copy()
+    m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
     if mask_joint_p > 0:
         drop_j = rng.random(V) < float(mask_joint_p)
@@ -119,6 +138,49 @@ def list_npz_files(root: str) -> List[str]:
     files = glob.glob(pat, recursive=True)
     files.sort()
     return files
+
+
+def _validate_hard_neg_paths(
+    paths: List[str],
+    *,
+    train_dir: str,
+    allow_nontrain: bool,
+) -> None:
+    """Guard against val/test leakage through hard-negative lists."""
+    if allow_nontrain or not paths:
+        return
+
+    train_root = Path(train_dir).expanduser().resolve()
+    bad_valtest: List[str] = []
+    bad_unknown: List[str] = []
+
+    for raw in paths:
+        rp = Path(raw).expanduser().resolve()
+        parts_l = {p.lower() for p in rp.parts}
+        if "val" in parts_l or "test" in parts_l:
+            bad_valtest.append(str(rp))
+            continue
+        in_train_root = False
+        try:
+            rp.relative_to(train_root)
+            in_train_root = True
+        except ValueError:
+            in_train_root = False
+        has_train_component = "train" in parts_l
+        if not (in_train_root or has_train_component):
+            bad_unknown.append(str(rp))
+
+    if bad_valtest or bad_unknown:
+        lines = [
+            "hard_neg_list safety guard rejected candidate paths.",
+            "By default, hard negatives must come from train split paths.",
+            "Use --allow_hard_neg_nontrain 1 only if you explicitly accept leakage risk.",
+        ]
+        if bad_valtest:
+            lines.append(f"val/test-like paths (showing up to 5): {bad_valtest[:5]}")
+        if bad_unknown:
+            lines.append(f"non-train paths (showing up to 5): {bad_unknown[:5]}")
+        raise ValueError(" ".join(lines))
 
 
 class WindowDatasetGCN(Dataset):
@@ -205,13 +267,33 @@ class WindowDatasetGCN(Dataset):
         self.labels01 = np.asarray(self.labels01, dtype=np.int64)
         base = int(seed) + (11 if split == "train" else 22)
         self.rng = np.random.default_rng(base)
+        self._missing_warned: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.files)
 
+    def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        n = len(self.files)
+        if n <= 0:
+            raise RuntimeError("[err] empty dataset")
+        max_probe = min(n, 32)
+        for off in range(max_probe):
+            j = (int(i) + off) % n
+            fp = self.files[j]
+            try:
+                return read_window_npz(fp, fps_default=self.fps_default)
+            except FileNotFoundError:
+                if fp not in self._missing_warned:
+                    self._missing_warned.add(fp)
+                    print(f"[warn] missing window file during training; skipping: {fp}")
+                continue
+        raise FileNotFoundError(
+            f"[err] unable to read any nearby window files around index={i} "
+            f"(probed={max_probe}). Check for concurrent cleanup under: {self.root}"
+        )
+
     def __getitem__(self, i: int):
-        fp = self.files[i]
-        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
+        joints, motion, conf, mask, fps, meta = self._read_window_with_fallback(i)
 
         X, mask_used = build_canonical_input(
             joints_xy=joints,
@@ -233,7 +315,7 @@ class WindowDatasetGCN(Dataset):
             # NumPy -> Torch
             return (
                 torch.as_tensor(X, dtype=torch.float32),
-                torch.tensor(y, dtype=torch.float32),
+                torch.as_tensor([y], dtype=torch.float32),
             )
 
         if not self.feat_cfg.use_motion:
@@ -245,73 +327,71 @@ class WindowDatasetGCN(Dataset):
         return (
             torch.as_tensor(xj, dtype=torch.float32),
             torch.as_tensor(xm, dtype=torch.float32),
-            torch.tensor(y, dtype=torch.float32),
+            torch.as_tensor([y], dtype=torch.float32),
         )
 
-def collect_probs_and_loss(
+def collect_probs(
+    model: nn.Module, loader: DataLoader, device: torch.device, two_stream: bool
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    ps: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    with torch.no_grad():
+        for batch in loader:
+            if two_stream:
+                xj, xm, yb = batch
+                xj = _to_f32(xj, device)
+                xm = _to_f32(xm, device)
+                logits = logits_1d(model(xj, xm))
+                bsz = int(xj.shape[0])
+            else:
+                xb, yb = batch
+                xb = _to_f32(xb, device)
+                logits = logits_1d(model(xb))
+                bsz = int(xb.shape[0])
+
+            yb = _to_f32(yb, device).view(-1)
+
+            p = torch.sigmoid(logits).detach().cpu().numpy()
+            y = yb.detach().cpu().numpy().reshape(-1)
+            ps.append(p)
+            ys.append(y)
+    return np.concatenate(ps, axis=0), np.concatenate(ys, axis=0)
+
+def compute_loss_on_loader(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
     two_stream: bool = False,
     ema: Optional[EMA] = None,
-) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Single-pass validation: collect probs/labels and mean loss together."""
+) -> float:
+    """Compute mean loss on a loader with model in eval mode (no grad)."""
     model.eval()
-    non_blocking = (device.type in {"cuda", "mps"})
-    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
-    use_prealloc = n_total > 0
-    probs_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
-    y_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
-    ptr = 0
-    ps: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    loss_sum = 0.0
-    count_sum = 0
+    losses: List[float] = []
+    counts: List[int] = []
 
     ctx = ema.use(model) if ema is not None else nullcontext()
-    with ctx, torch.inference_mode():
+    with ctx, torch.no_grad():
         for batch in loader:
             if two_stream:
-                xj, xm, yb_cpu = batch
-                xj = _to_f32(xj, device, non_blocking=non_blocking)
-                xm = _to_f32(xm, device, non_blocking=non_blocking)
+                xj, xm, yb = batch
+                xj = _to_f32(xj, device)  # numpy OR torch -> torch.float32 on device
+                xm = _to_f32(xm, device)
                 logits = logits_1d(model(xj, xm))
                 bsz = int(xj.shape[0])
             else:
-                xb, yb_cpu = batch
-                xb = _to_f32(xb, device, non_blocking=non_blocking)
+                xb, yb = batch
+                xb = _to_f32(xb, device)
                 logits = logits_1d(model(xb))
                 bsz = int(xb.shape[0])
 
-            if isinstance(yb_cpu, torch.Tensor):
-                y_np = yb_cpu.numpy().reshape(-1).astype(np.float32, copy=False)
-            else:
-                y_np = np.asarray(yb_cpu, dtype=np.float32).reshape(-1)
+            yb = _to_f32(yb, device).view(-1)
+            loss = criterion(logits, yb).detach()
+            losses.append(float(loss.cpu()) * bsz)
+            counts.append(bsz)
 
-            yb = _to_f32(yb_cpu, device, non_blocking=non_blocking).view(-1)
-            p = torch.sigmoid(logits).cpu().numpy()
-            if use_prealloc and probs_buf is not None and y_buf is not None and (ptr + bsz) <= n_total:
-                probs_buf[ptr:ptr + bsz] = p
-                y_buf[ptr:ptr + bsz] = y_np
-                ptr += bsz
-            else:
-                ps.append(p)
-                ys.append(y_np)
-            loss_sum += float(criterion(logits, yb).item()) * bsz
-            count_sum += bsz
-
-    if use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0 and not ps and not ys:
-        probs = probs_buf[:ptr]
-        y_true = y_buf[:ptr]
-    elif use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0:
-        probs = np.concatenate([probs_buf[:ptr]] + ps, axis=0)
-        y_true = np.concatenate([y_buf[:ptr]] + ys, axis=0)
-    else:
-        probs = np.concatenate(ps, axis=0) if ps else np.array([], dtype=np.float32)
-        y_true = np.concatenate(ys, axis=0) if ys else np.array([], dtype=np.float32)
-    val_loss = float(loss_sum / max(1, count_sum))
-    return probs, y_true, val_loss
+    return float(sum(losses) / max(1, sum(counts)))
 
 
 @dataclass
@@ -324,6 +404,7 @@ class TrainCfg:
     resume: Optional[str] = None
     hard_neg_list: Optional[str] = None
     hard_neg_mult: int = 1
+    allow_hard_neg_nontrain: int = 0
 
     epochs: int = 200
     min_epochs: int = 0
@@ -335,6 +416,10 @@ class TrainCfg:
     lr_plateau_patience: int = 3
     lr_plateau_factor: float = 0.5
     lr_plateau_min_lr: float = 1e-6
+    scheduler_metric: Optional[str] = None
+    scheduler_ema_beta: float = 0.0
+    scheduler: str = "plateau"
+    max_lr: Optional[float] = None
 
     weight_decay: float = 1e-4
     label_smoothing: float = 0.0
@@ -360,7 +445,13 @@ class TrainCfg:
     temporal_kernel: int = 9
     base_channels: int = 48
     two_stream: int = 1
-    fuse: str = "concat"        # "concat" | "sum"
+    fuse: str = "concat"        # "concat" | "sum" | "joint_only" | "motion_only"
+    use_adaptive_adj: int = 0
+    adaptive_adj_embed: int = 16
+    use_ctr_gcn_lite: int = 0
+    ctr_rank: int = 4
+    stream_drop_joint_p: float = 0.0
+    stream_drop_motion_p: float = 0.0
 
     # --- feature knobs (mapped into core.features.FeatCfg) ---
     center: str = "pelvis"      # keep for parity with core.features.FeatCfg
@@ -387,8 +478,12 @@ class TrainCfg:
     use_ema: int = 0
     ema_decay: float = 0.995
     save_tag: str = ""
+    amp: int = 0
 
     num_workers: int = 0
+    prefetch_factor: Optional[int] = 2
+    persistent_workers: int = 1
+    deterministic: int = 1
 
 def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
     """
@@ -424,6 +519,12 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--hard_neg_list", default=None)
     ap.add_argument("--hard_neg_mult", type=int, default=1)
+    ap.add_argument(
+        "--allow_hard_neg_nontrain",
+        type=int,
+        default=0,
+        help="Set to 1 to disable hard-negative split safety guard (risk: leakage from val/test).",
+    )
 
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--min_epochs", type=int, default=0)
@@ -435,6 +536,15 @@ def main() -> None:
     ap.add_argument("--lr_plateau_patience", type=int, default=3)
     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+    ap.add_argument(
+        "--scheduler_metric",
+        choices=["val_loss", "val_ap", "val_f1"],
+        default=None,
+        help="default: auto (resolved from --monitor)",
+    )
+    ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
+    ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
+    ap.add_argument("--max_lr", type=float, default=None)
 
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--label_smoothing", type=float, default=0.0)
@@ -464,7 +574,13 @@ def main() -> None:
     ap.add_argument("--base_channels", type=int, default=48)
 
     ap.add_argument("--two_stream", type=int, default=1)
-    ap.add_argument("--fuse", type=str, default="concat", choices=["concat", "sum"])
+    ap.add_argument("--fuse", type=str, default="concat", choices=["concat", "sum", "joint_only", "motion_only"])
+    ap.add_argument("--use_adaptive_adj", type=int, default=0)
+    ap.add_argument("--adaptive_adj_embed", type=int, default=16)
+    ap.add_argument("--use_ctr_gcn_lite", type=int, default=0)
+    ap.add_argument("--ctr_rank", type=int, default=4)
+    ap.add_argument("--stream_drop_joint_p", type=float, default=0.0)
+    ap.add_argument("--stream_drop_motion_p", type=float, default=0.0)
 
     ap.add_argument("--use_conf", type=int, default=1)
     ap.add_argument("--use_motion", type=int, default=1)
@@ -485,15 +601,25 @@ def main() -> None:
     ap.add_argument("--use_ema", type=int, default=0)
     ap.add_argument("--ema_decay", type=float, default=0.995)
     ap.add_argument("--save_tag", type=str, default="")
+    ap.add_argument("--amp", type=int, default=0)
 
     ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--prefetch_factor", type=int, default=2)
+    ap.add_argument("--persistent_workers", type=int, default=1)
+    ap.add_argument("--deterministic", type=int, default=1)
 
     args = ap.parse_args()
     cfg = TrainCfg(**vars(args))
 
     os.makedirs(cfg.save_dir, exist_ok=True)
 
-    set_seed(cfg.seed)
+    if cfg.scheduler_metric is None:
+        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
+
+    with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
+        json.dump(asdict(cfg), f, indent=2)
+
+    set_seed(cfg.seed, deterministic=cfg.deterministic)
     device = pick_device()
     feat_cfg = build_feat_cfg(cfg)
 
@@ -508,6 +634,11 @@ def main() -> None:
         try:
             with open(cfg.hard_neg_list, "r", encoding="utf-8", errors="ignore") as f:
                 extra_neg_files = [ln.strip() for ln in f if ln.strip()]
+            _validate_hard_neg_paths(
+                extra_neg_files,
+                train_dir=cfg.train_dir,
+                allow_nontrain=bool(int(cfg.allow_hard_neg_nontrain)),
+            )
             print(f"[hard_neg] loaded {len(extra_neg_files)} paths from: {cfg.hard_neg_list}")
         except Exception as e:
             print(f"[warn] cannot read hard_neg_list={cfg.hard_neg_list}: {type(e).__name__}: {e}")
@@ -571,6 +702,12 @@ def main() -> None:
         "use_se": bool(use_se),
         "two_stream": bool(cfg.two_stream),
         "fuse": str(cfg.fuse),
+        "use_adaptive_adj": bool(int(cfg.use_adaptive_adj)),
+        "adaptive_adj_embed": int(cfg.adaptive_adj_embed),
+        "use_ctr_gcn_lite": bool(int(cfg.use_ctr_gcn_lite)),
+        "ctr_rank": int(cfg.ctr_rank),
+        "stream_drop_joint_p": float(cfg.stream_drop_joint_p),
+        "stream_drop_motion_p": float(cfg.stream_drop_motion_p),
     }
     if bool(cfg.two_stream):
         model_cfg_save["in_feats_j"] = int(in_feats_j)  # type: ignore[arg-type]
@@ -599,18 +736,28 @@ def main() -> None:
             in_feats=int(in_feats),      # type: ignore[arg-type]
         ).to(device)
 
+    resume_bundle: Optional[Dict[str, Any]] = None
     if cfg.resume:
         bundle = load_ckpt(cfg.resume, map_location="cpu")
         if isinstance(bundle, dict) and "state_dict" in bundle:
             model.load_state_dict(bundle["state_dict"], strict=True)
         elif isinstance(bundle, dict):
             model.load_state_dict(bundle, strict=True)
+        if isinstance(bundle, dict):
+            resume_bundle = bundle
         print(f"[resume] loaded: {cfg.resume}")
+        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
 
     ema: Optional[EMA] = None
     if int(cfg.use_ema) == 1:
         ema = EMA(model, decay=float(cfg.ema_decay))
         print(f"[ema] enabled decay={cfg.ema_decay}")
+        if resume_bundle is not None and isinstance(resume_bundle, dict) and "ema_state" in resume_bundle:
+            try:
+                ema.load_state_dict(resume_bundle["ema_state"])
+                print("[info] resumed EMA state")
+            except Exception as e:
+                print(f"[warn] failed to load EMA state: {type(e).__name__}: {e}")
 
     sampler = None
     pos_w = None
@@ -638,23 +785,18 @@ def main() -> None:
             criterion = nn.BCEWithLogitsLoss()
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt,
-        mode="max",
-        patience=int(cfg.lr_plateau_patience),
-        factor=float(cfg.lr_plateau_factor),
-        min_lr=float(cfg.lr_plateau_min_lr),
-        verbose=False,
-    )
+    use_amp = bool(int(cfg.amp)) and (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    sched_kind = str(cfg.scheduler).lower()
+    sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
 
     pin = (device.type == "cuda")
-    loader_kwargs = {
-        "num_workers": nw,
-        "pin_memory": pin,
-        "persistent_workers": bool(nw > 0),
-    }
+    loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
     if nw > 0:
-        loader_kwargs["prefetch_factor"] = 2
+        if bool(int(cfg.persistent_workers)):
+            loader_kwargs["persistent_workers"] = True
+        if cfg.prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
     if sampler is not None:
         train_loader = DataLoader(
             train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs
@@ -664,10 +806,32 @@ def main() -> None:
             train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs
         )
     val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
+    if sched_kind == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt,
+            mode=sched_mode,
+            patience=int(cfg.lr_plateau_patience),
+            factor=float(cfg.lr_plateau_factor),
+            min_lr=float(cfg.lr_plateau_min_lr),
+            verbose=False,
+        )
+    elif sched_kind == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(1, int(cfg.epochs)), eta_min=float(cfg.lr_plateau_min_lr)
+        )
+    else:
+        onecycle_max_lr = float(cfg.max_lr) if cfg.max_lr is not None else float(cfg.lr)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            opt,
+            max_lr=onecycle_max_lr,
+            epochs=int(cfg.epochs),
+            steps_per_epoch=max(1, len(train_loader)),
+        )
 
     best_score = -1.0
     tag = (cfg.save_tag.strip() + "_") if cfg.save_tag.strip() else ""
     best_path = os.path.join(cfg.save_dir, f"{tag}best.pt")
+    last_path = os.path.join(cfg.save_dir, f"{tag}last.pt")
     history_path = os.path.join(cfg.save_dir, f"{tag}history.jsonl")
 
     if os.path.exists(history_path):
@@ -678,48 +842,80 @@ def main() -> None:
             f.write(json.dumps(row) + "\n")
 
     no_improve = 0
+    scheduler_metric_ema: Optional[float] = None
 
     for ep in range(1, cfg.epochs + 1):
         model.train()
         running = 0.0
         seen = 0
+        nonfinite_skips_ep = 0
+        grad_norm_vals: List[float] = []
 
-        for batch in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
+        for step, batch in enumerate(tqdm(train_loader, desc=f"train ep{ep}", leave=False), start=1):
             if bool(cfg.two_stream):
                 xj, xm, yb = batch
-                xj = _to_f32(xj, device, non_blocking=pin)
-                xm = _to_f32(xm, device, non_blocking=pin)
-                yb = _to_f32(yb, device, non_blocking=pin).view(-1)
-                logits = logits_1d(model(xj, xm))
+                xj = _to_f32(xj, device)
+                xm = _to_f32(xm, device)
+                yb = _to_f32(yb, device).view(-1)
                 bsz = int(xj.shape[0])
             else:
                 xb, yb = batch
-                xb = _to_f32(xb, device, non_blocking=pin)
-                yb = _to_f32(yb, device, non_blocking=pin).view(-1)
-                logits = logits_1d(model(xb))
+                xb = _to_f32(xb, device)
+                yb = _to_f32(yb, device).view(-1)
                 bsz = int(xb.shape[0])
 
-            yb_loss = yb
-            if cfg.label_smoothing > 0:
-                eps = float(cfg.label_smoothing)
-                yb_loss = yb * (1.0 - eps) + 0.5 * eps
-
             opt.zero_grad(set_to_none=True)
-            loss = criterion(logits, yb_loss)
-            loss.backward()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                if bool(cfg.two_stream):
+                    logits = logits_1d(model(xj, xm))
+                else:
+                    logits = logits_1d(model(xb))
+                yb_loss = yb
+                if cfg.label_smoothing > 0:
+                    eps = float(cfg.label_smoothing)
+                    yb_loss = yb * (1.0 - eps) + 0.5 * eps
+                loss = criterion(logits, yb_loss)
+            if not torch.isfinite(loss):
+                lr_now = float(opt.param_groups[0]["lr"])
+                print(
+                    f"[warn] non-finite loss; skipping step "
+                    f"ep={ep} step={step} lr={lr_now:.5g} loss={float(loss.detach().cpu()):.6g}"
+                )
+                nonfinite_skips_ep += 1
+                opt.zero_grad(set_to_none=True)
+                continue
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+            else:
+                loss.backward()
+            grad_sq = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    g = p.grad.detach()
+                    grad_sq += float(torch.sum(g * g).item())
+            grad_norm = grad_sq ** 0.5
+            if np.isfinite(grad_norm):
+                grad_norm_vals.append(float(grad_norm))
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            opt.step()
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
+            if sched_kind == "onecycle":
+                scheduler.step()
 
             if ema is not None:
                 ema.update(model)
 
-            running += float(loss.item()) * bsz
+            running += float(loss.detach().cpu()) * bsz
             seen += bsz
 
         train_loss = running / max(1, seen)
 
-        probs, y_true, val_loss = collect_probs_and_loss(
+        val_loss = compute_loss_on_loader(
             model,
             val_loader,
             device,
@@ -727,6 +923,10 @@ def main() -> None:
             two_stream=bool(cfg.two_stream),
             ema=ema,
         )
+
+        ctx_eval = ema.use(model) if ema is not None else nullcontext()
+        with ctx_eval:
+            probs, y_true = collect_probs(model, val_loader, device, two_stream=bool(cfg.two_stream))
 
         best = best_threshold_by_f1(
             probs, y_true, thr_min=cfg.thr_min, thr_max=cfg.thr_max, thr_step=cfg.thr_step
@@ -742,13 +942,18 @@ def main() -> None:
         extras = ap_auc(probs, y_true)
         apv = float(extras.get("ap", float("nan")))
         auc = float(extras.get("auc", float("nan")))
+        p_fixed, r_fixed, f1_fixed, fpr_fixed = prf_fpr_at_threshold(y_true, probs, cfg.fixed_thr)
 
         score = float(f1) if cfg.monitor == "f1" else float(apv)
         lr_now = float(opt.param_groups[0]["lr"])
+        grad_norm_mean = float(np.mean(grad_norm_vals)) if grad_norm_vals else None
+        grad_norm_p95 = float(np.percentile(grad_norm_vals, 95.0)) if grad_norm_vals else None
+        grad_norm_max = float(np.max(grad_norm_vals)) if grad_norm_vals else None
 
         print(
             f"[val] ep={ep:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"F1={f1:.3f} P={prec:.3f} R={rec:.3f} FPR={fpr:.3f} thr={thr:.2f} "
+            f"F1={f1:.3f} (F1@{cfg.fixed_thr:.2f}={f1_fixed:.3f}) "
+            f"P={prec:.3f} R={rec:.3f} FPR={fpr:.3f} thr={thr:.2f} "
             f"AP={apv:.3f} AUC={auc:.3f} lr={lr_now:.5g}"
         )
 
@@ -761,32 +966,79 @@ def main() -> None:
             "val_recall": float(rec),
             "val_fpr": float(fpr),
             "val_thr": float(thr),
+            "val_f1_fixed": float(f1_fixed),
+            "val_p_fixed": float(p_fixed),
+            "val_r_fixed": float(r_fixed),
+            "val_fpr_fixed": float(fpr_fixed),
+            "val_thr_fixed": float(cfg.fixed_thr),
             "ap": float(apv),
             "auc": float(auc),
             "lr": float(lr_now),
+            "nonfinite_skips": int(nonfinite_skips_ep),
+            "train_grad_norm_mean": grad_norm_mean,
+            "train_grad_norm_p95": grad_norm_p95,
+            "train_grad_norm_max": grad_norm_max,
         }
         log_row(row)
 
-        scheduler.step(score)
+        if sched_kind == "plateau":
+            sched_metric_raw = float(
+                val_loss if str(cfg.scheduler_metric) == "val_loss"
+                else (apv if str(cfg.scheduler_metric) == "val_ap" else f1)
+            )
+            beta = float(cfg.scheduler_ema_beta)
+            if beta > 0.0:
+                scheduler_metric_ema = (
+                    sched_metric_raw if scheduler_metric_ema is None
+                    else (beta * scheduler_metric_ema + (1.0 - beta) * sched_metric_raw)
+                )
+                sched_metric_step = float(scheduler_metric_ema)
+            else:
+                sched_metric_step = sched_metric_raw
+            if np.isfinite(sched_metric_step):
+                scheduler.step(sched_metric_step)
+            else:
+                fallback_metric = float(val_loss if sched_mode == "min" else f1)
+                scheduler.step(fallback_metric)
+        elif sched_kind == "cosine":
+            scheduler.step()
+        else:
+            pass
 
         improved = score > best_score + 1e-12
         if improved:
             best_score = score
             no_improve = 0
-            best_bundle = {
-                "arch": "gcn",
-                "state_dict": model.state_dict(),
-                "model_cfg": dict(model_cfg_save),
-                "feat_cfg": feat_cfg.to_dict(),
-                "data_cfg": {"fps_default": float(cfg.fps_default)},
-                "best": {"val_best": row, "best_thr": float(thr)},
-                "meta": {"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
-                "train_cfg": asdict(cfg),
-            }
-            save_ckpt(best_path, best_bundle)
+            ctx_save = ema.use(model) if ema is not None else nullcontext()
+            with ctx_save:
+                save_ckpt(
+                    best_path,
+                    arch="gcn",
+                    state_dict=model.state_dict(),
+                    model_cfg=dict(model_cfg_save),
+                    feat_cfg=feat_cfg.to_dict(),
+                    data_cfg={"fps_default": float(cfg.fps_default)},
+                    best={"val_best": row, "best_thr": float(thr)},
+                    meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
+                    train_cfg=asdict(cfg),
+                    **({"ema_state": ema.state_dict()} if ema is not None else {}),
+                )
             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
         else:
             no_improve += 1
+
+        save_ckpt(
+            last_path,
+            arch="gcn",
+            state_dict=model.state_dict(),
+            model_cfg=dict(model_cfg_save),
+            feat_cfg=feat_cfg.to_dict(),
+            data_cfg={"fps_default": float(cfg.fps_default)},
+            best={"val_best": row, "best_thr": float(thr)},
+            meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V), "is_last": True},
+            train_cfg=asdict(cfg),
+            **({"ema_state": ema.state_dict()} if ema is not None else {}),
+        )
 
         if ep >= int(cfg.min_epochs) and no_improve >= int(cfg.patience):
             print(f"[early_stop] no improvement for {cfg.patience} epochs")

@@ -71,7 +71,7 @@ def main() -> None:
 }
 
     param_grid = {
-    "LR_TCN_LE2I": [
+    "LR_TCN_le2i": [
         0.001,
         0.0005,
         0.0003

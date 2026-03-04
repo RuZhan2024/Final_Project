@@ -2,127 +2,310 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 from fastapi import APIRouter, Body, HTTPException, Query
+import yaml
+
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
 
 from .. import core
-from ..core import _detect_variants, _ensure_system_settings_schema, _table_exists
+from ..core import MonitorPredictPayload, _detect_variants, _ensure_system_settings_schema, _table_exists
+from ..core import normalize_dataset_code
 from ..db import get_conn
 from ..deploy_runtime import (
-    fuse_hybrid as _fuse_hybrid,
     get_specs as _get_deploy_specs,
     predict_spec as _predict_spec,
 )
+from ..notifications_service import dispatch_fall_notifications
 from ..online_alert import OnlineAlertTracker
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-_RUNTIME_DEFAULTS_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
-_RUNTIME_DEFAULTS_TTL_S = 2.0
-_RESAMPLE_TW_CACHE: Dict[Tuple[int, int], np.ndarray] = {}
-_RESAMPLE_TW_CACHE_MAX = 32
-_MAX_RAW_SRC_FRAMES = 4096
-_MAX_RAW_JOINTS = 64
-_EXPECTED_FPS_BY_DATASET: Dict[str, int] = {
-    "le2i": 25,
-    "urfd": 30,
-    "caucafall": 23,
-    "muvim": 30,
+_DUAL_POLICY_CFG_CACHE: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
+_LIVE_MIN_MOTION_FOR_FALL = {
+    "caucafall": 0.020,
+    "le2i": 0.020,
 }
+_LIVE_EFFECTIVE_FPS_MIN = 10.0
+_LIVE_LOW_FPS_MODE_THRESHOLD = 16.0
+_LIVE_LOW_FPS_FALL_PERSIST_N = 3
+_LIVE_MIN_FPS_RATIO = {
+    "caucafall": 0.70,
+    "le2i": 0.70,
+}
+_LIVE_MIN_FRAMES_RATIO = 0.60
+_LIVE_MIN_COVERAGE_RATIO = 0.85
+_LIVE_MIN_CONF_MEAN = {
+    "caucafall": 0.35,
+    "le2i": 0.35,
+}
+_LIVE_MIN_JOINTS_MED = 20
 
 
-def _compact_models_meta(models: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep persisted monitor-event payload small to reduce request-thread overhead."""
-    out: Dict[str, Any] = {}
-    if not isinstance(models, dict):
-        return out
-    for name, item in models.items():
-        if not isinstance(item, dict):
+def _norm_op_code(op_code: str) -> str:
+    c = (op_code or "").strip().upper().replace("_", "-")
+    if c in {"OP1", "OP-1", "1"}:
+        return "OP-1"
+    if c in {"OP2", "OP-2", "2"}:
+        return "OP-2"
+    if c in {"OP3", "OP-3", "3"}:
+        return "OP-3"
+    return "OP-2"
+
+
+def _load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str) -> Optional[Dict[str, Any]]:
+    """Load alert cfg for dual policy overlays (safe/recall) if available."""
+    key = (f"{dataset_code}:{policy_name}", _norm_op_code(op_code))
+    if key in _DUAL_POLICY_CFG_CACHE:
+        return _DUAL_POLICY_CFG_CACHE[key]
+
+    root = Path(__file__).resolve().parents[2]
+    path = root / "configs" / "ops" / "dual_policy" / f"tcn_{dataset_code}_dual_{policy_name}.yaml"
+    if not path.exists():
+        _DUAL_POLICY_CFG_CACHE[key] = None
+        return None
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        _DUAL_POLICY_CFG_CACHE[key] = None
+        return None
+
+    if not isinstance(data, dict):
+        _DUAL_POLICY_CFG_CACHE[key] = None
+        return None
+
+    cfg = {}
+    if isinstance(data.get("alert_cfg"), dict):
+        cfg.update(data.get("alert_cfg") or {})
+    elif isinstance(data.get("alert_base"), dict):
+        cfg.update(data.get("alert_base") or {})
+
+    ops = data.get("ops") if isinstance(data.get("ops"), dict) else {}
+    op_entry = None
+    want = _norm_op_code(op_code)
+    for k, v in (ops or {}).items():
+        if not isinstance(v, dict):
             continue
-        tri = item.get("triage") if isinstance(item.get("triage"), dict) else {}
-        comp = item.get("components") if isinstance(item.get("components"), dict) else None
-        out[str(name)] = {
-            "spec_key": item.get("spec_key"),
-            "dataset": item.get("dataset"),
-            "arch": item.get("arch"),
-            "mu": item.get("mu"),
-            "sigma": item.get("sigma"),
-            "p_det": item.get("p_det"),
-            "mc_n_used": item.get("mc_n_used"),
-            "triage_state": tri.get("state"),
-            "components": comp,
-        }
-    return out
+        kk = str(k).strip().upper().replace("_", "-")
+        if kk in {want, want.replace("-", "")}:
+            op_entry = v
+            break
+    if op_entry is None and isinstance(ops, dict):
+        op_entry = (ops.get("OP2") or ops.get("OP-2") or ops.get("op2") or ops.get("op-2"))
+
+    if isinstance(op_entry, dict):
+        if op_entry.get("tau_low") is not None:
+            cfg["tau_low"] = float(op_entry.get("tau_low"))
+        if op_entry.get("tau_high") is not None:
+            cfg["tau_high"] = float(op_entry.get("tau_high"))
+
+    # Minimal required defaults for OnlineAlertTracker.
+    cfg.setdefault("ema_alpha", 0.2)
+    cfg.setdefault("k", 2)
+    cfg.setdefault("n", 3)
+    cfg.setdefault("cooldown_s", 30.0)
+    cfg.setdefault("tau_low", 0.5)
+    cfg.setdefault("tau_high", 0.85)
+
+    _DUAL_POLICY_CFG_CACHE[key] = cfg
+    return cfg
 
 
-def _read_runtime_defaults_db(resident_id: int) -> Dict[str, Any]:
-    """Read deploy defaults from DB once for monitor runtime."""
-    out: Dict[str, Any] = {}
-    with get_conn() as conn:
-        _ensure_system_settings_schema(conn)
-        variants = _detect_variants(conn)
+def _window_motion_score(xy: Any) -> Optional[float]:
+    """Robust per-window motion score on normalized XY coordinates.
 
-        sys_row = None
-        with conn.cursor() as cur:
-            if variants.get("settings") == "v2" and _table_exists(conn, "system_settings"):
-                cur.execute("SELECT * FROM system_settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-                sys_row = cur.fetchone()
-            elif _table_exists(conn, "settings"):
-                cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-                sys_row = cur.fetchone()
+    Uses torso-center displacement (shoulders + hips) and normalizes by torso size
+    to reduce both jitter and camera distance scale effects.
+    Returns median normalized displacement per frame.
+    """
+    if not isinstance(xy, list) or len(xy) < 2:
+        return None
 
-        if not isinstance(sys_row, dict):
-            return out
+    def _torso_center_scale(frame: Any) -> Optional[Tuple[float, float, float]]:
+        if not isinstance(frame, list):
+            return None
+        pts: Dict[int, Tuple[float, float]] = {}
+        # MediaPipe Pose torso anchors: shoulders + hips
+        for idx in (11, 12, 23, 24):
+            if idx >= len(frame):
+                continue
+            p = frame[idx]
+            if not isinstance(p, list) or len(p) < 2:
+                continue
+            try:
+                x = float(p[0])
+                y = float(p[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                pts[idx] = (x, y)
+        if len(pts) < 2:
+            return None
+        vals = list(pts.values())
+        sx = sum(p[0] for p in vals) / len(vals)
+        sy = sum(p[1] for p in vals) / len(vals)
 
-        if sys_row.get("active_dataset_code"):
-            out["dataset_code"] = str(sys_row.get("active_dataset_code") or "").lower()
-        if sys_row.get("mc_enabled") is not None:
-            mc_enabled_raw = sys_row.get("mc_enabled")
-            out["use_mc"] = (
-                bool(int(mc_enabled_raw))
-                if str(mc_enabled_raw).isdigit()
-                else bool(mc_enabled_raw)
-            )
-        if sys_row.get("mc_M") is not None:
-            out["mc_M"] = int(sys_row.get("mc_M"))
-        if sys_row.get("active_model_code"):
-            out["active_model_code"] = str(sys_row.get("active_model_code") or "")
-        if sys_row.get("active_op_code"):
-            out["op_code"] = str(sys_row.get("active_op_code") or "").upper().strip()
+        # Torso scale estimate: shoulder width / hip width / shoulder-hip vertical span.
+        scales: List[float] = []
+        if 11 in pts and 12 in pts:
+            dx = pts[12][0] - pts[11][0]
+            dy = pts[12][1] - pts[11][1]
+            scales.append(math.hypot(dx, dy))
+        if 23 in pts and 24 in pts:
+            dx = pts[24][0] - pts[23][0]
+            dy = pts[24][1] - pts[23][1]
+            scales.append(math.hypot(dx, dy))
+        if 11 in pts and 23 in pts:
+            dx = pts[23][0] - pts[11][0]
+            dy = pts[23][1] - pts[11][1]
+            scales.append(math.hypot(dx, dy))
+        if 12 in pts and 24 in pts:
+            dx = pts[24][0] - pts[12][0]
+            dy = pts[24][1] - pts[12][1]
+            scales.append(math.hypot(dx, dy))
 
-        if "op_code" not in out:
-            op_id = None
-            for k in ("active_operating_point", "active_operating_point_id"):
-                if sys_row.get(k) is not None:
-                    op_id = sys_row.get(k)
-                    break
-            if op_id and _table_exists(conn, "operating_points"):
-                with conn.cursor() as cur:
-                    cur.execute("SELECT code FROM operating_points WHERE id=%s LIMIT 1", (int(op_id),))
-                    r = cur.fetchone() or {}
-                    if isinstance(r, dict) and r.get("code"):
-                        out["op_code"] = str(r.get("code") or "").upper()
+        scale = max(1e-6, (sum(scales) / len(scales)) if scales else 0.08)
+        return (sx, sy, scale)
 
-    return out
+    speeds: List[float] = []
+    for i in range(1, len(xy)):
+        c0 = _torso_center_scale(xy[i - 1])
+        c1 = _torso_center_scale(xy[i])
+        if c0 is None or c1 is None:
+            continue
+        dx = c1[0] - c0[0]
+        dy = c1[1] - c0[1]
+        if math.isfinite(dx) and math.isfinite(dy):
+            disp = math.hypot(dx, dy)
+            s = max(1e-6, 0.5 * (c0[2] + c1[2]))
+            speeds.append(disp / s)
+
+    if not speeds:
+        return None
+    speeds.sort()
+    m = len(speeds) // 2
+    if len(speeds) % 2 == 1:
+        return float(speeds[m])
+    return float((speeds[m - 1] + speeds[m]) * 0.5)
 
 
-def _get_runtime_defaults_cached(resident_id: int) -> Dict[str, Any]:
-    now = time.time()
-    rec = _RUNTIME_DEFAULTS_CACHE.get(int(resident_id))
-    if rec is not None:
-        ts, payload = rec
-        if (now - float(ts)) <= float(_RUNTIME_DEFAULTS_TTL_S):
-            return dict(payload)
-    payload = _read_runtime_defaults_db(int(resident_id))
-    _RUNTIME_DEFAULTS_CACHE[int(resident_id)] = (now, dict(payload))
-    return payload
+def _raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, Any]:
+    """Compute lightweight payload diagnostics for monitor parity checks."""
+    stats: Dict[str, Any] = {
+        "raw_len": 0,
+        "raw_fps_est": None,
+        "raw_duration_s": None,
+        "joints_per_frame_med": None,
+        "conf_mean": None,
+    }
+    if not isinstance(raw_t_ms, list) or not isinstance(raw_xy, list):
+        return stats
+    n = min(len(raw_t_ms), len(raw_xy))
+    if n <= 0:
+        return stats
+    stats["raw_len"] = int(n)
+
+    t_vals: List[float] = []
+    joints_counts: List[int] = []
+    conf_vals: List[float] = []
+    for i in range(n):
+        try:
+            t_vals.append(float(raw_t_ms[i]))
+        except (TypeError, ValueError):
+            continue
+        frame = raw_xy[i]
+        if isinstance(frame, list):
+            joints_counts.append(len(frame))
+        cfr = raw_conf[i] if isinstance(raw_conf, list) and i < len(raw_conf) else None
+        if isinstance(cfr, list):
+            for v in cfr:
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(fv):
+                    conf_vals.append(fv)
+
+    if len(t_vals) >= 2:
+        dt_s = (t_vals[-1] - t_vals[0]) / 1000.0
+        if dt_s > 1e-6:
+            stats["raw_duration_s"] = float(dt_s)
+            stats["raw_fps_est"] = float((len(t_vals) - 1) / dt_s)
+
+    if joints_counts:
+        joints_counts.sort()
+        m = len(joints_counts) // 2
+        stats["joints_per_frame_med"] = int(joints_counts[m])
+
+    if conf_vals:
+        stats["conf_mean"] = float(sum(conf_vals) / max(1, len(conf_vals)))
+    return stats
+
+
+def _window_quality_block(
+    *,
+    raw_stats: Dict[str, Any],
+    expected_fps: float,
+    effective_fps: float,
+    target_T: int,
+    dataset_code: str,
+) -> Dict[str, Any]:
+    """Return quality diagnostics + whether this window should be alert-blocked."""
+    need_s = max(1e-6, (max(2, int(target_T)) - 1) / max(1e-6, float(effective_fps)))
+    raw_fps = raw_stats.get("raw_fps_est")
+    raw_len = int(raw_stats.get("raw_len") or 0)
+    raw_dur = raw_stats.get("raw_duration_s")
+
+    fps_ratio = (float(raw_fps) / float(expected_fps)) if raw_fps is not None and expected_fps > 0 else None
+    frame_ratio = (float(raw_len) / float(target_T)) if target_T > 0 else None
+    coverage_ratio = (float(raw_dur) / float(need_s)) if raw_dur is not None and need_s > 0 else None
+
+    min_fps_ratio = float(_LIVE_MIN_FPS_RATIO.get(dataset_code, 0.75))
+    low_fps = bool(fps_ratio is not None and fps_ratio < min_fps_ratio)
+    low_frames = bool(frame_ratio is not None and frame_ratio < _LIVE_MIN_FRAMES_RATIO)
+    low_coverage = bool(coverage_ratio is not None and coverage_ratio < _LIVE_MIN_COVERAGE_RATIO)
+
+    return {
+        "need_duration_s": float(need_s),
+        "fps_ratio": float(fps_ratio) if fps_ratio is not None else None,
+        "frame_ratio": float(frame_ratio) if frame_ratio is not None else None,
+        "coverage_ratio": float(coverage_ratio) if coverage_ratio is not None else None,
+        "min_fps_ratio": float(min_fps_ratio),
+        "min_frames_ratio": float(_LIVE_MIN_FRAMES_RATIO),
+        "min_coverage_ratio": float(_LIVE_MIN_COVERAGE_RATIO),
+        "low_fps": low_fps,
+        "low_frames": low_frames,
+        "low_coverage": low_coverage,
+        "low_quality_block": bool(low_fps or low_frames or low_coverage),
+    }
+
+
+def _effective_target_fps(*, expected_fps: float, raw_fps_est: Optional[float]) -> float:
+    """Choose runtime target fps for resampling.
+
+    We clamp to a safe range so low frontend fps can still be consumed without
+    over-upsampling to an unrealistic rate.
+    """
+    exp = float(expected_fps) if expected_fps and float(expected_fps) > 0 else 23.0
+    if raw_fps_est is None or not math.isfinite(float(raw_fps_est)) or float(raw_fps_est) <= 0:
+        return exp
+    raw = float(raw_fps_est)
+    lo = min(_LIVE_EFFECTIVE_FPS_MIN, exp)
+    hi = exp
+    return float(max(lo, min(raw, hi)))
 
 
 
@@ -131,781 +314,285 @@ def _resample_pose_window(
     raw_t_ms: Any,
     raw_xy: Any,
     raw_conf: Any = None,
-    raw_xy_flat: Any = None,
-    raw_conf_flat: Any = None,
-    raw_joints: Optional[int] = None,
     target_fps: float = 30.0,
     target_T: int = 48,
     window_end_t_ms: Optional[float] = None,
-    generate_default_conf: bool = True,
-    prevalidated_raw: bool = False,
-) -> Tuple[Any, Any, float, float, Optional[float]]:
+) -> Tuple[List[Any], List[Any], float, float, Optional[float]]:
     """Resample variable-FPS pose frames to a fixed FPS + fixed length window."""
 
-    def _clip01_if_needed(a: np.ndarray, *, make_copy: bool = False) -> np.ndarray:
-        if a.size < 1:
-            return a.copy() if make_copy else a
-        out = a.copy() if make_copy else a
-        # Single-pass clip is typically faster than min/max pre-check scans.
-        np.clip(out, 0.0, 1.0, out=out)
-        return out
-
-    try:
-        raw_t_arr = np.asarray(raw_t_ms, dtype=np.float32).reshape(-1)
-    except Exception:
+    if (
+        not isinstance(raw_t_ms, list)
+        or not isinstance(raw_xy, list)
+        or len(raw_t_ms) != len(raw_xy)
+        or len(raw_xy) < 1
+    ):
         return [], [], 0.0, 0.0, None
-    if int(raw_t_arr.size) < 1:
-        return [], [], 0.0, 0.0, None
-    raw_t_src = raw_t_arr
 
-    keep_idx: Optional[np.ndarray] = None
-    t_np: Optional[np.ndarray] = None
-    xy_np_fast: Optional[np.ndarray] = None
-    conf_np_fast: Optional[np.ndarray] = None
-    use_conf = False
-
-    # Compact payload path: flattened XY/CONF arrays from app.
-    if raw_xy_flat is not None:
-        try:
-            t0 = raw_t_arr
-            n_src = int(t0.size)
-            n_joints = int(raw_joints) if raw_joints is not None else 33
-            if n_src > 0 and n_joints > 0:
-                if isinstance(raw_xy_flat, np.ndarray) and raw_xy_flat.dtype == np.float32:
-                    xy_flat = raw_xy_flat.reshape(-1)
-                else:
-                    xy_flat = np.asarray(raw_xy_flat, dtype=np.float32).reshape(-1)
-                if xy_flat.size == (n_src * n_joints * 2):
-                    x0 = xy_flat.reshape(n_src, n_joints, 2)
-                    conf_flat = None
-                    conf0 = None
-                    if raw_conf_flat is not None:
-                        if isinstance(raw_conf_flat, np.ndarray) and raw_conf_flat.dtype == np.float32:
-                            conf_flat = raw_conf_flat.reshape(-1)
-                        else:
-                            conf_flat = np.asarray(raw_conf_flat, dtype=np.float32).reshape(-1)
-                        if conf_flat.size == (n_src * n_joints):
-                            conf0 = conf_flat.reshape(n_src, n_joints)
-                    if prevalidated_raw:
-                        t_np = t0
-                        xy_np_fast = x0
-                        if conf0 is not None:
-                            conf_np_fast = conf0
-                            use_conf = True
-                    elif n_src == 1:
-                        if np.isfinite(t0[0]):
-                            t_np = t0
-                            xy_np_fast = x0
-                            if conf0 is not None:
-                                conf_np_fast = conf0
-                                use_conf = True
-                    else:
-                        fin_t = np.isfinite(t0)
-                        dt_t = np.diff(t0)
-                        finite_all = bool(fin_t.all())
-                        inc_all = bool(np.all(dt_t > 0.0))
-                        if finite_all and inc_all:
-                            t_np = t0
-                            xy_np_fast = x0
-                            if conf0 is not None:
-                                conf_np_fast = conf0
-                                use_conf = True
-                        else:
-                            keep = fin_t.copy()
-                            keep[1:] &= dt_t > 0.0
-                            if keep.any():
-                                keep_idx = np.flatnonzero(keep).astype(np.int64, copy=False)
-                                t_np = t0[keep]
-                                xy_np_fast = x0[keep]
-                                if conf0 is not None:
-                                    conf_np_fast = conf0[keep]
-                                    use_conf = True
-        except Exception:
-            t_np = None
-            xy_np_fast = None
-            conf_np_fast = None
-            use_conf = False
-
-    if isinstance(raw_conf, list) and isinstance(raw_xy, list) and len(raw_conf) == len(raw_xy):
+    if isinstance(raw_conf, list) and len(raw_conf) == len(raw_xy):
         use_conf = True
-    if xy_np_fast is None:
-        try:
-            t0 = raw_t_arr
-            x0 = np.asarray(raw_xy, dtype=np.float32)
-            if x0.ndim == 3 and x0.shape[0] == t0.shape[0] and x0.shape[2] >= 2:
-                x0 = x0[..., :2]
-                n_src = int(t0.size)
-                c0 = None
-                if use_conf:
-                    c0 = np.asarray(raw_conf, dtype=np.float32)
-                if prevalidated_raw:
-                    t_np = t0
-                    xy_np_fast = x0
-                    if c0 is not None:
-                        if c0.ndim == 2 and c0.shape[0] == t0.shape[0]:
-                            conf_np_fast = c0
-                        else:
-                            conf_np_fast = None
-                            use_conf = False
-                elif n_src == 1:
-                    if np.isfinite(t0[0]):
-                        t_np = t0
-                        xy_np_fast = x0
-                        if c0 is not None:
-                            if c0.ndim == 2 and c0.shape[0] == t0.shape[0]:
-                                conf_np_fast = c0
-                            else:
-                                conf_np_fast = None
-                                use_conf = False
-                    else:
-                        t_np = None
-                else:
-                    fin_t = np.isfinite(t0)
-                    dt_t = np.diff(t0)
-                    finite_all = bool(fin_t.all())
-                    inc_all = bool(np.all(dt_t > 0.0))
-                    if finite_all and inc_all:
-                        t_np = t0
-                        xy_np_fast = x0
-                        if c0 is not None:
-                            if c0.ndim == 2 and c0.shape[0] == t0.shape[0]:
-                                conf_np_fast = c0
-                            else:
-                                conf_np_fast = None
-                                use_conf = False
-                    else:
-                        keep = fin_t.copy()
-                        keep[1:] &= dt_t > 0.0
-                        if keep.any():
-                            keep_idx = np.flatnonzero(keep).astype(np.int64, copy=False)
-                            t_np = t0[keep]
-                            xy_np_fast = x0[keep]
-                            if c0 is not None:
-                                if c0.ndim == 2 and c0.shape[0] == t0.shape[0]:
-                                    conf_np_fast = c0[keep]
-                                else:
-                                    conf_np_fast = None
-                                    use_conf = False
-                        else:
-                            t_np = None
-        except Exception:
-            t_np = None
+    else:
+        use_conf = False
+        raw_conf = [None] * len(raw_xy)
 
-    if t_np is None or xy_np_fast is None or t_np.size < 1:
-        if (
-            not isinstance(raw_xy, list)
-            or len(raw_xy) < 1
-            or int(raw_t_arr.size) != len(raw_xy)
-        ):
-            return [], [], 0.0, 0.0, None
-        use_conf = bool(isinstance(raw_conf, list) and len(raw_conf) == len(raw_xy))
-        t: List[float] = []
-        xy: List[Any] = []
-        keep_src_idx: List[int] = []
-        conf: Optional[List[Any]] = [] if use_conf else None
-        last_t: Optional[float] = None
-        if use_conf:
-            for src_i, (ti, xyi, ci) in enumerate(zip(raw_t_src, raw_xy, raw_conf)):
-                try:
-                    tf = float(ti)
-                except Exception:
-                    continue
-                if last_t is not None and tf <= last_t:
-                    continue
-                if not isinstance(xyi, list):
-                    continue
-                t.append(tf)
-                xy.append(xyi)
-                keep_src_idx.append(int(src_i))
-                if conf is not None:
-                    conf.append(ci)
-                last_t = tf
-        else:
-            for src_i, (ti, xyi) in enumerate(zip(raw_t_src, raw_xy)):
-                try:
-                    tf = float(ti)
-                except Exception:
-                    continue
-                if last_t is not None and tf <= last_t:
-                    continue
-                if not isinstance(xyi, list):
-                    continue
-                t.append(tf)
-                xy.append(xyi)
-                keep_src_idx.append(int(src_i))
-                last_t = tf
-        if len(t) < 1:
-            return [], [], 0.0, 0.0, None
-        keep_idx = np.asarray(keep_src_idx, dtype=np.int64)
-        t_np = np.asarray(t, dtype=np.float32)
+    t: List[float] = []
+    xy: List[Any] = []
+    conf: List[Any] = []
+    last_t: Optional[float] = None
+    for ti, xyi, ci in zip(raw_t_ms, raw_xy, raw_conf):
         try:
-            xy_np_fast = np.asarray(xy, dtype=np.float32)
-            if xy_np_fast.ndim == 3 and xy_np_fast.shape[2] >= 2:
-                xy_np_fast = xy_np_fast[..., :2]
-            else:
-                xy_np_fast = None
-        except Exception:
-            xy_np_fast = None
-        if use_conf and conf is not None and conf:
-            try:
-                conf0 = np.asarray(conf, dtype=np.float32)
-                conf_np_fast = conf0 if conf0.ndim == 2 else None
-            except Exception:
-                conf_np_fast = None
-            if conf_np_fast is None:
-                use_conf = False
-        else:
-            conf_np_fast = None
+            tf = float(ti)
+        except (TypeError, ValueError):
+            continue
+        if last_t is not None and tf <= last_t:
+            continue
+        if not isinstance(xyi, list):
+            continue
+        t.append(tf)
+        xy.append(xyi)
+        conf.append(ci if use_conf else None)
+        last_t = tf
+
+    if len(t) < 1:
+        return [], [], 0.0, 0.0, None
 
     cap_fps: Optional[float] = None
-    if t_np.size >= 2:
-        dt_s = float((t_np[-1] - t_np[0]) / 1000.0)
+    if len(t) >= 2:
+        dt_s = (t[-1] - t[0]) / 1000.0
         if dt_s > 1e-6:
-            cap_fps = float((t_np.size - 1) / dt_s)
+            cap_fps = (len(t) - 1) / dt_s
 
     target_fps = float(target_fps) if target_fps and float(target_fps) > 0 else 30.0
     target_T = int(target_T) if target_T and int(target_T) > 1 else 48
     dt_ms = 1000.0 / target_fps
 
-    end_t_ms = float(window_end_t_ms) if window_end_t_ms is not None else float(t_np[-1])
+    end_t_ms = float(window_end_t_ms) if window_end_t_ms is not None else t[-1]
     start_t_ms = end_t_ms - (target_T - 1) * dt_ms
 
-    # Fast path: fixed-shape arrays (normal app flow). This avoids nested Python loops.
-    try:
-        xy_np = xy_np_fast if xy_np_fast is not None else np.asarray(raw_xy, dtype=np.float32)
-        if xy_np.ndim != 3 or xy_np.shape[2] < 2:
-            raise ValueError("xy must be [N,J,2] for vectorized resampling")
-        xy_np = xy_np[..., :2]
-        xy_np = np.nan_to_num(xy_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-        n_src, n_joints, _ = xy_np.shape
-        if n_src < 1 or n_joints < 1:
-            return [], [], start_t_ms, end_t_ms, cap_fps
-        conf_np: Optional[np.ndarray] = None
-        if use_conf:
-            conf_np = conf_np_fast if conf_np_fast is not None else np.asarray(raw_conf, dtype=np.float32)
-            if conf_np.ndim != 2:
-                raise ValueError("conf must be [N,J] for vectorized resampling")
-            if conf_np.shape[0] != n_src:
-                raise ValueError("conf length mismatch")
-            if conf_np.shape[1] != n_joints:
-                conf_np = conf_np[:, :n_joints]
-            conf_np = np.nan_to_num(conf_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+    j = 0
+    xy_out: List[Any] = []
+    conf_out: List[Any] = []
 
-        start_t32 = np.float32(start_t_ms)
-        fps_key = int(round(target_fps * 1000.0))
-        cache_key = (int(target_T), fps_key)
-        tw_offsets = _RESAMPLE_TW_CACHE.get(cache_key)
-        if tw_offsets is None:
-            tw_offsets = (np.arange(target_T, dtype=np.float32) * np.float32(dt_ms))
-            if len(_RESAMPLE_TW_CACHE) >= _RESAMPLE_TW_CACHE_MAX:
-                # Keep cache bounded for long-lived processes.
-                _RESAMPLE_TW_CACHE.pop(next(iter(_RESAMPLE_TW_CACHE)))
-            _RESAMPLE_TW_CACHE[cache_key] = tw_offsets
-        tw = start_t32 + tw_offsets
-        # Fast path: source frames already align with the target time grid.
-        if n_src == target_T:
-            tol_ms = max(1e-3, 0.25 * dt_ms)
-            if np.all(np.abs(t_np - tw) <= tol_ms):
-                xy_out_np = _clip01_if_needed(xy_np, make_copy=False)
-                if use_conf:
-                    assert conf_np is not None
-                    conf_out_np = _clip01_if_needed(conf_np, make_copy=False)
-                else:
-                    conf_out_np = np.ones((target_T, n_joints), dtype=np.float32) if generate_default_conf else None
-                return (
-                    xy_out_np,
-                    conf_out_np,
-                    start_t_ms,
-                    end_t_ms,
-                    cap_fps,
-                )
-        if n_src == 1:
-            xy_out_np = np.broadcast_to(xy_np[0], (target_T, n_joints, 2)).astype(np.float32, copy=True)
-            xy_out_np = _clip01_if_needed(xy_out_np, make_copy=False)
-            if use_conf:
-                assert conf_np is not None
-                conf_src = conf_np[0]
-                if conf_src.shape[0] != n_joints:
-                    conf_src = conf_src[:n_joints]
-                conf_out_np = np.broadcast_to(conf_src, (target_T, n_joints)).astype(np.float32, copy=True)
-                conf_out_np = _clip01_if_needed(conf_out_np, make_copy=False)
-            else:
-                conf_out_np = np.ones((target_T, n_joints), dtype=np.float32) if generate_default_conf else None
-            return xy_out_np, conf_out_np, start_t_ms, end_t_ms, cap_fps
+    def lerp(a: float, b: float, alpha: float) -> float:
+        return a + (b - a) * alpha
 
-        # Fully vectorized linear interpolation for [T,J,2] and [T,J] using source-time indices.
-        right = np.searchsorted(t_np, tw, side="left")
-        np.clip(right, 1, n_src - 1, out=right)
-        left = right - 1
-        t_left = t_np[left]
-        t_right = t_np[right]
-        denom = np.maximum(t_right - t_left, 1e-9)
-        alpha = ((tw - t_left) / denom).astype(np.float32, copy=False)
-
-        xy_left = xy_np[left]   # [target_T,J,2]
-        xy_right = xy_np[right] # [target_T,J,2]
-        xy_out_np = xy_left + (xy_right - xy_left) * alpha[:, None, None]
-        xy_out_np = _clip01_if_needed(xy_out_np, make_copy=False)
-
-        if use_conf:
-            assert conf_np is not None
-            conf_left = conf_np[left]   # [target_T,J]
-            conf_right = conf_np[right] # [target_T,J]
-            conf_out_np = conf_left + (conf_right - conf_left) * alpha[:, None]
-            conf_out_np = _clip01_if_needed(conf_out_np, make_copy=False)
-        else:
-            conf_out_np = np.ones((target_T, n_joints), dtype=np.float32) if generate_default_conf else None
-
-        return (
-            xy_out_np,
-            conf_out_np,
-            start_t_ms,
-            end_t_ms,
-            cap_fps,
-        )
-    except Exception:
-        # Fallback: robust interpolation for ragged/malformed frames.
-        idx = keep_idx if keep_idx is not None else np.arange(int(raw_t_arr.size), dtype=np.int64)
-        n_idx = int(idx.size)
-        t: List[float] = [0.0] * n_idx
-        xy: List[Any] = [None] * n_idx
-        conf: Optional[List[Any]] = ([None] * n_idx) if use_conf else None
-        n_keep = 0
-        for ii_raw in idx:
-            ii = int(ii_raw)
-            try:
-                ti = float(raw_t_arr[ii])
-            except Exception:
-                continue
-            t[n_keep] = ti
-            xy[n_keep] = raw_xy[ii]
-            if conf is not None:
-                conf[n_keep] = raw_conf[ii]
-            n_keep += 1
-        if n_keep < 1:
-            return [], [], start_t_ms, end_t_ms, cap_fps
-        if n_keep != n_idx:
-            t = t[:n_keep]
-            xy = xy[:n_keep]
-            if conf is not None:
-                conf = conf[:n_keep]
-        j = 0
-        target_T_i = int(target_T)
-        xy_out: List[Any] = [None] * target_T_i
-        need_conf_out = bool(generate_default_conf or (conf is not None))
-        conf_out: Optional[List[Any]] = ([None] * target_T_i) if need_conf_out else None
-        n_t = len(t)
-        t0_first = float(t[0])
-        t_last = float(t[-1])
-        xy_first = xy[0]
-        xy_last = xy[-1]
-        conf_first = conf[0] if conf is not None else None
-        conf_last = conf[-1] if conf is not None else None
-        ones_first = [1.0] * (len(xy_first) if isinstance(xy_first, list) else 0) if generate_default_conf else None
-        ones_last = [1.0] * (len(xy_last) if isinstance(xy_last, list) else 0) if generate_default_conf else None
-        ones_cache: Dict[int, List[float]] = {}
-        dt_ms_f = float(dt_ms)
-
-        def lerp(a: float, b: float, alpha: float) -> float:
-            return a + (b - a) * alpha
-
-        def interp_frame(frame0: Any, frame1: Any, alpha: float, is_xy: bool) -> Any:
-            if not isinstance(frame0, list):
-                return frame1
-            if not isinstance(frame1, list):
-                return frame0
-            if alpha <= 0.0:
-                return frame0
-            if alpha >= 1.0:
-                return frame1
-            if is_xy:
-                n = min(len(frame0), len(frame1))
-                out = [[0.0, 0.0] for _ in range(n)]
-                for k in range(n):
-                    p0 = frame0[k]
-                    p1 = frame1[k]
-                    try:
-                        x0 = float(p0[0]) if isinstance(p0, list) and len(p0) >= 2 else 0.0
-                        y0 = float(p0[1]) if isinstance(p0, list) and len(p0) >= 2 else 0.0
-                        x1 = float(p1[0]) if isinstance(p1, list) and len(p1) >= 2 else 0.0
-                        y1 = float(p1[1]) if isinstance(p1, list) and len(p1) >= 2 else 0.0
-                    except Exception:
-                        x0 = y0 = x1 = y1 = 0.0
-                    out[k][0] = lerp(x0, x1, alpha)
-                    out[k][1] = lerp(y0, y1, alpha)
-                return out
-
+    def interp_frame(frame0: Any, frame1: Any, alpha: float, is_xy: bool) -> Any:
+        if not isinstance(frame0, list):
+            return frame1
+        if not isinstance(frame1, list):
+            return frame0
+        out = []
+        if is_xy:
             n = min(len(frame0), len(frame1))
-            out = [0.0] * n
             for k in range(n):
+                p0 = frame0[k] if isinstance(frame0[k], list) and len(frame0[k]) >= 2 else [0.0, 0.0]
+                p1 = frame1[k] if isinstance(frame1[k], list) and len(frame1[k]) >= 2 else [0.0, 0.0]
                 try:
-                    v0 = float(frame0[k])
-                except Exception:
-                    v0 = 0.0
-                try:
-                    v1 = float(frame1[k])
-                except Exception:
-                    v1 = v0
-                out[k] = lerp(v0, v1, alpha)
+                    x0, y0 = float(p0[0]), float(p0[1])
+                    x1, y1 = float(p1[0]), float(p1[1])
+                except (TypeError, ValueError):
+                    x0 = y0 = x1 = y1 = 0.0
+                out.append([lerp(x0, x1, alpha), lerp(y0, y1, alpha)])
+            if len(frame0) > n:
+                out.extend(frame0[n:])
+            elif len(frame1) > n:
+                out.extend(frame1[n:])
             return out
 
-        def _ones_for_len(n: int) -> Optional[List[float]]:
-            if not generate_default_conf:
-                return None
-            nn = int(n) if int(n) > 0 else 0
-            out = ones_cache.get(nn)
-            if out is None:
-                out = [1.0] * nn
-                ones_cache[nn] = out
-            return out
+        n = min(len(frame0), len(frame1))
+        for k in range(n):
+            try:
+                v0 = float(frame0[k])
+            except (TypeError, ValueError):
+                v0 = 0.0
+            try:
+                v1 = float(frame1[k])
+            except (TypeError, ValueError):
+                v1 = v0
+            out.append(lerp(v0, v1, alpha))
+        if len(frame0) > n:
+            out.extend(frame0[n:])
+        elif len(frame1) > n:
+            out.extend(frame1[n:])
+        return out
 
-        tw = float(start_t_ms)
-        for k in range(target_T_i):
+    for k in range(target_T):
+        tw = start_t_ms + k * dt_ms
 
-            if tw <= t0_first:
-                xy_out[k] = xy_first
-                if conf_out is not None:
-                    conf_out[k] = conf_first if conf is not None and isinstance(conf_first, list) else (
-                        ones_first
-                    )
-                tw += dt_ms_f
-                continue
-            if tw >= t_last:
-                xy_out[k] = xy_last
-                if conf_out is not None:
-                    conf_out[k] = conf_last if conf is not None and isinstance(conf_last, list) else (
-                        ones_last
-                    )
-                tw += dt_ms_f
-                continue
+        if tw <= t[0]:
+            xy_out.append(xy[0])
+            conf_out.append(
+                conf[0]
+                if use_conf and isinstance(conf[0], list)
+                else [1.0] * (len(xy[0]) if isinstance(xy[0], list) else 0)
+            )
+            continue
+        if tw >= t[-1]:
+            xy_out.append(xy[-1])
+            conf_out.append(
+                conf[-1]
+                if use_conf and isinstance(conf[-1], list)
+                else [1.0] * (len(xy[-1]) if isinstance(xy[-1], list) else 0)
+            )
+            continue
 
-            while j + 1 < n_t and t[j + 1] < tw:
-                j += 1
+        while j + 1 < len(t) and t[j + 1] < tw:
+            j += 1
 
-            t0, t1 = t[j], t[j + 1]
-            alpha = 0.0 if t1 <= t0 else (tw - t0) / (t1 - t0)
+        t0, t1 = t[j], t[j + 1]
+        alpha = 0.0 if t1 <= t0 else (tw - t0) / (t1 - t0)
 
-            xy_interp = interp_frame(xy[j], xy[j + 1], alpha, True)
-            xy_out[k] = xy_interp
-            if conf_out is not None:
-                if conf is not None and isinstance(conf[j], list) and isinstance(conf[j + 1], list):
-                    conf_out[k] = interp_frame(conf[j], conf[j + 1], alpha, False)
-                else:
-                    conf_out[k] = _ones_for_len(len(xy_interp) if isinstance(xy_interp, list) else 0)
-            tw += dt_ms_f
+        xy_out.append(interp_frame(xy[j], xy[j + 1], alpha, True))
 
-        # Robustly pack potentially ragged fallback frames to dense arrays.
-        n_joints_out = None
-        for fr in xy_out:
-            if not isinstance(fr, list):
-                continue
-            lfr = len(fr)
-            if n_joints_out is None or lfr < n_joints_out:
-                n_joints_out = lfr
-        if n_joints_out is None:
-            return [], [], start_t_ms, end_t_ms, cap_fps
-        n_joints_out = max(int(n_joints_out), 0)
-
-        xy_out_np = np.zeros((target_T_i, n_joints_out, 2), dtype=np.float32)
-        for ti, fr in enumerate(xy_out):
-            if not isinstance(fr, list):
-                continue
-            upto = min(n_joints_out, len(fr))
-            row_xy = xy_out_np[ti]
-            for ji in range(upto):
-                p = fr[ji]
-                if not (isinstance(p, list) and len(p) >= 2):
-                    continue
-                try:
-                    row_xy[ji, 0] = float(p[0])
-                    row_xy[ji, 1] = float(p[1])
-                except Exception:
-                    continue
-        xy_out_np = _clip01_if_needed(xy_out_np, make_copy=False)
-
-        if conf_out is None:
-            conf_out_np = None
+        if use_conf and isinstance(conf[j], list) and isinstance(conf[j + 1], list):
+            conf_out.append(interp_frame(conf[j], conf[j + 1], alpha, False))
         else:
-            default_conf = 1.0 if generate_default_conf else 0.0
-            conf_out_np = np.full((target_T_i, n_joints_out), np.float32(default_conf), dtype=np.float32)
-            for ti, fr in enumerate(conf_out):
-                if not isinstance(fr, list):
-                    continue
-                upto = min(n_joints_out, len(fr))
-                row_conf = conf_out_np[ti]
-                for ji in range(upto):
-                    try:
-                        row_conf[ji] = float(fr[ji])
-                    except Exception:
-                        continue
-            conf_out_np = _clip01_if_needed(conf_out_np, make_copy=False)
+            conf_out.append([1.0] * (len(xy_out[-1]) if isinstance(xy_out[-1], list) else 0))
 
-        return (
-            xy_out_np,
-            conf_out_np,
-            start_t_ms,
-            end_t_ms,
-            cap_fps,
-        )
+    return xy_out, conf_out, start_t_ms, end_t_ms, cap_fps
 
 
 @router.post("/api/monitor/reset_session")
+@router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
     core._SESSION_STATE.pop(session_id, None)
     return {"ok": True, "session_id": session_id}
 
 
 @router.post("/api/monitor/predict_window")
-def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+@router.post("/api/v1/monitor/predict_window")
+def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one window from the live monitor UI."""
+    payload_d = payload.model_dump()
 
     t0 = time.time()
-
-    def _as_int(
-        v: Any,
-        *,
-        field: str,
-        default: int,
-        min_value: Optional[int] = None,
-        max_value: Optional[int] = None,
-    ) -> int:
-        if v is None:
-            out = int(default)
-        else:
-            try:
-                out = int(v)
-            except Exception:
-                raise HTTPException(status_code=400, detail=f"{field} must be an integer")
-        if min_value is not None and out < min_value:
-            raise HTTPException(status_code=400, detail=f"{field} must be >= {min_value}")
-        if max_value is not None and out > max_value:
-            raise HTTPException(status_code=400, detail=f"{field} must be <= {max_value}")
-        return out
 
     # -------------
     # Inputs
     # -------------
-    session_id = str(payload.get("session_id") or "default")
+    session_id = str(payload_d.get("session_id") or "default")
 
-    mode = str(payload.get("mode") or "hybrid").lower().strip()
+    requested_mode = str(payload_d.get("mode") or "tcn").lower().strip()
+    mode = requested_mode
     if mode in {"hyb", "hybrid", "dual"}:
-        mode = "dual"
-    elif mode not in {"tcn", "gcn"}:
-        mode = "dual"
+        mode = "hybrid"
+    elif mode not in {"tcn", "gcn", "hybrid"}:
+        mode = "tcn"
 
-    dataset_code = str(payload.get("dataset_code") or payload.get("dataset") or "").lower().strip()
-    op_code = str(payload.get("op_code") or payload.get("op") or "").upper().strip()
+    dataset_code = normalize_dataset_code(payload_d.get("dataset_code") or payload_d.get("dataset"))
+    op_code = str(payload_d.get("op_code") or payload_d.get("op") or "").upper().strip()
 
-    use_mc = payload.get("use_mc")
-    mc_M = payload.get("mc_M")
-    mc_sigma_tol_raw = payload.get("mc_sigma_tol")
-    mc_se_tol_raw = payload.get("mc_se_tol")
+    use_mc = payload_d.get("use_mc")
+    mc_M = payload_d.get("mc_M")
 
-    persist = bool(payload.get("persist", False))
+    persist = bool(payload_d.get("persist", False))
 
-    target_T = _as_int(payload.get("target_T"), field="target_T", default=48, min_value=2, max_value=512)
-    raw_xy = payload.get("raw_xy")
-    raw_conf = payload.get("raw_conf")
-    raw_xy_flat = payload.get("raw_xy_flat")
-    raw_conf_flat = payload.get("raw_conf_flat")
-    raw_joints = payload.get("raw_joints")
-    raw_t_ms = payload.get("raw_t_ms")
-    window_end_t_ms = payload.get("window_end_t_ms", None)
-    raw_xy_flat_arr: Optional[np.ndarray] = None
-    raw_conf_flat_arr: Optional[np.ndarray] = None
+    target_T = int(payload_d.get("target_T") or 48)
+    raw_xy = payload_d.get("raw_xy")
+    raw_conf = payload_d.get("raw_conf")
+    raw_t_ms = payload_d.get("raw_t_ms")
+    window_end_t_ms = payload_d.get("window_end_t_ms", None)
+    raw_stats = _raw_window_stats(raw_t_ms, raw_xy, raw_conf)
 
-    if raw_joints is not None:
-        raw_joints_i = _as_int(raw_joints, field="raw_joints", default=33, min_value=1, max_value=_MAX_RAW_JOINTS)
-    else:
-        raw_joints_i = None
-    if isinstance(raw_t_ms, list):
-        try:
-            raw_t_ms_arr = np.asarray(raw_t_ms, dtype=np.float32).reshape(-1)
-        except Exception:
-            raise HTTPException(status_code=400, detail="raw_t_ms must be a numeric array")
-        n_src = int(raw_t_ms_arr.size)
-        if n_src > _MAX_RAW_SRC_FRAMES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"raw_t_ms too long ({n_src}); max {_MAX_RAW_SRC_FRAMES} source frames",
-            )
-        if not bool(np.isfinite(raw_t_ms_arr).all()):
-            raise HTTPException(status_code=400, detail="raw_t_ms contains non-finite values")
-        if n_src > 1 and not bool(np.all(raw_t_ms_arr[1:] > raw_t_ms_arr[:-1])):
-            raise HTTPException(status_code=400, detail="raw_t_ms must be strictly increasing")
-        raw_t_ms = raw_t_ms_arr
-        if raw_xy_flat is not None and raw_joints_i is not None:
-            try:
-                if isinstance(raw_xy_flat, np.ndarray) and raw_xy_flat.dtype == np.float32:
-                    raw_xy_flat_arr = raw_xy_flat.reshape(-1)
-                else:
-                    raw_xy_flat_arr = np.asarray(raw_xy_flat, dtype=np.float32).reshape(-1)
-                flat_len = int(raw_xy_flat_arr.size)
-                max_flat = int(n_src * raw_joints_i * 2)
-                if flat_len > max_flat:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"raw_xy_flat too long ({flat_len}); expected <= {max_flat}",
-                    )
-                if flat_len != max_flat:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"raw_xy_flat length mismatch ({flat_len}); expected exactly {max_flat}",
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                raise HTTPException(status_code=400, detail="raw_xy_flat must be a flat numeric array")
-        if raw_conf_flat is not None and raw_joints_i is not None:
-            try:
-                if isinstance(raw_conf_flat, np.ndarray) and raw_conf_flat.dtype == np.float32:
-                    raw_conf_flat_arr = raw_conf_flat.reshape(-1)
-                else:
-                    raw_conf_flat_arr = np.asarray(raw_conf_flat, dtype=np.float32).reshape(-1)
-                conf_flat_len = int(raw_conf_flat_arr.size)
-                max_conf_flat = int(n_src * raw_joints_i)
-                if conf_flat_len > max_conf_flat:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"raw_conf_flat too long ({conf_flat_len}); expected <= {max_conf_flat}",
-                    )
-                if conf_flat_len != max_conf_flat:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"raw_conf_flat length mismatch ({conf_flat_len}); expected exactly {max_conf_flat}",
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                raise HTTPException(status_code=400, detail="raw_conf_flat must be a flat numeric array")
-
-    xy: Optional[np.ndarray] = None
-    conf: Optional[np.ndarray] = None
+    xy: List[Any] = []
+    conf: List[Any] = []
     cap_fps_est: Optional[float] = None
-    used_raw_path = False
-    sanitized_from_resample = False
 
     # -------------
     # Defaults from DB (if available)
     # -------------
-    resident_id = _as_int(payload.get("resident_id"), field="resident_id", default=1, min_value=1)
-    active_model_code = "HYBRID" if mode == "dual" else mode.upper()
-    need_db_defaults = (not dataset_code) or (not op_code) or (use_mc is None) or (mc_M is None)
-    if need_db_defaults:
-        try:
-            db_defaults = _get_runtime_defaults_cached(resident_id)
-            if not dataset_code and db_defaults.get("dataset_code"):
-                dataset_code = str(db_defaults.get("dataset_code") or "").lower()
-            if use_mc is None and ("use_mc" in db_defaults):
-                use_mc = bool(db_defaults.get("use_mc"))
-            if mc_M is None and ("mc_M" in db_defaults):
-                mc_M = _as_int(db_defaults.get("mc_M"), field="mc_M", default=10, min_value=1, max_value=200)
-            if db_defaults.get("active_model_code"):
-                active_model_code = str(db_defaults.get("active_model_code") or active_model_code)
-            if (not op_code) and db_defaults.get("op_code"):
-                op_code = str(db_defaults.get("op_code") or "").upper().strip()
-        except Exception:
-            logger.debug("Falling back to payload/default monitor settings (DB unavailable)", exc_info=True)
+    resident_id = int(payload_d.get("resident_id") or 1)
+    active_model_code = mode.upper()
+
+    try:
+        with get_conn() as conn:
+            _ensure_system_settings_schema(conn)
+            variants = _detect_variants(conn)
+
+            sys_row = None
+            with conn.cursor() as cur:
+                if variants.get("settings") == "v2" and _table_exists(conn, "system_settings"):
+                    cur.execute("SELECT * FROM system_settings WHERE resident_id=%s LIMIT 1", (resident_id,))
+                    sys_row = cur.fetchone()
+                elif _table_exists(conn, "settings"):
+                    cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
+                    sys_row = cur.fetchone()
+
+            if isinstance(sys_row, dict):
+                if not dataset_code and sys_row.get("active_dataset_code"):
+                    dataset_code = normalize_dataset_code(sys_row.get("active_dataset_code"))
+                if use_mc is None and sys_row.get("mc_enabled") is not None:
+                    use_mc = (
+                        bool(int(sys_row.get("mc_enabled")))
+                        if str(sys_row.get("mc_enabled")).isdigit()
+                        else bool(sys_row.get("mc_enabled"))
+                    )
+                if mc_M is None and sys_row.get("mc_M") is not None:
+                    mc_M = int(sys_row.get("mc_M"))
+                if sys_row.get("alert_cooldown_sec") is not None:
+                    cooldown_sec = int(sys_row.get("alert_cooldown_sec"))
+                if sys_row.get("active_model_code"):
+                    active_model_code = str(sys_row.get("active_model_code") or active_model_code)
+
+                if (not op_code) and sys_row.get("active_op_code"):
+                    op_code = str(sys_row.get("active_op_code") or "").upper().strip()
+
+                op_id = None
+                for k in ("active_operating_point", "active_operating_point_id"):
+                    if sys_row.get(k) is not None:
+                        op_id = sys_row.get(k)
+                        break
+                if (not op_code) and op_id and _table_exists(conn, "operating_points"):
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT code FROM operating_points WHERE id=%s LIMIT 1", (int(op_id),))
+                        r = cur.fetchone() or {}
+                        if isinstance(r, dict) and r.get("code"):
+                            op_code = str(r.get("code") or "").upper()
+    except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
+            resident_id,
+            session_id,
+            mode,
+            dataset_code or "unset",
+            exc,
+        )
 
     if not dataset_code:
-        dataset_code = "muvim"
+        dataset_code = "caucafall"
     if not op_code:
         op_code = "OP-2"
     if use_mc is None:
         use_mc = True
     if mc_M is None:
         mc_M = 10
-    mc_M = _as_int(mc_M, field="mc_M", default=10, min_value=1, max_value=200)
-    mc_sigma_tol: Optional[float] = None
-    if mc_sigma_tol_raw is not None:
-        try:
-            mc_sigma_tol = float(mc_sigma_tol_raw)
-            if not (mc_sigma_tol > 0.0):
-                mc_sigma_tol = None
-        except Exception:
-            raise HTTPException(status_code=400, detail="mc_sigma_tol must be a positive number")
-    mc_se_tol: Optional[float] = None
-    if mc_se_tol_raw is not None:
-        try:
-            mc_se_tol = float(mc_se_tol_raw)
-            if not (mc_se_tol > 0.0):
-                mc_se_tol = None
-        except Exception:
-            raise HTTPException(status_code=400, detail="mc_se_tol must be a positive number")
 
-    expected_fps = _EXPECTED_FPS_BY_DATASET.get(
-        dataset_code,
-        int(payload.get("target_fps") or payload.get("fps") or 30),
+    expected_fps = {
+        "le2i": 25,
+        "caucafall": 23,
+    }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 23))
+    effective_fps = _effective_target_fps(
+        expected_fps=float(expected_fps),
+        raw_fps_est=raw_stats.get("raw_fps_est"),
     )
 
-    if raw_t_ms is not None and (raw_xy is not None or raw_xy_flat is not None):
-        used_raw_path = True
-        has_raw_conf = (raw_conf_flat is not None) or (isinstance(raw_conf, list) and len(raw_conf) > 0)
+    if raw_xy is not None and raw_t_ms is not None:
         xy, conf, _, _, cap_fps_est = _resample_pose_window(
             raw_t_ms=raw_t_ms,
             raw_xy=raw_xy,
             raw_conf=raw_conf,
-            raw_xy_flat=raw_xy_flat_arr if raw_xy_flat_arr is not None else raw_xy_flat,
-            raw_conf_flat=raw_conf_flat_arr if raw_conf_flat_arr is not None else raw_conf_flat,
-            raw_joints=raw_joints_i,
-            target_fps=float(expected_fps),
+            target_fps=float(effective_fps),
             target_T=target_T,
             window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
-            generate_default_conf=False,
-            prevalidated_raw=True,
         )
-        sanitized_from_resample = isinstance(xy, np.ndarray) and (conf is None or isinstance(conf, np.ndarray))
-        # If source stream did not provide confidence, keep conf=None so the ML
-        # pipeline can use its no-conf fast/default path without carrying dense
-        # synthetic confidence tensors through inference.
-        if not has_raw_conf:
-            conf = None
 
-    if not (isinstance(xy, np.ndarray) and int(xy.size) > 0):
-        xy_in = payload.get("xy") or []
-        conf_in = payload.get("conf") or []
-        try:
-            xy = np.asarray(xy_in, dtype=np.float32)
-        except Exception:
-            raise HTTPException(status_code=400, detail="xy must be a numeric array")
-        if conf_in:
-            try:
-                conf = np.asarray(conf_in, dtype=np.float32)
-            except Exception:
-                raise HTTPException(status_code=400, detail="conf must be a numeric array")
-        else:
-            conf = None
+    if not xy:
+        xy = payload_d.get("xy") or []
+        conf = payload_d.get("conf") or []
 
-    if not (isinstance(xy, np.ndarray) and int(xy.size) > 0):
+    if not xy:
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
-    if xy.ndim != 3 or int(xy.shape[2]) < 2:
-        raise HTTPException(status_code=400, detail="xy must be shaped [T,J,2]")
-    xy = xy[..., :2]
-    if not sanitized_from_resample:
-        xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-        np.clip(xy, 0.0, 1.0, out=xy)
-    if conf is not None:
-        if conf.ndim != 2:
-            raise HTTPException(status_code=400, detail="conf must be shaped [T,J]")
-        t_xy = int(xy.shape[0])
-        j_xy = int(xy.shape[1])
-        if conf.shape != (t_xy, j_xy):
-            if int(conf.size) == int(t_xy * j_xy):
-                conf = conf.reshape(t_xy, j_xy)
-            else:
-                raise HTTPException(status_code=400, detail="conf shape mismatch for xy")
-        if not sanitized_from_resample:
-            conf = np.nan_to_num(conf, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-            np.clip(conf, 0.0, 1.0, out=conf)
-    if not used_raw_path and int(xy.shape[0]) != int(target_T):
-        raise HTTPException(
-            status_code=400,
-            detail=f"xy time length mismatch ({int(xy.shape[0])}); expected target_T={int(target_T)}",
-        )
 
-    expected_fps_f = float(expected_fps)
-    use_mc_b = bool(use_mc)
-    mc_M_i = int(mc_M)
+    motion_score = _window_motion_score(xy)
 
     try:
         if window_end_t_ms is not None:
@@ -914,71 +601,126 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             _now_ms = float(raw_t_ms[-1])
         else:
             _now_ms = time.time() * 1000.0
-    except Exception:
+    except (TypeError, ValueError):
         _now_ms = time.time() * 1000.0
     _t_s = float(_now_ms) / 1000.0
 
-    core.prune_session_state(now_s=_t_s)
-    st = core.touch_session_state(session_id, now_s=_t_s)
+    st = core._SESSION_STATE.setdefault(session_id, {})
     st_trackers = st.setdefault("trackers", {})
     st_trackers_cfg = st.setdefault("trackers_cfg", {})
     started_tcn = False
     started_gcn = False
+
+    # Precompute live gating signals before feeding tracker state machines.
+    min_motion = _LIVE_MIN_MOTION_FOR_FALL.get(dataset_code, 0.006)
+    low_motion_block = bool(motion_score is not None and motion_score < float(min_motion))
+    qdiag = _window_quality_block(
+        raw_stats=raw_stats,
+        expected_fps=float(expected_fps),
+        effective_fps=float(effective_fps),
+        target_T=int(target_T),
+        dataset_code=dataset_code,
+    )
+    structural_quality_block = bool(qdiag.get("low_frames", False) or qdiag.get("low_coverage", False))
+    low_quality_block = bool(qdiag.get("low_quality_block", False))
+    raw_fps_est = raw_stats.get("raw_fps_est")
+    low_fps_mode = bool(
+        raw_fps_est is not None
+        and math.isfinite(float(raw_fps_est))
+        and float(raw_fps_est) < float(_LIVE_LOW_FPS_MODE_THRESHOLD)
+    )
+    sampling_mode = "low_fps" if low_fps_mode else "normal"
+    conf_mean = raw_stats.get("conf_mean")
+    joints_med = int(raw_stats.get("joints_per_frame_med") or 0)
+    low_conf_block = bool(
+        conf_mean is not None
+        and math.isfinite(float(conf_mean))
+        and float(conf_mean) < float(_LIVE_MIN_CONF_MEAN.get(dataset_code, 0.35))
+    )
+    low_joints_block = bool(joints_med > 0 and joints_med < int(_LIVE_MIN_JOINTS_MED))
+    occlusion_block = bool(low_conf_block or low_joints_block)
+
+    def _guard_alert_p(p_raw: float, tau_low: float) -> float:
+        """Clamp tracker input when live sampling/motion quality is insufficient."""
+        if low_motion_block or structural_quality_block:
+            return float(min(float(p_raw), float(tau_low) - 0.02))
+        return float(p_raw)
 
     # -------------
     # Inference
     # -------------
     specs = _get_deploy_specs()
 
+    def resolve_spec_key(arch: str, preferred: str) -> str:
+        if preferred in specs:
+            return preferred
+        ds_prefix = f"{dataset_code}_"
+        suffix = f"_{arch}"
+        candidates = [k for k in specs.keys() if k.startswith(ds_prefix) and k.endswith(suffix)]
+        if not candidates:
+            return preferred
+        candidates.sort(key=lambda x: (len(x), x))
+        return candidates[0]
+
     def spec_key_for(arch: str) -> str:
         return f"{dataset_code}_{arch}".lower()
 
-    tcn_key = str(payload.get("model_tcn") or spec_key_for("tcn")).lower()
-    gcn_key = str(payload.get("model_gcn") or spec_key_for("gcn")).lower()
-    if tcn_key not in specs or gcn_key not in specs:
-        raise HTTPException(status_code=404, detail=f"No deploy specs found for dataset '{dataset_code}'.")
+    tcn_key = resolve_spec_key("tcn", str(payload_d.get("model_tcn") or spec_key_for("tcn")).lower())
+    gcn_key = resolve_spec_key("gcn", str(payload_d.get("model_gcn") or spec_key_for("gcn")).lower())
+    has_tcn = tcn_key in specs
+    has_gcn = gcn_key in specs
+    if mode == "tcn":
+        if not has_tcn:
+            raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
+    elif mode == "gcn":
+        if not has_gcn:
+            raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
+    else:
+        if not has_tcn or not has_gcn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
+            )
 
     models_out: Dict[str, Any] = {}
     tri_tcn = None
     tri_gcn = None
-    feature_cache: Optional[Dict[Any, Any]] = {} if mode == "dual" else None
-    def _predict_spec_safe(*, spec_key_local: str) -> Dict[str, Any]:
-        try:
-            return _predict_spec(
-                spec_key=spec_key_local,
-                joints_xy=xy,
-                conf=conf,
-                fps=expected_fps_f,
-                target_T=target_T,
-                op_code=op_code,
-                use_mc=use_mc_b,
-                mc_M=mc_M_i,
-                mc_sigma_tol=mc_sigma_tol,
-                mc_se_tol=mc_se_tol,
-                feature_cache=feature_cache,
-                assume_sanitized_inputs=True,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"invalid inference input: {e}") from e
+    dual_policy_alerts: Dict[str, Any] = {}
 
-    if mode in {"tcn", "dual"}:
-        out_tcn = _predict_spec_safe(spec_key_local=tcn_key)
+    run_tcn = mode in {"tcn", "hybrid"}
+    run_gcn = mode in {"gcn", "hybrid"}
+
+    if run_tcn:
+        out_tcn = _predict_spec(
+            spec_key=tcn_key,
+            joints_xy=xy,
+            conf=conf,
+            fps=float(expected_fps),
+            target_T=target_T,
+            op_code=op_code,
+            use_mc=bool(use_mc),
+            mc_M=int(mc_M),
+        )
 
         cfg_tcn = out_tcn.get("alert_cfg") or {}
+        tau_low_tcn = float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0)))
+        p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
+        p_alert_tcn = _guard_alert_p(p_raw_tcn, tau_low_tcn)
+        out_tcn["p_alert_in"] = float(p_alert_tcn)
         trk = st_trackers.get(tcn_key)
         if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
             trk = OnlineAlertTracker(cfg_tcn)
             st_trackers[tcn_key] = trk
             st_trackers_cfg[tcn_key] = cfg_tcn
         r = trk.step(
-            p=float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0)),
+            p=float(p_alert_tcn),
             t_s=_t_s,
         )
         out_tcn["triage"] = {
             "state": r.triage_state,
             "ps": r.ps,
             "p_in": r.p_in,
-            "tau_low": float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0))),
+            "tau_low": tau_low_tcn,
             "tau_high": float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0))),
             "ema_alpha": float(cfg_tcn.get("ema_alpha", 0.0)),
             "k": int(cfg_tcn.get("k", 2)),
@@ -990,22 +732,59 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         tri_tcn = r.triage_state
         started_tcn = bool(r.started_event)
 
-    if mode in {"gcn", "dual"}:
-        out_gcn = _predict_spec_safe(spec_key_local=gcn_key)
+        # Optional dual-policy overlays (safe/recall) for deployment UI.
+        for pol in ("safe", "recall"):
+            pol_cfg = _load_dual_policy_cfg(dataset_code, pol, op_code)
+            if not isinstance(pol_cfg, dict):
+                continue
+            pol_key = f"{tcn_key}::dual::{pol}"
+            pol_trk = st_trackers.get(pol_key)
+            if pol_trk is None or st_trackers_cfg.get(pol_key) != pol_cfg:
+                pol_trk = OnlineAlertTracker(pol_cfg)
+                st_trackers[pol_key] = pol_trk
+                st_trackers_cfg[pol_key] = pol_cfg
+
+            pol_res = pol_trk.step(
+                p=float(p_alert_tcn),
+                t_s=_t_s,
+            )
+            dual_policy_alerts[pol] = {
+                "state": pol_res.triage_state,
+                "alert": bool(pol_res.triage_state == "fall"),
+                "tau_low": float(pol_cfg.get("tau_low", 0.0)),
+                "tau_high": float(pol_cfg.get("tau_high", 0.0)),
+                "cooldown_remaining_s": pol_res.cooldown_remaining_s,
+            }
+
+    if run_gcn:
+        out_gcn = _predict_spec(
+            spec_key=gcn_key,
+            joints_xy=xy,
+            conf=conf,
+            fps=float(expected_fps),
+            target_T=target_T,
+            op_code=op_code,
+            use_mc=bool(use_mc),
+            mc_M=int(mc_M),
+        )
         models_out["gcn"] = out_gcn
 
         cfg_gcn = out_gcn.get("alert_cfg") or {}
+        tau_low_gcn = float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0)))
+        p_raw_gcn = float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0)
+        p_alert_gcn = _guard_alert_p(p_raw_gcn, tau_low_gcn)
+        out_gcn["p_alert_in"] = float(p_alert_gcn)
         trk = st_trackers.get(gcn_key)
         if trk is None or st_trackers_cfg.get(gcn_key) != cfg_gcn:
             trk = OnlineAlertTracker(cfg_gcn)
             st_trackers[gcn_key] = trk
             st_trackers_cfg[gcn_key] = cfg_gcn
-        res = trk.step(p=float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0), t_s=_t_s)
+        res = trk.step(p=float(p_alert_gcn), t_s=_t_s)
         out_gcn["triage"] = {
             "state": res.triage_state,
             "ps": res.ps,
             "p_in": res.p_in,
-            "tau_low": float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0))),
+            "tau_low": tau_low_gcn,
             "tau_high": float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0))),
             "ema_alpha": float(cfg_gcn.get("ema_alpha", 0.0)),
             "k": int(cfg_gcn.get("k", 2)),
@@ -1016,36 +795,126 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         started_gcn = bool(res.started_event)
         tri_gcn = res.triage_state
 
+    # Primary alert signals.
+    tcn_safe_alert = (
+        bool(dual_policy_alerts.get("safe", {}).get("alert"))
+        if "safe" in dual_policy_alerts
+        else bool((tri_tcn or "not_fall") == "fall")
+    )
+    tcn_recall_alert = (
+        bool(dual_policy_alerts.get("recall", {}).get("alert"))
+        if "recall" in dual_policy_alerts
+        else tcn_safe_alert
+    )
+    gcn_alert = bool((tri_gcn or "not_fall") == "fall")
+
     if mode == "tcn":
-        triage_state = tri_tcn or "not_fall"
-        p_display = float(models_out.get("tcn", {}).get("mu", 0.0))
+        # Prefer safety channel state when available to reduce spurious live false alerts.
+        triage_state = str(dual_policy_alerts.get("safe", {}).get("state") or tri_tcn or "not_fall")
+        p_display = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
+        safe_alert = tcn_safe_alert
+        recall_alert = tcn_recall_alert
     elif mode == "gcn":
         triage_state = tri_gcn or "not_fall"
-        p_display = float(models_out.get("gcn", {}).get("mu", 0.0))
+        p_display = float(models_out.get("gcn", {}).get("p_alert_in", models_out.get("gcn", {}).get("mu", 0.0)))
+        safe_alert = gcn_alert
+        recall_alert = gcn_alert
     else:
-        triage_state = _fuse_hybrid(tri_tcn=str(tri_tcn or "not_fall"), tri_gcn=str(tri_gcn or "not_fall"))
-        mu_t = float(models_out.get("tcn", {}).get("mu", 0.0))
-        mu_g = float(models_out.get("gcn", {}).get("mu", 0.0))
-        sig_t = float(models_out.get("tcn", {}).get("sigma", 0.0))
-        sig_g = float(models_out.get("gcn", {}).get("sigma", 0.0))
-        models_out["hybrid"] = {
-            "mu": float(min(mu_t, mu_g)),
-            "sigma": float(max(sig_t, sig_g)),
-            "triage": {"state": triage_state},
-            "components": {"tcn": tri_tcn, "gcn": tri_gcn},
-        }
-        p_display = float(min(mu_t, mu_g))
+        # Safety hybrid fusion:
+        # - automated alert channel (safe): TCN_safe AND GCN_fall
+        # - review channel (recall): TCN_recall OR GCN_fall
+        safe_alert = bool(tcn_safe_alert and gcn_alert)
+        recall_alert = bool(tcn_recall_alert or gcn_alert)
+        if safe_alert:
+            triage_state = "fall"
+        elif recall_alert:
+            triage_state = "uncertain"
+        else:
+            triage_state = "not_fall"
+        p_tcn = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
+        p_gcn = float(models_out.get("gcn", {}).get("p_alert_in", models_out.get("gcn", {}).get("mu", 0.0)))
+        p_display = float(max(p_tcn, p_gcn))
+        dual_policy_alerts.setdefault(
+            "safe",
+            {
+                "state": "fall" if safe_alert else "not_fall",
+                "alert": safe_alert,
+                "source": "tcn_safe_and_gcn",
+            },
+        )
+        dual_policy_alerts.setdefault(
+            "recall",
+            {
+                "state": "fall" if recall_alert else "not_fall",
+                "alert": recall_alert,
+                "source": "tcn_recall_or_gcn",
+            },
+        )
 
     saved_event_id = None
+    notification_dispatch: Optional[Dict[str, Any]] = None
 
     if mode == "tcn":
-        started_event = started_tcn
+        # Use safety-channel alert gate if present (deployment-safe default).
+        if "safe" in dual_policy_alerts:
+            started_event = bool(dual_policy_alerts.get("safe", {}).get("alert"))
+        else:
+            started_event = started_tcn
     elif mode == "gcn":
         started_event = started_gcn
     else:
-        prev_hyb = str(st.get("last_hybrid_state") or "not_fall")
-        started_event = (triage_state == "fall") and (prev_hyb != "fall")
-        st["last_hybrid_state"] = triage_state
+        started_event = bool(safe_alert)
+
+    # In low-fps mode, allow falls but require stricter persistence + motion + structure quality.
+    low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"
+    low_fps_confirm_count = int(st.get(low_fps_gate_key, 0) or 0)
+    low_fps_gate_reason: Optional[str] = None
+    if low_motion_block and triage_state == "fall":
+        triage_state = "uncertain"
+        started_event = False
+        safe_alert = False
+        if recall_alert is not None:
+            recall_alert = False
+    if occlusion_block and triage_state == "fall":
+        triage_state = "uncertain"
+        started_event = False
+        safe_alert = False
+        if recall_alert is not None:
+            recall_alert = False
+    if structural_quality_block and triage_state == "fall":
+        triage_state = "uncertain"
+        started_event = False
+        safe_alert = False
+        if recall_alert is not None:
+            recall_alert = False
+
+    if triage_state == "fall" and low_fps_mode:
+        safe_gate_ok = bool(safe_alert) if mode in {"tcn", "hybrid"} else True
+        motion_gate_ok = not low_motion_block
+        structure_gate_ok = not structural_quality_block
+        occlusion_gate_ok = not occlusion_block
+        if safe_gate_ok and motion_gate_ok and structure_gate_ok and occlusion_gate_ok:
+            low_fps_confirm_count += 1
+            st[low_fps_gate_key] = low_fps_confirm_count
+            if low_fps_confirm_count < int(_LIVE_LOW_FPS_FALL_PERSIST_N):
+                low_fps_gate_reason = "need_more_consecutive_fall_windows"
+                triage_state = "uncertain"
+                started_event = False
+                safe_alert = False
+                if recall_alert is not None:
+                    recall_alert = False
+        else:
+            low_fps_confirm_count = 0
+            st[low_fps_gate_key] = 0
+            low_fps_gate_reason = "failed_low_fps_strict_gate"
+            triage_state = "uncertain"
+            started_event = False
+            safe_alert = False
+            if recall_alert is not None:
+                recall_alert = False
+    else:
+        st[low_fps_gate_key] = 0
+        low_fps_confirm_count = 0
 
     if persist and started_event and triage_state == "fall":
         meta = {
@@ -1053,89 +922,50 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             "mode": mode,
             "op_code": op_code,
             "use_mc": bool(use_mc),
-            "mc_M": mc_M_i,
-            "mc_sigma_tol": mc_sigma_tol,
-            "mc_se_tol": mc_se_tol,
+            "mc_M": int(mc_M),
             "expected_fps": expected_fps,
             "capture_fps_est": cap_fps_est,
-            "models": _compact_models_meta(models_out),
+            "models": models_out,
+            "policy_alerts": dual_policy_alerts,
+            "safe_alert": safe_alert,
+            "safe_state": dual_policy_alerts.get("safe", {}).get("state"),
+            "recall_alert": recall_alert,
+            "recall_state": dual_policy_alerts.get("recall", {}).get("state"),
         }
         try:
             with get_conn() as conn:
                 if _table_exists(conn, "events"):
-                    cols = core._cols(conn, "events")
-                    if "type" not in cols:
-                        raise RuntimeError("events table missing required `type` column")
-
-                    model_id = None
-                    if "model_id" in cols:
-                        model_id = core._resolve_model_id(conn, active_model_code)
-
-                    op_id = None
-                    if "operating_point_id" in cols and _table_exists(conn, "operating_points"):
-                        with conn.cursor() as cur:
-                            if model_id is not None:
-                                cur.execute(
-                                    "SELECT id FROM operating_points WHERE model_id=%s AND code=%s LIMIT 1",
-                                    (int(model_id), str(op_code).upper()),
-                                )
-                                orow = cur.fetchone() or {}
-                                if isinstance(orow, dict):
-                                    op_id = orow.get("id")
-                            if op_id is None:
-                                cur.execute(
-                                    "SELECT id FROM operating_points WHERE code=%s ORDER BY id ASC LIMIT 1",
-                                    (str(op_code).upper(),),
-                                )
-                                orow = cur.fetchone() or {}
-                                if isinstance(orow, dict):
-                                    op_id = orow.get("id")
-
-                    time_col = core._event_time_col(conn)
-                    prob_col = core._event_prob_col(conn)
-                    insert_cols: List[str] = ["resident_id", "type"]
-                    params: List[Any] = [resident_id, "fall"]
-
-                    def add_if(col: str, val: Any) -> None:
-                        if col in cols:
-                            insert_cols.append(col)
-                            params.append(val)
-
-                    add_if(time_col, datetime.utcnow())
-                    add_if("severity", "high")
-                    add_if("status", "unreviewed")
-                    add_if("model_code", active_model_code)
-                    add_if("model_id", model_id)
-                    add_if("operating_point_id", op_id)
-                    if prob_col is not None:
-                        add_if(prob_col, float(p_display))
-                    meta_json = None
-                    if "meta" in cols or "payload_json" in cols:
-                        try:
-                            meta_json = json.dumps(meta, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-                        except Exception:
-                            # Fallback for unexpected non-finite values in telemetry payloads.
-                            meta_json = json.dumps(meta, separators=(",", ":"), ensure_ascii=False)
-                    if "meta" in cols:
-                        add_if("meta", meta_json)
-                    elif "payload_json" in cols:
-                        add_if("payload_json", meta_json)
-
                     with conn.cursor() as cur:
                         cur.execute(
-                            f"INSERT INTO events ({', '.join('`'+c+'`' for c in insert_cols)}) "
-                            f"VALUES ({', '.join(['%s'] * len(insert_cols))})",
-                            tuple(params),
+                            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                            (
+                                resident_id,
+                                "fall",
+                                "high",
+                                active_model_code,
+                                None,
+                                float(p_display),
+                                json.dumps(meta),
+                            ),
                         )
                         saved_event_id = cur.lastrowid
+                    notification_dispatch = dispatch_fall_notifications(
+                        conn,
+                        resident_id=int(resident_id),
+                        event_id=int(saved_event_id) if saved_event_id is not None else None,
+                        p_fall=float(p_display),
+                        source="monitor",
+                    )
                     conn.commit()
-        except Exception:
+        except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
-                "Failed to persist monitor event (resident_id=%s, mode=%s, dataset=%s)",
+                "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
                 resident_id,
+                session_id,
                 mode,
                 dataset_code,
-                exc_info=True,
+                exc,
             )
 
     latency_ms = int((time.time() - t0) * 1000)
@@ -1144,24 +974,42 @@ def predict_window(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     core.LAST_PRED_DECISION = str(triage_state)
     core.LAST_PRED_MODEL_CODE = str(active_model_code)
     core.LAST_PRED_TS_ISO = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    mc_n_used_map = {
-        k: int(v.get("mc_n_used"))
-        for k, v in models_out.items()
-        if isinstance(v, dict) and v.get("mc_n_used") is not None
-    }
 
     return {
         "triage_state": triage_state,
         "models": models_out,
-        "mc_n_used": mc_n_used_map,
+        "policy_alerts": dual_policy_alerts,
+        "safe_alert": safe_alert,
+        "safe_state": dual_policy_alerts.get("safe", {}).get("state"),
+        "recall_alert": recall_alert,
+        "recall_state": dual_policy_alerts.get("recall", {}).get("state"),
         "latency_ms": latency_ms,
         "capture_fps_est": cap_fps_est,
         "target_fps": expected_fps,
+        "effective_fps": float(effective_fps),
         "target_T": target_T,
+        "motion_score": motion_score,
+        "low_motion_block": low_motion_block,
+        "min_motion_for_fall": float(min_motion),
+        "low_quality_block": low_quality_block,
+        "structural_quality_block": structural_quality_block,
+        "occlusion_block": occlusion_block,
+        "low_conf_block": low_conf_block,
+        "low_joints_block": low_joints_block,
+        "min_conf_mean": float(_LIVE_MIN_CONF_MEAN.get(dataset_code, 0.35)),
+        "min_joints_med": int(_LIVE_MIN_JOINTS_MED),
+        "sampling_mode": sampling_mode,
+        "low_fps_mode": low_fps_mode,
+        "low_fps_confirm_count": int(low_fps_confirm_count),
+        "low_fps_confirm_need": int(_LIVE_LOW_FPS_FALL_PERSIST_N),
+        "low_fps_gate_reason": low_fps_gate_reason,
+        "quality": qdiag,
+        "raw_stats": raw_stats,
         "dataset_code": dataset_code,
+        "requested_mode": requested_mode,
+        "effective_mode": mode,
         "op_code": op_code,
-        "use_mc": use_mc_b,
-        "mc_sigma_tol": mc_sigma_tol,
-        "mc_se_tol": mc_se_tol,
+        "use_mc": bool(use_mc),
         "event_id": saved_event_id,
+        "notification_dispatch": notification_dispatch,
     }

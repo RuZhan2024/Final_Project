@@ -29,6 +29,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .deploy_runtime import get_specs as _get_deploy_specs
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 
 # -----------------------------
 # Payloads
@@ -56,11 +62,11 @@ class SettingsUpdatePayload(BaseModel):
 
     store_event_clips: Optional[bool] = None
     anonymize_skeleton_data: Optional[bool] = None
-    require_confirmation: Optional[bool] = None
+    store_anonymized_data: Optional[bool] = None
 
     active_model_code: Optional[str] = Field(default=None, description="TCN | GCN | HYBRID")
     active_operating_point: Optional[int] = Field(default=None, description="operating_points.id")
-    active_dataset_code: Optional[str] = Field(default=None, description="le2i | urfd | caucafall | muvim")
+    active_dataset_code: Optional[str] = Field(default=None, description="le2i | caucafall")
     active_op_code: Optional[str] = Field(default=None, description="OP-1 | OP-2 | OP-3")
 
     mc_enabled: Optional[bool] = Field(default=None, description="Enable MC Dropout at inference")
@@ -71,6 +77,7 @@ class SettingsUpdatePayload(BaseModel):
     risk_profile: Optional[str] = None
     notify_email: Optional[str] = None
     notify_sms: Optional[bool] = None
+    notify_phone: Optional[bool] = None
 
 
 class SkeletonClipPayload(BaseModel):
@@ -95,6 +102,45 @@ class SkeletonClipPayload(BaseModel):
     xy_flat: Optional[List[float]] = None
     conf_flat: Optional[List[float]] = None
     raw_joints: Optional[int] = None
+
+
+class MonitorPredictPayload(BaseModel):
+    """Live monitor inference payload.
+
+    Keep fields permissive to preserve backward compatibility while making
+    the request contract explicit and discoverable.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: Optional[str] = None
+    mode: Optional[str] = None
+    dataset_code: Optional[str] = None
+    dataset: Optional[str] = None
+    op_code: Optional[str] = None
+    op: Optional[str] = None
+
+    model_tcn: Optional[str] = None
+    model_gcn: Optional[str] = None
+    model_id: Optional[str] = None
+
+    resident_id: Optional[int] = None
+    use_mc: Optional[bool] = None
+    mc_M: Optional[int] = None
+    persist: Optional[bool] = None
+
+    target_T: Optional[int] = None
+    target_fps: Optional[float] = None
+    fps: Optional[float] = None
+    capture_fps: Optional[float] = None
+    timestamp_ms: Optional[float] = None
+    window_end_t_ms: Optional[float] = None
+
+    raw_t_ms: Any = None
+    raw_xy: Any = None
+    raw_conf: Any = None
+    xy: Any = None
+    conf: Any = None
 
 
 class CaregiverUpsertPayload(BaseModel):
@@ -126,7 +172,7 @@ def _jsonable(x: Any) -> Any:
     if isinstance(x, (bytes, bytearray)):
         try:
             return x.decode("utf-8")
-        except Exception:
+        except UnicodeDecodeError:
             return x.hex()
     if isinstance(x, dict):
         return {k: _jsonable(v) for k, v in x.items()}
@@ -161,11 +207,11 @@ def _list_tables(conn) -> Set[str]:
             else:
                 try:
                     tables.add(str(r[0]))
-                except Exception:
+                except (TypeError, IndexError, KeyError):
                     pass
         _TABLE_CACHE = tables
         return tables
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         _TABLE_CACHE = set()
         return set()
 
@@ -177,7 +223,7 @@ def _cols(conn, table: str) -> Set[str]:
         with conn.cursor() as cur:
             cur.execute(f"SHOW COLUMNS FROM `{table}`")
             rows = cur.fetchall() or []
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         _COL_CACHE[table] = set()
         return set()
     cols = {r.get("Field") for r in rows if isinstance(r, dict) and r.get("Field")}
@@ -205,14 +251,15 @@ def _ensure_system_settings_schema(conn) -> None:
 
         wanted: Dict[str, str] = {
             "fall_threshold": "DECIMAL(6,4) NULL",
-            "require_confirmation": "TINYINT(1) NOT NULL DEFAULT 0",
             "store_event_clips": "TINYINT(1) NOT NULL DEFAULT 0",
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
-            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'muvim'",
+            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'caucafall'",
             "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
             "mc_M": "INT NOT NULL DEFAULT 10",
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
+            "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
+            "notify_phone": "TINYINT(1) NOT NULL DEFAULT 0",
         }
 
         alters: List[str] = []
@@ -225,7 +272,7 @@ def _ensure_system_settings_schema(conn) -> None:
                 cur.execute(f"ALTER TABLE `system_settings` {', '.join(alters)}")
             conn.commit()
             _COL_CACHE.pop("system_settings", None)
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         return
 
 
@@ -233,6 +280,26 @@ def _safe_get(d: Dict[str, Any], key: str, default: Any = None) -> Any:
     if not isinstance(d, dict):
         return default
     return d.get(key, default)
+
+
+SUPPORTED_DATASETS = {"caucafall", "le2i"}
+
+
+def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafall") -> str:
+    ds = str(dataset_code or "").lower().strip()
+    if ds in SUPPORTED_DATASETS:
+        return ds
+    return default
+
+
+SUPPORTED_MODEL_CODES = {"TCN", "GCN", "HYBRID"}
+
+
+def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str:
+    mc = str(model_code or "").upper().strip()
+    if mc in SUPPORTED_MODEL_CODES:
+        return mc
+    return default
 
 
 def _detect_variants(conn) -> Dict[str, str]:
@@ -266,8 +333,8 @@ def _norm_op_code(op_code: Optional[str]) -> str:
 def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str) -> Dict[str, Any]:
     """Return YAML-derived params for Settings/Monitor UI."""
     specs = _get_deploy_specs()
-    ds = (dataset_code or "muvim").lower().strip()
-    mc = (model_code or "HYBRID").upper().strip()
+    ds = normalize_dataset_code(dataset_code, default="caucafall")
+    mc = normalize_model_code(model_code, default="TCN")
     oc = _norm_op_code(op_code)
 
     def _get_attr_or_key(obj: Any, name: str, default: Any = None) -> Any:
@@ -276,7 +343,7 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         try:
             if hasattr(obj, name):
                 return getattr(obj, name)
-        except Exception:
+        except (AttributeError, TypeError):
             pass
         if isinstance(obj, dict):
             return obj.get(name, default)
@@ -298,7 +365,7 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         try:
             if p and isinstance(p.get("op"), dict) and p["op"].get(k) is not None:
                 return float(p["op"][k])
-        except Exception:
+        except (TypeError, ValueError, KeyError):
             pass
         return float(default)
 
@@ -306,7 +373,7 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         try:
             if p and isinstance(p.get("alert_cfg"), dict) and p["alert_cfg"].get(k) is not None:
                 return float(p["alert_cfg"][k])
-        except Exception:
+        except (TypeError, ValueError, KeyError):
             pass
         return float(default)
 
@@ -325,12 +392,13 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         k = int(_acfg(gcn, "k", 2))
         n = int(_acfg(gcn, "n", 3))
     else:
-        tau_low = min(_tau(tcn, "tau_low", 0.0), _tau(gcn, "tau_low", 0.0))
-        tau_high = min(_tau(tcn, "tau_high", 0.85), _tau(gcn, "tau_high", 0.85))
-        cooldown_s = max(_acfg(tcn, "cooldown_s", 3.0), _acfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = max(_acfg(tcn, "ema_alpha", 0.0), _acfg(gcn, "ema_alpha", 0.0))
-        k = int(max(_acfg(tcn, "k", 2), _acfg(gcn, "k", 2)))
-        n = int(max(_acfg(tcn, "n", 3), _acfg(gcn, "n", 3)))
+        # HYBRID UI defaults follow TCN-safe channel for primary auto-alert behavior.
+        tau_low = _tau(tcn, "tau_low", _tau(gcn, "tau_low", 0.0))
+        tau_high = _tau(tcn, "tau_high", _tau(gcn, "tau_high", 0.85))
+        cooldown_s = _acfg(tcn, "cooldown_s", _acfg(gcn, "cooldown_s", 3.0))
+        ema_alpha = _acfg(tcn, "ema_alpha", _acfg(gcn, "ema_alpha", 0.0))
+        k = int(_acfg(tcn, "k", _acfg(gcn, "k", 2)))
+        n = int(_acfg(tcn, "n", _acfg(gcn, "n", 3)))
 
     return {
         "ui": {
@@ -465,7 +533,7 @@ def _resolve_op_id(conn, model_id: Optional[int], op_id: Optional[int]) -> Optio
             if model_id is not None and row.get("model_id") not in (None, model_id):
                 return None
             return int(row["id"])
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         return op_id
 
 
@@ -516,7 +584,7 @@ def _read_clip_privacy_flags(conn, resident_id: int) -> Tuple[bool, bool]:
                 store_event_clips = bool(int(row.get("store_event_clips"))) if str(row.get("store_event_clips")).isdigit() else bool(row.get("store_event_clips"))
             if row.get("anonymize_skeleton_data") is not None:
                 anonymize = bool(int(row.get("anonymize_skeleton_data"))) if str(row.get("anonymize_skeleton_data")).isdigit() else bool(row.get("anonymize_skeleton_data"))
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         pass
     return store_event_clips, anonymize
 
@@ -525,7 +593,7 @@ def _event_clips_dir() -> Path:
     d = Path(__file__).resolve().parent / "event_clips"
     try:
         d.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except OSError:
         pass
     return d
 
@@ -541,7 +609,7 @@ def _anonymize_xy_inplace(xy: np.ndarray) -> np.ndarray:
         pelvis = 0.5 * (xy[:, 23, :] + xy[:, 24, :])
         xy = xy - pelvis[:, None, :]
         return xy
-    except Exception:
+    except (AttributeError, TypeError, ValueError, IndexError):
         return xy
 
 
@@ -573,7 +641,7 @@ def _ensure_caregivers_table(conn) -> None:
         conn.commit()
         global _TABLE_CACHE
         _TABLE_CACHE = None
-    except Exception:
+    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         pass
 
 
@@ -586,13 +654,15 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "api_online": True,
     "alert_cooldown_sec": 3,
     "notify_on_every_fall": True,
-    "fall_threshold": 0.85,
+    "notify_sms": False,
+    "notify_phone": False,
+    "fall_threshold": 0.71,
     "store_event_clips": False,
     "anonymize_skeleton_data": True,
-    "require_confirmation": False,
-    "active_model_code": "HYBRID",
+    "store_anonymized_data": False,
+    "active_model_code": "TCN",
     "active_operating_point": None,
-    "active_dataset_code": "muvim",
+    "active_dataset_code": "caucafall",
     "active_op_code": "OP-2",
     "mc_enabled": True,
     "mc_M": 10,
@@ -607,6 +677,7 @@ _DEFAULT_DEPLOY_SETTINGS: Dict[str, Any] = {
 
 # resident_id -> {system, deploy}
 _INMEM_SETTINGS: Dict[int, Dict[str, Any]] = {}
+_INMEM_CAREGIVERS: Dict[int, List[Dict[str, Any]]] = {}
 
 
 def get_inmem_settings(resident_id: int = 1) -> Dict[str, Any]:
@@ -639,36 +710,51 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
             if 1.0 < v <= 100.0:
                 v = v / 100.0
             system["fall_threshold"] = max(0.0, min(1.0, float(v)))
-        except Exception:
+        except (TypeError, ValueError):
             pass
+
+    if payload.store_anonymized_data is not None:
+        v = bool(payload.store_anonymized_data)
+        system["store_event_clips"] = v
+        system["anonymize_skeleton_data"] = v
+        system["store_anonymized_data"] = v
 
     for k in [
         "monitoring_enabled",
         "api_online",
         "notify_on_every_fall",
+        "notify_sms",
+        "notify_phone",
         "store_event_clips",
         "anonymize_skeleton_data",
-        "require_confirmation",
         "mc_enabled",
     ]:
         v = getattr(payload, k, None)
         if v is not None:
             system[k] = bool(v)
 
+    if payload.notify_on_every_fall is False:
+        system["notify_sms"] = False
+        system["notify_phone"] = False
+
+    system["store_anonymized_data"] = bool(
+        system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
+    )
+
     if payload.alert_cooldown_sec is not None:
         try:
             system["alert_cooldown_sec"] = int(payload.alert_cooldown_sec)
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     if payload.active_model_code is not None:
-        system["active_model_code"] = str(payload.active_model_code).upper()
+        system["active_model_code"] = normalize_model_code(payload.active_model_code, default="TCN")
 
     if payload.active_operating_point is not None:
         system["active_operating_point"] = payload.active_operating_point
 
     if payload.active_dataset_code is not None:
-        system["active_dataset_code"] = str(payload.active_dataset_code).lower()
+        system["active_dataset_code"] = normalize_dataset_code(payload.active_dataset_code, default="caucafall")
 
     if payload.active_op_code is not None:
         system["active_op_code"] = str(payload.active_op_code).upper()
@@ -677,14 +763,56 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         try:
             system["mc_M"] = int(payload.mc_M)
             deploy.setdefault("mc", {})["M"] = int(payload.mc_M)
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     if payload.mc_M_confirm is not None:
         try:
             system["mc_M_confirm"] = int(payload.mc_M_confirm)
             deploy.setdefault("mc", {})["M_confirm"] = int(payload.mc_M_confirm)
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     _INMEM_SETTINGS[rid] = {"system": system, "deploy": deploy}
+
+
+def get_inmem_caregivers(resident_id: int = 1) -> List[Dict[str, Any]]:
+    """Return in-memory caregivers list for DB-offline fallback."""
+    rid = int(resident_id or 1)
+    rows = _INMEM_CAREGIVERS.get(rid, [])
+    return [dict(r) for r in rows]
+
+
+def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
+    """Upsert caregiver in memory when DB is unavailable."""
+    rid = int(payload.resident_id or 1)
+    rows = _INMEM_CAREGIVERS.setdefault(rid, [])
+    target_id = int(payload.id) if payload.id else (rows[0]["id"] if rows else 1)
+
+    row = None
+    for r in rows:
+        if int(r.get("id", 0)) == target_id:
+            row = r
+            break
+
+    now = datetime.now(timezone.utc).isoformat()
+    if row is None:
+        row = {
+            "id": target_id,
+            "resident_id": rid,
+            "name": None,
+            "email": None,
+            "phone": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        rows.append(row)
+
+    if payload.name is not None:
+        row["name"] = payload.name
+    if payload.email is not None:
+        row["email"] = payload.email
+    if payload.phone is not None:
+        row["phone"] = payload.phone
+    row["updated_at"] = now
+    return dict(row)

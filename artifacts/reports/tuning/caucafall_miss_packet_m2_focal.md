@@ -1,0 +1,8 @@
+# CAUCAFall TCN Miss Packet (m2_focal)
+
+- Source metrics: `outputs/metrics/tcn_caucafall_opt_m2_focal.json`\n- Selected OP: `op2` (tau_high=0.8499999642372131, tau_low=0.6629999876022339)\n\n## Missed Events
+
+- Clip: `Subject.6/Fall left`\n  - n_gt_events=1, n_matched_gt=0, event_recall=0.0\n  - duration_s=9.91304347826087, fps=23.0\n
+## Candidate Train Windows Related to Miss Pattern
+
+- Train windows with `__Fall_left__` pattern: 89\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.3__Fall_left__63b463d1__w000024_000071.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.5__Fall_left__b30e5062__w000012_000059.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.4__Fall_left__89bc0847__w000072_000119.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.4__Fall_left__89bc0847__w000096_000143.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.3__Fall_left__63b463d1__w000060_000107.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.5__Fall_left__b30e5062__w000084_000131.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.8__Fall_left__c62bf683__w000144_000191.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.3__Fall_left__63b463d1__w000036_000083.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.1__Fall_left__976f341e__w000024_000071.npz`\n  - `data/processed/caucafall/windows_W48_S12/train/Subject.8__Fall_left__c62bf683__w000120_000167.npz`\n  - ... (+79 more)\n

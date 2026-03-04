@@ -35,6 +35,7 @@ from torch.utils.data import DataLoader, Dataset
 from fall_detection.core.alerting import (
     AlertCfg,
     times_from_windows,
+    window_span_seconds,
     event_metrics_from_windows,
     sweep_alert_policy_from_windows,
     classify_states,
@@ -292,8 +293,8 @@ def infer_probs(model, loader, device, arch: str, two_stream: bool):
             we.append(int(m.w_end))
             fps.append(float(m.fps))
             y_true.append(int(m.y))
-            ls_list.append(float(getattr(m, "lying_score", 0.0)))
-            ms_list.append(float(getattr(m, "motion_score", 0.0)))
+            ls_list.append(float(getattr(m, "lying_score", float("nan"))))
+            ms_list.append(float(getattr(m, "motion_score", float("nan"))))
 
     return (
         (np.concatenate(probs) if probs else np.array([])),
@@ -373,7 +374,7 @@ def _aggregate_event_metrics(
         t_v = times_from_windows(ws_v, we_v, fps_v, mode=time_mode)
 
         # Duration MUST honor inclusive w_end: +1 frame.
-        duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
+        duration_s = window_span_seconds(ws_v.min(), we_v.max(), fps_v)
         totals["total_duration_s"] += max(0.0, duration_s)
 
         em, detail = event_metrics_from_windows(
@@ -383,6 +384,7 @@ def _aggregate_event_metrics(
             alert_cfg,
             lying_score=ls_v,
             motion_score=ms_v,
+            video_id=str(v),
             duration_s=duration_s,
             merge_gap_s=float(merge_gap_s),
             overlap_slack_s=float(overlap_slack_s),
@@ -390,7 +392,7 @@ def _aggregate_event_metrics(
         em = _event_metrics_to_compat_dict(em)
 
         # ✅ FIX: keep state counts consistent with confirm stage (lying/motion).
-        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
+        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v, video_id=str(v))
 
         # Approximate time occupancy with median dt.
         dt = float(np.median(np.diff(t_v))) if t_v.size >= 2 else 0.0
@@ -523,7 +525,7 @@ def _aggregate_event_counts(
             fps_v = float(fps_default)
 
         t_v = times_from_windows(ws_v, we_v, fps_v, mode=time_mode)
-        duration_s = float((we_v.max() - ws_v.min() + 1) / max(1e-6, fps_v))
+        duration_s = window_span_seconds(ws_v.min(), we_v.max(), fps_v)
         totals["total_duration_s"] += max(0.0, duration_s)
 
         em, _detail = event_metrics_from_windows(
@@ -533,6 +535,7 @@ def _aggregate_event_counts(
             alert_cfg,
             lying_score=ls_v,
             motion_score=ms_v,
+            video_id=str(v),
             duration_s=duration_s,
             merge_gap_s=float(merge_gap_s),
             overlap_slack_s=float(overlap_slack_s),
@@ -621,6 +624,8 @@ def main() -> None:
     ap.add_argument("--confirm_min_lying", type=float, default=0.65)
     ap.add_argument("--confirm_max_motion", type=float, default=0.08)
     ap.add_argument("--confirm_require_low", type=int, default=1)
+    ap.add_argument("--start_guard_max_lying", type=float, default=-1.0)
+    ap.add_argument("--start_guard_prefixes", type=str, default="")
 
     # event + time params
     ap.add_argument("--merge_gap_s", type=float, default=1.0)
@@ -666,6 +671,8 @@ def main() -> None:
         confirm_min_lying=float(args.confirm_min_lying),
         confirm_max_motion=float(args.confirm_max_motion),
         confirm_require_low=bool(int(args.confirm_require_low)),
+        start_guard_max_lying=(None if float(args.start_guard_max_lying) < 0.0 else float(args.start_guard_max_lying)),
+        start_guard_prefixes=([x.strip() for x in str(args.start_guard_prefixes).split(",") if x.strip()] or None),
     )
 
     ops_blob = _load_ops_yaml(str(args.ops_yaml) if args.ops_yaml else "")
@@ -679,6 +686,14 @@ def main() -> None:
             except Exception:
                 return cur
         return cur
+    def _maybe_prefixes(policy_key: str, cur: Optional[List[str]]) -> Optional[List[str]]:
+        if policy_key not in policy_d or policy_d[policy_key] is None:
+            return cur
+        try:
+            parsed = AlertCfg.from_dict({"start_guard_prefixes": policy_d[policy_key]}).start_guard_prefixes
+            return parsed if parsed else None
+        except Exception:
+            return cur
 
     tau_low_ratio = float(args.tau_low_ratio)
     if "tau_low_ratio" in policy_d:
@@ -699,6 +714,8 @@ def main() -> None:
         confirm_min_lying=_maybe("confirm_min_lying", float, base_alert_cfg.confirm_min_lying),
         confirm_max_motion=_maybe("confirm_max_motion", float, base_alert_cfg.confirm_max_motion),
         confirm_require_low=bool(int(_maybe("confirm_require_low", int, int(base_alert_cfg.confirm_require_low)))),
+        start_guard_max_lying=_maybe("start_guard_max_lying", float, base_alert_cfg.start_guard_max_lying),
+        start_guard_prefixes=_maybe_prefixes("start_guard_prefixes", base_alert_cfg.start_guard_prefixes),
     )
 
     # Optional: threshold sweep (needed by Makefile plot targets).
@@ -723,6 +740,8 @@ def main() -> None:
                 confirm_min_lying=base_alert_cfg.confirm_min_lying,
                 confirm_max_motion=base_alert_cfg.confirm_max_motion,
                 confirm_require_low=base_alert_cfg.confirm_require_low,
+                start_guard_max_lying=base_alert_cfg.start_guard_max_lying,
+                start_guard_prefixes=base_alert_cfg.start_guard_prefixes,
             )
             tot_i = _aggregate_event_counts(
                 probs,
@@ -773,6 +792,8 @@ def main() -> None:
             confirm_min_lying=base_alert_cfg.confirm_min_lying,
             confirm_max_motion=base_alert_cfg.confirm_max_motion,
             confirm_require_low=base_alert_cfg.confirm_require_low,
+            start_guard_max_lying=base_alert_cfg.start_guard_max_lying,
+            start_guard_prefixes=base_alert_cfg.start_guard_prefixes,
         )
 
         tot_op = _aggregate_event_counts(
@@ -817,6 +838,8 @@ def main() -> None:
         confirm_min_lying=base_alert_cfg.confirm_min_lying,
         confirm_max_motion=base_alert_cfg.confirm_max_motion,
         confirm_require_low=base_alert_cfg.confirm_require_low,
+        start_guard_max_lying=base_alert_cfg.start_guard_max_lying,
+        start_guard_prefixes=base_alert_cfg.start_guard_prefixes,
     )
 
     totals, detail = _aggregate_event_metrics(

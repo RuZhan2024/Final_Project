@@ -14,7 +14,7 @@ import { LiveMonitorCard } from "./monitor/components/LiveMonitorCard";
 import { ModelInfoCard } from "./monitor/components/ModelInfoCard";
 import { TimelineCard } from "./monitor/components/TimelineCard";
 
-import { normModeFromCode, pickFirstByArch, pickModelPair, prettyModelTag, targetFpsForDataset } from "./monitor/utils";
+import { normModeFromCode, pickFirstByArch, prettyModelTag, targetFpsForDataset } from "./monitor/utils";
 
 function safeNumber(x, fallback = null) {
   const n = Number(x);
@@ -45,12 +45,12 @@ function Monitor({ isActive = true } = {}) {
 
   const activeModelCode = useMemo(() => {
     const code = settingsPayload?.system?.active_model_code;
-    return code ? String(code) : "GCN";
+    return code ? String(code) : "TCN";
   }, [settingsPayload]);
 
   const activeDatasetCode = useMemo(() => {
     const code = settingsPayload?.system?.active_dataset_code;
-    return code ? String(code) : "muvim";
+    return code ? String(code) : "caucafall";
   }, [settingsPayload]);
 
   const mcEnabled = useMemo(() => {
@@ -64,24 +64,46 @@ function Monitor({ isActive = true } = {}) {
   }, [settingsPayload]);
 
   const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
-  const modelTag = useMemo(() => prettyModelTag(activeModelCode), [activeModelCode]);
   const targetFps = useMemo(() => targetFpsForDataset(activeDatasetCode), [activeDatasetCode]);
 
   // ---- Backend spec + model picking ----
-  const { models, error: modelsErr } = useApiSpec(apiBase);
+  const { models, error: modelsErr } = useApiSpec(apiBase, isActive);
 
   const chosen = useMemo(() => {
-    if (mode === "dual") return pickModelPair(models, activeDatasetCode);
     if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
-    return { tcn: "", gcn: pickFirstByArch(models, "gcn", activeDatasetCode) };
+    if (mode === "gcn") return { tcn: "", gcn: pickFirstByArch(models, "gcn", activeDatasetCode) };
+    return {
+      tcn: pickFirstByArch(models, "tcn", activeDatasetCode),
+      gcn: pickFirstByArch(models, "gcn", activeDatasetCode),
+    };
   }, [mode, models, activeDatasetCode]);
 
+  const effectiveMode = useMemo(() => {
+    if (mode === "tcn" && chosen.tcn) return "tcn";
+    if (mode === "gcn" && chosen.gcn) return "gcn";
+    if (mode === "hybrid" && chosen.tcn && chosen.gcn) return "hybrid";
+    // Auto-fallback when selected arch is unavailable for the dataset.
+    if (chosen.tcn) return "tcn";
+    if (chosen.gcn) return "gcn";
+    return mode;
+  }, [mode, chosen]);
+
+  const modelTag = useMemo(() => prettyModelTag(effectiveMode), [effectiveMode]);
+
   const chosenSpec = useMemo(() => {
-    if (mode === "tcn") return models.find((m) => m.id === chosen.tcn) || null;
-    if (mode === "gcn") return models.find((m) => m.id === chosen.gcn) || null;
-    // dual: show GCN as primary tag in UI, but keep both
-    return models.find((m) => m.id === chosen.gcn) || models.find((m) => m.id === chosen.tcn) || null;
-  }, [mode, models, chosen]);
+    if (effectiveMode === "tcn") return models.find((m) => m.id === chosen.tcn) || null;
+    if (effectiveMode === "hybrid") return null;
+    return models.find((m) => m.id === chosen.gcn) || null;
+  }, [effectiveMode, models, chosen]);
+
+  const resolvedDatasetCode = useMemo(() => {
+    const fromSpec =
+      chosenSpec?.dataset_code ||
+      chosenSpec?.dataset ||
+      (effectiveMode === "tcn" ? (models.find((m) => m.id === chosen.tcn)?.dataset_code || models.find((m) => m.id === chosen.tcn)?.dataset) : null) ||
+      (effectiveMode === "gcn" ? (models.find((m) => m.id === chosen.gcn)?.dataset_code || models.find((m) => m.id === chosen.gcn)?.dataset) : null);
+    return String(fromSpec || activeDatasetCode || "caucafall");
+  }, [chosenSpec, effectiveMode, models, chosen, activeDatasetCode]);
 
   // ---- Operating point params (YAML-derived preferred; legacy DB fallback) ----
   const { opCode, tauLow, tauHigh, confirmK, confirmN, cooldownS } = useOperatingPointParams({
@@ -98,7 +120,7 @@ function Monitor({ isActive = true } = {}) {
   }, [tauHigh, fallThreshold, chosenSpec]);
 
   // ---- Optional server summary ----
-  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase);
+  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase, 5000, isActive);
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {
@@ -106,12 +128,23 @@ function Monitor({ isActive = true } = {}) {
     canvasRef,
     currentPrediction,
     pText,
+    safePrediction,
+    recallPrediction,
     sigma,
     markers,
     captureFpsText,
     modelFpsText,
     resetSession,
     testFall,
+    inputSource,
+    selectedVideoName,
+    setVideoFile,
+    setInputMode,
+    startError,
+    predictError,
+    replayCurrentS,
+    replayDurationS,
+    seekReplay,
   } = usePoseMonitor({
     apiBase,
     isActive,
@@ -121,14 +154,17 @@ function Monitor({ isActive = true } = {}) {
     deployW,
     deployS,
     targetFps,
-    mode,
+    mode: effectiveMode,
     chosen,
     opCode,
     mcEnabled,
     mcCfg,
-    activeDatasetCode,
+    activeDatasetCode: resolvedDatasetCode,
     chosenSpec,
+    onAutoStop: () => setMonitoringOn(false),
   });
+
+  const hasReplayFile = useMemo(() => Boolean(selectedVideoName), [selectedVideoName]);
 
   // If settings are still loading, keep UI stable but show placeholders.
   const showPlaceholders = !settingsLoaded;
@@ -145,6 +181,9 @@ function Monitor({ isActive = true } = {}) {
             canvasRef={canvasRef}
             currentPrediction={showPlaceholders ? "—" : currentPrediction}
             pText={showPlaceholders ? "—" : pText}
+            safePrediction={showPlaceholders ? "—" : safePrediction}
+            recallPrediction={showPlaceholders ? "—" : recallPrediction}
+            inputSource={inputSource}
           />
         </div>
 
@@ -155,6 +194,24 @@ function Monitor({ isActive = true } = {}) {
             setMonitoringOn={setMonitoringOn}
             resetSession={resetSession}
             testFall={testFall}
+            inputSource={inputSource}
+            selectedVideoName={selectedVideoName}
+            hasReplayFile={hasReplayFile}
+            onSwitchRealtime={() => {
+              if (monitoringOn) setMonitoringOn(false);
+              setInputMode("camera");
+            }}
+            onSwitchReplay={() => {
+              if (monitoringOn) setMonitoringOn(false);
+              setInputMode("video");
+            }}
+            onPickVideo={setVideoFile}
+            onClearReplay={() => setVideoFile(null)}
+            replayCurrentS={replayCurrentS}
+            replayDurationS={replayDurationS}
+            onSeekReplay={seekReplay}
+            startError={startError}
+            predictError={predictError}
             modelsErr={modelsErr}
             monitoringErr={monitoringErr}
             summaryErr={summaryErr}
@@ -173,7 +230,7 @@ function Monitor({ isActive = true } = {}) {
             confirmK={confirmK}
             confirmN={confirmN}
             cooldownS={cooldownS}
-            mode={mode}
+            mode={effectiveMode}
             captureFpsText={captureFpsText}
             modelFpsText={modelFpsText}
             mcCfg={mcCfg}

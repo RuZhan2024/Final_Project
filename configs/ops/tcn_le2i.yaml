@@ -1,30 +1,30 @@
 ops:
   OP1:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
-    fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    tau_high: 0.5999999642372131
+    tau_low: 0.46799996495246887
+    precision: 0.8181818127632141
+    recall: 0.8999999761581421
+    f1: 0.8571428656578064
+    fa24h: 880.1998901367188
+    mean_delay_s: 2.3555307388305664
+    median_delay_s: 2.499959945678711
     n_gt_events: 10
-    n_alert_events: 0
-    n_true_alerts: 0
-    n_false_alerts: 0
+    n_alert_events: 11
+    n_true_alerts: 9
+    n_false_alerts: 2
   OP2:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
-    fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    tau_high: 0.5999999642372131
+    tau_low: 0.46799996495246887
+    precision: 0.8181818127632141
+    recall: 0.8999999761581421
+    f1: 0.8571428656578064
+    fa24h: 880.1998901367188
+    mean_delay_s: 2.3555307388305664
+    median_delay_s: 2.499959945678711
     n_gt_events: 10
-    n_alert_events: 0
-    n_true_alerts: 0
-    n_false_alerts: 0
+    n_alert_events: 11
+    n_true_alerts: 9
+    n_false_alerts: 2
   OP3:
     tau_high: 0.949999988079071
     tau_low: 0.7409999966621399
@@ -44,10 +44,14 @@ ops_meta:
   min_tau_high: 0.2
   op1_recall: 0.95
   op3_fa24h: 1.0
+  op2_objective: "f1"
+  cost_fn: 5.0
+  cost_fp: 1.0
   idx:
-    OP1: 94
-    OP2: 94
+    OP1: 59
+    OP2: 59
     OP3: 94
+  confirm_fallback: "disabled_confirm_after_degenerate_sweep"
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -55,11 +59,13 @@ alert_cfg:
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: true
+  confirm: false
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
   confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
 alert_base:
   ema_alpha: 0.2
   k: 2
@@ -67,11 +73,13 @@ alert_base:
   tau_high: 0.5
   tau_low: 0.4
   cooldown_s: 30.0
-  confirm: true
+  confirm: false
   confirm_s: 2.0
   confirm_min_lying: 0.65
   confirm_max_motion: 0.08
   confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
 sweep_meta:
   n_videos: 13
   total_duration_s: 196.319041572622
@@ -85,25 +93,27 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_le2i.sweep.json"
+sweep_json: "tcn_le2i.sweep.json"
 calibration:
   method: "temperature"
-  T: 1.1080278158187866
+  T: 1.1649079322814941
   n_val: 365
-  nll_before: 0.15094923973083496
-  nll_after: 0.14994218945503235
-  ece_before: 0.046922779874403645
-  ece_after: 0.05279766626329185
+  nll_before: 0.20148266851902008
+  nll_after: 0.1988118439912796
+  ece_before: 0.07425602791380333
+  ece_after: 0.08211197409119565
 model:
   arch: "tcn"
-  ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/le2i_tcn_W48S12/best.pt"
+  ckpt: "../../outputs/le2i_tcn_W48S12/best.pt"
   model_cfg:
     hidden: 128
     dropout: 0.3
     num_blocks: 4
     kernel: 3
-    in_ch: 136
-    num_joints: 17
+    use_tsm: false
+    tsm_fold_div: 8
+    in_ch: 264
+    num_joints: 33
   feat_cfg:
     center: "pelvis"
     use_motion: true

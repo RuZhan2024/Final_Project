@@ -191,6 +191,22 @@ input:checked + .slider:before {
   cursor: pointer;
   font-size: 0.875rem;
   color: #5F6368;
+  border: 1px solid #DADCE0;
+  background: #FFFFFF;
+  border-radius: 999px;
+  padding: 6px 12px;
+  transition: all 0.2s ease;
+}
+
+.radioLabel:hover {
+  border-color: #AECBFA;
+  background: #F8FAFF;
+}
+
+.radioLabelActive {
+  border-color: #1967D2;
+  background: #E8F0FE;
+  color: #174EA6;
 }
 
 .radioLabel input {
@@ -224,6 +240,36 @@ input:checked + .slider:before {
 }
 
 .radioLabel input:checked + .customRadio::after {
+  transform: scale(1);
+}
+
+.radioCustom {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #5F6368;
+  border-radius: 50%;
+  position: relative;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.radioCustom::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  background-color: #1A73E8;
+  border-radius: 50%;
+  transform: scale(0);
+  transition: transform 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.radioLabel input:checked + .radioCustom {
+  border-color: #1A73E8;
+}
+
+.radioLabel input:checked + .radioCustom::after {
   transform: scale(1);
 }
 

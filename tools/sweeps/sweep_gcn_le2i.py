@@ -6,7 +6,7 @@ Auto-sweep for GCN on LE2I (native FPS from Makefile)
 - Loops over explicit parameter value lists (PARAM_GRID + STRATEGIES)
 - Runs: `make train-gcn-le2i OUT_TAG=... VAR=...`
 - Reads: <save_dir>/history.jsonl
-- Scores: best monitor_score across epochs (default: monitor_score)
+- Scores: best val_f1 across epochs (default: val_f1)
 - Writes: outputs/sweeps/gcn/le2i/<exp>/* including best_command.sh
 """
 
@@ -27,7 +27,7 @@ from sweep_lib import RunSpec, iter_param_grid, run_sweep
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default="gcn_le2i_sweep", help="Name for this sweep run (output subfolder).")
-    ap.add_argument("--metric", default="monitor_score", help="Metric key in history.jsonl to maximize.")
+    ap.add_argument("--metric", default="val_f1", help="Metric key in history.jsonl to maximize.")
     ap.add_argument("--trials", type=int, default=80,
                     help="How many trials to run (random subset of full grid). Use 0 to run ALL.")
     ap.add_argument("--max_trials", type=int, default=None,
@@ -71,7 +71,7 @@ def main() -> None:
 }
 
     param_grid = {
-    "LR_GCN_LE2I": [
+    "LR_GCN_le2i": [
         0.001,
         0.0005,
         0.0003
@@ -80,23 +80,10 @@ def main() -> None:
         0.2,
         0.35
     ],
-    "GCN_GCN_HIDDEN": [
+    "GCN_HIDDEN": [
         64,
         96,
         128
-    ],
-    "GCN_TCN_HIDDEN": [
-        128,
-        192,
-        256
-    ],
-    "GCN_WEIGHT_DECAY": [
-        0.0001,
-        0.0005
-    ],
-    "GCN_LABEL_SMOOTHING": [
-        0.0,
-        0.05
     ],
     "MASK_JOINT_P": [
         0.05,
@@ -114,7 +101,6 @@ def main() -> None:
         "GCN_POS_WEIGHT": "auto",
         "GCN_BALANCED_SAMPLER": 0,
         "GCN_TWO_STREAM": 1,
-        "GCN_USE_SE": 1,
         "GCN_FUSE": "concat"
     },
     {
@@ -124,7 +110,6 @@ def main() -> None:
         "GCN_POS_WEIGHT": "none",
         "GCN_BALANCED_SAMPLER": 0,
         "GCN_TWO_STREAM": 1,
-        "GCN_USE_SE": 1,
         "GCN_FUSE": "concat"
     }
 ]

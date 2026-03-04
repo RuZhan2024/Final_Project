@@ -85,7 +85,7 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/gcn_le2i.sweep.json"
+sweep_json: "configs/ops/gcn_le2i.sweep.json"
 calibration:
   method: "temperature"
   T: 1.3344659805297852
@@ -96,7 +96,7 @@ calibration:
   ece_after: 0.0973375460603402
 model:
   arch: "gcn"
-  ckpt: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/le2i_gcn_W48S12/best.pt"
+  ckpt: "outputs/le2i_gcn_W48S12/best.pt"
   model_cfg:
     num_joints: 33
     gcn_hidden: 96

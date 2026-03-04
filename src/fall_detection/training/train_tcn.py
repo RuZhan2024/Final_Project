@@ -16,10 +16,8 @@ Key fixes vs older script:
 
 from __future__ import annotations
 
-def _to_f32(x, device: torch.device, non_blocking: bool = False) -> torch.Tensor:
-    # Fast path for tensors: avoid re-wrapping via as_tensor each step.
-    if isinstance(x, torch.Tensor):
-        return x.to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+def _to_f32(x, device: torch.device) -> torch.Tensor:
+    # Works for numpy arrays and torch tensors
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
 # ---- bootstrap: allow running as a script from repo root ----
@@ -38,6 +36,7 @@ import argparse
 import json
 import os
 import random
+from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -59,14 +58,18 @@ from fall_detection.core.ema import EMA
 # -------------------------
 # Utilities
 # -------------------------
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, *, deterministic: int = 1) -> None:
     seed = int(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if bool(int(deterministic)):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def logits_1d(out: torch.Tensor) -> torch.Tensor:
@@ -78,7 +81,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
-    y = np.asarray(labels01, dtype=np.int64).reshape(-1)
+    y = np.asarray(labels01).astype(int).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
     return torch.tensor([neg / pos], dtype=torch.float32)
@@ -95,7 +98,7 @@ def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
 
 
 def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple[float, float, float, float]:
-    yb = (np.asarray(y_true, dtype=np.int64).reshape(-1) > 0).astype(np.int64, copy=False)
+    yb = (np.asarray(y_true).reshape(-1).astype(np.int64) > 0).astype(np.int64)
     pb = (np.asarray(p).reshape(-1) >= float(thr)).astype(np.int64)
 
     tp = int(((pb == 1) & (yb == 1)).sum())
@@ -111,7 +114,7 @@ def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple
 
 
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
-    m = np.asarray(mask, dtype=bool).copy()
+    m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
     if mask_joint_p > 0:
         drop_j = rng.random(V) < float(mask_joint_p)
@@ -137,57 +140,47 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
 
 
 
-def collect_probs_and_loss(
+def collect_probs(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    ema: Optional[EMA] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    ps: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    ctx = ema.use(model) if ema is not None else nullcontext()
+    with ctx, torch.no_grad():
+        for xb, yb in loader:
+            xb = _to_f32(xb, device)  # [B,T,C]
+            logits = logits_1d(model(xb))
+            p = torch.sigmoid(logits).detach().cpu().numpy()
+            y = yb.detach().cpu().numpy().reshape(-1)
+            ps.append(p)
+            ys.append(y)
+    return np.concatenate(ps, axis=0), np.concatenate(ys, axis=0)
+
+def compute_loss_on_loader(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
     ema: Optional[EMA] = None,
-) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Single-pass validation: collect probs/labels and mean loss together."""
+) -> float:
+    """Compute mean loss on a loader with model in eval mode (no grad)."""
     model.eval()
-    non_blocking = (device.type in {"cuda", "mps"})
-    n_total = len(loader.dataset) if hasattr(loader, "dataset") else 0
-    use_prealloc = n_total > 0
-    probs_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
-    y_buf = np.empty((n_total,), dtype=np.float32) if use_prealloc else None
-    ptr = 0
-    ps: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    loss_sum = 0.0
-    count_sum = 0
+    losses: List[float] = []
+    counts: List[int] = []
     ctx = ema.use(model) if ema is not None else nullcontext()
-    with ctx, torch.inference_mode():
+    with ctx, torch.no_grad():
         for xb, yb in loader:
-            if isinstance(yb, torch.Tensor):
-                y_np = yb.numpy().reshape(-1).astype(np.float32, copy=False)
-            else:
-                y_np = np.asarray(yb, dtype=np.float32).reshape(-1)
-            xb = _to_f32(xb, device, non_blocking=non_blocking)
-            yb = _to_f32(yb, device, non_blocking=non_blocking).view(-1)
+            xb = _to_f32(xb, device)
+            yb = _to_f32(yb, device).view(-1)
             logits = logits_1d(model(xb))
-            p = torch.sigmoid(logits).cpu().numpy()
-            bsz = int(xb.shape[0])
-            if use_prealloc and probs_buf is not None and y_buf is not None and (ptr + bsz) <= n_total:
-                probs_buf[ptr:ptr + bsz] = p
-                y_buf[ptr:ptr + bsz] = y_np
-                ptr += bsz
-            else:
-                ps.append(p)
-                ys.append(y_np)
-            loss_sum += float(criterion(logits, yb).item()) * bsz
-            count_sum += bsz
-    if use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0 and not ps and not ys:
-        probs = probs_buf[:ptr]
-        y_true = y_buf[:ptr]
-    elif use_prealloc and probs_buf is not None and y_buf is not None and ptr > 0:
-        probs = np.concatenate([probs_buf[:ptr]] + ps, axis=0)
-        y_true = np.concatenate([y_buf[:ptr]] + ys, axis=0)
-    else:
-        probs = np.concatenate(ps, axis=0) if ps else np.array([], dtype=np.float32)
-        y_true = np.concatenate(ys, axis=0) if ys else np.array([], dtype=np.float32)
-    val_loss = float(loss_sum / max(1, count_sum))
-    return probs, y_true, val_loss
+            loss = criterion(logits, yb).detach()
+            losses.append(float(loss.cpu()) * xb.shape[0])
+            counts.append(int(xb.shape[0]))
+    return float(sum(losses) / max(1, sum(counts)))
 
 
 
@@ -197,6 +190,49 @@ def list_npz_files(root: str) -> List[str]:
     files = glob.glob(pat, recursive=True)
     files.sort()
     return files
+
+
+def _validate_hard_neg_paths(
+    paths: List[str],
+    *,
+    train_dir: str,
+    allow_nontrain: bool,
+) -> None:
+    """Guard against val/test leakage through hard-negative lists."""
+    if allow_nontrain or not paths:
+        return
+
+    train_root = Path(train_dir).expanduser().resolve()
+    bad_valtest: List[str] = []
+    bad_unknown: List[str] = []
+
+    for raw in paths:
+        rp = Path(raw).expanduser().resolve()
+        parts_l = {p.lower() for p in rp.parts}
+        if "val" in parts_l or "test" in parts_l:
+            bad_valtest.append(str(rp))
+            continue
+        in_train_root = False
+        try:
+            rp.relative_to(train_root)
+            in_train_root = True
+        except ValueError:
+            in_train_root = False
+        has_train_component = "train" in parts_l
+        if not (in_train_root or has_train_component):
+            bad_unknown.append(str(rp))
+
+    if bad_valtest or bad_unknown:
+        lines = [
+            "hard_neg_list safety guard rejected candidate paths.",
+            "By default, hard negatives must come from train split paths.",
+            "Use --allow_hard_neg_nontrain 1 only if you explicitly accept leakage risk.",
+        ]
+        if bad_valtest:
+            lines.append(f"val/test-like paths (showing up to 5): {bad_valtest[:5]}")
+        if bad_unknown:
+            lines.append(f"non-train paths (showing up to 5): {bad_unknown[:5]}")
+        raise ValueError(" ".join(lines))
 
 
 class WindowDatasetTCN(Dataset):
@@ -213,6 +249,8 @@ class WindowDatasetTCN(Dataset):
         seed: int,
         extra_neg_files: Optional[List[str]] = None,
         extra_neg_mult: int = 1,
+        extra_neg_prefixes: Optional[List[str]] = None,
+        extra_neg_prefix_mult: int = 1,
     ) -> None:
         self.root = str(root)
         self.split = str(split)
@@ -247,8 +285,9 @@ class WindowDatasetTCN(Dataset):
         # extra hard negatives (treated as y=0 unless y==1, which is skipped)
         if extra_neg_files:
             mult = max(1, int(extra_neg_mult))
-            extra = list(extra_neg_files) * mult
-            for fp in extra:
+            prefix_mult = max(1, int(extra_neg_prefix_mult))
+            prefixes = [str(p).strip() for p in (extra_neg_prefixes or []) if str(p).strip()]
+            for fp in list(extra_neg_files):
                 fp = fp.strip()
                 if not fp:
                     continue
@@ -262,8 +301,14 @@ class WindowDatasetTCN(Dataset):
                 y = int(meta.y)
                 if y == 1:
                     continue
-                self.files.append(fp)
-                self.labels01.append(0)
+                rep = mult
+                if prefixes:
+                    bname = os.path.basename(fp)
+                    if any(bname.startswith(pref) for pref in prefixes):
+                        rep *= prefix_mult
+                for _ in range(rep):
+                    self.files.append(fp)
+                    self.labels01.append(0)
 
         if fail:
             print(f"[warn] skipped {fail} unreadable windows under: {self.root}")
@@ -280,13 +325,33 @@ class WindowDatasetTCN(Dataset):
         self.labels01 = np.asarray(self.labels01, dtype=np.int64)
         base = int(seed) + (11 if split == "train" else 22)
         self.rng = np.random.default_rng(base)
+        self._missing_warned: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.files)
 
+    def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        n = len(self.files)
+        if n <= 0:
+            raise RuntimeError("[err] empty dataset")
+        max_probe = min(n, 32)
+        for off in range(max_probe):
+            j = (int(i) + off) % n
+            fp = self.files[j]
+            try:
+                return read_window_npz(fp, fps_default=self.fps_default)
+            except FileNotFoundError:
+                if fp not in self._missing_warned:
+                    self._missing_warned.add(fp)
+                    print(f"[warn] missing window file during training; skipping: {fp}")
+                continue
+        raise FileNotFoundError(
+            f"[err] unable to read any nearby window files around index={i} "
+            f"(probed={max_probe}). Check for concurrent cleanup under: {self.root}"
+        )
+
     def __getitem__(self, i: int):
-        fp = self.files[i]
-        joints, motion, conf, mask, fps, meta = read_window_npz(fp, fps_default=self.fps_default)
+        joints, motion, conf, mask, fps, meta = self._read_window_with_fallback(i)
 
         # Build [T,V,F] first; get mask_used after conf gating.
         Xg, mask_used = build_canonical_input(
@@ -309,7 +374,7 @@ class WindowDatasetTCN(Dataset):
         # NumPy -> Torch (explicit, no copy when possible)
         return (
             torch.as_tensor(Xt, dtype=torch.float32),
-            torch.tensor(y, dtype=torch.float32),
+            torch.as_tensor([y], dtype=torch.float32),
         )
 
 @dataclass
@@ -323,9 +388,12 @@ class TrainCfg:
     resume: Optional[str] = None
     hard_neg_list: Optional[str] = None
     hard_neg_mult: int = 1
+    hard_neg_prefixes: str = ""
+    hard_neg_prefix_mult: int = 1
+    hard_neg_prefix_strict: int = 0
+    allow_hard_neg_nontrain: int = 0
 
     epochs: int = 200
-    num_workers: int = 0
     batch: int = 128
     lr: float = 1e-3
     seed: int = 33724876
@@ -334,6 +402,10 @@ class TrainCfg:
     lr_plateau_patience: int = 5
     lr_plateau_factor: float = 0.5
     lr_plateau_min_lr: float = 1e-6
+    scheduler_metric: Optional[str] = None
+    scheduler_ema_beta: float = 0.0
+    scheduler: str = "plateau"
+    max_lr: Optional[float] = None
 
     weight_decay: float = 1e-4
     label_smoothing: float = 0.0
@@ -345,9 +417,14 @@ class TrainCfg:
 
     use_ema: int = 0
     ema_decay: float = 0.995
+    amp: int = 0
 
     patience: int = 30
+    min_epochs: int = 0
     fps_default: float = 30.0
+    num_workers: int = 0
+    persistent_workers: int = 0
+    prefetch_factor: Optional[int] = None
 
     loss: str = "bce"
     focal_alpha: float = 0.25
@@ -364,8 +441,11 @@ class TrainCfg:
     dropout: float = 0.30
     num_blocks: int = 4
     kernel: int = 3
+    use_tsm: int = 0
+    tsm_fold_div: int = 8
 
     # feature flags (must match fit/eval)
+    resume_use_ckpt_feat_cfg: int = 1
     center: str = "pelvis"
     use_motion: int = 1
     use_conf_channel: int = 1
@@ -374,6 +454,7 @@ class TrainCfg:
     motion_scale_by_fps: int = 1
     conf_gate: float = 0.20
     use_precomputed_mask: int = 1
+    deterministic: int = 1
 
 
 def main() -> None:
@@ -387,9 +468,32 @@ def main() -> None:
     ap.add_argument("--resume", default=None, help="Optional checkpoint to init weights from.")
     ap.add_argument("--hard_neg_list", default=None, help="Optional text file listing extra negative window NPZ paths.")
     ap.add_argument("--hard_neg_mult", type=int, default=1, help="Repeat hard negatives N times.")
+    ap.add_argument(
+        "--allow_hard_neg_nontrain",
+        type=int,
+        default=0,
+        help="Set to 1 to disable hard-negative split safety guard (risk: leakage from val/test).",
+    )
+    ap.add_argument(
+        "--hard_neg_prefixes",
+        type=str,
+        default="",
+        help="Optional comma-separated video filename prefixes to upweight among hard negatives.",
+    )
+    ap.add_argument(
+        "--hard_neg_prefix_mult",
+        type=int,
+        default=1,
+        help="Additional multiplier for hard negatives whose basename matches --hard_neg_prefixes.",
+    )
+    ap.add_argument(
+        "--hard_neg_prefix_strict",
+        type=int,
+        default=0,
+        help="If 1, fail when --hard_neg_prefixes are provided but match no hard-negative basenames.",
+    )
 
     ap.add_argument("--epochs", type=int, default=200)
-    ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=33724876)
@@ -398,6 +502,15 @@ def main() -> None:
     ap.add_argument("--lr_plateau_patience", type=int, default=5)
     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+    ap.add_argument(
+        "--scheduler_metric",
+        choices=["val_loss", "val_ap", "val_f1"],
+        default=None,
+        help="default: auto (resolved from --monitor)",
+    )
+    ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
+    ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
+    ap.add_argument("--max_lr", type=float, default=None)
 
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--label_smoothing", type=float, default=0.0)
@@ -409,9 +522,14 @@ def main() -> None:
 
     ap.add_argument("--use_ema", type=int, default=0)
     ap.add_argument("--ema_decay", type=float, default=0.995)
+    ap.add_argument("--amp", type=int, default=0)
 
     ap.add_argument("--patience", type=int, default=30)
+    ap.add_argument("--min_epochs", type=int, default=0)
     ap.add_argument("--fps_default", type=float, default=30.0)
+    ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--persistent_workers", type=int, default=0)
+    ap.add_argument("--prefetch_factor", type=int, default=None)
 
     ap.add_argument("--monitor", choices=["f1", "ap"], default="f1")
     ap.add_argument("--pos_weight", default="auto")
@@ -428,8 +546,16 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.30)
     ap.add_argument("--num_blocks", type=int, default=4)
     ap.add_argument("--kernel", type=int, default=3)
+    ap.add_argument("--use_tsm", type=int, default=0)
+    ap.add_argument("--tsm_fold_div", type=int, default=8)
 
     ap.add_argument("--center", choices=["pelvis", "none"], default="pelvis")
+    ap.add_argument(
+        "--resume_use_ckpt_feat_cfg",
+        type=int,
+        default=1,
+        help="If 1 (default), --resume restores feature flags from checkpoint. Set 0 to use CLI feature flags.",
+    )
     ap.add_argument("--use_motion", type=int, default=1)
     ap.add_argument("--use_conf_channel", type=int, default=1)
     ap.add_argument("--use_bone", type=int, default=0)
@@ -437,11 +563,15 @@ def main() -> None:
     ap.add_argument("--motion_scale_by_fps", type=int, default=1)
     ap.add_argument("--conf_gate", type=float, default=0.20)
     ap.add_argument("--use_precomputed_mask", type=int, default=1)
+    ap.add_argument("--deterministic", type=int, default=1)
 
     args = ap.parse_args()
     cfg = TrainCfg(**vars(args))
 
-    set_seed(cfg.seed)
+    if cfg.scheduler_metric is None:
+        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
+
+    set_seed(cfg.seed, deterministic=cfg.deterministic)
     os.makedirs(cfg.save_dir, exist_ok=True)
 
     # If resuming, load cfg from checkpoint (single source of truth).
@@ -451,16 +581,19 @@ def main() -> None:
         if arch0 and arch0 != "tcn":
             raise SystemExit(f"[err] resume arch mismatch: expected tcn, got {arch0}")
 
-        # Override feature flags (so train/fit/eval stay aligned).
-        if isinstance(feat_cfg_d0, dict) and feat_cfg_d0:
-            cfg.center = str(feat_cfg_d0.get("center", cfg.center))
-            cfg.use_motion = 1 if bool(feat_cfg_d0.get("use_motion", cfg.use_motion)) else 0
-            cfg.use_conf_channel = 1 if bool(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel)) else 0
-            cfg.use_bone = 1 if bool(feat_cfg_d0.get("use_bone", cfg.use_bone)) else 0
-            cfg.use_bone_length = 1 if bool(feat_cfg_d0.get("use_bone_length", cfg.use_bone_length)) else 0
-            cfg.motion_scale_by_fps = 1 if bool(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps)) else 0
-            cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
-            cfg.use_precomputed_mask = 1 if bool(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask)) else 0
+        # Override feature flags from checkpoint unless explicitly disabled.
+        if int(cfg.resume_use_ckpt_feat_cfg) == 1:
+            if isinstance(feat_cfg_d0, dict) and feat_cfg_d0:
+                cfg.center = str(feat_cfg_d0.get("center", cfg.center))
+                cfg.use_motion = 1 if bool(feat_cfg_d0.get("use_motion", cfg.use_motion)) else 0
+                cfg.use_conf_channel = 1 if bool(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel)) else 0
+                cfg.use_bone = 1 if bool(feat_cfg_d0.get("use_bone", cfg.use_bone)) else 0
+                cfg.use_bone_length = 1 if bool(feat_cfg_d0.get("use_bone_length", cfg.use_bone_length)) else 0
+                cfg.motion_scale_by_fps = 1 if bool(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps)) else 0
+                cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
+                cfg.use_precomputed_mask = 1 if bool(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask)) else 0
+        else:
+            print("[resume] using CLI feature flags (--resume_use_ckpt_feat_cfg=0)")
 
         # Override model cfg (avoid accidental mismatch when mining hard negatives).
         if isinstance(model_cfg_d0, dict) and model_cfg_d0:
@@ -468,15 +601,21 @@ def main() -> None:
             cfg.dropout = float(model_cfg_d0.get("dropout", cfg.dropout))
             cfg.num_blocks = int(model_cfg_d0.get("num_blocks", model_cfg_d0.get("blocks", cfg.num_blocks)))
             cfg.kernel = int(model_cfg_d0.get("kernel", cfg.kernel))
+            cfg.use_tsm = 1 if bool(model_cfg_d0.get("use_tsm", cfg.use_tsm)) else 0
+            cfg.tsm_fold_div = int(model_cfg_d0.get("tsm_fold_div", cfg.tsm_fold_div))
 
         if isinstance(data_cfg0, dict) and "fps_default" in data_cfg0:
             cfg.fps_default = float(data_cfg0["fps_default"])
+        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
 
     with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
 
     device = pick_device()
     print(f"[info] device: {device.type}")
+    nw = int(cfg.num_workers)
+    if device.type == "mps":
+        nw = 0
 
     feat_cfg = FeatCfg(
         center=cfg.center,
@@ -490,10 +629,37 @@ def main() -> None:
     )
 
     extra_neg_files: Optional[List[str]] = None
+    extra_neg_prefixes: List[str] = []
     if cfg.hard_neg_list:
         with open(cfg.hard_neg_list, "r", encoding="utf-8") as f:
             extra_neg_files = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+        _validate_hard_neg_paths(
+            extra_neg_files,
+            train_dir=cfg.train_dir,
+            allow_nontrain=bool(int(cfg.allow_hard_neg_nontrain)),
+        )
         print(f"[info] hard_neg_list: {cfg.hard_neg_list} (n={len(extra_neg_files)}) mult={cfg.hard_neg_mult}")
+        extra_neg_prefixes = [x.strip() for x in str(cfg.hard_neg_prefixes).split(",") if x.strip()]
+        if extra_neg_prefixes and int(cfg.hard_neg_prefix_mult) > 1:
+            print(
+                "[info] hard_neg_prefix boost: "
+                f"prefixes={extra_neg_prefixes} x{int(cfg.hard_neg_prefix_mult)}"
+            )
+        if extra_neg_prefixes:
+            # Validate that provided prefixes actually match hard-negative basenames.
+            basenames = [os.path.basename(fp) for fp in extra_neg_files]
+            matched = sum(1 for b in basenames if any(b.startswith(pref) for pref in extra_neg_prefixes))
+            if matched == 0:
+                msg = (
+                    "[warn] hard_neg_prefixes matched 0 files. "
+                    f"Provided={extra_neg_prefixes}. "
+                    "Check exact basename prefixes (e.g., use underscores as in NPZ filenames)."
+                )
+                if int(cfg.hard_neg_prefix_strict) == 1:
+                    raise ValueError(msg)
+                print(msg)
+            else:
+                print(f"[info] hard_neg_prefix matched files: {matched}/{len(basenames)}")
 
     train_ds = WindowDatasetTCN(
         cfg.train_dir,
@@ -506,6 +672,8 @@ def main() -> None:
         seed=cfg.seed,
         extra_neg_files=extra_neg_files,
         extra_neg_mult=cfg.hard_neg_mult,
+        extra_neg_prefixes=extra_neg_prefixes,
+        extra_neg_prefix_mult=cfg.hard_neg_prefix_mult,
     )
     val_ds = WindowDatasetTCN(
         cfg.val_dir,
@@ -530,7 +698,14 @@ def main() -> None:
         raise ValueError(f"Flattened C={C} not divisible by F={F}. Check feature layout / flatten.")
     V = C // F
 
-    model_cfg = TCNConfig(hidden=cfg.hidden, dropout=cfg.dropout, num_blocks=cfg.num_blocks, kernel=cfg.kernel)
+    model_cfg = TCNConfig(
+        hidden=cfg.hidden,
+        dropout=cfg.dropout,
+        num_blocks=cfg.num_blocks,
+        kernel=cfg.kernel,
+        use_tsm=bool(cfg.use_tsm),
+        tsm_fold_div=int(cfg.tsm_fold_div),
+    )
     model = build_model("tcn", model_cfg.to_dict(), in_ch=C).to(device)
 
     model_cfg_save = model_cfg.to_dict()
@@ -596,21 +771,18 @@ def main() -> None:
             criterion = nn.BCEWithLogitsLoss()
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode="max", factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
-    )
+    use_amp = bool(int(cfg.amp)) and (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    sched_kind = str(cfg.scheduler).lower()
+    sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
 
-    nw = int(cfg.num_workers)
-    if device.type == "mps":
-        nw = 0
-    pin = (device.type == "cuda")
-    loader_kwargs = {
-        "num_workers": nw,
-        "pin_memory": pin,
-        "persistent_workers": bool(nw > 0),
-    }
+    pin = torch.cuda.is_available()
+    loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
     if nw > 0:
-        loader_kwargs["prefetch_factor"] = 2
+        if bool(int(cfg.persistent_workers)):
+            loader_kwargs["persistent_workers"] = True
+        if cfg.prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
     if cfg.balanced_sampler:
         sampler = make_balanced_sampler(train_ds.labels01)
         train_loader = DataLoader(train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs)
@@ -618,6 +790,22 @@ def main() -> None:
         train_loader = DataLoader(train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs)
 
     val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
+    if sched_kind == "plateau":
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode=sched_mode, factor=cfg.lr_plateau_factor, patience=cfg.lr_plateau_patience, min_lr=cfg.lr_plateau_min_lr
+        )
+    elif sched_kind == "cosine":
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(1, int(cfg.epochs)), eta_min=float(cfg.lr_plateau_min_lr)
+        )
+    else:
+        onecycle_max_lr = float(cfg.max_lr) if cfg.max_lr is not None else float(cfg.lr)
+        sched = torch.optim.lr_scheduler.OneCycleLR(
+            opt,
+            max_lr=onecycle_max_lr,
+            epochs=int(cfg.epochs),
+            steps_per_epoch=max(1, len(train_loader)),
+        )
 
     best_score = -1.0
     best_path = os.path.join(cfg.save_dir, "best.pt")
@@ -630,40 +818,74 @@ def main() -> None:
             f.write(json.dumps(row) + "\n")
 
     no_improve = 0
+    scheduler_metric_ema: Optional[float] = None
 
     for ep in range(1, cfg.epochs + 1):
         model.train()
         running = 0.0
         seen = 0
+        nonfinite_skips_ep = 0
+        grad_norm_vals: List[float] = []
 
-        for xb, yb in tqdm(train_loader, desc=f"train ep{ep}", leave=False):
-            xb = _to_f32(xb, device, non_blocking=pin)         # [B,T,C]
-            yb = _to_f32(yb, device, non_blocking=pin).view(-1)  # [B]
+        for step, (xb, yb) in enumerate(tqdm(train_loader, desc=f"train ep{ep}", leave=False), start=1):
+            xb = _to_f32(xb, device)         # [B,T,C]
+            yb = _to_f32(yb, device).view(-1)  # [B]
 
             opt.zero_grad(set_to_none=True)
-            logits = logits_1d(model(xb))
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = logits_1d(model(xb))
 
-            # label smoothing
-            yb_loss = yb
-            if cfg.label_smoothing > 0:
-                eps = float(cfg.label_smoothing)
-                yb_loss = yb * (1.0 - eps) + 0.5 * eps
+                # label smoothing
+                yb_loss = yb
+                if cfg.label_smoothing > 0:
+                    eps = float(cfg.label_smoothing)
+                    yb_loss = yb * (1.0 - eps) + 0.5 * eps
 
-            loss = criterion(logits, yb_loss)
-            loss.backward()
+                loss = criterion(logits, yb_loss)
+            if not torch.isfinite(loss):
+                lr_now = float(opt.param_groups[0]["lr"])
+                print(
+                    f"[warn] non-finite loss; skipping step "
+                    f"ep={ep} step={step} lr={lr_now:.5g} loss={float(loss.detach().cpu()):.6g}"
+                )
+                nonfinite_skips_ep += 1
+                opt.zero_grad(set_to_none=True)
+                continue
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+            else:
+                loss.backward()
+            grad_sq = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    g = p.grad.detach()
+                    grad_sq += float(torch.sum(g * g).item())
+            grad_norm = grad_sq ** 0.5
+            if np.isfinite(grad_norm):
+                grad_norm_vals.append(float(grad_norm))
             if cfg.grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            opt.step()
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
+            if sched_kind == "onecycle":
+                sched.step()
 
             if ema is not None:
                 ema.update(model)
 
-            running += float(loss.item()) * xb.shape[0]
+            running += float(loss.detach().cpu()) * xb.shape[0]
             seen += xb.shape[0]
 
         train_loss = running / max(1, seen)
 
-        probs, y_true, val_loss = collect_probs_and_loss(model, val_loader, device, criterion, ema=ema)
+        probs, y_true = collect_probs(model, val_loader, device, ema=ema)
+
+        # compute val loss (for debugging divergence vs overfit)
+        val_loss = compute_loss_on_loader(model, val_loader, device, criterion, ema=ema)
 
 
         best = best_threshold_by_f1(probs, y_true, thr_min=cfg.thr_min, thr_max=cfg.thr_max, thr_step=cfg.thr_step)
@@ -675,6 +897,9 @@ def main() -> None:
 
         score = float(f1) if cfg.monitor == "f1" else float(apv)
         lr_now = float(opt.param_groups[0]["lr"])
+        grad_norm_mean = float(np.mean(grad_norm_vals)) if grad_norm_vals else None
+        grad_norm_p95 = float(np.percentile(grad_norm_vals, 95.0)) if grad_norm_vals else None
+        grad_norm_max = float(np.max(grad_norm_vals)) if grad_norm_vals else None
 
         print(
             f"[val] ep={ep:03d} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
@@ -706,10 +931,36 @@ def main() -> None:
             "monitor": cfg.monitor,
             "monitor_score": float(score),
             "lr": lr_now,
+            "nonfinite_skips": int(nonfinite_skips_ep),
+            "train_grad_norm_mean": grad_norm_mean,
+            "train_grad_norm_p95": grad_norm_p95,
+            "train_grad_norm_max": grad_norm_max,
         }
         log_row(row)
 
-        sched.step(score if np.isfinite(score) else float(f1))
+        if sched_kind == "plateau":
+            sched_metric_raw = float(
+                val_loss if str(cfg.scheduler_metric) == "val_loss"
+                else (apv if str(cfg.scheduler_metric) == "val_ap" else f1)
+            )
+            beta = float(cfg.scheduler_ema_beta)
+            if beta > 0.0:
+                scheduler_metric_ema = (
+                    sched_metric_raw if scheduler_metric_ema is None
+                    else (beta * scheduler_metric_ema + (1.0 - beta) * sched_metric_raw)
+                )
+                sched_metric_step = float(scheduler_metric_ema)
+            else:
+                sched_metric_step = sched_metric_raw
+            if np.isfinite(sched_metric_step):
+                sched.step(sched_metric_step)
+            else:
+                fallback_metric = float(val_loss if sched_mode == "min" else f1)
+                sched.step(fallback_metric)
+        elif sched_kind == "cosine":
+            sched.step()
+        else:
+            pass
 
         if score > best_score + 1e-6:
             best_score = float(score)
@@ -731,7 +982,7 @@ def main() -> None:
             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
         else:
             no_improve += 1
-            if cfg.patience > 0 and no_improve >= cfg.patience:
+            if cfg.patience > 0 and ep >= int(cfg.min_epochs) and no_improve >= cfg.patience:
                 print(f"[early stop] patience={cfg.patience} reached at ep={ep}")
                 break
 

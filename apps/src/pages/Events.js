@@ -45,7 +45,7 @@ export default function Events() {
       }
 
       if (model !== "All") {
-        const want = model.toUpperCase() === "HYBRID" ? "HYBRID" : model.toUpperCase();
+        const want = model.toUpperCase();
         if ((ev.model_code || "").toUpperCase() !== want) return false;
       }
 
@@ -155,7 +155,6 @@ export default function Events() {
             <option>All</option>
             <option>TCN</option>
             <option>GCN</option>
-            <option>Hybrid</option>
           </select>
 
           <button

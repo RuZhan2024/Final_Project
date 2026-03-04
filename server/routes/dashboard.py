@@ -4,6 +4,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 from .. import core
 from ..core import _col_exists, _one_resident_id, _resident_exists, _table_exists
 from ..db import get_conn
@@ -13,6 +19,7 @@ router = APIRouter()
 
 
 @router.get("/api/dashboard/summary")
+@router.get("/api/v1/dashboard/summary")
 def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
     """Summary used by /Dashboard. Never returns 500."""
 
@@ -20,7 +27,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
         "status": "normal",
         "today": {"falls_detected": 0, "false_alarms": 0},
         "system": {
-            "model_name": "HYBRID",
+            "model_name": "TCN",
             "monitoring_enabled": False,
             "last_latency_ms": int(core.LAST_PRED_LATENCY_MS or 0),
             "api_online": True,
@@ -115,13 +122,14 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
 
             return summary
 
-    except Exception as e:
+    except (MySQLError, RuntimeError, TypeError, ValueError) as e:
         summary["system"]["api_online"] = False
         summary["system"]["error"] = str(e)
         return summary
 
 
 @router.get("/api/summary")
+@router.get("/api/v1/summary")
 def api_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
     """Alias for /api/dashboard/summary (for Monitor UI)."""
     return dashboard_summary(resident_id=resident_id)

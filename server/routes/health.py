@@ -10,5 +10,6 @@ router = APIRouter()
 
 
 @router.get("/api/health")
+@router.get("/api/v1/health")
 def health() -> Dict[str, Any]:
     return {"ok": True, "ts": datetime.utcnow().isoformat()}

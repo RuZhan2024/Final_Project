@@ -183,6 +183,8 @@ def main() -> None:
     ap.add_argument("--confirm_min_lying", type=float, default=0.65)
     ap.add_argument("--confirm_max_motion", type=float, default=0.08)
     ap.add_argument("--confirm_require_low", type=int, default=1)
+    ap.add_argument("--start_guard_max_lying", type=float, default=-1.0)
+    ap.add_argument("--start_guard_prefixes", type=str, default="")
 
     args = ap.parse_args()
 
@@ -216,6 +218,8 @@ def main() -> None:
         confirm_min_lying=float(args.confirm_min_lying),
         confirm_max_motion=float(args.confirm_max_motion),
         confirm_require_low=bool(int(args.confirm_require_low)),
+        start_guard_max_lying=(None if float(args.start_guard_max_lying) < 0.0 else float(args.start_guard_max_lying)),
+        start_guard_prefixes=([x.strip() for x in str(args.start_guard_prefixes).split(",") if x.strip()] or None),
     )
 
     vids_arr = np.asarray(vids)
@@ -256,8 +260,15 @@ def main() -> None:
             }
             continue
 
-        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
-        _alert_mask, events = detect_alert_events(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v)
+        st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v, video_id=str(v))
+        _alert_mask, events = detect_alert_events(
+            p_v,
+            t_v,
+            alert_cfg,
+            lying_score=ls_v,
+            motion_score=ms_v,
+            video_id=str(v),
+        )
 
         n = int(len(events))
         fa_hour = float(n / (duration_s / 3600.0)) if duration_s > 0 else float("nan")

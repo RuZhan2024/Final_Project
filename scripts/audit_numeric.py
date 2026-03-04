@@ -11,6 +11,20 @@ from typing import Any
 import numpy as np
 
 
+def _load_gate_overrides(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"[err] gates config not found: {p}")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"[err] invalid gates json: {p}: {e}") from e
+    sect = data.get("numeric", data)
+    return sect if isinstance(sect, dict) else {}
+
+
 def _stats(arr: np.ndarray) -> dict[str, float]:
     x = np.asarray(arr, dtype=np.float32).reshape(-1)
     if x.size == 0:
@@ -50,6 +64,7 @@ def _read_window(fp: Path) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--gates_json", default="configs/audit_gates.json")
     ap.add_argument("--processed_root", default="data/processed")
     ap.add_argument("--datasets", default="le2i,urfd,caucafall,muvim")
     ap.add_argument("--max_windows_per_dataset", type=int, default=300)
@@ -60,6 +75,15 @@ def main() -> None:
     ap.add_argument("--abs_p99_max", type=float, default=5.0)
     ap.add_argument("--out_json", default="")
     args = ap.parse_args()
+
+    gate = _load_gate_overrides(str(args.gates_json).strip())
+    if gate:
+        args.ref_dataset = str(gate.get("ref_dataset", args.ref_dataset))
+        args.std_ratio_min = float(gate.get("std_ratio_min", args.std_ratio_min))
+        args.std_ratio_max = float(gate.get("std_ratio_max", args.std_ratio_max))
+        args.mean_delta_max = float(gate.get("mean_delta_max", args.mean_delta_max))
+        args.abs_p99_max = float(gate.get("abs_p99_max", args.abs_p99_max))
+        args.max_windows_per_dataset = int(gate.get("max_windows_per_dataset", args.max_windows_per_dataset))
 
     root = Path(args.processed_root)
     datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]

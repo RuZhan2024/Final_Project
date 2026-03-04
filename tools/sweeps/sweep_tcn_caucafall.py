@@ -71,7 +71,7 @@ def main() -> None:
 }
 
     param_grid = {
-    "LR_TCN_CAUC": [
+    "LR_TCN_caucafall": [
         0.001,
         0.0005,
         0.0003

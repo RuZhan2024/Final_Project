@@ -1,16 +1,16 @@
 {
   "arch": "tcn",
   "latency_ms": {
-    "max": 2.958607001346536,
-    "mean": 2.2035009402316064,
-    "median": 2.150338053703308,
-    "min": 1.9969620007032063,
-    "p95": 2.4880464911460876
+    "max": 5.565308005316183,
+    "mean": 4.158155860641273,
+    "median": 4.119344472885132,
+    "min": 3.556666008080356,
+    "p95": 4.7538913011550905
   },
-  "n_windows_available": 269,
+  "n_windows_available": 365,
   "profile": "cpu_local",
-  "runs": 50,
+  "runs": 100,
   "warmup": 10,
-  "window_dir": "data/processed/le2i/windows_eval_W48_S12/test",
-  "with_model": false
+  "window_dir": "data/processed/le2i/windows_eval_W48_S12/val",
+  "with_model": true
 }

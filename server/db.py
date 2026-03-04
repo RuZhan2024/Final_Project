@@ -20,6 +20,12 @@ import os
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
 
 def _require_env(name: str, default: str | None = None) -> str:
     v = os.getenv(name, default)
@@ -40,7 +46,7 @@ def get_conn() -> Iterator[object]:
     try:
         import pymysql  # type: ignore
         from pymysql.cursors import DictCursor  # type: ignore
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         raise RuntimeError(
             "PyMySQL is not installed. Install it with: pip install pymysql"
         ) from e
@@ -68,7 +74,7 @@ def get_conn() -> Iterator[object]:
     finally:
         try:
             conn.close()
-        except Exception:
+        except (MySQLError, OSError, RuntimeError):
             pass
 
 
@@ -80,8 +86,16 @@ def get_conn_optional() -> Iterator[Optional[object]]:
     - PyMySQL isn't installed, or
     - the DB isn't reachable.
     """
+    conn_cm = None
     try:
-        with get_conn() as conn:
-            yield conn
-    except Exception:
+        conn_cm = get_conn()
+        conn = conn_cm.__enter__()
+    except (MySQLError, OSError, RuntimeError, ValueError, TypeError):
+        # DB unavailable only during connection setup.
         yield None
+        return
+    try:
+        yield conn
+    finally:
+        if conn_cm is not None:
+            conn_cm.__exit__(None, None, None)

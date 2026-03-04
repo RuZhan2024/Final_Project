@@ -1,0 +1,6 @@
+name,status,pass_gate,f1,recall,precision,fa24h,tau_high,tau_low,ops_yaml,metrics_json
+base,ok,False,0.888888888888889,0.8,1.0,0.0,0.8699999451637268,0.6785999536514282,configs/ops/tcn_caucafall_tune_base.yaml,outputs/metrics/tcn_caucafall_tune_base.json
+recall_cs,ok,False,0.888888888888889,0.8,1.0,0.0,0.8699999451637268,0.6785999536514282,configs/ops/tcn_caucafall_tune_recall_cs.yaml,outputs/metrics/tcn_caucafall_tune_recall_cs.json
+low_alarm_cs,ok,False,0.888888888888889,0.8,1.0,0.0,0.8699999451637268,0.6785999536514282,configs/ops/tcn_caucafall_tune_low_alarm_cs.yaml,outputs/metrics/tcn_caucafall_tune_low_alarm_cs.json
+confirm_off,ok,False,0.888888888888889,0.8,1.0,0.0,0.8699999451637268,0.6785999536514282,configs/ops/tcn_caucafall_tune_confirm_off.yaml,outputs/metrics/tcn_caucafall_tune_confirm_off.json
+strict_confirm,ok,False,0.888888888888889,0.8,1.0,0.0,0.8699999451637268,0.6785999536514282,configs/ops/tcn_caucafall_tune_strict_confirm.yaml,outputs/metrics/tcn_caucafall_tune_strict_confirm.json

@@ -27,8 +27,8 @@ function normaliseUiParams(settingsPayload) {
 }
 
 async function loadLegacyOperatingPoint(apiBase, modelCode, activeOperatingPointId) {
-  const codeRaw = String(modelCode || "GCN").toUpperCase();
-  const tryCodes = codeRaw === "HYBRID" ? ["HYBRID", "GCN"] : [codeRaw];
+  const codeRaw = String(modelCode || "TCN").toUpperCase();
+  const tryCodes = codeRaw === "GCN" ? ["GCN"] : ["TCN"];
 
   for (const code of tryCodes) {
     try {

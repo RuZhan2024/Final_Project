@@ -1,0 +1,22 @@
+{
+  "metrics": {
+    "delay_p50_s": 0.8,
+    "delay_p95_s": 0.8,
+    "event_precision_proxy": 0.5,
+    "event_recall_proxy": 1.0,
+    "fa24h_estimate": 24.0,
+    "false_alerts_per_hour": 1.0,
+    "false_alerts_total": 1
+  },
+  "n_clips": 3,
+  "n_detected_event_clips": 2,
+  "n_gt_event_clips": 1,
+  "n_true_positive_clips": 1,
+  "schema_version": "1.0",
+  "source_csv": "artifacts/templates/deployment_field_observations_template.csv",
+  "status_counts": {
+    "fail": 1,
+    "ok": 1,
+    "unknown": 1
+  }
+}

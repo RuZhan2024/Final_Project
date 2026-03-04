@@ -10,8 +10,8 @@ export function normModeFromCode(code) {
   const c = String(code || "").toUpperCase();
   if (c === "TCN") return "tcn";
   if (c === "GCN") return "gcn";
-  if (c === "HYBRID") return "dual";
-  return "gcn";
+  if (c === "HYBRID") return "hybrid";
+  return "tcn";
 }
 
 export function labelForTriage(triageState) {
@@ -23,20 +23,25 @@ export function labelForTriage(triageState) {
 
 export function prettyModelTag(activeModelCode) {
   const c = String(activeModelCode || "").toUpperCase();
-  if (c === "HYBRID") return "HYBRID";
   if (c === "TCN") return "TCN";
   if (c === "GCN") return "GCN";
-  return "GCN";
+  if (c === "HYBRID") return "HYBRID";
+  return "TCN";
 }
 
 export function pickFirstByArch(models, arch, datasetCode) {
   const a = String(arch || "").toLowerCase();
   const d = String(datasetCode || "").toLowerCase();
-  const m = (models || []).find((x) => {
+  const arr = models || [];
+  const m = arr.find((x) => {
     const xa = String(x?.arch || "").toLowerCase();
     const xd = String(x?.dataset_code || x?.dataset || "").toLowerCase();
     return xa === a && (!d || xd === d);
   });
+  if (m?.id) return m.id;
+  // Fallback: if requested dataset has no model for this arch, pick first available arch model.
+  const any = arr.find((x) => String(x?.arch || "").toLowerCase() === a);
+  if (any?.id) return any.id;
   return m?.id || "";
 }
 
@@ -49,7 +54,7 @@ export function pickModelPair(models, datasetCode) {
 
 export function targetFpsForDataset(datasetCode) {
   const ds = String(datasetCode || "").toLowerCase();
-  const byDs = { le2i: 25, urfd: 30, caucafall: 23, muvim: 30 };
+  const byDs = { le2i: 25, caucafall: 23 };
   const f = byDs[ds];
-  return typeof f === "number" && Number.isFinite(f) && f > 0 ? f : 30;
+  return typeof f === "number" && Number.isFinite(f) && f > 0 ? f : 23;
 }

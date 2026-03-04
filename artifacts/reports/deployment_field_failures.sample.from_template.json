@@ -1,0 +1,13 @@
+{
+  "failure_type_counts": {
+    "false_alert": 1
+  },
+  "n_fail_rows": 1,
+  "schema_version": "1.0",
+  "source_csv": "artifacts/templates/deployment_field_observations_template.csv",
+  "status_counts": {
+    "fail": 1,
+    "ok": 1,
+    "unknown": 1
+  }
+}

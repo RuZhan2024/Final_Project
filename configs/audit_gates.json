@@ -1,0 +1,26 @@
+{
+  "numeric": {
+    "ref_dataset": "le2i",
+    "max_windows_per_dataset": 300,
+    "std_ratio_min": 0.5,
+    "std_ratio_max": 2.0,
+    "mean_delta_max": 1.0,
+    "abs_p99_max": 5.0
+  },
+  "temporal": {
+    "max_windows_per_dataset": 300,
+    "target_window_seconds": 1.92,
+    "target_stride_seconds": 0.48,
+    "window_tol": 0.15,
+    "stride_tol": 0.05,
+    "strict_datasets": "le2i,urfd",
+    "fps_expect_le2i_urfd": 25.0,
+    "fps_tol": 0.25
+  },
+  "profile": {
+    "cpu_local": {
+      "io_only_p95_ms_max": 9.0,
+      "with_model_p95_ms_max": 40.0
+    }
+  }
+}

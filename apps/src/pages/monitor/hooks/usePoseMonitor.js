@@ -7,17 +7,6 @@ import { CLIP_POST_S, CLIP_PRE_S, MAX_PROC_FPS, NUM_JOINTS } from "../constants"
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
-const XY_DIM = NUM_JOINTS * 2;
-
-function safeNumber(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : null;
-}
-
-function positiveNumberOrUndef(x) {
-  const n = Number(x);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
 
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
@@ -27,65 +16,18 @@ function getClipFlags(settingsPayload) {
   };
 }
 
-function stripNilFields(obj) {
-  const out = {};
-  for (const [k, v] of Object.entries(obj || {})) {
-    if (v !== null && typeof v !== "undefined") out[k] = v;
-  }
-  return out;
-}
-
-function packFrameSlice(raw, startIdx, endIdx) {
-  const n = endIdx - startIdx + 1;
-  const t_ms = new Array(n);
-  // Build JSON-ready dense arrays directly to avoid an extra Array.from copy pass.
-  const xyFlat = new Array(n * XY_DIM).fill(0);
-  const confFlat = new Array(n * NUM_JOINTS).fill(0);
-  let j = 0;
-  for (let i = startIdx; i <= endIdx; i += 1, j += 1) {
-    const fr = raw[i];
-    const t = Number(fr?.t);
-    t_ms[j] = Number.isFinite(t) ? Math.round(t) : 0;
-    const xySrc = fr?.xyFlat;
-    const confSrc = fr?.confFlat;
-    const xyBase = j * XY_DIM;
-    const confBase = j * NUM_JOINTS;
-    if (xySrc && xySrc.length === XY_DIM) {
-      for (let k = 0; k < XY_DIM; k += 1) xyFlat[xyBase + k] = xySrc[k];
-    }
-    if (confSrc && confSrc.length === NUM_JOINTS) {
-      for (let k = 0; k < NUM_JOINTS; k += 1) confFlat[confBase + k] = confSrc[k];
-    }
-  }
-  return {
-    t_ms,
-    xy_flat: xyFlat,
-    conf_flat: confFlat,
+function getVideoLoadErrorMessage(videoEl, file) {
+  const code = Number(videoEl?.error?.code || 0);
+  const byCode = {
+    1: "Video loading aborted.",
+    2: "Network/media fetch error while loading video.",
+    3: "Video decode error (codec may be unsupported).",
+    4: "Video format not supported by this browser.",
   };
-}
-
-function lowerBoundFrameTs(raw, targetTs) {
-  let lo = 0;
-  let hi = raw.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    const t = raw[mid]?.t;
-    if (typeof t !== "number" || !Number.isFinite(t) || t < targetTs) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-function upperBoundFrameTs(raw, targetTs) {
-  let lo = 0;
-  let hi = raw.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    const t = raw[mid]?.t;
-    if (typeof t !== "number" || !Number.isFinite(t) || t <= targetTs) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
+  const base = byCode[code] || "Unknown video load error.";
+  const t = String(file?.type || "").trim();
+  const hint = t ? ` File type: ${t}.` : "";
+  return `${base}${hint} Try an H.264 MP4 (AAC) or WebM file.`;
 }
 
 /**
@@ -111,6 +53,7 @@ export function usePoseMonitor({
   mcCfg,
   activeDatasetCode,
   chosenSpec,
+  onAutoStop,
 }) {
   // Refs for camera + mediapipe
   const videoRef = useRef(null);
@@ -118,6 +61,9 @@ export function usePoseMonitor({
   const isActiveRef = useRef(Boolean(isActive));
   const poseRef = useRef(null);
   const streamRef = useRef(null);
+  const videoFileRef = useRef(null);
+  const videoObjectUrlRef = useRef(null);
+  const inputSourceRef = useRef("camera");
   const rafRef = useRef(null);
   const liveFlagRef = useRef(false);
 
@@ -127,49 +73,64 @@ export function usePoseMonitor({
 
   // Cap pose processing rate to reduce CPU.
   const lastProcMsRef = useRef(0);
-  const lastClockMsRef = useRef(0);
-  const clockTextRef = useRef("");
 
   // Live state
   const [liveRunning, setLiveRunning] = useState(false);
   const [streamFps, setStreamFps] = useState(null);
+  const [inputSource, setInputSource] = useState("camera"); // camera | video
+  const [selectedVideoName, setSelectedVideoName] = useState("");
+  const [replayFile, setReplayFile] = useState(null);
+  const [startError, setStartError] = useState("");
+  const [predictError, setPredictError] = useState("");
+  const [replayCurrentS, setReplayCurrentS] = useState(0);
+  const [replayDurationS, setReplayDurationS] = useState(0);
 
   // Prediction UI
   const [triageState, setTriageState] = useState("not_fall");
   const [pFall, setPFall] = useState(null);
   const [sigma, setSigma] = useState(null);
+  const [safeAlert, setSafeAlert] = useState(null);
+  const [recallAlert, setRecallAlert] = useState(null);
+  const [safeState, setSafeState] = useState(null);
+  const [recallState, setRecallState] = useState(null);
 
   // Timeline markers: store last 50 non-safe windows
   const [timeline, setTimeline] = useState([]); // [{kind:'fall'|'uncertain', t: number}]
 
   // Frame buffer for windowing
-  const rawFramesRef = useRef([]); // [{t,xyFlat,confFlat}]
+  const rawFramesRef = useRef([]); // [{t,xy,conf}]
   const lastPoseTsRef = useRef(null);
   const fpsDeltasRef = useRef([]);
-  const fpsDeltaSumRef = useRef(0);
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
   const uploadedClipIdsRef = useRef(new Set());
-  const clipUploadInFlightRef = useRef(false);
-  const predictInFlightRef = useRef(false);
-  const bgTickScheduledRef = useRef(false);
-  const bgTaskIdRef = useRef(null);
-  const bgTaskTypeRef = useRef(null);
 
   // Session id for server-side state machine
   const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
+  const triageStableRef = useRef({ fall: 0, uncertain: 0, safe: 0, last: "not_fall" });
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
     isActiveRef.current = Boolean(isActive);
   }, [isActive]);
 
+  const autoStopMonitoring = useCallback(() => {
+    try {
+      if (typeof onAutoStop === "function") {
+        void Promise.resolve(onAutoStop(false));
+      }
+    } catch {
+      // ignore
+    }
+  }, [onAutoStop]);
+
   // Update inference throttle and MediaPipe complexity based on whether this page is active.
   useEffect(() => {
-    const fgFps = Math.min(12, Math.max(5, Number(targetFps) || 12));
+    // Keep live inference close to dataset target FPS for better train/runtime parity.
+    const fgFps = Math.min(30, Math.max(8, Number(targetFps) || 23));
     const bgFps = Math.min(5, fgFps);
     inferFpsRef.current = isActiveRef.current ? fgFps : bgFps;
 
@@ -228,32 +189,84 @@ export function usePoseMonitor({
       streamRef.current = null;
     }
 
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      try {
+        videoEl.pause();
+      } catch {
+        // ignore
+      }
+      videoEl.srcObject = null;
+      if (videoObjectUrlRef.current) {
+        videoEl.removeAttribute("src");
+        videoEl.load?.();
+      }
+    }
+    if (videoObjectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(videoObjectUrlRef.current);
+      } catch {
+        // ignore
+      }
+      videoObjectUrlRef.current = null;
+    }
+
     // Clear buffer
     rawFramesRef.current = [];
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
-    fpsDeltaSumRef.current = 0;
     lastSentRef.current = 0;
 
     // Clip upload state
     pendingClipRef.current = null;
     uploadedClipIdsRef.current = new Set();
-    bgTickScheduledRef.current = false;
-    if (bgTaskIdRef.current != null) {
-      if (bgTaskTypeRef.current === "idle" && typeof window !== "undefined" && window.cancelIdleCallback) {
-        window.cancelIdleCallback(bgTaskIdRef.current);
-      } else if (bgTaskTypeRef.current === "timeout" && typeof window !== "undefined") {
-        window.clearTimeout(bgTaskIdRef.current);
-      }
-    }
-    bgTaskIdRef.current = null;
-    bgTaskTypeRef.current = null;
 
     // Reset UI
     setPFall(null);
     setSigma(null);
     setTriageState("not_fall");
+    setSafeAlert(null);
+    setRecallAlert(null);
+    setSafeState(null);
+    setRecallState(null);
     setTimeline([]);
+    triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
+    setReplayCurrentS(0);
+    setReplayDurationS(0);
+    setStartError("");
+    setPredictError("");
+  }, []);
+
+  const setVideoFile = useCallback((file) => {
+    stopLive();
+    autoStopMonitoring();
+    if (file) {
+      videoFileRef.current = file;
+      setReplayFile(file);
+      setSelectedVideoName(String(file.name || "video"));
+      inputSourceRef.current = "video";
+      setInputSource("video");
+      setStartError("");
+    } else {
+      videoFileRef.current = null;
+      setReplayFile(null);
+      setSelectedVideoName("");
+      inputSourceRef.current = "camera";
+      setInputSource("camera");
+      setStartError("");
+    }
+  }, [autoStopMonitoring, stopLive]);
+
+  const setInputMode = useCallback((mode) => {
+    const m = mode === "video" ? "video" : "camera";
+    inputSourceRef.current = m;
+    setInputSource(m);
+    if (m === "camera") {
+      videoFileRef.current = null;
+      setReplayFile(null);
+      setSelectedVideoName("");
+    }
+    setStartError("");
   }, []);
 
   const addTimelineMarker = useCallback((kind) => {
@@ -273,7 +286,6 @@ export function usePoseMonitor({
 
     const pending = pendingClipRef.current;
     if (!pending) return;
-    if (clipUploadInFlightRef.current) return;
 
     const raw = rawFramesRef.current;
     if (!raw || raw.length < 2) return;
@@ -290,35 +302,26 @@ export function usePoseMonitor({
 
     const startTs = pending.triggerEndTs - pending.preMs;
     const endTs = pending.triggerEndTs + pending.postMs;
-    const startIdx = lowerBoundFrameTs(raw, startTs);
-    const endExclusive = upperBoundFrameTs(raw, endTs);
-    const endIdx = endExclusive - 1;
-
-    if (startIdx < 0 || endIdx <= startIdx || startIdx >= raw.length) {
+    const frames = raw.filter((fr) => fr && typeof fr.t === "number" && fr.t >= startTs && fr.t <= endTs);
+    if (!frames || frames.length < 2) {
       pendingClipRef.current = null;
       return;
     }
 
     try {
-      clipUploadInFlightRef.current = true;
-      const { t_ms, xy_flat, conf_flat } = packFrameSlice(raw, startIdx, endIdx);
-
-      const clipPayload = stripNilFields({
+      const clipPayload = {
         resident_id: 1,
         dataset_code: pending.ctx?.dataset_code,
         mode: pending.ctx?.mode,
         op_code: pending.ctx?.op_code,
         use_mc: pending.ctx?.use_mc,
         mc_M: pending.ctx?.mc_M,
-        mc_sigma_tol: pending.ctx?.mc_sigma_tol,
-        mc_se_tol: pending.ctx?.mc_se_tol,
         pre_s: pending.preMs / 1000,
         post_s: pending.postMs / 1000,
-        t_ms,
-        xy_flat,
-        conf_flat,
-        raw_joints: NUM_JOINTS,
-      });
+        t_ms: frames.map((fr) => fr.t),
+        xy: frames.map((fr) => fr.xy),
+        conf: frames.map((fr) => fr.conf),
+      };
 
       const data = await apiRequest(
         apiBase,
@@ -328,17 +331,10 @@ export function usePoseMonitor({
 
       if (data?.ok) {
         sent.add(String(pending.eventId));
-        // Bound memory in very long monitoring sessions.
-        while (sent.size > 512) {
-          const first = sent.values().next().value;
-          if (first == null) break;
-          sent.delete(first);
-        }
       }
     } catch (err) {
       console.error("Failed to upload skeleton clip", err);
     } finally {
-      clipUploadInFlightRef.current = false;
       pendingClipRef.current = null;
     }
   }, [apiBase, settingsPayload]);
@@ -347,7 +343,6 @@ export function usePoseMonitor({
     const now = performance.now();
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     if (now - lastSentRef.current < minGapMs) return;
-    if (predictInFlightRef.current) return;
 
     const raw = rawFramesRef.current;
     if (!raw || raw.length < 2) return;
@@ -361,55 +356,109 @@ export function usePoseMonitor({
     if (raw[0].t > startNeed) return;
 
     // Include one frame before startNeed for interpolation on the server.
-    const i0 = lowerBoundFrameTs(raw, startNeed);
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
     const startIdx = Math.max(0, i0 - 1);
-    const { t_ms: raw_t_ms, xy_flat: raw_xy_flat, conf_flat: raw_conf_flat } = packFrameSlice(
-      raw,
-      startIdx,
-      raw.length - 1
-    );
+    const slice = raw.slice(startIdx);
 
     lastSentRef.current = now;
 
     const { storeEventClips } = getClipFlags(settingsPayload);
-    const mcSigmaTol = positiveNumberOrUndef(settingsPayload?.deploy?.mc?.sigma_tol);
-    const mcSeTol = positiveNumberOrUndef(settingsPayload?.deploy?.mc?.se_tol);
 
-    const payload = stripNilFields({
+    const payload = {
       session_id: sessionIdRef.current,
+      resident_id: 1,
       mode,
       dataset_code: activeDatasetCode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
 
-      model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
-      model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
+      model_tcn: mode !== "gcn" ? chosen.tcn : null,
+      model_gcn: mode !== "tcn" ? chosen.gcn : null,
+      model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
 
       // The model expects this FPS after resampling.
+      fps: targetFps,
       target_fps: targetFps,
       target_T: deployW,
+
+      // Useful for debugging / dashboards (does NOT affect inference)
+      capture_fps: streamFps || fpsEstimateRef.current || null,
+
+      timestamp_ms: Date.now(),
       use_mc: Boolean(mcEnabled),
       mc_M: mcCfg?.M,
-      mc_sigma_tol: mcSigmaTol,
-      mc_se_tol: mcSeTol,
 
       // Persist events when monitoring is on OR when we need an event_id for clip saving.
       persist: Boolean(monitoringOn || storeEventClips),
 
       // Raw pose samples (variable FPS)
-      raw_t_ms,
-      raw_xy_flat,
-      raw_conf_flat,
-      raw_joints: NUM_JOINTS,
+      raw_t_ms: slice.map((fr) => fr.t),
+      raw_xy: slice.map((fr) => fr.xy),
+      raw_conf: slice.map((fr) => fr.conf),
 
       window_end_t_ms: endTs,
-    });
+    };
 
     try {
-      predictInFlightRef.current = true;
-      const data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
+      let data;
+      try {
+        data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
+      } catch (err) {
+        if (Number(err?.status) === 404) {
+          data = await apiRequest(apiBase, "/api/v1/monitor/predict_window", { method: "POST", body: payload });
+        } else {
+          throw err;
+        }
+      }
+      setPredictError("");
 
-      const tri = data?.triage_state || data?.triageState || "not_fall";
-      setTriageState(tri);
+      const safeObj = data?.policy_alerts?.safe;
+      const recallObj = data?.policy_alerts?.recall;
+      const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
+      const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
+      const safeBool =
+        typeof data?.safe_alert === "boolean"
+          ? data.safe_alert
+          : typeof safeObj?.alert === "boolean"
+          ? safeObj.alert
+          : null;
+      const recallBool =
+        typeof data?.recall_alert === "boolean"
+          ? data.recall_alert
+          : typeof recallObj?.alert === "boolean"
+          ? recallObj.alert
+          : null;
+      setSafeAlert(safeBool);
+      setRecallAlert(recallBool);
+      setSafeState((data?.safe_state || safeObj?.state || null) ?? null);
+      setRecallState((data?.recall_state || recallObj?.state || null) ?? null);
+
+      // UI hysteresis to suppress noisy flips between fall/uncertain/not_fall.
+      let triCandidate = safeStateRaw || triRaw || "not_fall";
+      if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
+      if (data?.low_quality_block || data?.occlusion_block || data?.low_motion_block) {
+        triCandidate = "not_fall";
+      }
+      const st = triageStableRef.current;
+      if (triCandidate === "fall" && safeBool !== false) {
+        st.fall += 1;
+        st.uncertain = 0;
+        st.safe = 0;
+      } else if (triCandidate === "uncertain") {
+        st.uncertain += 1;
+        st.fall = 0;
+        st.safe = 0;
+      } else {
+        st.safe += 1;
+        st.fall = 0;
+        st.uncertain = 0;
+      }
+      let triStable = st.last || "not_fall";
+      if (st.fall >= 2) triStable = "fall";
+      else if (st.safe >= 2) triStable = "not_fall";
+      else if (st.uncertain >= 2 && st.fall === 0) triStable = "uncertain";
+      st.last = triStable;
+      setTriageState(triStable);
 
       // Schedule a skeleton clip upload (pre + post seconds around this window end)
       try {
@@ -432,8 +481,6 @@ export function usePoseMonitor({
                 op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
                 use_mc: Boolean(mcEnabled),
                 mc_M: mcCfg?.M,
-                mc_sigma_tol: mcSigmaTol,
-                mc_se_tol: mcSeTol,
               },
             };
           }
@@ -442,43 +489,35 @@ export function usePoseMonitor({
         // ignore
       }
 
-      // pFall display: use overall mu (single) or conservative fusion for dual
+      // pFall display from the active model output.
       let mu = null;
       let sig = null;
 
-      if (mode === "dual") {
-        const mt = data?.models?.tcn;
-        const mg = data?.models?.gcn;
-        const mh = data?.models?.hybrid;
-        const muT = safeNumber(mt?.mu);
-        const muG = safeNumber(mg?.mu);
-
-        if (mh?.mu != null) mu = Number(mh.mu);
-        else mu = Math.min(muT ?? 1, muG ?? 1);
-
-        const sT = safeNumber(mt?.sigma);
-        const sG = safeNumber(mg?.sigma);
-        if (mh?.sigma != null) sig = Number(mh.sigma);
-        else sig = Math.max(sT ?? 0, sG ?? 0);
-      } else {
-        const mOut = data?.models?.[mode];
-        if (mOut) {
-          mu = mOut?.mu != null ? Number(mOut.mu) : mOut?.p_det != null ? Number(mOut.p_det) : null;
-          sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
-        }
+      const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
+      if (mOut) {
+        // Use tracker-smoothed score first so P(fall) matches current triage semantics.
+        mu = mOut?.triage?.ps != null
+          ? Number(mOut.triage.ps)
+          : mOut?.p_alert_in != null
+            ? Number(mOut.p_alert_in)
+            : mOut?.mu != null
+              ? Number(mOut.mu)
+              : mOut?.p_det != null
+                ? Number(mOut.p_det)
+                : null;
+        sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
       }
 
       setPFall(mu);
       setSigma(sig);
 
       // timeline markers
-      const triNorm = String(tri || "").toLowerCase();
+      const triNorm = String(triStable || "").toLowerCase();
       if (triNorm === "fall") addTimelineMarker("fall");
       else if (triNorm === "uncertain") addTimelineMarker("uncertain");
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
-    } finally {
-      predictInFlightRef.current = false;
+      setPredictError(String(err?.message || err || "predict_window failed"));
     }
   }, [
     activeDatasetCode,
@@ -497,32 +536,12 @@ export function usePoseMonitor({
     targetFps,
   ]);
 
-  const scheduleBackgroundTick = useCallback(() => {
-    if (bgTickScheduledRef.current) return;
-    bgTickScheduledRef.current = true;
-    const run = () => {
-      bgTickScheduledRef.current = false;
-      bgTaskIdRef.current = null;
-      bgTaskTypeRef.current = null;
-      void maybeFinalizeClipUpload();
-      void maybeSendWindow();
-    };
-    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
-      bgTaskTypeRef.current = "idle";
-      bgTaskIdRef.current = window.requestIdleCallback(run, { timeout: 50 });
-      return;
-    }
-    bgTaskTypeRef.current = "timeout";
-    bgTaskIdRef.current = setTimeout(run, 0);
-  }, [maybeFinalizeClipUpload, maybeSendWindow]);
-
   const handlePoseResults = useCallback(
     (results) => {
       // Cap processing rate.
       const nowMs = performance.now();
       if (nowMs - lastProcMsRef.current < 1000 / MAX_PROC_FPS) return;
       lastProcMsRef.current = nowMs;
-      const tNow = Math.round(nowMs);
 
       const canvasEl = canvasRef.current;
       if (!canvasEl) return;
@@ -559,32 +578,27 @@ export function usePoseMonitor({
         });
         drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
 
-        if (tNow - lastClockMsRef.current >= 500 || !clockTextRef.current) {
-          clockTextRef.current = new Date().toLocaleTimeString();
-          lastClockMsRef.current = tNow;
-        }
         ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
         ctx.fillStyle = "#94a3b8";
-        ctx.fillText(clockTextRef.current, 16, h - 16);
+        ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
       }
 
       // Build raw frame
-      const xyFlat = new Float32Array(NUM_JOINTS * 2);
-      const confFlat = new Float32Array(NUM_JOINTS);
+      const xyFrame = new Array(NUM_JOINTS);
+      const confFrame = new Array(NUM_JOINTS);
 
       for (let i = 0; i < NUM_JOINTS; i++) {
         const lm = landmarks[i];
-        const b = i * 2;
         if (!lm) {
-          xyFlat[b] = 0;
-          xyFlat[b + 1] = 0;
-          confFlat[i] = 0;
+          xyFrame[i] = [0, 0];
+          confFrame[i] = 0;
         } else {
-          xyFlat[b] = clamp01(lm.x);
-          xyFlat[b + 1] = clamp01(lm.y);
-          confFlat[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
+          xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
+          confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
         }
       }
+
+      const tNow = performance.now();
 
       // Estimate FPS from callback timing (smoothed)
       const last = lastPoseTsRef.current;
@@ -593,13 +607,9 @@ export function usePoseMonitor({
         if (dt > 0 && dt < 5000) {
           const arr = fpsDeltasRef.current;
           arr.push(dt);
-          fpsDeltaSumRef.current += dt;
-          if (arr.length > 30) {
-            const dropped = arr.shift();
-            if (typeof dropped === "number") fpsDeltaSumRef.current -= dropped;
-          }
+          if (arr.length > 30) arr.shift();
 
-          const meanDt = fpsDeltaSumRef.current / Math.max(1, arr.length);
+          const meanDt = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
           const estFps = meanDt > 0 ? 1000 / meanDt : null;
           if (estFps && Number.isFinite(estFps)) {
             const prev = fpsEstimateRef.current;
@@ -611,17 +621,17 @@ export function usePoseMonitor({
 
       // Push raw
       const raw = rawFramesRef.current;
-      raw.push({ t: tNow, xyFlat, confFlat });
+      raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
 
-      // Keep ~12s max. Trim in batches to avoid O(n) shifts on every frame.
+      // Keep ~12s max
       const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
-      const trimChunk = Math.max(32, Math.ceil(targetFps));
-      if (raw.length > maxRaw + trimChunk) raw.splice(0, raw.length - maxRaw);
+      if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
 
-      // Clip upload + inference run on a deferred tick to keep pose callback light.
-      scheduleBackgroundTick();
+      // Clip upload + inference
+      void maybeFinalizeClipUpload();
+      void maybeSendWindow();
     },
-    [ensureCanvasMatchesVideo, scheduleBackgroundTick, targetFps]
+    [ensureCanvasMatchesVideo, maybeFinalizeClipUpload, maybeSendWindow, targetFps]
   );
 
   const startLive = useCallback(async () => {
@@ -629,35 +639,126 @@ export function usePoseMonitor({
     if (!videoEl) return false;
 
     try {
+      setStartError("");
       liveFlagRef.current = true;
       setLiveRunning(true);
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, frameRate: { ideal: targetFps } },
-        audio: false,
+      const source = inputSourceRef.current || "camera";
+      const file = videoFileRef.current || replayFile;
+      const useVideoFile = source === "video";
+      if (useVideoFile && !file) {
+        throw new Error("Replay mode selected but no video file is loaded.");
+      }
+      if (useVideoFile) {
+        if (videoObjectUrlRef.current) {
+          try {
+            URL.revokeObjectURL(videoObjectUrlRef.current);
+          } catch {
+            // ignore
+          }
+          videoObjectUrlRef.current = null;
+        }
+        try {
+          videoEl.pause();
+        } catch {
+          // ignore
+        }
+        videoEl.srcObject = null;
+        videoEl.removeAttribute("src");
+        try {
+          videoEl.load?.();
+        } catch {
+          // ignore
+        }
+        const u = URL.createObjectURL(file);
+        videoObjectUrlRef.current = u;
+        videoEl.src = u;
+        videoEl.currentTime = 0;
+        videoEl.muted = true;
+        videoEl.playsInline = true;
+        videoEl.preload = "auto";
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: targetFps },
+          },
+          audio: false,
+        });
+        streamRef.current = stream;
+        videoEl.srcObject = stream;
+      }
+
+      await new Promise((resolve, reject) => {
+        if (videoEl.readyState >= 1) {
+          resolve();
+          return;
+        }
+        let done = false;
+        const timer = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error("Video metadata load timeout"));
+        }, 10000);
+        const cleanup = () => {
+          videoEl.removeEventListener("loadedmetadata", onLoaded);
+          videoEl.removeEventListener("canplay", onCanPlay);
+          videoEl.removeEventListener("error", onErr);
+          window.clearTimeout(timer);
+        };
+        const onLoaded = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const onCanPlay = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const onErr = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error(getVideoLoadErrorMessage(videoEl, file)));
+        };
+        videoEl.addEventListener("loadedmetadata", onLoaded, { once: true });
+        videoEl.addEventListener("canplay", onCanPlay, { once: true });
+        videoEl.addEventListener("error", onErr, { once: true });
+        try {
+          videoEl.load?.();
+        } catch {
+          // ignore
+        }
       });
 
-      streamRef.current = stream;
-      videoEl.srcObject = stream;
-
-      await new Promise((resolve) => {
-        const onLoaded = () => resolve();
-        videoEl.onloadedmetadata = onLoaded;
-      });
-
-      await videoEl.play();
+      try {
+        await videoEl.play();
+      } catch (e) {
+        throw new Error(`Video play failed: ${String(e?.message || e)}`);
+      }
       ensureCanvasMatchesVideo();
+      if (useVideoFile) {
+        setReplayCurrentS(Number(videoEl.currentTime || 0));
+        setReplayDurationS(Number(videoEl.duration || 0));
+      }
 
       // Try camera-reported FPS if available
-      try {
-        const track = stream.getVideoTracks()[0];
-        const settings = track?.getSettings?.();
-        if (settings && typeof settings.frameRate === "number") {
-          fpsEstimateRef.current = settings.frameRate;
-          setStreamFps(settings.frameRate);
+      if (streamRef.current) {
+        try {
+          const track = streamRef.current.getVideoTracks()[0];
+          const settings = track?.getSettings?.();
+          if (settings && typeof settings.frameRate === "number") {
+            fpsEstimateRef.current = settings.frameRate;
+            setStreamFps(settings.frameRate);
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
 
       const pose = new mpPose.Pose({
@@ -676,6 +777,17 @@ export function usePoseMonitor({
 
       const loop = async () => {
         if (!liveFlagRef.current) return;
+        if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
+          stopLive();
+          autoStopMonitoring();
+          return;
+        }
+        if ((inputSourceRef.current || "camera") === "video") {
+          const ct = Number(videoEl.currentTime || 0);
+          const du = Number(videoEl.duration || 0);
+          if (Number.isFinite(ct)) setReplayCurrentS(ct);
+          if (Number.isFinite(du)) setReplayDurationS(du);
+        }
 
         const now = performance.now();
         const target = Math.max(1, Number(inferFpsRef.current) || 15);
@@ -700,10 +812,11 @@ export function usePoseMonitor({
       return true;
     } catch (err) {
       console.error("Error starting monitor", err);
+      setStartError(String(err?.message || err || "Failed to start monitor"));
       stopLive();
       return false;
     }
-  }, [ensureCanvasMatchesVideo, handlePoseResults, stopLive, targetFps]);
+  }, [autoStopMonitoring, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -730,15 +843,38 @@ export function usePoseMonitor({
 
   const resetSession = useCallback(async () => {
     try {
-      await apiRequest(
-        apiBase,
-        `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-        { method: "POST" }
-      );
+      try {
+        await apiRequest(
+          apiBase,
+          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+          { method: "POST" }
+        );
+      } catch (err) {
+        if (Number(err?.status) === 404) {
+          await apiRequest(
+            apiBase,
+            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+            { method: "POST" }
+          );
+        } else {
+          throw err;
+        }
+      }
     } catch {
       // ignore
     }
   }, [apiBase]);
+
+  const seekReplay = useCallback((ratio) => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+    const du = Number(videoEl.duration || 0);
+    if (!Number.isFinite(du) || du <= 0) return;
+    const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+    videoEl.currentTime = r * du;
+    setReplayCurrentS(Number(videoEl.currentTime || 0));
+    setReplayDurationS(du);
+  }, []);
 
   const testFall = useCallback(async () => {
     // 1) Try backend helper endpoint (if present)
@@ -770,6 +906,26 @@ export function usePoseMonitor({
   }, [addTimelineMarker, apiBase, settingsPayload]);
 
   const currentPrediction = useMemo(() => labelForTriage(triageState), [triageState]);
+  const safePrediction = useMemo(() => {
+    if (mode === "gcn") return "N/A";
+    if (safeState) return labelForTriage(safeState);
+    if (safeAlert == null) return "—";
+    return safeAlert ? "FALL DETECTED" : "SAFE";
+  }, [mode, safeState, safeAlert]);
+  const recallPrediction = useMemo(() => {
+    if (mode === "gcn") return "N/A";
+    if (recallState) {
+      const r = labelForTriage(recallState);
+      const s = safeState ? labelForTriage(safeState) : null;
+      if (String(r).toLowerCase() === "fall" && String(s || "").toLowerCase() !== "fall") {
+        return "Watch";
+      }
+      return r;
+    }
+    if (recallAlert == null) return "—";
+    if (recallAlert && String(safeState || "").toLowerCase() !== "fall") return "Watch";
+    return recallAlert ? "FALL DETECTED" : "SAFE";
+  }, [mode, recallState, recallAlert, safeState]);
 
   const captureFpsText = useMemo(() => {
     const v = streamFps;
@@ -813,6 +969,10 @@ export function usePoseMonitor({
     pFall,
     pText,
     sigma,
+    safeAlert,
+    recallAlert,
+    safePrediction,
+    recallPrediction,
 
     markers,
     captureFpsText,
@@ -820,6 +980,15 @@ export function usePoseMonitor({
 
     resetSession,
     testFall,
+    inputSource,
+    selectedVideoName,
+    setVideoFile,
+    setInputMode,
+    startError,
+    predictError,
+    replayCurrentS,
+    replayDurationS,
+    seekReplay,
 
     tauHighFromSpec,
   };

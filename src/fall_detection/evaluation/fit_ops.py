@@ -113,11 +113,43 @@ def _pick_index_by_thr(cand: np.ndarray, thr: np.ndarray, *, tie_break: str) -> 
     return int(cand[np.nanargmax(thr[cand])])
 
 
+def _path_ref_for_output(target_path: str, out_yaml_path: str, *, emit_absolute_paths: bool) -> str:
+    """Encode path in output YAML as absolute or out-relative."""
+    tgt = os.path.abspath(str(target_path))
+    if emit_absolute_paths:
+        return tgt
+    base_dir = os.path.dirname(os.path.abspath(str(out_yaml_path)))
+    return os.path.relpath(tgt, start=base_dir)
+
+
+def _sweep_has_non_degenerate_alert_region(sweep: Dict[str, Any], *, eps: float = 1e-12) -> Tuple[bool, str]:
+    """Check whether sweep has at least one meaningful alert point."""
+    rec = _to_np(sweep.get("recall"), dtype=np.float32)
+    f1 = _to_np(sweep.get("f1"), dtype=np.float32)
+    n_alert = _to_np(sweep.get("n_alert_events"), dtype=np.float32)
+
+    has_pos_recall = bool(np.isfinite(rec).any() and np.nanmax(rec) > eps)
+    has_pos_f1 = bool(np.isfinite(f1).any() and np.nanmax(f1) > eps)
+    has_alert_events = bool(np.isfinite(n_alert).any() and np.nanmax(n_alert) > eps)
+
+    if has_pos_recall or has_pos_f1 or has_alert_events:
+        return True, ""
+
+    return (
+        False,
+        "degenerate sweep: no positive recall, no positive F1, and no alert events across thresholds. "
+        "Try refitting with ALERT_CONFIRM=0 first, or relax confirm gating/thresholds.",
+    )
+
+
 def pick_ops_from_sweep_conservative(
     sweep: Dict[str, Any],
     *,
     op1_recall: float,
     op3_fa24h: float,
+    op2_objective: str = "f1",
+    cost_fn: float = 5.0,
+    cost_fp: float = 1.0,
     tie_break: str = "max_thr",
     min_tau_high: float = 0.0,
     eps: float = 1e-9,
@@ -172,18 +204,33 @@ def pick_ops_from_sweep_conservative(
             "n_false_alerts": int(n_false[i]) if np.isfinite(n_false[i]) else None,
         }
 
-    # ---------- OP2 (best F1) ----------
-    f1_ok = np.isfinite(f1) & ok_thr
-    if not f1_ok.any():
-        # fallback to max recall
-        rec_ok = np.isfinite(rec) & ok_thr
-        i2 = int(np.nanargmax(rec[rec_ok]))
-        cand = np.where(rec_ok & (rec >= np.nanmax(rec[rec_ok]) - eps))[0]
-        i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
-    else:
-        best = float(np.nanmax(f1[f1_ok]))
-        cand = np.where(f1_ok & (f1 >= best - eps))[0]
-        i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+    # ---------- OP2 (objective) ----------
+    op2_obj = str(op2_objective).strip().lower()
+    if op2_obj == "cost_sensitive":
+        ng_ok = np.isfinite(n_gt) & ok_thr
+        nt_ok = np.isfinite(n_true) & ok_thr
+        nf_ok = np.isfinite(n_false) & ok_thr
+        cost_ok = ng_ok & nt_ok & nf_ok
+        if cost_ok.any():
+            fn = np.maximum(0.0, n_gt - n_true)
+            cost = float(cost_fn) * fn + float(cost_fp) * n_false
+            best_cost = float(np.nanmin(cost[cost_ok]))
+            cand = np.where(cost_ok & (cost <= best_cost + eps))[0]
+            i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+        else:
+            op2_obj = "f1"  # fallback
+    if op2_obj == "f1":
+        f1_ok = np.isfinite(f1) & ok_thr
+        if not f1_ok.any():
+            # fallback to max recall
+            rec_ok = np.isfinite(rec) & ok_thr
+            i2 = int(np.nanargmax(rec[rec_ok]))
+            cand = np.where(rec_ok & (rec >= np.nanmax(rec[rec_ok]) - eps))[0]
+            i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
+        else:
+            best = float(np.nanmax(f1[f1_ok]))
+            cand = np.where(f1_ok & (f1 >= best - eps))[0]
+            i2 = _pick_index_by_thr(cand, thr, tie_break=tie_break)
 
     # ---------- OP1 (recall target) ----------
     rec_ok = np.isfinite(rec) & ok_thr
@@ -234,6 +281,38 @@ def pick_ops_from_sweep_conservative(
     else:
         i3 = i2
 
+    # If all OPs collapse to one threshold (common on near-perfect sweeps),
+    # enforce a stable ordering for UI/deploy semantics:
+    # OP-1 (high sensitivity) <= OP-2 (balanced) <= OP-3 (low sensitivity).
+    if int(i1) == int(i2) == int(i3):
+        valid = np.where(ok_thr & np.isfinite(thr))[0]
+        if valid.size >= 3:
+            # OP1: lowest threshold among recall-meeting points if available.
+            cand1 = np.where(meet)[0] if meet.any() else valid
+            i1 = int(cand1[np.argmin(thr[cand1])])
+
+            # OP3: highest threshold among FA-meeting points if available.
+            cand3 = np.where(meet_fa)[0] if meet_fa.any() else valid
+            i3 = int(cand3[np.argmax(thr[cand3])])
+
+            # OP2: pick best-F1 between OP1..OP3 region (fallback to midpoint).
+            lo = float(min(thr[i1], thr[i3]))
+            hi = float(max(thr[i1], thr[i3]))
+            region = np.where(ok_thr & np.isfinite(f1) & (thr >= lo - eps) & (thr <= hi + eps))[0]
+            if region.size > 0:
+                best = float(np.nanmax(f1[region]))
+                cand2 = region[np.where(f1[region] >= best - eps)[0]]
+                i2 = _pick_index_by_thr(cand2, thr, tie_break="max_thr")
+            else:
+                mid = 0.5 * (thr[i1] + thr[i3])
+                i2 = int(valid[np.argmin(np.abs(thr[valid] - mid))])
+
+            # Final guard to preserve ordering even with ties.
+            if thr[i2] < thr[i1]:
+                i2 = i1
+            if thr[i2] > thr[i3]:
+                i2 = i3
+
     ops = {"OP1": _row(i1), "OP2": _row(i2), "OP3": _row(i3)}
     meta = {
         "picker": "conservative",
@@ -241,6 +320,9 @@ def pick_ops_from_sweep_conservative(
         "min_tau_high": float(min_tau_high),
         "op1_recall": float(op1_recall),
         "op3_fa24h": float(op3_fa24h),
+        "op2_objective": str(op2_obj),
+        "cost_fn": float(cost_fn),
+        "cost_fp": float(cost_fp),
         "idx": {"OP1": int(i1), "OP2": int(i2), "OP3": int(i3)},
     }
     return ops, meta
@@ -309,9 +391,10 @@ class WindowDirDataset(Dataset):
             feat_cfg=self.feat_cfg,
         )
         ls, ms = confirm_scores_window(joints_xy, m, fps, tail_s=1.0)
-        # Clamp non-finite scores to safe values (never confirm by accident)
-        ls = float(ls) if np.isfinite(ls) else 0.0
-        ms = float(ms) if np.isfinite(ms) else float('inf')
+        # Preserve unavailable confirm signals as NaN.
+        # Alert policy treats NaN confirm heuristics as "missing" (no veto).
+        ls = float(ls) if np.isfinite(ls) else float("nan")
+        ms = float(ms) if np.isfinite(ms) else float("nan")
 
         y = int(meta.y) if meta.y is not None else -1
         row = MetaRow(
@@ -391,6 +474,65 @@ def infer_logits(
     return np.concatenate(logits_all), np.concatenate(y_all), metas_all
 
 
+def _preflight_input_contract(
+    *,
+    arch: str,
+    model_cfg: Dict[str, Any],
+    ds: WindowDirDataset,
+    two_stream: bool,
+    source_dir: str,
+) -> None:
+    """Fail fast when checkpoint input contract and window features do not match."""
+    if len(ds) == 0:
+        return
+    kind = str(arch).lower()
+    sample = ds[0]
+    if kind == "tcn":
+        x = sample[0]
+        got_in = int(x.shape[-1])
+        exp_in = int(model_cfg.get("in_ch", got_in))
+        if got_in != exp_in:
+            raise RuntimeError(
+                f"Input feature mismatch for fit_ops: ckpt expects in_ch={exp_in}, "
+                f"but windows from '{source_dir}' produce in_ch={got_in}. "
+                "This usually means a stale checkpoint built from a different window contract "
+                "(for example 33-joint vs 17-joint adapter mode). Rebuild training + eval windows "
+                "and retrain before fit_ops (e.g., make -B ADAPTER_USE=1 train-tcn-<dataset>)."
+            )
+        return
+
+    if kind == "gcn":
+        if two_stream:
+            xj, xm = sample[0], sample[1]
+            got_j = int(xj.shape[1])
+            got_fj = int(xj.shape[-1])
+            got_fm = int(xm.shape[-1])
+            exp_j = int(model_cfg.get("num_joints", got_j))
+            exp_fj = int(model_cfg.get("in_feats_joint", model_cfg.get("in_feats", got_fj)))
+            exp_fm = int(model_cfg.get("in_feats_motion", model_cfg.get("in_feats", got_fm)))
+            if got_j != exp_j or got_fj != exp_fj or got_fm != exp_fm:
+                raise RuntimeError(
+                    "Input feature mismatch for fit_ops (GCN two-stream): "
+                    f"ckpt expects num_joints={exp_j}, in_feats_joint={exp_fj}, in_feats_motion={exp_fm}; "
+                    f"windows from '{source_dir}' produced num_joints={got_j}, "
+                    f"in_feats_joint={got_fj}, in_feats_motion={got_fm}. "
+                    "Rebuild windows and retrain with a consistent feature contract."
+                )
+        else:
+            x = sample[0]
+            got_j = int(x.shape[1])
+            got_f = int(x.shape[-1])
+            exp_j = int(model_cfg.get("num_joints", got_j))
+            exp_f = int(model_cfg.get("in_feats", got_f))
+            if got_j != exp_j or got_f != exp_f:
+                raise RuntimeError(
+                    "Input feature mismatch for fit_ops (GCN): "
+                    f"ckpt expects num_joints={exp_j}, in_feats={exp_f}; "
+                    f"windows from '{source_dir}' produced num_joints={got_j}, in_feats={got_f}. "
+                    "Rebuild windows and retrain with a consistent feature contract."
+                )
+
+
 def _extract_arrays(metas: Sequence[MetaRow]) -> Dict[str, np.ndarray]:
     vids = np.asarray([m.video_id for m in metas], dtype=object)
     ws = np.asarray([m.w_start for m in metas], dtype=np.int32)
@@ -456,6 +598,18 @@ def main() -> None:
     ap.add_argument("--tie_eps", type=float, default=1e-9, help="Tolerance for plateau tie-breaking")
 
     ap.add_argument("--recursive", type=int, default=0, help="Recursively scan val_dir/fa_dir for .npz")
+    ap.add_argument(
+        "--emit_absolute_paths",
+        type=int,
+        default=0,
+        help="If 1, emit absolute paths in ops YAML; if 0, emit paths relative to --out",
+    )
+    ap.add_argument(
+        "--allow_degenerate_sweep",
+        type=int,
+        default=0,
+        help="If 1, allow writing ops even when sweep has no meaningful alert region",
+    )
 
     # Sweep range
     ap.add_argument("--thr_min", type=float, default=0.05)
@@ -466,6 +620,9 @@ def main() -> None:
     # OP selection targets
     ap.add_argument("--op1_recall", type=float, default=0.95)
     ap.add_argument("--op3_fa24h", type=float, default=2.0)
+    ap.add_argument("--op2_objective", type=_strip_lower, default="f1", choices=["f1", "cost_sensitive"])
+    ap.add_argument("--cost_fn", type=float, default=5.0)
+    ap.add_argument("--cost_fp", type=float, default=1.0)
 
     # Alert policy knobs
     ap.add_argument("--ema_alpha", type=float, default=0.0)
@@ -478,6 +635,8 @@ def main() -> None:
     ap.add_argument("--confirm_min_lying", type=float, default=0.7)
     ap.add_argument("--confirm_max_motion", type=float, default=0.08)
     ap.add_argument("--confirm_require_low", type=_int_or_default(1), default=1)
+    ap.add_argument("--start_guard_max_lying", type=float, default=-1.0)
+    ap.add_argument("--start_guard_prefixes", type=str, default="")
 
     # Event metrics details
     ap.add_argument("--merge_gap_s", type=float, default=None)
@@ -517,6 +676,13 @@ def main() -> None:
         num_workers=max(0, int(args.num_workers)),
         pin_memory=torch.cuda.is_available(),
         collate_fn=_collate,
+    )
+    _preflight_input_contract(
+        arch=args.arch,
+        model_cfg=model_cfg,
+        ds=val_ds,
+        two_stream=two_stream,
+        source_dir=args.val_dir,
     )
 
     logits_val, y_val_float, metas_val = infer_logits(model, val_loader, device, arch=args.arch, two_stream=two_stream)
@@ -604,6 +770,8 @@ def main() -> None:
         confirm_min_lying=float(args.confirm_min_lying),
         confirm_max_motion=float(args.confirm_max_motion),
         confirm_require_low=bool(int(args.confirm_require_low)),
+        start_guard_max_lying=(None if float(args.start_guard_max_lying) < 0.0 else float(args.start_guard_max_lying)),
+        start_guard_prefixes=([x.strip() for x in str(args.start_guard_prefixes).split(",") if x.strip()] or None),
     )
 
     sweep, meta = sweep_alert_policy_from_windows(
@@ -627,6 +795,52 @@ def main() -> None:
         **fa_payload,
     )
 
+    sweep_ok, failure_reason = _sweep_has_non_degenerate_alert_region(sweep)
+    # If confirm-stage causes a fully degenerate sweep, retry once with confirm disabled.
+    # This keeps downstream fit/eval targets usable on heavily occluded streams while
+    # preserving the same model/checkpoint and core ML logic.
+    used_confirm_fallback = False
+    if (not sweep_ok) and bool(alert_base.confirm):
+        print(f"[warn] {failure_reason}")
+        print("[warn] retrying sweep with confirm disabled (fallback for NaN/occlusion-heavy windows)")
+        alert_base = AlertCfg(
+            ema_alpha=float(alert_base.ema_alpha),
+            k=int(alert_base.k),
+            n=int(alert_base.n),
+            tau_high=float(alert_base.tau_high),
+            tau_low=float(alert_base.tau_low),
+            cooldown_s=float(alert_base.cooldown_s),
+            confirm=False,
+            confirm_s=float(alert_base.confirm_s),
+            confirm_min_lying=float(alert_base.confirm_min_lying),
+            confirm_max_motion=float(alert_base.confirm_max_motion),
+            confirm_require_low=bool(alert_base.confirm_require_low),
+            start_guard_max_lying=alert_base.start_guard_max_lying,
+            start_guard_prefixes=alert_base.start_guard_prefixes,
+        )
+        sweep, meta = sweep_alert_policy_from_windows(
+            probs_val,
+            y_val,
+            arr_val["video_id"],
+            arr_val["w_start"],
+            arr_val["w_end"],
+            arr_val["fps"],
+            alert_base=alert_base,
+            thr_min=float(args.thr_min),
+            thr_max=float(args.thr_max),
+            thr_step=float(args.thr_step),
+            tau_low_ratio=float(args.tau_low_ratio),
+            merge_gap_s=args.merge_gap_s,
+            overlap_slack_s=float(args.overlap_slack_s),
+            time_mode=str(args.time_mode),
+            fps_default=float(args.fps_default),
+            lying_score=arr_val["lying"],
+            motion_score=arr_val["motion"],
+            **fa_payload,
+        )
+        sweep_ok, failure_reason = _sweep_has_non_degenerate_alert_region(sweep)
+        used_confirm_fallback = True
+
     ops_meta: Dict[str, Any] = {}
     if str(args.ops_picker) == "core":
         # Keep legacy behaviour.
@@ -637,15 +851,34 @@ def main() -> None:
             sweep,
             op1_recall=float(args.op1_recall),
             op3_fa24h=float(args.op3_fa24h),
+            op2_objective=str(args.op2_objective),
+            cost_fn=float(args.cost_fn),
+            cost_fp=float(args.cost_fp),
             tie_break=str(args.op_tie_break),
             min_tau_high=float(args.min_tau_high),
             eps=float(args.tie_eps),
         )
+    if used_confirm_fallback:
+        ops_meta["confirm_fallback"] = "disabled_confirm_after_degenerate_sweep"
+
+    if (not sweep_ok):
+        ops_meta["failure_reason"] = str(failure_reason)
+        print(f"[warn] {failure_reason}")
 
     sweep_json_path = ""
+    sweep_json_ref = ""
+    out_abs = os.path.abspath(args.out)
+    out_dir_abs = os.path.dirname(out_abs)
+    out_stem = os.path.splitext(os.path.basename(out_abs))[0]
+    sweep_json_abs = os.path.join(out_dir_abs, out_stem + ".sweep.json")
+
     if int(args.save_sweep_json):
-        base = os.path.splitext(os.path.abspath(args.out))[0]
-        sweep_json_path = base + ".sweep.json"
+        sweep_json_path = sweep_json_abs
+        sweep_json_ref = _path_ref_for_output(
+            sweep_json_abs,
+            args.out,
+            emit_absolute_paths=bool(int(args.emit_absolute_paths)),
+        )
         payload = _sanitize_json(
             {
                 "sweep": sweep,
@@ -664,6 +897,9 @@ def main() -> None:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         print(f"[ok] wrote sweep json: {sweep_json_path}")
 
+    if (not sweep_ok) and (not bool(int(args.allow_degenerate_sweep))):
+        raise SystemExit(f"[err] {failure_reason}")
+
     sweep_cfg = {
         "thr_min": float(args.thr_min),
         "thr_max": float(args.thr_max),
@@ -678,17 +914,21 @@ def main() -> None:
         "alert_base": alert_base.to_dict(),  # legacy alias
         "sweep_meta": meta,
         "sweep_cfg": sweep_cfg,
-        "sweep_json": sweep_json_path,
+        "sweep_json": sweep_json_ref if sweep_json_ref else "",
         "calibration": cal,
         "model": {
             "arch": str(args.arch),
-            "ckpt": os.path.abspath(args.ckpt),
+            "ckpt": _path_ref_for_output(
+                args.ckpt,
+                args.out,
+                emit_absolute_paths=bool(int(args.emit_absolute_paths)),
+            ),
             "model_cfg": model_cfg,
             "feat_cfg": feat_cfg.to_dict(),
         },
     }
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    os.makedirs(out_dir_abs, exist_ok=True)
     yaml_dump_simple(_sanitize_json(out), args.out)
     print(f"[ok] wrote ops: {args.out}")
 

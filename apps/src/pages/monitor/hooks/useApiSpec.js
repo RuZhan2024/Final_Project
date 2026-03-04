@@ -5,11 +5,13 @@ import { apiRequest } from "../../../lib/apiClient";
 /**
  * Loads /api/spec and normalises it into the shape used by the Monitor UI.
  */
-export function useApiSpec(apiBase) {
+export function useApiSpec(apiBase, enabled = true) {
   const [models, setModels] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (!enabled) return undefined;
+
     let cancelled = false;
 
     (async () => {
@@ -38,7 +40,7 @@ export function useApiSpec(apiBase) {
     return () => {
       cancelled = true;
     };
-  }, [apiBase]);
+  }, [apiBase, enabled]);
 
   return { models, error };
 }

@@ -29,11 +29,13 @@ from typing import Any, Dict, Optional, Tuple
 
 import yaml
 
+SUPPORTED_DATASETS = {"caucafall", "le2i"}
+
 
 @dataclass
 class DeploySpec:
-    key: str                     # e.g. "muvim_tcn"
-    dataset: str                  # le2i|urfd|caucafall|muvim
+    key: str                     # e.g. "caucafall_tcn"
+    dataset: str                  # le2i|caucafall
     arch: str                     # tcn|gcn
     ckpt: str                     # absolute path to best.pt
     feat_cfg: Dict[str, Any]      # from configs/ops/*.yaml
@@ -50,7 +52,7 @@ def _safe_float(x: Any, default: float) -> float:
         if v != v:  # NaN
             return default
         return v
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -62,7 +64,7 @@ def _repo_root() -> Path:
 def _load_json(path: Path) -> Dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
 
 
@@ -71,7 +73,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return {}
 
 
@@ -125,6 +127,7 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
         data = _load_yaml(p)
         if not data:
             continue
+        model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
 
         # Filename pattern: <arch>_<dataset>.yaml (e.g. gcn_muvim.yaml)
         stem = p.stem.lower().strip()
@@ -133,25 +136,29 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
             continue
         arch_guess, dataset_guess = parts[0], "_".join(parts[1:])
 
-        arch = str(data.get("arch") or arch_guess).lower().strip()
+        arch = str(data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
         dataset = dataset_guess.lower().strip()
         if arch not in {"tcn", "gcn"}:
             continue
-        if dataset not in {"le2i", "urfd", "caucafall", "muvim"}:
-            # allow other datasets, but keep the key stable
-            dataset = dataset_guess.lower().strip()
+        if dataset not in SUPPORTED_DATASETS:
+            continue
 
-        ckpt_rel = str(data.get("ckpt") or "").strip()
+        ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
         if not ckpt_rel:
             continue
-        ckpt_path = (root / ckpt_rel).resolve() if not os.path.isabs(ckpt_rel) else Path(ckpt_rel)
+        if os.path.isabs(ckpt_rel):
+            ckpt_path = Path(ckpt_rel)
+        else:
+            ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
+            ckpt_from_root = (root / ckpt_rel).resolve()
+            ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
         if not ckpt_path.exists():
             # Skip broken configs
             continue
 
         spec_key = f"{dataset}_{arch}"
 
-        feat_cfg = data.get("feat_cfg") or {}
+        feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
         alert_cfg = data.get("alert_cfg") or {}
         ops = _standardise_ops(data.get("ops") or {})
 
@@ -222,6 +229,8 @@ def _discover_from_reports(root: Path) -> Dict[str, DeploySpec]:
         arch = (rep.get("arch") or "").lower().strip()
         ckpt_rel = str(rep.get("ckpt") or rep.get("ckpt_path") or "").strip()
         dataset = spec_key.split("_")[0]
+        if dataset not in SUPPORTED_DATASETS:
+            continue
         ckpt_path = (root / ckpt_rel).resolve() if not os.path.isabs(ckpt_rel) else Path(ckpt_rel)
         if not ckpt_path.exists():
             continue
@@ -300,7 +309,7 @@ def _torch() -> Any:
     try:
         import torch  # type: ignore
         return torch
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         raise RuntimeError("PyTorch is required for real model inference.") from e
 
 
@@ -309,17 +318,81 @@ def _pick_device(torch: Any) -> Any:
     try:
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             return torch.device("cuda")
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError):
         pass
-    try:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-    except Exception:
-        pass
+    # NOTE: MPS can be unstable for some GCN runtime ops in long-running API process.
+    # Keep CPU as default for service stability; allow opt-in via env.
+    allow_mps = str(os.environ.get("SERVER_ALLOW_MPS", "0")).strip().lower() in {"1", "true", "yes"}
+    if allow_mps:
+        try:
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return torch.device("mps")
+        except (AttributeError, RuntimeError, TypeError):
+            pass
     return torch.device("cpu")
 
 
 _MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _infer_model_num_joints(model: Any) -> Optional[int]:
+    try:
+        if hasattr(model, "encoder") and hasattr(model.encoder, "A_hat"):
+            return int(model.encoder.A_hat.shape[0])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        pass
+    try:
+        if hasattr(model, "j_enc") and hasattr(model.j_enc, "A_hat"):
+            return int(model.j_enc.A_hat.shape[0])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _align_joint_count(
+    joints_xy: Any,
+    conf: Any,
+    *,
+    expected_v: Optional[int],
+) -> Tuple[Any, Any]:
+    """Align runtime joint count to model expectation."""
+    import numpy as np
+
+    j = np.asarray(joints_xy, dtype=np.float32)
+    c = np.asarray(conf, dtype=np.float32) if conf is not None else None
+    if j.ndim != 3 or j.shape[-1] != 2 or expected_v is None:
+        return j, c
+
+    cur_v = int(j.shape[1])
+    exp_v = int(expected_v)
+    if cur_v == exp_v:
+        return j, c
+
+    # Preferred semantic remap for MediaPipe33 -> internal17.
+    if cur_v >= 29 and exp_v == 17:
+        try:
+            from fall_detection.data.adapters.base import map_mp33_to_internal17
+
+            j17, c17, _m17 = map_mp33_to_internal17(j, conf=c, mask=None)
+            return j17, c17
+        except (ImportError, ModuleNotFoundError, ValueError, TypeError, RuntimeError):
+            pass
+
+    # Fallback: truncate/pad in joint dimension.
+    if cur_v > exp_v:
+        j2 = j[:, :exp_v, :]
+        c2 = c[:, :exp_v] if c is not None and c.ndim == 2 else c
+        return j2, c2
+
+    pad_v = exp_v - cur_v
+    jpad = np.zeros((j.shape[0], pad_v, 2), dtype=j.dtype)
+    j2 = np.concatenate([j, jpad], axis=1)
+    if c is not None and c.ndim == 2:
+        cpad = np.zeros((c.shape[0], pad_v), dtype=c.dtype)
+        c2 = np.concatenate([c, cpad], axis=1)
+    else:
+        c2 = c
+    return j2, c2
 
 
 def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
@@ -334,7 +407,7 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
         from fall_detection.core.ckpt import load_ckpt
         from fall_detection.core.models import build_model
         from fall_detection.core.features import FeatCfg
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         raise RuntimeError(
             "Missing ML runtime package 'fall_detection'. "
             "Make sure the package is installed (e.g. pip install -e .), "
@@ -373,7 +446,7 @@ def _match_in_ch_tcn(torch: Any, model: Any, x: Any) -> Any:
     """Pad/trim to match conv_in channels (TCN)."""
     try:
         expected = int(getattr(model, "conv_in")[0].in_channels)  # type: ignore[index]
-    except Exception:
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return x
     c = int(x.shape[-1])
     if c == expected:
@@ -410,15 +483,23 @@ def predict_spec(
     device = cached["device"]
     feat_cfg = cached["feat_cfg"]
     data_cfg = cached["data_cfg"] or {}
+    model_cfg = cached.get("model_cfg") or {}
 
     # NOTE: `joints_xy` is expected to already be a fixed-length window (server/app.py
     # resamples/pads to target_T). Our feature builders operate on that window.
     import numpy as np
 
-    from fall_detection.core.features import build_tcn_input, build_canonical_input
+    from fall_detection.core.features import build_tcn_input, build_canonical_input, split_gcn_two_stream
 
-    j = np.asarray(joints_xy, dtype=np.float32)
-    c = np.asarray(conf, dtype=np.float32) if conf is not None else None
+    expected_v = None
+    try:
+        expected_v = int(model_cfg.get("num_joints")) if isinstance(model_cfg, dict) and model_cfg.get("num_joints") is not None else None
+    except (TypeError, ValueError):
+        expected_v = None
+    if expected_v is None:
+        expected_v = _infer_model_num_joints(model)
+
+    j, c = _align_joint_count(joints_xy, conf, expected_v=expected_v)
 
     # Prepare inputs.
     Xg, _mask = build_canonical_input(
@@ -443,31 +524,12 @@ def predict_spec(
     else:
         xb = torch.from_numpy(Xg).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,V,F]
 
-        # Two-stream models expect (xj, xm). We follow the same split logic as deploy/run_modes.py.
+        # Two-stream models must use canonical channel-layout split for train/runtime parity.
         is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
         if is_two_stream:
-            # build_canonical_input() produces features in the order:
-            #   [x, y] + ([dx, dy] if use_motion) + ([conf] if use_conf_channel)
-            # Motion stream for TwoStreamGCN is **dx,dy only** (no conf).
-            f = int(xb.shape[-1])
-            if f == 5:
-                # [x,y,dx,dy,conf] -> xj=[x,y,conf], xm=[dx,dy]
-                xj_t = torch.cat([xb[..., 0:2], xb[..., 4:5]], dim=-1)
-                xm_t = xb[..., 2:4]
-            elif f == 4:
-                # [x,y,dx,dy] -> xj=[x,y], xm=[dx,dy]
-                xj_t = xb[..., 0:2]
-                xm_t = xb[..., 2:4]
-            elif f == 3:
-                # [x,y,conf] but model expects motion too; keep xj as-is and pad xm
-                xj_t = xb
-                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
-            elif f == 2:
-                # [x,y] but model expects motion too; keep xj as-is and pad xm
-                xj_t = xb
-                xm_t = torch.zeros((*xb.shape[:-1], 2), device=xb.device, dtype=xb.dtype)
-            else:
-                raise RuntimeError(f"Unexpected GCN feature dim F={f} for two-stream model")
+            xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
+            xj_t = torch.from_numpy(xj_np).to(device=device, dtype=torch.float32).unsqueeze(0)
+            xm_t = torch.from_numpy(xm_np).to(device=device, dtype=torch.float32).unsqueeze(0)
 
             def forward_fn():
                 with torch.no_grad():
@@ -492,7 +554,7 @@ def predict_spec(
             mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
             mu = float(mu_t.detach().cpu().view(-1)[0].item())
             sigma = float(sig_t.detach().cpu().view(-1)[0].item())
-        except Exception:
+        except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, TypeError, ValueError):
             mu, sigma = float(p_det), 0.0
 
     tau_low, tau_high = get_op_taus(spec_key, op_code)

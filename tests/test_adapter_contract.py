@@ -22,9 +22,13 @@ def test_adapter_output_contract(tmp_path) -> None:
 
     adapter = build_adapter("le2i")
     out = adapter.load_sequence(str(fp), fps_default=25.0)
-    assert out.joints_xy.shape == (T, 17, 2)
-    assert out.conf is not None and out.conf.shape == (T, 17)
-    assert out.mask is None or out.mask.shape == (T, 17)
+    assert out.joints_xy.shape == (T, 33, 2)
+    assert out.conf is not None and out.conf.shape == (T, 33)
+    assert out.mask is None or out.mask.shape == (T, 33)
     assert float(out.fps) == 25.0
     assert int(out.meta["y"]) == 0
 
+    adapter17 = build_adapter("le2i", joint_layout="internal17")
+    out17 = adapter17.load_sequence(str(fp), fps_default=25.0)
+    assert out17.joints_xy.shape == (T, 17, 2)
+    assert out17.conf is not None and out17.conf.shape == (T, 17)

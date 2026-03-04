@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "generated_by": "manual_bundle_repair_2026-03-02",
+  "notes": "Paths are relative to artifacts/ and intentionally include cross-repo references via ../ for portability audits.",
+  "files": [
+    {
+      "id": "baseline_le2i_58813e8",
+      "type": "baseline",
+      "path": "../baselines/le2i/58813e8/performance_baseline.json"
+    },
+    {
+      "id": "ops_tcn_le2i",
+      "type": "ops_yaml",
+      "path": "../configs/ops/tcn_le2i.yaml"
+    },
+    {
+      "id": "ops_gcn_caucafall",
+      "type": "ops_yaml",
+      "path": "../configs/ops/gcn_caucafall.yaml"
+    },
+    {
+      "id": "ckpt_tcn_le2i",
+      "type": "checkpoint",
+      "path": "../outputs/le2i_tcn_W48S12/best.pt"
+    },
+    {
+      "id": "ckpt_gcn_caucafall",
+      "type": "checkpoint",
+      "path": "../outputs/caucafall_gcn_W48S12/best.pt"
+    },
+    {
+      "id": "history_tcn_le2i",
+      "type": "train_history",
+      "path": "../outputs/le2i_tcn_W48S12/history.jsonl"
+    },
+    {
+      "id": "history_gcn_caucafall",
+      "type": "train_history",
+      "path": "../outputs/caucafall_gcn_W48S12/history.jsonl"
+    },
+    {
+      "id": "train_config_tcn_le2i",
+      "type": "train_config",
+      "path": "../outputs/le2i_tcn_W48S12/train_config.json"
+    },
+    {
+      "id": "train_config_gcn_caucafall",
+      "type": "train_config",
+      "path": "../outputs/caucafall_gcn_W48S12/train_config.json"
+    }
+  ]
+}

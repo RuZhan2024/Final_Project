@@ -10,9 +10,9 @@
   },
   "status": "captured",
   "targets": {
-    "f1": 0.0,
-    "fa24h": 0.0,
-    "recall": 0.0
+    "f1": 0.823529411764706,
+    "fa24h": 581.5843243262096,
+    "recall": 0.7777777777777778
   },
   "tolerances": {
     "f1_abs_delta_max": 0.02,

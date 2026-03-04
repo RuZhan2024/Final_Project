@@ -1,0 +1,630 @@
+diff --git a/docs/training_upgrades.md b/docs/training_upgrades.md
+new file mode 100644
+index 0000000..54907a6
+--- /dev/null
++++ b/docs/training_upgrades.md
+@@ -0,0 +1,71 @@
++# Training Upgrades
++
++## Summary
++This upgrade improves training correctness and reproducibility for TCN/GCN without changing model families.
++
++### Key changes
++- Unified checkpoint schema normalization in `core/ckpt.py`.
++- Added `ckpt_version` marker (`2`) and atomic checkpoint writes (`.tmp` + `os.replace`).
++- GCN best-checkpoint saving now uses EMA-averaged weights when EMA is enabled.
++- GCN now stores and restores `ema_state` on resume when present.
++- Added GCN `last.pt` raw-weight checkpoint (best remains selection checkpoint).
++- Added TCN `--min_epochs` early-stop gate (parity with GCN behavior).
++- Added GCN DataLoader knobs: `--prefetch_factor`, `--persistent_workers`.
++- Added `--deterministic` to both trainers.
++- `scheduler_metric` default is now **auto** (resolved from `monitor`) in both trainers.
++
++## New / Changed Flags
++
++### Both TCN and GCN
++- `--deterministic {0,1}` (default `1`)
++  - `1`: `cudnn.deterministic=True`, `cudnn.benchmark=False`
++  - `0`: `cudnn.deterministic=False`, `cudnn.benchmark=True`
++  - Seed application is unchanged and always applied.
++
++- `--scheduler_metric {val_loss,val_f1,val_ap}` (default: auto)
++  - If omitted:
++    - `--monitor ap` => `scheduler_metric=val_ap`
++    - `--monitor f1` => `scheduler_metric=val_f1`
++  - If explicitly set, explicit value is preserved.
++
++### TCN
++- `--min_epochs` (default `0`)
++  - Patience-based early stop cannot trigger before `ep >= min_epochs`.
++
++### GCN
++- `--prefetch_factor` (default `2`)
++- `--persistent_workers` (default `1`)
++  - Applied only when `num_workers > 0`.
++
++## EMA + Checkpoint Behavior
++
++### GCN
++- `best.pt` uses EMA weights when `--use_ema 1`.
++- `best.pt` includes `ema_state` when EMA is enabled.
++- `last.pt` stores raw model weights (non-EMA) for debugging/comparison.
++
++### TCN
++- Existing EMA save behavior remains: best checkpoint is saved under EMA context when enabled.
++
++## Resume Semantics
++- Resume restores model weights from checkpoint.
++- If checkpoint contains `ema_state` and EMA is enabled, EMA state is restored (warns but does not crash on mismatch).
++- Current trainers do **not** restore optimizer/scheduler/scaler states; resume is model (+ optional EMA) focused.
++
++## Backward Compatibility
++- Old checkpoints without `ema_state` load safely.
++- `save_ckpt` supports both styles:
++  - Canonical: `save_ckpt(path, **kwargs)`
++  - Legacy: `save_ckpt(path, bundle_dict)`
++- Both styles are normalized to the same on-disk key schema.
++
++## Smoke checks
++```bash
++python -m py_compile src/fall_detection/core/ckpt.py
++python -m py_compile src/fall_detection/core/ema.py
++python -m py_compile src/fall_detection/training/train_tcn.py
++python -m py_compile src/fall_detection/training/train_gcn.py
++python -m py_compile scripts/train_tcn.py
++python -m py_compile scripts/train_gcn.py
++python tools/smoke_ckpt_ema.py
++```
+diff --git a/src/fall_detection/core/ckpt.py b/src/fall_detection/core/ckpt.py
+index b870bf1..8bc5825 100644
+--- a/src/fall_detection/core/ckpt.py
++++ b/src/fall_detection/core/ckpt.py
+@@ -24,10 +24,28 @@ from dataclasses import dataclass
+ from typing import Any, Dict, Optional, Union
+ 
+ import os
++import tempfile
+ import torch
+ 
+ 
+ Bundle = Dict[str, Any]
++CKPT_VERSION = 2
++
++
++def _normalize_bundle(bundle: Bundle) -> Bundle:
++    """Normalize bundle fields to a stable schema."""
++    b = dict(bundle or {})
++    v = int(b.get("ckpt_version", b.get("version", CKPT_VERSION)))
++    b["ckpt_version"] = v
++    b["version"] = v  # keep legacy alias for older readers
++    b["arch"] = str(b.get("arch", "unknown"))
++    b["model_cfg"] = dict(b.get("model_cfg", {}) or {})
++    b["feat_cfg"] = dict(b.get("feat_cfg", {}) or {})
++    b["data_cfg"] = dict(b.get("data_cfg", {}) or {})
++    b["meta"] = dict(b.get("meta", {}) or {})
++    if "best" in b and b["best"] is None:
++        b["best"] = {}
++    return b
+ 
+ 
+ def _as_bundle(obj: Any) -> Bundle:
+@@ -42,19 +60,12 @@ def _as_bundle(obj: Any) -> Bundle:
+     if isinstance(obj, dict):
+         # New style: already a bundle
+         if "state_dict" in obj and isinstance(obj["state_dict"], dict):
+-            b = dict(obj)
+-            b.setdefault("version", 2)
+-            b.setdefault("arch", b.get("arch", "unknown"))
+-            b.setdefault("model_cfg", b.get("model_cfg", {}) or {})
+-            b.setdefault("feat_cfg", b.get("feat_cfg", {}) or {})
+-            b.setdefault("data_cfg", b.get("data_cfg", {}) or {})
+-            b.setdefault("meta", b.get("meta", {}) or {})
+-            return b
++            return _normalize_bundle(dict(obj))
+ 
+         # Some trainers saved {"model": state_dict, ...}
+         if "model" in obj and isinstance(obj["model"], dict):
+             b = {
+-                "version": 1,
++                "ckpt_version": 1,
+                 "arch": obj.get("arch", obj.get("model_arch", "unknown")),
+                 "state_dict": obj["model"],
+                 "model_cfg": obj.get("model_cfg", obj.get("cfg", {})) or {},
+@@ -62,7 +73,7 @@ def _as_bundle(obj: Any) -> Bundle:
+                 "data_cfg": obj.get("data_cfg", {}) or {},
+                 "meta": obj.get("meta", {}) or {},
+             }
+-            return b
++            return _normalize_bundle(b)
+ 
+         # It might itself be a raw state_dict (parameter tensors)
+         if obj and all(isinstance(k, str) for k in obj.keys()):
+@@ -70,7 +81,7 @@ def _as_bundle(obj: Any) -> Bundle:
+             sample_keys = list(obj.keys())[:5]
+             if any("." in k for k in sample_keys) or any(k.endswith(("weight", "bias")) for k in sample_keys):
+                 return {
+-                    "version": 0,
++                    "ckpt_version": 0,
+                     "arch": "unknown",
+                     "state_dict": obj,
+                     "model_cfg": {},
+@@ -114,18 +125,26 @@ def save_ckpt(
+     else:
+         raise TypeError("bundle_or_state_dict must be a dict or None")
+ 
+-    # Normalize bundle fields
+-    bundle.setdefault("version", 2)
+-    bundle.setdefault("arch", bundle.get("arch", "unknown"))
+-    bundle.setdefault("model_cfg", bundle.get("model_cfg", {}) or {})
+-    bundle.setdefault("feat_cfg", bundle.get("feat_cfg", {}) or {})
+-    bundle.setdefault("data_cfg", bundle.get("data_cfg", {}) or {})
+-    bundle.setdefault("meta", bundle.get("meta", {}) or {})
++    bundle = _normalize_bundle(bundle)
+ 
+     if "state_dict" not in bundle or not isinstance(bundle["state_dict"], dict):
+         raise ValueError("Checkpoint bundle must contain a dict 'state_dict'.")
+ 
+-    torch.save(bundle, path)
++    # Atomic write: write to temp file in the same directory then replace.
++    out_dir = os.path.dirname(path) or "."
++    base = os.path.basename(path)
++    fd, tmp_path = tempfile.mkstemp(prefix=f".{base}.", suffix=".tmp", dir=out_dir)
++    os.close(fd)
++    try:
++        torch.save(bundle, tmp_path)
++        os.replace(tmp_path, path)
++    except Exception:
++        try:
++            if os.path.exists(tmp_path):
++                os.remove(tmp_path)
++        except OSError:
++            pass
++        raise
+ 
+ 
+ def load_ckpt(path: str, map_location: Union[str, torch.device] = "cpu") -> Bundle:
+@@ -133,7 +152,7 @@ def load_ckpt(path: str, map_location: Union[str, torch.device] = "cpu") -> Bund
+     Load a checkpoint and return a canonical bundle dict.
+     """
+     obj = torch.load(path, map_location=map_location)
+-    return _as_bundle(obj)
++    return _normalize_bundle(_as_bundle(obj))
+ 
+ 
+ def get_cfg(bundle: Bundle, key: Optional[str] = None, default: Any = None) -> Any:
+diff --git a/src/fall_detection/training/train_gcn.py b/src/fall_detection/training/train_gcn.py
+index 92d6ecc..16ec930 100644
+--- a/src/fall_detection/training/train_gcn.py
++++ b/src/fall_detection/training/train_gcn.py
+@@ -61,14 +61,18 @@ from fall_detection.core.models import GCNConfig, build_model, pick_device
+ def _to_f32(x, device: torch.device) -> torch.Tensor:
+     return torch.as_tensor(x, dtype=torch.float32, device=device)
+ 
+-def set_seed(seed: int) -> None:
++def set_seed(seed: int, *, deterministic: int = 1) -> None:
+     seed = int(seed)
+     random.seed(seed)
+     np.random.seed(seed)
+     torch.manual_seed(seed)
+     torch.cuda.manual_seed_all(seed)
+-    torch.backends.cudnn.deterministic = True
+-    torch.backends.cudnn.benchmark = False
++    if bool(int(deterministic)):
++        torch.backends.cudnn.deterministic = True
++        torch.backends.cudnn.benchmark = False
++    else:
++        torch.backends.cudnn.deterministic = False
++        torch.backends.cudnn.benchmark = True
+ 
+ 
+ def logits_1d(out: torch.Tensor) -> torch.Tensor:
+@@ -412,7 +416,7 @@ class TrainCfg:
+     lr_plateau_patience: int = 3
+     lr_plateau_factor: float = 0.5
+     lr_plateau_min_lr: float = 1e-6
+-    scheduler_metric: str = "val_loss"
++    scheduler_metric: Optional[str] = None
+     scheduler_ema_beta: float = 0.0
+     scheduler: str = "plateau"
+     max_lr: Optional[float] = None
+@@ -477,6 +481,9 @@ class TrainCfg:
+     amp: int = 0
+ 
+     num_workers: int = 0
++    prefetch_factor: Optional[int] = 2
++    persistent_workers: int = 1
++    deterministic: int = 1
+ 
+ def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
+     """
+@@ -529,7 +536,12 @@ def main() -> None:
+     ap.add_argument("--lr_plateau_patience", type=int, default=3)
+     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
+     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+-    ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
++    ap.add_argument(
++        "--scheduler_metric",
++        choices=["val_loss", "val_ap", "val_f1"],
++        default=None,
++        help="default: auto (resolved from --monitor)",
++    )
+     ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
+     ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
+     ap.add_argument("--max_lr", type=float, default=None)
+@@ -592,13 +604,19 @@ def main() -> None:
+     ap.add_argument("--amp", type=int, default=0)
+ 
+     ap.add_argument("--num_workers", type=int, default=0)
++    ap.add_argument("--prefetch_factor", type=int, default=2)
++    ap.add_argument("--persistent_workers", type=int, default=1)
++    ap.add_argument("--deterministic", type=int, default=1)
+ 
+     args = ap.parse_args()
+     cfg = TrainCfg(**vars(args))
+ 
+     os.makedirs(cfg.save_dir, exist_ok=True)
+ 
+-    set_seed(cfg.seed)
++    if cfg.scheduler_metric is None:
++        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
++
++    set_seed(cfg.seed, deterministic=cfg.deterministic)
+     device = pick_device()
+     feat_cfg = build_feat_cfg(cfg)
+ 
+@@ -715,18 +733,28 @@ def main() -> None:
+             in_feats=int(in_feats),      # type: ignore[arg-type]
+         ).to(device)
+ 
++    resume_bundle: Optional[Dict[str, Any]] = None
+     if cfg.resume:
+         bundle = load_ckpt(cfg.resume, map_location="cpu")
+         if isinstance(bundle, dict) and "state_dict" in bundle:
+             model.load_state_dict(bundle["state_dict"], strict=True)
+         elif isinstance(bundle, dict):
+             model.load_state_dict(bundle, strict=True)
++        if isinstance(bundle, dict):
++            resume_bundle = bundle
+         print(f"[resume] loaded: {cfg.resume}")
++        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
+ 
+     ema: Optional[EMA] = None
+     if int(cfg.use_ema) == 1:
+         ema = EMA(model, decay=float(cfg.ema_decay))
+         print(f"[ema] enabled decay={cfg.ema_decay}")
++        if resume_bundle is not None and isinstance(resume_bundle, dict) and "ema_state" in resume_bundle:
++            try:
++                ema.load_state_dict(resume_bundle["ema_state"])
++                print("[info] resumed EMA state")
++            except Exception as e:
++                print(f"[warn] failed to load EMA state: {type(e).__name__}: {e}")
+ 
+     sampler = None
+     pos_w = None
+@@ -760,15 +788,21 @@ def main() -> None:
+     sched_mode = "min" if str(cfg.scheduler_metric) == "val_loss" else "max"
+ 
+     pin = (device.type == "cuda")
++    loader_kwargs: Dict[str, Any] = {"num_workers": nw, "pin_memory": pin}
++    if nw > 0:
++        if bool(int(cfg.persistent_workers)):
++            loader_kwargs["persistent_workers"] = True
++        if cfg.prefetch_factor is not None:
++            loader_kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
+     if sampler is not None:
+         train_loader = DataLoader(
+-            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, num_workers=nw, pin_memory=pin
++            train_ds, batch_size=cfg.batch, sampler=sampler, shuffle=False, **loader_kwargs
+         )
+     else:
+         train_loader = DataLoader(
+-            train_ds, batch_size=cfg.batch, shuffle=True, num_workers=nw, pin_memory=pin
++            train_ds, batch_size=cfg.batch, shuffle=True, **loader_kwargs
+         )
+-    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, num_workers=nw, pin_memory=pin)
++    val_loader = DataLoader(val_ds, batch_size=cfg.batch, shuffle=False, **loader_kwargs)
+     if sched_kind == "plateau":
+         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+             opt,
+@@ -794,6 +828,7 @@ def main() -> None:
+     best_score = -1.0
+     tag = (cfg.save_tag.strip() + "_") if cfg.save_tag.strip() else ""
+     best_path = os.path.join(cfg.save_dir, f"{tag}best.pt")
++    last_path = os.path.join(cfg.save_dir, f"{tag}last.pt")
+     history_path = os.path.join(cfg.save_dir, f"{tag}history.jsonl")
+ 
+     if os.path.exists(history_path):
+@@ -971,21 +1006,37 @@ def main() -> None:
+         if improved:
+             best_score = score
+             no_improve = 0
+-            best_bundle = {
+-                "arch": "gcn",
+-                "state_dict": model.state_dict(),
+-                "model_cfg": dict(model_cfg_save),
+-                "feat_cfg": feat_cfg.to_dict(),
+-                "data_cfg": {"fps_default": float(cfg.fps_default)},
+-                "best": {"val_best": row, "best_thr": float(thr)},
+-                "meta": {"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
+-                "train_cfg": asdict(cfg),
+-            }
+-            save_ckpt(best_path, best_bundle)
++            ctx_save = ema.use(model) if ema is not None else nullcontext()
++            with ctx_save:
++                save_ckpt(
++                    best_path,
++                    arch="gcn",
++                    state_dict=model.state_dict(),
++                    model_cfg=dict(model_cfg_save),
++                    feat_cfg=feat_cfg.to_dict(),
++                    data_cfg={"fps_default": float(cfg.fps_default)},
++                    best={"val_best": row, "best_thr": float(thr)},
++                    meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
++                    train_cfg=asdict(cfg),
++                    **({"ema_state": ema.state_dict()} if ema is not None else {}),
++                )
+             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
+         else:
+             no_improve += 1
+ 
++        save_ckpt(
++            last_path,
++            arch="gcn",
++            state_dict=model.state_dict(),
++            model_cfg=dict(model_cfg_save),
++            feat_cfg=feat_cfg.to_dict(),
++            data_cfg={"fps_default": float(cfg.fps_default)},
++            best={"val_best": row, "best_thr": float(thr)},
++            meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V), "is_last": True},
++            train_cfg=asdict(cfg),
++            **({"ema_state": ema.state_dict()} if ema is not None else {}),
++        )
++
+         if ep >= int(cfg.min_epochs) and no_improve >= int(cfg.patience):
+             print(f"[early_stop] no improvement for {cfg.patience} epochs")
+             break
+diff --git a/src/fall_detection/training/train_tcn.py b/src/fall_detection/training/train_tcn.py
+index 1711ede..4684ea1 100644
+--- a/src/fall_detection/training/train_tcn.py
++++ b/src/fall_detection/training/train_tcn.py
+@@ -58,14 +58,18 @@ from fall_detection.core.ema import EMA
+ # -------------------------
+ # Utilities
+ # -------------------------
+-def set_seed(seed: int) -> None:
++def set_seed(seed: int, *, deterministic: int = 1) -> None:
+     seed = int(seed)
+     random.seed(seed)
+     np.random.seed(seed)
+     torch.manual_seed(seed)
+     torch.cuda.manual_seed_all(seed)
+-    torch.backends.cudnn.deterministic = True
+-    torch.backends.cudnn.benchmark = False
++    if bool(int(deterministic)):
++        torch.backends.cudnn.deterministic = True
++        torch.backends.cudnn.benchmark = False
++    else:
++        torch.backends.cudnn.deterministic = False
++        torch.backends.cudnn.benchmark = True
+ 
+ 
+ def logits_1d(out: torch.Tensor) -> torch.Tensor:
+@@ -397,7 +401,7 @@ class TrainCfg:
+     lr_plateau_patience: int = 5
+     lr_plateau_factor: float = 0.5
+     lr_plateau_min_lr: float = 1e-6
+-    scheduler_metric: str = "val_loss"
++    scheduler_metric: Optional[str] = None
+     scheduler_ema_beta: float = 0.0
+     scheduler: str = "plateau"
+     max_lr: Optional[float] = None
+@@ -415,6 +419,7 @@ class TrainCfg:
+     amp: int = 0
+ 
+     patience: int = 30
++    min_epochs: int = 0
+     fps_default: float = 30.0
+     num_workers: int = 0
+     persistent_workers: int = 0
+@@ -447,6 +452,7 @@ class TrainCfg:
+     motion_scale_by_fps: int = 1
+     conf_gate: float = 0.20
+     use_precomputed_mask: int = 1
++    deterministic: int = 1
+ 
+ 
+ def main() -> None:
+@@ -488,7 +494,12 @@ def main() -> None:
+     ap.add_argument("--lr_plateau_patience", type=int, default=5)
+     ap.add_argument("--lr_plateau_factor", type=float, default=0.5)
+     ap.add_argument("--lr_plateau_min_lr", type=float, default=1e-6)
+-    ap.add_argument("--scheduler_metric", choices=["val_loss", "val_ap", "val_f1"], default="val_loss")
++    ap.add_argument(
++        "--scheduler_metric",
++        choices=["val_loss", "val_ap", "val_f1"],
++        default=None,
++        help="default: auto (resolved from --monitor)",
++    )
+     ap.add_argument("--scheduler_ema_beta", type=float, default=0.0)
+     ap.add_argument("--scheduler", choices=["plateau", "cosine", "onecycle"], default="plateau")
+     ap.add_argument("--max_lr", type=float, default=None)
+@@ -506,6 +517,7 @@ def main() -> None:
+     ap.add_argument("--amp", type=int, default=0)
+ 
+     ap.add_argument("--patience", type=int, default=30)
++    ap.add_argument("--min_epochs", type=int, default=0)
+     ap.add_argument("--fps_default", type=float, default=30.0)
+     ap.add_argument("--num_workers", type=int, default=0)
+     ap.add_argument("--persistent_workers", type=int, default=0)
+@@ -537,11 +549,15 @@ def main() -> None:
+     ap.add_argument("--motion_scale_by_fps", type=int, default=1)
+     ap.add_argument("--conf_gate", type=float, default=0.20)
+     ap.add_argument("--use_precomputed_mask", type=int, default=1)
++    ap.add_argument("--deterministic", type=int, default=1)
+ 
+     args = ap.parse_args()
+     cfg = TrainCfg(**vars(args))
+ 
+-    set_seed(cfg.seed)
++    if cfg.scheduler_metric is None:
++        cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
++
++    set_seed(cfg.seed, deterministic=cfg.deterministic)
+     os.makedirs(cfg.save_dir, exist_ok=True)
+ 
+     # If resuming, load cfg from checkpoint (single source of truth).
+@@ -573,6 +589,7 @@ def main() -> None:
+ 
+         if isinstance(data_cfg0, dict) and "fps_default" in data_cfg0:
+             cfg.fps_default = float(data_cfg0["fps_default"])
++        print("[resume] optimizer/scheduler/scaler state restore: not implemented (model + EMA only)")
+ 
+     with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
+         json.dump(asdict(cfg), f, indent=2)
+@@ -933,7 +950,7 @@ def main() -> None:
+             print(f"[save] {best_path} (best {cfg.monitor}={best_score:.4f})")
+         else:
+             no_improve += 1
+-            if cfg.patience > 0 and no_improve >= cfg.patience:
++            if cfg.patience > 0 and ep >= int(cfg.min_epochs) and no_improve >= cfg.patience:
+                 print(f"[early stop] patience={cfg.patience} reached at ep={ep}")
+                 break
+ 
+diff --git a/tools/smoke_ckpt_ema.py b/tools/smoke_ckpt_ema.py
+new file mode 100644
+index 0000000..e7f5b33
+--- /dev/null
++++ b/tools/smoke_ckpt_ema.py
+@@ -0,0 +1,132 @@
++#!/usr/bin/env python3
++"""Smoke test for checkpoint schema + EMA compatibility.
++
++Covers:
++A) save/load with ema_state
++B) load old checkpoint without ema_state
++C) save_ckpt kwargs style vs legacy bundle style normalization
++D) EMA vs raw weight divergence sanity
++"""
++
++from __future__ import annotations
++
++import os
++import tempfile
++
++import torch
++import torch.nn as nn
++
++from fall_detection.core.ckpt import load_ckpt, save_ckpt
++from fall_detection.core.ema import EMA
++
++
++def _first_float_tensor(sd: dict[str, torch.Tensor]) -> torch.Tensor:
++    for v in sd.values():
++        if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
++            return v
++    raise RuntimeError("no float tensor found")
++
++
++def _any_diff(a: dict[str, torch.Tensor], b: dict[str, torch.Tensor]) -> bool:
++    keys = sorted(set(a.keys()) & set(b.keys()))
++    for k in keys:
++        ta, tb = a[k], b[k]
++        if isinstance(ta, torch.Tensor) and isinstance(tb, torch.Tensor):
++            if ta.shape == tb.shape and torch.is_floating_point(ta) and torch.is_floating_point(tb):
++                if not torch.allclose(ta, tb):
++                    return True
++    return False
++
++
++def main() -> None:
++    torch.manual_seed(7)
++    model = nn.Linear(4, 2)
++    ema = EMA(model, decay=0.9)
++
++    with tempfile.TemporaryDirectory(prefix="smoke_ckpt_ema_") as td:
++        best_p = os.path.join(td, "best.pt")
++        last_p = os.path.join(td, "last.pt")
++        old_p = os.path.join(td, "old_no_ema.pt")
++        legacy_p = os.path.join(td, "legacy_style.pt")
++        canon_p = os.path.join(td, "canonical_style.pt")
++
++        # Move model weights, then update EMA so shadow differs from raw.
++        with torch.no_grad():
++            for p in model.parameters():
++                p.add_(0.5)
++        raw_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
++        ema.update(model)
++
++        with ema.use(model):
++            ema_sd_weights = {k: v.detach().clone() for k, v in model.state_dict().items()}
++
++        assert _any_diff(raw_sd, ema_sd_weights), "EMA weights should differ from raw weights in smoke setup"
++
++        # D) Save last/raw and best/EMA style checkpoints.
++        save_ckpt(
++            last_p,
++            arch="gcn",
++            state_dict=raw_sd,
++            model_cfg={"hidden": 8},
++            feat_cfg={"use_motion": True},
++            data_cfg={"fps_default": 25.0},
++            meta={"kind": "last_raw"},
++        )
++        save_ckpt(
++            best_p,
++            arch="gcn",
++            state_dict=ema_sd_weights,
++            model_cfg={"hidden": 8},
++            feat_cfg={"use_motion": True},
++            data_cfg={"fps_default": 25.0},
++            meta={"kind": "best_ema"},
++            ema_state=ema.state_dict(),
++        )
++
++        b_best = load_ckpt(best_p)
++        b_last = load_ckpt(last_p)
++        assert "ema_state" in b_best, "best checkpoint should contain ema_state in this smoke case"
++        assert "ema_state" not in b_last, "raw last checkpoint should not contain ema_state in this smoke case"
++        assert _any_diff(b_best["state_dict"], b_last["state_dict"]), "best(EMA) and last(raw) should differ"
++
++        # B) Old ckpt without ema_state should load.
++        torch.save({"state_dict": raw_sd, "arch": "gcn"}, old_p)
++        b_old = load_ckpt(old_p)
++        assert isinstance(b_old, dict) and "state_dict" in b_old
++        assert "ema_state" not in b_old
++
++        # C) save_ckpt kwargs style vs legacy bundle style normalization.
++        save_ckpt(
++            canon_p,
++            arch="gcn",
++            state_dict=raw_sd,
++            model_cfg={"a": 1},
++            feat_cfg={"b": 2},
++            data_cfg={"fps_default": 25.0},
++            meta={"via": "kwargs"},
++        )
++        save_ckpt(
++            legacy_p,
++            {
++                "arch": "gcn",
++                "state_dict": raw_sd,
++                "model_cfg": {"a": 1},
++                "feat_cfg": {"b": 2},
++                "data_cfg": {"fps_default": 25.0},
++                "meta": {"via": "legacy"},
++            },
++        )
++        b_canon = load_ckpt(canon_p)
++        b_legacy = load_ckpt(legacy_p)
++
++        req_keys = {"ckpt_version", "version", "arch", "state_dict", "model_cfg", "feat_cfg", "data_cfg", "meta"}
++        assert req_keys.issubset(set(b_canon.keys()))
++        assert req_keys.issubset(set(b_legacy.keys()))
++        assert set(b_canon.keys()) == set(b_legacy.keys())
++
++        # A) explicit with ema_state already checked above.
++        print("[ok] smoke_ckpt_ema passed")
++
++
++if __name__ == "__main__":
++    main()

@@ -4,27 +4,41 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..core import _derive_ops_params_from_yaml, _detect_variants, _ensure_system_settings_schema, _table_exists
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
+
+from ..core import (
+    _derive_ops_params_from_yaml,
+    _detect_variants,
+    _ensure_system_settings_schema,
+    _table_exists,
+    normalize_dataset_code,
+    normalize_model_code,
+)
 from ..db import get_conn
 
 router = APIRouter()
 
 
 @router.get("/api/operating_points")
+@router.get("/api/v1/operating_points")
 def operating_points(
-    model_code: str = Query(..., description="TCN | GCN | HYBRID"),
-    dataset_code: str = Query("muvim", description="Dataset code (optional, for YAML fallback)"),
+    model_code: str = Query(..., description="TCN | GCN"),
+    dataset_code: str = Query("caucafall", description="Dataset code (caucafall | le2i)"),
 ) -> Dict[str, Any]:
     """Return operating point presets for a model.
 
     - If DB is available, returns DB-backed rows (v1 or v2 schema).
     - If DB is not available, returns YAML-derived OP-1/OP-2/OP-3 thresholds.
     """
-    model_code = (model_code or "").upper().strip()
-    if model_code not in {"TCN", "GCN", "HYBRID"}:
-        raise HTTPException(status_code=400, detail="model_code must be one of: TCN, GCN, HYBRID")
+    model_code = normalize_model_code(model_code, default="")
+    if model_code not in {"TCN", "GCN"}:
+        raise HTTPException(status_code=400, detail="model_code must be one of: TCN, GCN")
 
-    dataset_code = (dataset_code or "muvim").lower().strip()
+    dataset_code = normalize_dataset_code(dataset_code, default="caucafall")
 
     # Try DB path first
     try:
@@ -116,7 +130,7 @@ def operating_points(
                 }
     except HTTPException:
         raise
-    except Exception:
+    except (MySQLError, RuntimeError, TypeError, ValueError):
         # YAML fallback
         ops = []
         for oc in ["OP-1", "OP-2", "OP-3"]:

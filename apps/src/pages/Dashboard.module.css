@@ -17,6 +17,25 @@
   margin: 0;
 }
 
+.toast {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+}
+
+.toastSuccess {
+  background: #ecfdf5;
+  color: #065f46;
+  border-color: #a7f3d0;
+}
+
+.toastError {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
 /* --- Card Styles --- */
 .card, .fullWidthCard {
   background-color: #FFFFFF;
