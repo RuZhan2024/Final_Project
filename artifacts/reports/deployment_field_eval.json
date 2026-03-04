@@ -1,0 +1,33 @@
+{
+  "dual_policy": {
+    "dual_policy_counts": {},
+    "ratios": {
+      "disagreement_ratio_on_dual_rows": 0.0,
+      "dual_rows_ratio": 0.0,
+      "recall_only_ratio_on_disagreements": 0.0
+    },
+    "rows_scanned": 0,
+    "source_json": "artifacts/reports/deployment_dual_policy_events.json",
+    "window_hours": 24
+  },
+  "metrics": {
+    "delay_p50_s": 0.8,
+    "delay_p95_s": 0.8,
+    "event_precision_proxy": 0.5,
+    "event_recall_proxy": 1.0,
+    "fa24h_estimate": 24.0,
+    "false_alerts_per_hour": 1.0,
+    "false_alerts_total": 1
+  },
+  "n_clips": 3,
+  "n_detected_event_clips": 2,
+  "n_gt_event_clips": 1,
+  "n_true_positive_clips": 1,
+  "schema_version": "1.0",
+  "source_csv": "artifacts/reports/deployment_field_observations.csv",
+  "status_counts": {
+    "fail": 1,
+    "ok": 1,
+    "unknown": 1
+  }
+}

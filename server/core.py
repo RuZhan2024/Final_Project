@@ -61,11 +61,11 @@ class SettingsUpdatePayload(BaseModel):
 
     store_event_clips: Optional[bool] = None
     anonymize_skeleton_data: Optional[bool] = None
-    require_confirmation: Optional[bool] = None
+    store_anonymized_data: Optional[bool] = None
 
     active_model_code: Optional[str] = Field(default=None, description="TCN | GCN | HYBRID")
     active_operating_point: Optional[int] = Field(default=None, description="operating_points.id")
-    active_dataset_code: Optional[str] = Field(default=None, description="le2i | urfd | caucafall | muvim")
+    active_dataset_code: Optional[str] = Field(default=None, description="le2i | caucafall")
     active_op_code: Optional[str] = Field(default=None, description="OP-1 | OP-2 | OP-3")
 
     mc_enabled: Optional[bool] = Field(default=None, description="Enable MC Dropout at inference")
@@ -244,10 +244,9 @@ def _ensure_system_settings_schema(conn) -> None:
 
         wanted: Dict[str, str] = {
             "fall_threshold": "DECIMAL(6,4) NULL",
-            "require_confirmation": "TINYINT(1) NOT NULL DEFAULT 0",
             "store_event_clips": "TINYINT(1) NOT NULL DEFAULT 0",
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
-            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'muvim'",
+            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'caucafall'",
             "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
             "mc_M": "INT NOT NULL DEFAULT 10",
@@ -272,6 +271,26 @@ def _safe_get(d: Dict[str, Any], key: str, default: Any = None) -> Any:
     if not isinstance(d, dict):
         return default
     return d.get(key, default)
+
+
+SUPPORTED_DATASETS = {"caucafall", "le2i"}
+
+
+def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafall") -> str:
+    ds = str(dataset_code or "").lower().strip()
+    if ds in SUPPORTED_DATASETS:
+        return ds
+    return default
+
+
+SUPPORTED_MODEL_CODES = {"TCN", "GCN", "HYBRID"}
+
+
+def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str:
+    mc = str(model_code or "").upper().strip()
+    if mc in SUPPORTED_MODEL_CODES:
+        return mc
+    return default
 
 
 def _detect_variants(conn) -> Dict[str, str]:
@@ -305,8 +324,8 @@ def _norm_op_code(op_code: Optional[str]) -> str:
 def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str) -> Dict[str, Any]:
     """Return YAML-derived params for Settings/Monitor UI."""
     specs = _get_deploy_specs()
-    ds = (dataset_code or "muvim").lower().strip()
-    mc = (model_code or "HYBRID").upper().strip()
+    ds = normalize_dataset_code(dataset_code, default="caucafall")
+    mc = normalize_model_code(model_code, default="TCN")
     oc = _norm_op_code(op_code)
 
     def _get_attr_or_key(obj: Any, name: str, default: Any = None) -> Any:
@@ -364,12 +383,13 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         k = int(_acfg(gcn, "k", 2))
         n = int(_acfg(gcn, "n", 3))
     else:
-        tau_low = min(_tau(tcn, "tau_low", 0.0), _tau(gcn, "tau_low", 0.0))
-        tau_high = min(_tau(tcn, "tau_high", 0.85), _tau(gcn, "tau_high", 0.85))
-        cooldown_s = max(_acfg(tcn, "cooldown_s", 3.0), _acfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = max(_acfg(tcn, "ema_alpha", 0.0), _acfg(gcn, "ema_alpha", 0.0))
-        k = int(max(_acfg(tcn, "k", 2), _acfg(gcn, "k", 2)))
-        n = int(max(_acfg(tcn, "n", 3), _acfg(gcn, "n", 3)))
+        # HYBRID UI defaults follow TCN-safe channel for primary auto-alert behavior.
+        tau_low = _tau(tcn, "tau_low", _tau(gcn, "tau_low", 0.0))
+        tau_high = _tau(tcn, "tau_high", _tau(gcn, "tau_high", 0.85))
+        cooldown_s = _acfg(tcn, "cooldown_s", _acfg(gcn, "cooldown_s", 3.0))
+        ema_alpha = _acfg(tcn, "ema_alpha", _acfg(gcn, "ema_alpha", 0.0))
+        k = int(_acfg(tcn, "k", _acfg(gcn, "k", 2)))
+        n = int(_acfg(tcn, "n", _acfg(gcn, "n", 3)))
 
     return {
         "ui": {
@@ -581,10 +601,10 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "fall_threshold": 0.85,
     "store_event_clips": False,
     "anonymize_skeleton_data": True,
-    "require_confirmation": False,
-    "active_model_code": "HYBRID",
+    "store_anonymized_data": False,
+    "active_model_code": "TCN",
     "active_operating_point": None,
-    "active_dataset_code": "muvim",
+    "active_dataset_code": "caucafall",
     "active_op_code": "OP-2",
     "mc_enabled": True,
     "mc_M": 10,
@@ -634,18 +654,27 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         except (TypeError, ValueError):
             pass
 
+    if payload.store_anonymized_data is not None:
+        v = bool(payload.store_anonymized_data)
+        system["store_event_clips"] = v
+        system["anonymize_skeleton_data"] = v
+        system["store_anonymized_data"] = v
+
     for k in [
         "monitoring_enabled",
         "api_online",
         "notify_on_every_fall",
         "store_event_clips",
         "anonymize_skeleton_data",
-        "require_confirmation",
         "mc_enabled",
     ]:
         v = getattr(payload, k, None)
         if v is not None:
             system[k] = bool(v)
+
+    system["store_anonymized_data"] = bool(
+        system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
+    )
 
     if payload.alert_cooldown_sec is not None:
         try:
@@ -654,13 +683,13 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
             pass
 
     if payload.active_model_code is not None:
-        system["active_model_code"] = str(payload.active_model_code).upper()
+        system["active_model_code"] = normalize_model_code(payload.active_model_code, default="TCN")
 
     if payload.active_operating_point is not None:
         system["active_operating_point"] = payload.active_operating_point
 
     if payload.active_dataset_code is not None:
-        system["active_dataset_code"] = str(payload.active_dataset_code).lower()
+        system["active_dataset_code"] = normalize_dataset_code(payload.active_dataset_code, default="caucafall")
 
     if payload.active_op_code is not None:
         system["active_op_code"] = str(payload.active_op_code).upper()

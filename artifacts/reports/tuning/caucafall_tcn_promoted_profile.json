@@ -1,0 +1,88 @@
+{
+  "best": {
+    "name": "base",
+    "status": "ok",
+    "selected": "op2",
+    "f1": 0.888888888888889,
+    "recall": 0.8,
+    "precision": 1.0,
+    "fa24h": 0.0,
+    "tau_high": 0.8699999451637268,
+    "tau_low": 0.6785999536514282,
+    "ops_yaml": "configs/ops/tcn_caucafall_tune_base.yaml",
+    "metrics_json": "outputs/metrics/tcn_caucafall_tune_base.json",
+    "pass_gate": false
+  },
+  "ranking": [
+    {
+      "name": "base",
+      "status": "ok",
+      "selected": "op2",
+      "f1": 0.888888888888889,
+      "recall": 0.8,
+      "precision": 1.0,
+      "fa24h": 0.0,
+      "tau_high": 0.8699999451637268,
+      "tau_low": 0.6785999536514282,
+      "ops_yaml": "configs/ops/tcn_caucafall_tune_base.yaml",
+      "metrics_json": "outputs/metrics/tcn_caucafall_tune_base.json",
+      "pass_gate": false
+    },
+    {
+      "name": "recall_cs",
+      "status": "ok",
+      "selected": "op2",
+      "f1": 0.888888888888889,
+      "recall": 0.8,
+      "precision": 1.0,
+      "fa24h": 0.0,
+      "tau_high": 0.8699999451637268,
+      "tau_low": 0.6785999536514282,
+      "ops_yaml": "configs/ops/tcn_caucafall_tune_recall_cs.yaml",
+      "metrics_json": "outputs/metrics/tcn_caucafall_tune_recall_cs.json",
+      "pass_gate": false
+    },
+    {
+      "name": "low_alarm_cs",
+      "status": "ok",
+      "selected": "op2",
+      "f1": 0.888888888888889,
+      "recall": 0.8,
+      "precision": 1.0,
+      "fa24h": 0.0,
+      "tau_high": 0.8699999451637268,
+      "tau_low": 0.6785999536514282,
+      "ops_yaml": "configs/ops/tcn_caucafall_tune_low_alarm_cs.yaml",
+      "metrics_json": "outputs/metrics/tcn_caucafall_tune_low_alarm_cs.json",
+      "pass_gate": false
+    },
+    {
+      "name": "confirm_off",
+      "status": "ok",
+      "selected": "op2",
+      "f1": 0.888888888888889,
+      "recall": 0.8,
+      "precision": 1.0,
+      "fa24h": 0.0,
+      "tau_high": 0.8699999451637268,
+      "tau_low": 0.6785999536514282,
+      "ops_yaml": "configs/ops/tcn_caucafall_tune_confirm_off.yaml",
+      "metrics_json": "outputs/metrics/tcn_caucafall_tune_confirm_off.json",
+      "pass_gate": false
+    },
+    {
+      "name": "strict_confirm",
+      "status": "ok",
+      "selected": "op2",
+      "f1": 0.888888888888889,
+      "recall": 0.8,
+      "precision": 1.0,
+      "fa24h": 0.0,
+      "tau_high": 0.8699999451637268,
+      "tau_low": 0.6785999536514282,
+      "ops_yaml": "configs/ops/tcn_caucafall_tune_strict_confirm.yaml",
+      "metrics_json": "outputs/metrics/tcn_caucafall_tune_strict_confirm.json",
+      "pass_gate": false
+    }
+  ]
+}

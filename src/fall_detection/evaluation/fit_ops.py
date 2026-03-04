@@ -281,6 +281,38 @@ def pick_ops_from_sweep_conservative(
     else:
         i3 = i2
 
+    # If all OPs collapse to one threshold (common on near-perfect sweeps),
+    # enforce a stable ordering for UI/deploy semantics:
+    # OP-1 (high sensitivity) <= OP-2 (balanced) <= OP-3 (low sensitivity).
+    if int(i1) == int(i2) == int(i3):
+        valid = np.where(ok_thr & np.isfinite(thr))[0]
+        if valid.size >= 3:
+            # OP1: lowest threshold among recall-meeting points if available.
+            cand1 = np.where(meet)[0] if meet.any() else valid
+            i1 = int(cand1[np.argmin(thr[cand1])])
+
+            # OP3: highest threshold among FA-meeting points if available.
+            cand3 = np.where(meet_fa)[0] if meet_fa.any() else valid
+            i3 = int(cand3[np.argmax(thr[cand3])])
+
+            # OP2: pick best-F1 between OP1..OP3 region (fallback to midpoint).
+            lo = float(min(thr[i1], thr[i3]))
+            hi = float(max(thr[i1], thr[i3]))
+            region = np.where(ok_thr & np.isfinite(f1) & (thr >= lo - eps) & (thr <= hi + eps))[0]
+            if region.size > 0:
+                best = float(np.nanmax(f1[region]))
+                cand2 = region[np.where(f1[region] >= best - eps)[0]]
+                i2 = _pick_index_by_thr(cand2, thr, tie_break="max_thr")
+            else:
+                mid = 0.5 * (thr[i1] + thr[i3])
+                i2 = int(valid[np.argmin(np.abs(thr[valid] - mid))])
+
+            # Final guard to preserve ordering even with ties.
+            if thr[i2] < thr[i1]:
+                i2 = i1
+            if thr[i2] > thr[i3]:
+                i2 = i3
+
     ops = {"OP1": _row(i1), "OP2": _row(i2), "OP3": _row(i3)}
     meta = {
         "picker": "conservative",

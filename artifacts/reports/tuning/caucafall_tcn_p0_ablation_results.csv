@@ -1,0 +1,4 @@
+profile,path,ap,event_f1,event_recall,event_precision,fa24h
+FC1_promoted,outputs/metrics/tcn_caucafall_cauc_hneg1_confirm0.json,,,,,
+A1_nomotion,outputs/metrics/tcn_caucafall_ablate_nomotion.json,,,,,
+A2_nobone,outputs/metrics/tcn_caucafall_ablate_nobone.json,,,,,

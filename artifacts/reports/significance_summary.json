@@ -1,0 +1,154 @@
+[
+  {
+    "dataset": "caucafall",
+    "metric": "f1",
+    "n": 5,
+    "tcn_mean": 0.861111111111111,
+    "gcn_mean": 0.5873015873015874,
+    "mean_diff_tcn_minus_gcn": 0.2738095238095238,
+    "cohen_dz": 1.3391117724010382,
+    "wilcoxon_p": 0.125,
+    "ttest_p": 0.040165431843335944,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "caucafall",
+    "metric": "recall",
+    "n": 5,
+    "tcn_mean": 0.76,
+    "gcn_mean": 0.44000000000000006,
+    "mean_diff_tcn_minus_gcn": 0.32,
+    "cohen_dz": 1.4032928308912465,
+    "wilcoxon_p": 0.125,
+    "ttest_p": 0.03491970667453905,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "caucafall",
+    "metric": "fa24h",
+    "n": 5,
+    "tcn_mean": 0.0,
+    "gcn_mean": 0.0,
+    "mean_diff_tcn_minus_gcn": 0.0,
+    "cohen_dz": NaN,
+    "wilcoxon_p": NaN,
+    "ttest_p": NaN,
+    "wilcoxon_stat": "all_zero",
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "caucafall",
+    "metric": "ap",
+    "n": 5,
+    "tcn_mean": 0.9818984087199516,
+    "gcn_mean": 0.9705693532062689,
+    "mean_diff_tcn_minus_gcn": 0.01132905551368275,
+    "cohen_dz": 0.9926703607172213,
+    "wilcoxon_p": 0.0625,
+    "ttest_p": 0.09064466120413155,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "le2i",
+    "metric": "f1",
+    "n": 5,
+    "tcn_mean": 0.823529411764706,
+    "gcn_mean": 0.75,
+    "mean_diff_tcn_minus_gcn": 0.07352941176470595,
+    "cohen_dz": NaN,
+    "wilcoxon_p": 0.0625,
+    "ttest_p": 0.0,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "le2i",
+    "metric": "recall",
+    "n": 5,
+    "tcn_mean": 0.7777777777777778,
+    "gcn_mean": 0.6666666666666666,
+    "mean_diff_tcn_minus_gcn": 0.11111111111111116,
+    "cohen_dz": NaN,
+    "wilcoxon_p": 0.0625,
+    "ttest_p": 0.0,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "le2i",
+    "metric": "fa24h",
+    "n": 5,
+    "tcn_mean": 581.5843243262096,
+    "gcn_mean": 581.5843243262096,
+    "mean_diff_tcn_minus_gcn": 0.0,
+    "cohen_dz": NaN,
+    "wilcoxon_p": NaN,
+    "ttest_p": NaN,
+    "wilcoxon_stat": "all_zero",
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  },
+  {
+    "dataset": "le2i",
+    "metric": "ap",
+    "n": 5,
+    "tcn_mean": 0.8389044711981676,
+    "gcn_mean": 0.7471203499152062,
+    "mean_diff_tcn_minus_gcn": 0.0917841212829614,
+    "cohen_dz": 2.078523264161139,
+    "wilcoxon_p": 0.0625,
+    "ttest_p": 0.009677943504110107,
+    "wilcoxon_stat": 0.0,
+    "seeds": [
+      "1337",
+      "17",
+      "2025",
+      "33724876",
+      "42"
+    ]
+  }
+]

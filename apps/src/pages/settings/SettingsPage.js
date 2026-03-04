@@ -39,12 +39,14 @@ export default function SettingsPage() {
 
   const monitoringEnabled = Boolean(sys.monitoring_enabled ?? false);
   const notifyOnEveryFall = Boolean(sys.notify_on_every_fall ?? true);
-  const requireConfirmation = Boolean(sys.require_confirmation ?? false);
 
-  const activeDatasetCode = String(sys.active_dataset_code || "muvim").toLowerCase();
+  const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
   const mcEnabled = Boolean(sys.mc_enabled ?? true);
+  const storeAnonymizedData = Boolean(
+    sys.store_anonymized_data ?? ((sys.store_event_clips ?? false) && (sys.anonymize_skeleton_data ?? true))
+  );
 
-  const activeModelLabel = modelCodeToLabel(sys.active_model_code || "HYBRID");
+  const activeModelLabel = modelCodeToLabel(sys.active_model_code || "TCN");
   const activeOpCode = String(sys.active_op_code || "OP-2").toUpperCase();
   const activePreset = presetFromOpCode(activeOpCode);
 
@@ -53,12 +55,17 @@ export default function SettingsPage() {
     const v = Number(sys.fall_threshold ?? 0.85);
     return Math.round(v * 1000) / 10; // 0.1% precision
   }, [sys.fall_threshold]);
+  const lowThresholdPct = useMemo(() => {
+    const v = Number(sys.tau_low ?? 0.5);
+    return Math.round(v * 1000) / 10;
+  }, [sys.tau_low]);
 
   const alertCooldownSec = useMemo(() => {
     return Math.round(Number(sys.alert_cooldown_sec ?? 3));
   }, [sys.alert_cooldown_sec]);
 
   const fallThrBg = useMemo(() => sliderBackground(fallThresholdPct, 0, 100), [fallThresholdPct]);
+  const lowThrBg = useMemo(() => sliderBackground(lowThresholdPct, 0, 100), [lowThresholdPct]);
   const cooldownBg = useMemo(() => sliderBackground(alertCooldownSec, 0, 60), [alertCooldownSec]);
 
   async function savePatch(patch, okMsg = "Saved") {
@@ -182,19 +189,6 @@ export default function SettingsPage() {
               </label>
             </div>
 
-            <div className={styles.toggleRow}>
-              <span>Require Confirmation</span>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={requireConfirmation}
-                  onChange={(e) => savePatch({ require_confirmation: e.target.checked })}
-                  disabled={!loaded}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
-
             <button
               className={styles.actionBtn}
               style={{ marginTop: 24, fontSize: "0.8rem" }}
@@ -217,12 +211,13 @@ export default function SettingsPage() {
               <span className={styles.labelBold}>Dataset</span>
               <div className={styles.radioGroup}>
                 {[
-                  { code: "muvim", label: "MUVIM" },
                   { code: "le2i", label: "LE2I" },
-                  { code: "urfd", label: "URFD" },
                   { code: "caucafall", label: "CAUCAFall" },
                 ].map((d) => (
-                  <label key={d.code} className={styles.radioLabel}>
+                  <label
+                    key={d.code}
+                    className={`${styles.radioLabel} ${activeDatasetCode === d.code ? styles.radioLabelActive : ""}`}
+                  >
                     {d.label}
                     <input
                       type="radio"
@@ -254,8 +249,11 @@ export default function SettingsPage() {
             <div className={styles.row}>
               <span className={styles.labelBold}>Active Model</span>
               <div className={styles.radioGroup}>
-                {["TCN", "GCN", "Hybrid"].map((m) => (
-                  <label key={m} className={styles.radioLabel}>
+                {["TCN", "GCN", "HYBRID"].map((m) => (
+                  <label
+                    key={m}
+                    className={`${styles.radioLabel} ${activeModelLabel === m ? styles.radioLabelActive : ""}`}
+                  >
                     {m}
                     <input
                       type="radio"
@@ -291,7 +289,7 @@ export default function SettingsPage() {
             <div className={styles.sliderGroup}>
               <div className={styles.sliderRow}>
                 <div className={styles.sliderHeader}>
-                  <span>Fall Detection Threshold</span>
+                  <span>High Threshold (tau_high)</span>
                   <span>{fallThresholdPct}%</span>
                 </div>
                 <input
@@ -301,6 +299,22 @@ export default function SettingsPage() {
                   max={100}
                   value={fallThresholdPct}
                   style={{ background: fallThrBg }}
+                  disabled
+                />
+              </div>
+
+              <div className={styles.sliderRow}>
+                <div className={styles.sliderHeader}>
+                  <span>Low Threshold (tau_low)</span>
+                  <span>{lowThresholdPct}%</span>
+                </div>
+                <input
+                  type="range"
+                  className={styles.rangeInput}
+                  min={0}
+                  max={100}
+                  value={lowThresholdPct}
+                  style={{ background: lowThrBg }}
                   disabled
                 />
               </div>
@@ -333,30 +347,14 @@ export default function SettingsPage() {
 
             <div className={styles.privacyItem}>
               <div className={styles.privacyText}>
-                <span className={styles.itemTitle}>Store Event Clips</span>
-                <span className={styles.itemDesc}>Save short video segments around detected falls</span>
+                <span className={styles.itemTitle}>Store Anonymized Data</span>
+                <span className={styles.itemDesc}>Persist event data only in anonymized skeleton form</span>
               </div>
               <label className={styles.switch}>
                 <input
                   type="checkbox"
-                  checked={Boolean(sys.store_event_clips ?? false)}
-                  onChange={(e) => savePatch({ store_event_clips: e.target.checked })}
-                  disabled={!loaded}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
-
-            <div className={styles.privacyItem}>
-              <div className={styles.privacyText}>
-                <span className={styles.itemTitle}>Anonymize Data</span>
-                <span className={styles.itemDesc}>Convert video to skeleton data before storing</span>
-              </div>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(sys.anonymize_skeleton_data ?? true)}
-                  onChange={(e) => savePatch({ anonymize_skeleton_data: e.target.checked })}
+                  checked={storeAnonymizedData}
+                  onChange={(e) => savePatch({ store_anonymized_data: e.target.checked })}
                   disabled={!loaded}
                 />
                 <span className={styles.slider}></span>

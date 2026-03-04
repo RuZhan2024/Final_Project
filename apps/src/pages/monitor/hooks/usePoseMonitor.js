@@ -8,17 +8,26 @@ import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
 
-function safeNumber(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : null;
-}
-
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
   return {
     storeEventClips: Boolean(sys?.store_event_clips),
     anonymize: Boolean(sys?.anonymize_skeleton_data ?? true),
   };
+}
+
+function getVideoLoadErrorMessage(videoEl, file) {
+  const code = Number(videoEl?.error?.code || 0);
+  const byCode = {
+    1: "Video loading aborted.",
+    2: "Network/media fetch error while loading video.",
+    3: "Video decode error (codec may be unsupported).",
+    4: "Video format not supported by this browser.",
+  };
+  const base = byCode[code] || "Unknown video load error.";
+  const t = String(file?.type || "").trim();
+  const hint = t ? ` File type: ${t}.` : "";
+  return `${base}${hint} Try an H.264 MP4 (AAC) or WebM file.`;
 }
 
 /**
@@ -44,6 +53,7 @@ export function usePoseMonitor({
   mcCfg,
   activeDatasetCode,
   chosenSpec,
+  onAutoStop,
 }) {
   // Refs for camera + mediapipe
   const videoRef = useRef(null);
@@ -51,6 +61,9 @@ export function usePoseMonitor({
   const isActiveRef = useRef(Boolean(isActive));
   const poseRef = useRef(null);
   const streamRef = useRef(null);
+  const videoFileRef = useRef(null);
+  const videoObjectUrlRef = useRef(null);
+  const inputSourceRef = useRef("camera");
   const rafRef = useRef(null);
   const liveFlagRef = useRef(false);
 
@@ -64,11 +77,22 @@ export function usePoseMonitor({
   // Live state
   const [liveRunning, setLiveRunning] = useState(false);
   const [streamFps, setStreamFps] = useState(null);
+  const [inputSource, setInputSource] = useState("camera"); // camera | video
+  const [selectedVideoName, setSelectedVideoName] = useState("");
+  const [replayFile, setReplayFile] = useState(null);
+  const [startError, setStartError] = useState("");
+  const [predictError, setPredictError] = useState("");
+  const [replayCurrentS, setReplayCurrentS] = useState(0);
+  const [replayDurationS, setReplayDurationS] = useState(0);
 
   // Prediction UI
   const [triageState, setTriageState] = useState("not_fall");
   const [pFall, setPFall] = useState(null);
   const [sigma, setSigma] = useState(null);
+  const [safeAlert, setSafeAlert] = useState(null);
+  const [recallAlert, setRecallAlert] = useState(null);
+  const [safeState, setSafeState] = useState(null);
+  const [recallState, setRecallState] = useState(null);
 
   // Timeline markers: store last 50 non-safe windows
   const [timeline, setTimeline] = useState([]); // [{kind:'fall'|'uncertain', t: number}]
@@ -86,15 +110,27 @@ export function usePoseMonitor({
 
   // Session id for server-side state machine
   const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
+  const triageStableRef = useRef({ fall: 0, uncertain: 0, safe: 0, last: "not_fall" });
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
     isActiveRef.current = Boolean(isActive);
   }, [isActive]);
 
+  const autoStopMonitoring = useCallback(() => {
+    try {
+      if (typeof onAutoStop === "function") {
+        void Promise.resolve(onAutoStop(false));
+      }
+    } catch {
+      // ignore
+    }
+  }, [onAutoStop]);
+
   // Update inference throttle and MediaPipe complexity based on whether this page is active.
   useEffect(() => {
-    const fgFps = Math.min(12, Math.max(5, Number(targetFps) || 12));
+    // Keep live inference close to dataset target FPS for better train/runtime parity.
+    const fgFps = Math.min(30, Math.max(8, Number(targetFps) || 23));
     const bgFps = Math.min(5, fgFps);
     inferFpsRef.current = isActiveRef.current ? fgFps : bgFps;
 
@@ -153,6 +189,28 @@ export function usePoseMonitor({
       streamRef.current = null;
     }
 
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      try {
+        videoEl.pause();
+      } catch {
+        // ignore
+      }
+      videoEl.srcObject = null;
+      if (videoObjectUrlRef.current) {
+        videoEl.removeAttribute("src");
+        videoEl.load?.();
+      }
+    }
+    if (videoObjectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(videoObjectUrlRef.current);
+      } catch {
+        // ignore
+      }
+      videoObjectUrlRef.current = null;
+    }
+
     // Clear buffer
     rawFramesRef.current = [];
     lastPoseTsRef.current = null;
@@ -167,7 +225,48 @@ export function usePoseMonitor({
     setPFall(null);
     setSigma(null);
     setTriageState("not_fall");
+    setSafeAlert(null);
+    setRecallAlert(null);
+    setSafeState(null);
+    setRecallState(null);
     setTimeline([]);
+    triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
+    setReplayCurrentS(0);
+    setReplayDurationS(0);
+    setStartError("");
+    setPredictError("");
+  }, []);
+
+  const setVideoFile = useCallback((file) => {
+    stopLive();
+    autoStopMonitoring();
+    if (file) {
+      videoFileRef.current = file;
+      setReplayFile(file);
+      setSelectedVideoName(String(file.name || "video"));
+      inputSourceRef.current = "video";
+      setInputSource("video");
+      setStartError("");
+    } else {
+      videoFileRef.current = null;
+      setReplayFile(null);
+      setSelectedVideoName("");
+      inputSourceRef.current = "camera";
+      setInputSource("camera");
+      setStartError("");
+    }
+  }, [autoStopMonitoring, stopLive]);
+
+  const setInputMode = useCallback((mode) => {
+    const m = mode === "video" ? "video" : "camera";
+    inputSourceRef.current = m;
+    setInputSource(m);
+    if (m === "camera") {
+      videoFileRef.current = null;
+      setReplayFile(null);
+      setSelectedVideoName("");
+    }
+    setStartError("");
   }, []);
 
   const addTimelineMarker = useCallback((kind) => {
@@ -273,9 +372,9 @@ export function usePoseMonitor({
       dataset_code: activeDatasetCode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
 
-      model_tcn: mode === "dual" ? chosen.tcn : mode === "tcn" ? chosen.tcn : null,
-      model_gcn: mode === "dual" ? chosen.gcn : mode === "gcn" ? chosen.gcn : null,
-      model_id: mode === "dual" ? null : mode === "tcn" ? chosen.tcn : chosen.gcn,
+      model_tcn: mode !== "gcn" ? chosen.tcn : null,
+      model_gcn: mode !== "tcn" ? chosen.gcn : null,
+      model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
 
       // The model expects this FPS after resampling.
       fps: targetFps,
@@ -301,10 +400,65 @@ export function usePoseMonitor({
     };
 
     try {
-      const data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
+      let data;
+      try {
+        data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
+      } catch (err) {
+        if (Number(err?.status) === 404) {
+          data = await apiRequest(apiBase, "/api/v1/monitor/predict_window", { method: "POST", body: payload });
+        } else {
+          throw err;
+        }
+      }
+      setPredictError("");
 
-      const tri = data?.triage_state || data?.triageState || "not_fall";
-      setTriageState(tri);
+      const safeObj = data?.policy_alerts?.safe;
+      const recallObj = data?.policy_alerts?.recall;
+      const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
+      const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
+      const safeBool =
+        typeof data?.safe_alert === "boolean"
+          ? data.safe_alert
+          : typeof safeObj?.alert === "boolean"
+          ? safeObj.alert
+          : null;
+      const recallBool =
+        typeof data?.recall_alert === "boolean"
+          ? data.recall_alert
+          : typeof recallObj?.alert === "boolean"
+          ? recallObj.alert
+          : null;
+      setSafeAlert(safeBool);
+      setRecallAlert(recallBool);
+      setSafeState((data?.safe_state || safeObj?.state || null) ?? null);
+      setRecallState((data?.recall_state || recallObj?.state || null) ?? null);
+
+      // UI hysteresis to suppress noisy flips between fall/uncertain/not_fall.
+      let triCandidate = safeStateRaw || triRaw || "not_fall";
+      if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
+      if (data?.low_quality_block || data?.occlusion_block || data?.low_motion_block) {
+        triCandidate = "not_fall";
+      }
+      const st = triageStableRef.current;
+      if (triCandidate === "fall" && safeBool !== false) {
+        st.fall += 1;
+        st.uncertain = 0;
+        st.safe = 0;
+      } else if (triCandidate === "uncertain") {
+        st.uncertain += 1;
+        st.fall = 0;
+        st.safe = 0;
+      } else {
+        st.safe += 1;
+        st.fall = 0;
+        st.uncertain = 0;
+      }
+      let triStable = st.last || "not_fall";
+      if (st.fall >= 2) triStable = "fall";
+      else if (st.safe >= 2) triStable = "not_fall";
+      else if (st.uncertain >= 2 && st.fall === 0) triStable = "uncertain";
+      st.last = triStable;
+      setTriageState(triStable);
 
       // Schedule a skeleton clip upload (pre + post seconds around this window end)
       try {
@@ -335,41 +489,35 @@ export function usePoseMonitor({
         // ignore
       }
 
-      // pFall display: use overall mu (single) or conservative fusion for dual
+      // pFall display from the active model output.
       let mu = null;
       let sig = null;
 
-      if (mode === "dual") {
-        const mt = data?.models?.tcn;
-        const mg = data?.models?.gcn;
-        const mh = data?.models?.hybrid;
-        const muT = safeNumber(mt?.mu);
-        const muG = safeNumber(mg?.mu);
-
-        if (mh?.mu != null) mu = Number(mh.mu);
-        else mu = Math.min(muT ?? 1, muG ?? 1);
-
-        const sT = safeNumber(mt?.sigma);
-        const sG = safeNumber(mg?.sigma);
-        if (mh?.sigma != null) sig = Number(mh.sigma);
-        else sig = Math.max(sT ?? 0, sG ?? 0);
-      } else {
-        const mOut = data?.models?.[mode];
-        if (mOut) {
-          mu = mOut?.mu != null ? Number(mOut.mu) : mOut?.p_det != null ? Number(mOut.p_det) : null;
-          sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
-        }
+      const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
+      if (mOut) {
+        // Use tracker-smoothed score first so P(fall) matches current triage semantics.
+        mu = mOut?.triage?.ps != null
+          ? Number(mOut.triage.ps)
+          : mOut?.p_alert_in != null
+            ? Number(mOut.p_alert_in)
+            : mOut?.mu != null
+              ? Number(mOut.mu)
+              : mOut?.p_det != null
+                ? Number(mOut.p_det)
+                : null;
+        sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
       }
 
       setPFall(mu);
       setSigma(sig);
 
       // timeline markers
-      const triNorm = String(tri || "").toLowerCase();
+      const triNorm = String(triStable || "").toLowerCase();
       if (triNorm === "fall") addTimelineMarker("fall");
       else if (triNorm === "uncertain") addTimelineMarker("uncertain");
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
+      setPredictError(String(err?.message || err || "predict_window failed"));
     }
   }, [
     activeDatasetCode,
@@ -491,35 +639,126 @@ export function usePoseMonitor({
     if (!videoEl) return false;
 
     try {
+      setStartError("");
       liveFlagRef.current = true;
       setLiveRunning(true);
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, frameRate: { ideal: targetFps } },
-        audio: false,
+      const source = inputSourceRef.current || "camera";
+      const file = videoFileRef.current || replayFile;
+      const useVideoFile = source === "video";
+      if (useVideoFile && !file) {
+        throw new Error("Replay mode selected but no video file is loaded.");
+      }
+      if (useVideoFile) {
+        if (videoObjectUrlRef.current) {
+          try {
+            URL.revokeObjectURL(videoObjectUrlRef.current);
+          } catch {
+            // ignore
+          }
+          videoObjectUrlRef.current = null;
+        }
+        try {
+          videoEl.pause();
+        } catch {
+          // ignore
+        }
+        videoEl.srcObject = null;
+        videoEl.removeAttribute("src");
+        try {
+          videoEl.load?.();
+        } catch {
+          // ignore
+        }
+        const u = URL.createObjectURL(file);
+        videoObjectUrlRef.current = u;
+        videoEl.src = u;
+        videoEl.currentTime = 0;
+        videoEl.muted = true;
+        videoEl.playsInline = true;
+        videoEl.preload = "auto";
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: targetFps },
+          },
+          audio: false,
+        });
+        streamRef.current = stream;
+        videoEl.srcObject = stream;
+      }
+
+      await new Promise((resolve, reject) => {
+        if (videoEl.readyState >= 1) {
+          resolve();
+          return;
+        }
+        let done = false;
+        const timer = window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error("Video metadata load timeout"));
+        }, 10000);
+        const cleanup = () => {
+          videoEl.removeEventListener("loadedmetadata", onLoaded);
+          videoEl.removeEventListener("canplay", onCanPlay);
+          videoEl.removeEventListener("error", onErr);
+          window.clearTimeout(timer);
+        };
+        const onLoaded = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const onCanPlay = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const onErr = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error(getVideoLoadErrorMessage(videoEl, file)));
+        };
+        videoEl.addEventListener("loadedmetadata", onLoaded, { once: true });
+        videoEl.addEventListener("canplay", onCanPlay, { once: true });
+        videoEl.addEventListener("error", onErr, { once: true });
+        try {
+          videoEl.load?.();
+        } catch {
+          // ignore
+        }
       });
 
-      streamRef.current = stream;
-      videoEl.srcObject = stream;
-
-      await new Promise((resolve) => {
-        const onLoaded = () => resolve();
-        videoEl.onloadedmetadata = onLoaded;
-      });
-
-      await videoEl.play();
+      try {
+        await videoEl.play();
+      } catch (e) {
+        throw new Error(`Video play failed: ${String(e?.message || e)}`);
+      }
       ensureCanvasMatchesVideo();
+      if (useVideoFile) {
+        setReplayCurrentS(Number(videoEl.currentTime || 0));
+        setReplayDurationS(Number(videoEl.duration || 0));
+      }
 
       // Try camera-reported FPS if available
-      try {
-        const track = stream.getVideoTracks()[0];
-        const settings = track?.getSettings?.();
-        if (settings && typeof settings.frameRate === "number") {
-          fpsEstimateRef.current = settings.frameRate;
-          setStreamFps(settings.frameRate);
+      if (streamRef.current) {
+        try {
+          const track = streamRef.current.getVideoTracks()[0];
+          const settings = track?.getSettings?.();
+          if (settings && typeof settings.frameRate === "number") {
+            fpsEstimateRef.current = settings.frameRate;
+            setStreamFps(settings.frameRate);
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
 
       const pose = new mpPose.Pose({
@@ -538,6 +777,17 @@ export function usePoseMonitor({
 
       const loop = async () => {
         if (!liveFlagRef.current) return;
+        if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
+          stopLive();
+          autoStopMonitoring();
+          return;
+        }
+        if ((inputSourceRef.current || "camera") === "video") {
+          const ct = Number(videoEl.currentTime || 0);
+          const du = Number(videoEl.duration || 0);
+          if (Number.isFinite(ct)) setReplayCurrentS(ct);
+          if (Number.isFinite(du)) setReplayDurationS(du);
+        }
 
         const now = performance.now();
         const target = Math.max(1, Number(inferFpsRef.current) || 15);
@@ -562,10 +812,11 @@ export function usePoseMonitor({
       return true;
     } catch (err) {
       console.error("Error starting monitor", err);
+      setStartError(String(err?.message || err || "Failed to start monitor"));
       stopLive();
       return false;
     }
-  }, [ensureCanvasMatchesVideo, handlePoseResults, stopLive, targetFps]);
+  }, [autoStopMonitoring, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -592,15 +843,38 @@ export function usePoseMonitor({
 
   const resetSession = useCallback(async () => {
     try {
-      await apiRequest(
-        apiBase,
-        `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-        { method: "POST" }
-      );
+      try {
+        await apiRequest(
+          apiBase,
+          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+          { method: "POST" }
+        );
+      } catch (err) {
+        if (Number(err?.status) === 404) {
+          await apiRequest(
+            apiBase,
+            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+            { method: "POST" }
+          );
+        } else {
+          throw err;
+        }
+      }
     } catch {
       // ignore
     }
   }, [apiBase]);
+
+  const seekReplay = useCallback((ratio) => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+    const du = Number(videoEl.duration || 0);
+    if (!Number.isFinite(du) || du <= 0) return;
+    const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+    videoEl.currentTime = r * du;
+    setReplayCurrentS(Number(videoEl.currentTime || 0));
+    setReplayDurationS(du);
+  }, []);
 
   const testFall = useCallback(async () => {
     // 1) Try backend helper endpoint (if present)
@@ -632,6 +906,26 @@ export function usePoseMonitor({
   }, [addTimelineMarker, apiBase, settingsPayload]);
 
   const currentPrediction = useMemo(() => labelForTriage(triageState), [triageState]);
+  const safePrediction = useMemo(() => {
+    if (mode === "gcn") return "N/A";
+    if (safeState) return labelForTriage(safeState);
+    if (safeAlert == null) return "—";
+    return safeAlert ? "FALL DETECTED" : "SAFE";
+  }, [mode, safeState, safeAlert]);
+  const recallPrediction = useMemo(() => {
+    if (mode === "gcn") return "N/A";
+    if (recallState) {
+      const r = labelForTriage(recallState);
+      const s = safeState ? labelForTriage(safeState) : null;
+      if (String(r).toLowerCase() === "fall" && String(s || "").toLowerCase() !== "fall") {
+        return "Watch";
+      }
+      return r;
+    }
+    if (recallAlert == null) return "—";
+    if (recallAlert && String(safeState || "").toLowerCase() !== "fall") return "Watch";
+    return recallAlert ? "FALL DETECTED" : "SAFE";
+  }, [mode, recallState, recallAlert, safeState]);
 
   const captureFpsText = useMemo(() => {
     const v = streamFps;
@@ -675,6 +969,10 @@ export function usePoseMonitor({
     pFall,
     pText,
     sigma,
+    safeAlert,
+    recallAlert,
+    safePrediction,
+    recallPrediction,
 
     markers,
     captureFpsText,
@@ -682,6 +980,15 @@ export function usePoseMonitor({
 
     resetSession,
     testFall,
+    inputSource,
+    selectedVideoName,
+    setVideoFile,
+    setInputMode,
+    startError,
+    predictError,
+    replayCurrentS,
+    replayDurationS,
+    seekReplay,
 
     tauHighFromSpec,
   };

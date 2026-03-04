@@ -60,7 +60,6 @@ CREATE TABLE system_settings (
   alert_cooldown_sec INT NOT NULL DEFAULT 3,
   notify_on_every_fall TINYINT(1) NOT NULL DEFAULT 1,
   fall_threshold DECIMAL(6,4) NULL DEFAULT 0.8500,
-  require_confirmation TINYINT(1) NOT NULL DEFAULT 0,
   store_event_clips TINYINT(1) NOT NULL DEFAULT 0,
   anonymize_skeleton_data TINYINT(1) NOT NULL DEFAULT 1,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

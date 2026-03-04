@@ -26,8 +26,8 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 
 POST ` /api/monitor/predict_window `
 
-- `mode`: `"tcn" | "gcn" | "dual"`
-- `model_tcn`, `model_gcn`: optional model IDs (strings) when mode is `dual`
+- `mode`: `"tcn" | "gcn" | "hybrid"`
+- `model_tcn`, `model_gcn`: optional model IDs (strings) when mode is `hybrid`
 - preferred live payload:
   - `raw_t_ms`: capture timestamps in milliseconds, shape `[N]`
   - `raw_xy`: pose coordinates, shape `[N,J,2]`

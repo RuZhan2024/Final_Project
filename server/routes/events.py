@@ -45,7 +45,7 @@ def list_events(
     end_date: Optional[str] = None,    # YYYY-MM-DD (local UI date, inclusive)
     event_type: Optional[str] = None,  # exact type (e.g., "fall", "uncertain"), or None/"All"
     status: Optional[str] = None,      # pending_review/confirmed_fall/false_alarm/dismissed, or None/"All"
-    model: Optional[str] = None,       # GCN/TCN/HYBRID, or None/"All"
+    model: Optional[str] = None,       # GCN/TCN, or None/"All"
     limit: Optional[int] = None,       # legacy: /api/events?limit=500
 ) -> Dict[str, Any]:
     """List events with server-side pagination (+ optional filters).
@@ -488,7 +488,7 @@ def test_fall() -> Dict[str, Any]:
             cur.execute(
                 """INSERT INTO events (resident_id, ts, type, severity, model_code, score, meta)
                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (rid, now, "fall", "high", "HYBRID", 0.99, json.dumps(meta)),
+                (rid, now, "fall", "high", "TCN", 0.99, json.dumps(meta)),
             )
             new_id = cur.lastrowid
             cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))

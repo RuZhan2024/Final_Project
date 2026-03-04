@@ -29,11 +29,13 @@ from typing import Any, Dict, Optional, Tuple
 
 import yaml
 
+SUPPORTED_DATASETS = {"caucafall", "le2i"}
+
 
 @dataclass
 class DeploySpec:
-    key: str                     # e.g. "muvim_tcn"
-    dataset: str                  # le2i|urfd|caucafall|muvim
+    key: str                     # e.g. "caucafall_tcn"
+    dataset: str                  # le2i|caucafall
     arch: str                     # tcn|gcn
     ckpt: str                     # absolute path to best.pt
     feat_cfg: Dict[str, Any]      # from configs/ops/*.yaml
@@ -138,9 +140,8 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
         dataset = dataset_guess.lower().strip()
         if arch not in {"tcn", "gcn"}:
             continue
-        if dataset not in {"le2i", "urfd", "caucafall", "muvim"}:
-            # allow other datasets, but keep the key stable
-            dataset = dataset_guess.lower().strip()
+        if dataset not in SUPPORTED_DATASETS:
+            continue
 
         ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
         if not ckpt_rel:
@@ -228,6 +229,8 @@ def _discover_from_reports(root: Path) -> Dict[str, DeploySpec]:
         arch = (rep.get("arch") or "").lower().strip()
         ckpt_rel = str(rep.get("ckpt") or rep.get("ckpt_path") or "").strip()
         dataset = spec_key.split("_")[0]
+        if dataset not in SUPPORTED_DATASETS:
+            continue
         ckpt_path = (root / ckpt_rel).resolve() if not os.path.isabs(ckpt_rel) else Path(ckpt_rel)
         if not ckpt_path.exists():
             continue
@@ -317,15 +320,79 @@ def _pick_device(torch: Any) -> Any:
             return torch.device("cuda")
     except (AttributeError, RuntimeError, TypeError):
         pass
-    try:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-    except (AttributeError, RuntimeError, TypeError):
-        pass
+    # NOTE: MPS can be unstable for some GCN runtime ops in long-running API process.
+    # Keep CPU as default for service stability; allow opt-in via env.
+    allow_mps = str(os.environ.get("SERVER_ALLOW_MPS", "0")).strip().lower() in {"1", "true", "yes"}
+    if allow_mps:
+        try:
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return torch.device("mps")
+        except (AttributeError, RuntimeError, TypeError):
+            pass
     return torch.device("cpu")
 
 
 _MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _infer_model_num_joints(model: Any) -> Optional[int]:
+    try:
+        if hasattr(model, "encoder") and hasattr(model.encoder, "A_hat"):
+            return int(model.encoder.A_hat.shape[0])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        pass
+    try:
+        if hasattr(model, "j_enc") and hasattr(model.j_enc, "A_hat"):
+            return int(model.j_enc.A_hat.shape[0])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _align_joint_count(
+    joints_xy: Any,
+    conf: Any,
+    *,
+    expected_v: Optional[int],
+) -> Tuple[Any, Any]:
+    """Align runtime joint count to model expectation."""
+    import numpy as np
+
+    j = np.asarray(joints_xy, dtype=np.float32)
+    c = np.asarray(conf, dtype=np.float32) if conf is not None else None
+    if j.ndim != 3 or j.shape[-1] != 2 or expected_v is None:
+        return j, c
+
+    cur_v = int(j.shape[1])
+    exp_v = int(expected_v)
+    if cur_v == exp_v:
+        return j, c
+
+    # Preferred semantic remap for MediaPipe33 -> internal17.
+    if cur_v >= 29 and exp_v == 17:
+        try:
+            from fall_detection.data.adapters.base import map_mp33_to_internal17
+
+            j17, c17, _m17 = map_mp33_to_internal17(j, conf=c, mask=None)
+            return j17, c17
+        except (ImportError, ModuleNotFoundError, ValueError, TypeError, RuntimeError):
+            pass
+
+    # Fallback: truncate/pad in joint dimension.
+    if cur_v > exp_v:
+        j2 = j[:, :exp_v, :]
+        c2 = c[:, :exp_v] if c is not None and c.ndim == 2 else c
+        return j2, c2
+
+    pad_v = exp_v - cur_v
+    jpad = np.zeros((j.shape[0], pad_v, 2), dtype=j.dtype)
+    j2 = np.concatenate([j, jpad], axis=1)
+    if c is not None and c.ndim == 2:
+        cpad = np.zeros((c.shape[0], pad_v), dtype=c.dtype)
+        c2 = np.concatenate([c, cpad], axis=1)
+    else:
+        c2 = c
+    return j2, c2
 
 
 def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
@@ -416,6 +483,7 @@ def predict_spec(
     device = cached["device"]
     feat_cfg = cached["feat_cfg"]
     data_cfg = cached["data_cfg"] or {}
+    model_cfg = cached.get("model_cfg") or {}
 
     # NOTE: `joints_xy` is expected to already be a fixed-length window (server/app.py
     # resamples/pads to target_T). Our feature builders operate on that window.
@@ -423,8 +491,15 @@ def predict_spec(
 
     from fall_detection.core.features import build_tcn_input, build_canonical_input, split_gcn_two_stream
 
-    j = np.asarray(joints_xy, dtype=np.float32)
-    c = np.asarray(conf, dtype=np.float32) if conf is not None else None
+    expected_v = None
+    try:
+        expected_v = int(model_cfg.get("num_joints")) if isinstance(model_cfg, dict) and model_cfg.get("num_joints") is not None else None
+    except (TypeError, ValueError):
+        expected_v = None
+    if expected_v is None:
+        expected_v = _infer_model_num_joints(model)
+
+    j, c = _align_joint_count(joints_xy, conf, expected_v=expected_v)
 
     # Prepare inputs.
     Xg, _mask = build_canonical_input(

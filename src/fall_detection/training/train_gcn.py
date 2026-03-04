@@ -616,6 +616,9 @@ def main() -> None:
     if cfg.scheduler_metric is None:
         cfg.scheduler_metric = "val_ap" if str(cfg.monitor) == "ap" else "val_f1"
 
+    with open(os.path.join(cfg.save_dir, "train_config.json"), "w", encoding="utf-8") as f:
+        json.dump(asdict(cfg), f, indent=2)
+
     set_seed(cfg.seed, deterministic=cfg.deterministic)
     device = pick_device()
     feat_cfg = build_feat_cfg(cfg)

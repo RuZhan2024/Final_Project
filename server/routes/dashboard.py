@@ -27,7 +27,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
         "status": "normal",
         "today": {"falls_detected": 0, "false_alarms": 0},
         "system": {
-            "model_name": "HYBRID",
+            "model_name": "TCN",
             "monitoring_enabled": False,
             "last_latency_ms": int(core.LAST_PRED_LATENCY_MS or 0),
             "api_online": True,

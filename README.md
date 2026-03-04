@@ -184,6 +184,49 @@ make windows-unlabeled-caucafall ADAPTER_USE=1
 Adapter knobs:
 - `ADAPTER_DATASET_<ds>`
 - `ADAPTER_URFALL_TARGET_FPS` (default `25.0`)
+- `ADAPTER_JOINT_LAYOUT` (`mp33` default, `internal17` for legacy reproduction)
+
+## Unlabeled LE2i Smoke (False Alerts First)
+
+Use LE2i unlabeled clips to estimate false-alert behavior before real field data collection.
+
+Build unlabeled windows:
+
+```bash
+make splits-unlabeled-le2i ADAPTER_USE=1
+make windows-unlabeled-le2i ADAPTER_USE=1
+```
+
+Evaluate promoted/default checkpoints on unlabeled windows via Makefile:
+
+```bash
+make eval-unlabeled-le2i ADAPTER_USE=1
+make eval-unlabeled-gcn-le2i ADAPTER_USE=1
+```
+
+If your default `outputs/le2i_* /best.pt` is missing, override checkpoint + ops yaml explicitly:
+
+```bash
+make eval-unlabeled-le2i ADAPTER_USE=1 \
+  UNLABELED_CKPT=outputs/le2i_tcn_W48S12_stb_s33724876/best.pt \
+  UNLABELED_OPS_YAML=configs/ops/tcn_le2i_stb_s33724876.yaml
+
+make eval-unlabeled-gcn-le2i ADAPTER_USE=1 \
+  UNLABELED_CKPT=outputs/le2i_gcn_W48S12/best.pt \
+  UNLABELED_OPS_YAML=configs/ops/gcn_le2i.yaml
+```
+
+Outputs are written to:
+- `artifacts/reports/hneg_cycle/tcn_le2i_unlabeled_fa.json`
+- `artifacts/reports/hneg_cycle/gcn_le2i_unlabeled_fa.json`
+
+Read these keys for unlabeled behavior:
+- `totals.n_alert_events`
+- `totals.fa_per_day` / `totals.fa24h`
+
+Important interpretation:
+- If the unlabeled subset may contain true falls, treat this as an open-world stress alert-rate check.
+- Only claim strict false-alarm rate when the evaluated set is verified fall-free.
 
 ## Backend (FastAPI)
 
@@ -261,3 +304,74 @@ Errors like `OMP: Error #179 ... Can't open SHM2` are environment restrictions. 
 
 The active migration plan is tracked in:
 - `Integrated-Refactor-Master-Plan.md`
+
+ DO_EXTRACT=0 ADAPTER_USE=1 AUTO_DO_EXTRACT=0 python3 tools/sweeps/sweep_tcn_le2i.py \
+    --exp tcn_le2i_s2 --trials 60 --metric monitor_score --seed 33724876 \
+    --stage2 --stage2_no_windows_eval --stage2_topk 10 --stage2_split val \
+    --stage2_op1_target 0.95 --stage2_op3_target 1.0 --silent_make
+
+  DO_EXTRACT=0 ADAPTER_USE=1 AUTO_DO_EXTRACT=0 python3 tools/sweeps/sweep_tcn_caucafall.py \
+    --exp tcn_cauc_s2 --trials 60 --metric monitor_score --seed 33724876 \
+    --stage2 --stage2_no_windows_eval --stage2_topk 10 --stage2_split val \
+    --stage2_op1_target 0.95 --stage2_op3_target 1.0 --silent_make
+
+  DO_EXTRACT=0 ADAPTER_USE=1 AUTO_DO_EXTRACT=0 python3 tools/sweeps/sweep_gcn_le2i.py \
+    --exp gcn_le2i_s2 --trials 80 --metric ap --seed 33724876 \
+    --stage2 --stage2_no_windows_eval --stage2_topk 10 --stage2_split val \
+    --stage2_op1_target 0.95 --stage2_op3_target 1.0 --silent_make
+
+  DO_EXTRACT=0 ADAPTER_USE=1 AUTO_DO_EXTRACT=0 python3 tools/sweeps/sweep_gcn_caucafall.py \
+    --exp gcn_cauc_s2 --trials 80 --metric ap --seed 33724876 \
+    --stage2 --stage2_no_windows_eval --stage2_topk 10 --stage2_split val \
+    --stage2_op1_target 0.95 --stage2_op3_target 1.0 --silent_make
+
+## Dual Policy Deployment (CAUCAFall TCN)
+
+Use two ops policies with the same checkpoint:
+- `safe`: primary automated alert channel
+- `recall`: secondary review-only channel (higher sensitivity)
+
+Policies:
+- `configs/ops/dual_policy/tcn_caucafall_dual_safe.yaml`
+- `configs/ops/dual_policy/tcn_caucafall_dual_recall.yaml`
+
+Evaluate both quickly:
+
+```bash
+PYTHONPATH="$(pwd)/src:$(pwd)" python scripts/eval_metrics.py \
+  --win_dir data/processed/caucafall/windows_eval_W48_S12/test \
+  --ckpt outputs/caucafall_tcn_W48S12_opt_m2_focal/best.pt \
+  --ops_yaml configs/ops/dual_policy/tcn_caucafall_dual_safe.yaml \
+  --out_json outputs/metrics/tcn_caucafall_dual_safe.json \
+  --fps_default 23
+
+PYTHONPATH="$(pwd)/src:$(pwd)" python scripts/eval_metrics.py \
+  --win_dir data/processed/caucafall/windows_eval_W48_S12/test \
+  --ckpt outputs/caucafall_tcn_W48S12_opt_m2_focal/best.pt \
+  --ops_yaml configs/ops/dual_policy/tcn_caucafall_dual_recall.yaml \
+  --out_json outputs/metrics/tcn_caucafall_dual_recall.json \
+  --fps_default 23
+```
+
+Summary artifacts:
+- `artifacts/reports/tuning/caucafall_dual_policy_summary.csv`
+- `artifacts/reports/tuning/caucafall_dual_policy_deployment.md`
+
+Live monitor API now also returns dual-channel fields when available:
+- `policy_alerts.safe`, `policy_alerts.recall`
+- top-level `safe_alert`, `safe_state`, `recall_alert`, `recall_state`
+
+Deployment scope is intentionally restricted to:
+- `caucafall`
+- `le2i`
+
+The frontend monitor/settings and backend deploy spec discovery only use these two datasets.
+
+Summarize persisted event meta dual-channel stats (last 24h):
+
+```bash
+python tools/summarize_dual_policy_events.py \
+  --resident_id 1 \
+  --hours 24 \
+  --out_json artifacts/reports/deployment_dual_policy_events.json
+```

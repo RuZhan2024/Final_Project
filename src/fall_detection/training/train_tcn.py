@@ -390,6 +390,7 @@ class TrainCfg:
     hard_neg_mult: int = 1
     hard_neg_prefixes: str = ""
     hard_neg_prefix_mult: int = 1
+    hard_neg_prefix_strict: int = 0
     allow_hard_neg_nontrain: int = 0
 
     epochs: int = 200
@@ -444,6 +445,7 @@ class TrainCfg:
     tsm_fold_div: int = 8
 
     # feature flags (must match fit/eval)
+    resume_use_ckpt_feat_cfg: int = 1
     center: str = "pelvis"
     use_motion: int = 1
     use_conf_channel: int = 1
@@ -483,6 +485,12 @@ def main() -> None:
         type=int,
         default=1,
         help="Additional multiplier for hard negatives whose basename matches --hard_neg_prefixes.",
+    )
+    ap.add_argument(
+        "--hard_neg_prefix_strict",
+        type=int,
+        default=0,
+        help="If 1, fail when --hard_neg_prefixes are provided but match no hard-negative basenames.",
     )
 
     ap.add_argument("--epochs", type=int, default=200)
@@ -542,6 +550,12 @@ def main() -> None:
     ap.add_argument("--tsm_fold_div", type=int, default=8)
 
     ap.add_argument("--center", choices=["pelvis", "none"], default="pelvis")
+    ap.add_argument(
+        "--resume_use_ckpt_feat_cfg",
+        type=int,
+        default=1,
+        help="If 1 (default), --resume restores feature flags from checkpoint. Set 0 to use CLI feature flags.",
+    )
     ap.add_argument("--use_motion", type=int, default=1)
     ap.add_argument("--use_conf_channel", type=int, default=1)
     ap.add_argument("--use_bone", type=int, default=0)
@@ -567,16 +581,19 @@ def main() -> None:
         if arch0 and arch0 != "tcn":
             raise SystemExit(f"[err] resume arch mismatch: expected tcn, got {arch0}")
 
-        # Override feature flags (so train/fit/eval stay aligned).
-        if isinstance(feat_cfg_d0, dict) and feat_cfg_d0:
-            cfg.center = str(feat_cfg_d0.get("center", cfg.center))
-            cfg.use_motion = 1 if bool(feat_cfg_d0.get("use_motion", cfg.use_motion)) else 0
-            cfg.use_conf_channel = 1 if bool(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel)) else 0
-            cfg.use_bone = 1 if bool(feat_cfg_d0.get("use_bone", cfg.use_bone)) else 0
-            cfg.use_bone_length = 1 if bool(feat_cfg_d0.get("use_bone_length", cfg.use_bone_length)) else 0
-            cfg.motion_scale_by_fps = 1 if bool(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps)) else 0
-            cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
-            cfg.use_precomputed_mask = 1 if bool(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask)) else 0
+        # Override feature flags from checkpoint unless explicitly disabled.
+        if int(cfg.resume_use_ckpt_feat_cfg) == 1:
+            if isinstance(feat_cfg_d0, dict) and feat_cfg_d0:
+                cfg.center = str(feat_cfg_d0.get("center", cfg.center))
+                cfg.use_motion = 1 if bool(feat_cfg_d0.get("use_motion", cfg.use_motion)) else 0
+                cfg.use_conf_channel = 1 if bool(feat_cfg_d0.get("use_conf_channel", cfg.use_conf_channel)) else 0
+                cfg.use_bone = 1 if bool(feat_cfg_d0.get("use_bone", cfg.use_bone)) else 0
+                cfg.use_bone_length = 1 if bool(feat_cfg_d0.get("use_bone_length", cfg.use_bone_length)) else 0
+                cfg.motion_scale_by_fps = 1 if bool(feat_cfg_d0.get("motion_scale_by_fps", cfg.motion_scale_by_fps)) else 0
+                cfg.conf_gate = float(feat_cfg_d0.get("conf_gate", cfg.conf_gate))
+                cfg.use_precomputed_mask = 1 if bool(feat_cfg_d0.get("use_precomputed_mask", cfg.use_precomputed_mask)) else 0
+        else:
+            print("[resume] using CLI feature flags (--resume_use_ckpt_feat_cfg=0)")
 
         # Override model cfg (avoid accidental mismatch when mining hard negatives).
         if isinstance(model_cfg_d0, dict) and model_cfg_d0:
@@ -628,6 +645,21 @@ def main() -> None:
                 "[info] hard_neg_prefix boost: "
                 f"prefixes={extra_neg_prefixes} x{int(cfg.hard_neg_prefix_mult)}"
             )
+        if extra_neg_prefixes:
+            # Validate that provided prefixes actually match hard-negative basenames.
+            basenames = [os.path.basename(fp) for fp in extra_neg_files]
+            matched = sum(1 for b in basenames if any(b.startswith(pref) for pref in extra_neg_prefixes))
+            if matched == 0:
+                msg = (
+                    "[warn] hard_neg_prefixes matched 0 files. "
+                    f"Provided={extra_neg_prefixes}. "
+                    "Check exact basename prefixes (e.g., use underscores as in NPZ filenames)."
+                )
+                if int(cfg.hard_neg_prefix_strict) == 1:
+                    raise ValueError(msg)
+                print(msg)
+            else:
+                print(f"[info] hard_neg_prefix matched files: {matched}/{len(basenames)}")
 
     train_ds = WindowDatasetTCN(
         cfg.train_dir,

@@ -168,11 +168,12 @@ WIN_EVAL_EXTRA ?= --strategy "$(WIN_STRATEGY_EVAL)" --min_overlap_frames 1 --min
 # Defaults are OFF to preserve stable behavior.
 ADAPTER_USE ?= 0
 ADAPTER_URFALL_TARGET_FPS ?= 25.0
+ADAPTER_JOINT_LAYOUT ?= mp33
 ADAPTER_DATASET_le2i ?= le2i
 ADAPTER_DATASET_urfd ?= urfd
 ADAPTER_DATASET_caucafall ?= caucafall
 ADAPTER_DATASET_muvim ?= muvim
-ADAPTER_FLAGS = $(if $(filter 1,$(strip $(ADAPTER_USE))),--adapter_dataset "$(call get,ADAPTER_DATASET,$*)" --adapter_urfall_target_fps "$(call get,ADAPTER_URFALL_TARGET_FPS,$*)",)
+ADAPTER_FLAGS = $(if $(filter 1,$(strip $(ADAPTER_USE))),--adapter_dataset "$(call get,ADAPTER_DATASET,$*)" --adapter_urfall_target_fps "$(call get,ADAPTER_URFALL_TARGET_FPS,$*)" --adapter_joint_layout "$(ADAPTER_JOINT_LAYOUT)",)
 
 WIN_EXTRA_caucafall      += --require_spans "$(CAUCA_REQUIRE_SPANS)"
 WIN_EVAL_EXTRA_caucafall += --require_spans "$(CAUCA_REQUIRE_SPANS)"
@@ -421,6 +422,14 @@ METR_THR_STEP ?= 0.01
 METRICS_SWEEP_FLAGS = --thr_min "$(METR_THR_MIN)" --thr_max "$(METR_THR_MAX)" --thr_step "$(METR_THR_STEP)"
 
 # -------------------------
+# unlabeled eval knobs
+# -------------------------
+UNLABELED_MET_DIR ?= artifacts/reports/hneg_cycle
+UNLABELED_SUBSET_EVAL ?= $(UNLABELED_SUBSET)
+UNLABELED_CKPT ?=
+UNLABELED_OPS_YAML ?=
+
+# -------------------------
 # Server
 # -------------------------
 SERVER_HOST ?= 127.0.0.1
@@ -513,6 +522,7 @@ help:
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
 	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
+	@echo "  make eval-unlabeled-<ds> | eval-unlabeled-gcn-<ds>"
 	@echo "  make plot-<ds>    | plot-gcn-<ds>"
 	@echo ""
 	@echo "Adapter windows mode (optional):"
@@ -741,7 +751,7 @@ windows-%: $(STAMP_DIR)/windows/%.stamp
 	@:
 $(STAMP_DIR)/windows/%.stamp: $(STAMP_DIR)/splits/%.stamp $$(WINDOW_PREREQ_$$*)
 	@mkdir -p "$(@D)" "$(call win_dir,$*)"
-	@if [ "$(WIN_CLEAN)" = "1" ]; then rm -rf "$(call win_dir,$*)/train" "$(call win_dir,$*)/val" "$(call win_dir,$*)/test"; fi
+	@if [ "$(WIN_CLEAN)" = "1" ]; then rm -rf "$(call win_dir,$*)/train" "$(call win_dir,$*)/val" "$(call win_dir,$*)/test" || true; fi
 	$(RUN) scripts/make_windows.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --labels_json "$(call labels_json,$*)" \
@@ -759,7 +769,7 @@ windows-eval-%: $(STAMP_DIR)/windows_eval/%.stamp
 	@:
 $(STAMP_DIR)/windows_eval/%.stamp: $(STAMP_DIR)/splits/%.stamp $$(WINDOW_PREREQ_$$*)
 	@mkdir -p "$(@D)" "$(call win_eval_dir,$*)"
-	@if [ "$(WIN_EVAL_CLEAN)" = "1" ]; then rm -rf "$(call win_eval_dir,$*)/train" "$(call win_eval_dir,$*)/val" "$(call win_eval_dir,$*)/test"; fi
+	@if [ "$(WIN_EVAL_CLEAN)" = "1" ]; then rm -rf "$(call win_eval_dir,$*)/train" "$(call win_eval_dir,$*)/val" "$(call win_eval_dir,$*)/test" || true; fi
 	$(RUN) scripts/make_windows.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --labels_json "$(call labels_json,$*)" \
@@ -899,12 +909,19 @@ $(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/b
 # ============================================================
 # Eval → metrics JSON
 # Dataset-scoped eval targets (avoid pattern collisions like 'eval-gcn-le2i' matching 'eval-%').
-.PHONY: $(addprefix eval-,$(DATASETS)) $(addprefix eval-gcn-,$(DATASETS))
+.PHONY: $(addprefix eval-,$(DATASETS)) $(addprefix eval-gcn-,$(DATASETS)) \
+        $(addprefix eval-unlabeled-,$(DATASETS)) $(addprefix eval-unlabeled-gcn-,$(DATASETS))
 
 $(addprefix eval-,$(DATASETS)): eval-%: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@:
 
 $(addprefix eval-gcn-,$(DATASETS)): eval-gcn-%: $(MET_DIR)/gcn_%$(OUT_TAG).json
+	@:
+
+$(addprefix eval-unlabeled-,$(DATASETS)): eval-unlabeled-%: $(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json
+	@:
+
+$(addprefix eval-unlabeled-gcn-,$(DATASETS)): eval-unlabeled-gcn-%: $(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json
 	@:
 
 # ============================================================
@@ -925,6 +942,26 @@ $(MET_DIR)/gcn_%$(OUT_TAG).json: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_gc
 	  --win_dir "$(call win_eval_dir,$*)/test" \
 	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --ops_yaml "$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_$*)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unlabeled/%.stamp
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_unlabeled_dir,$*)/$(UNLABELED_SUBSET_EVAL)" \
+	  --ckpt "$(if $(strip $(UNLABELED_CKPT)),$(UNLABELED_CKPT),$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt)" \
+	  --ops_yaml "$(if $(strip $(UNLABELED_OPS_YAML)),$(UNLABELED_OPS_YAML),$(OPS_DIR)/tcn_$*$(OUT_TAG).yaml)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_$*)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unlabeled/%.stamp
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_unlabeled_dir,$*)/$(UNLABELED_SUBSET_EVAL)" \
+	  --ckpt "$(if $(strip $(UNLABELED_CKPT)),$(UNLABELED_CKPT),$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt)" \
+	  --ops_yaml "$(if $(strip $(UNLABELED_OPS_YAML)),$(UNLABELED_OPS_YAML),$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml)" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_$*)" \
 	  $(METRICS_SWEEP_FLAGS)
@@ -1109,9 +1146,14 @@ pipeline-all-gcn-noextract: $(addsuffix -noextract,$(addprefix pipeline-gcn-,$(D
 # ============================================================
 .PHONY: $(addprefix pipeline-auto-tcn-,$(DATASETS)) $(addprefix pipeline-auto-gcn-,$(DATASETS))
 AUTO_DO_EXTRACT ?= 0
+AUTO_FORCE_REBUILD ?= 0
+AUTO_WIN_EVAL_CLEAN ?= 0
 
 $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
-	@$(MAKE) -B DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@mkdir -p ".make/locks"
+	@while ! mkdir ".make/locks/windows-$*.lock" 2>/dev/null; do echo "[wait] windows lock busy for $*"; sleep 1; done; \
+	trap 'rmdir ".make/locks/windows-$*.lock"' EXIT INT TERM; \
+	$(MAKE) $(if $(filter 1,$(AUTO_FORCE_REBUILD)),-B,) DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN="$(AUTO_WIN_EVAL_CLEAN)" windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-tcn-$*
 	@$(MAKE) ADAPTER_USE=1 fit-ops-$*
@@ -1121,7 +1163,10 @@ $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
 	@$(MAKE) ADAPTER_USE=1 plot-$*
 
 $(addprefix pipeline-auto-gcn-,$(DATASETS)): pipeline-auto-gcn-%:
-	@$(MAKE) -B DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN=1 windows-$* windows-eval-$*
+	@mkdir -p ".make/locks"
+	@while ! mkdir ".make/locks/windows-$*.lock" 2>/dev/null; do echo "[wait] windows lock busy for $*"; sleep 1; done; \
+	trap 'rmdir ".make/locks/windows-$*.lock"' EXIT INT TERM; \
+	$(MAKE) $(if $(filter 1,$(AUTO_FORCE_REBUILD)),-B,) DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN="$(AUTO_WIN_EVAL_CLEAN)" windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
 	@$(MAKE) ADAPTER_USE=1 train-gcn-$*
 	@$(MAKE) ADAPTER_USE=1 fit-ops-gcn-$*
