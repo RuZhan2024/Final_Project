@@ -76,6 +76,7 @@ class SettingsUpdatePayload(BaseModel):
     risk_profile: Optional[str] = None
     notify_email: Optional[str] = None
     notify_sms: Optional[bool] = None
+    notify_phone: Optional[bool] = None
 
 
 class SkeletonClipPayload(BaseModel):
@@ -251,6 +252,8 @@ def _ensure_system_settings_schema(conn) -> None:
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
             "mc_M": "INT NOT NULL DEFAULT 10",
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
+            "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
+            "notify_phone": "TINYINT(1) NOT NULL DEFAULT 0",
         }
 
         alters: List[str] = []
@@ -598,7 +601,9 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "api_online": True,
     "alert_cooldown_sec": 3,
     "notify_on_every_fall": True,
-    "fall_threshold": 0.85,
+    "notify_sms": False,
+    "notify_phone": False,
+    "fall_threshold": 0.71,
     "store_event_clips": False,
     "anonymize_skeleton_data": True,
     "store_anonymized_data": False,
@@ -619,6 +624,7 @@ _DEFAULT_DEPLOY_SETTINGS: Dict[str, Any] = {
 
 # resident_id -> {system, deploy}
 _INMEM_SETTINGS: Dict[int, Dict[str, Any]] = {}
+_INMEM_CAREGIVERS: Dict[int, List[Dict[str, Any]]] = {}
 
 
 def get_inmem_settings(resident_id: int = 1) -> Dict[str, Any]:
@@ -664,6 +670,8 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         "monitoring_enabled",
         "api_online",
         "notify_on_every_fall",
+        "notify_sms",
+        "notify_phone",
         "store_event_clips",
         "anonymize_skeleton_data",
         "mc_enabled",
@@ -671,6 +679,10 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         v = getattr(payload, k, None)
         if v is not None:
             system[k] = bool(v)
+
+    if payload.notify_on_every_fall is False:
+        system["notify_sms"] = False
+        system["notify_phone"] = False
 
     system["store_anonymized_data"] = bool(
         system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
@@ -709,3 +721,45 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
             pass
 
     _INMEM_SETTINGS[rid] = {"system": system, "deploy": deploy}
+
+
+def get_inmem_caregivers(resident_id: int = 1) -> List[Dict[str, Any]]:
+    """Return in-memory caregivers list for DB-offline fallback."""
+    rid = int(resident_id or 1)
+    rows = _INMEM_CAREGIVERS.get(rid, [])
+    return [dict(r) for r in rows]
+
+
+def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
+    """Upsert caregiver in memory when DB is unavailable."""
+    rid = int(payload.resident_id or 1)
+    rows = _INMEM_CAREGIVERS.setdefault(rid, [])
+    target_id = int(payload.id) if payload.id else (rows[0]["id"] if rows else 1)
+
+    row = None
+    for r in rows:
+        if int(r.get("id", 0)) == target_id:
+            row = r
+            break
+
+    now = datetime.now(timezone.utc).isoformat()
+    if row is None:
+        row = {
+            "id": target_id,
+            "resident_id": rid,
+            "name": None,
+            "email": None,
+            "phone": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        rows.append(row)
+
+    if payload.name is not None:
+        row["name"] = payload.name
+    if payload.email is not None:
+        row["email"] = payload.email
+    if payload.phone is not None:
+        row["phone"] = payload.phone
+    row["updated_at"] = now
+    return dict(row)

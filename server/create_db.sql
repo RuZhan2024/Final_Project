@@ -55,11 +55,11 @@ CREATE TABLE system_settings (
   monitoring_enabled TINYINT(1) NOT NULL DEFAULT 0,
   api_online TINYINT(1) NOT NULL DEFAULT 1,
   last_latency_ms INT NULL,
-  active_model_code VARCHAR(16) NOT NULL DEFAULT 'GCN',
+  active_model_code VARCHAR(16) NOT NULL DEFAULT 'TCN',
   active_operating_point INT NULL,
   alert_cooldown_sec INT NOT NULL DEFAULT 3,
   notify_on_every_fall TINYINT(1) NOT NULL DEFAULT 1,
-  fall_threshold DECIMAL(6,4) NULL DEFAULT 0.8500,
+  fall_threshold DECIMAL(6,4) NULL DEFAULT 0.7100,
   store_event_clips TINYINT(1) NOT NULL DEFAULT 0,
   anonymize_skeleton_data TINYINT(1) NOT NULL DEFAULT 1,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -107,18 +107,18 @@ INSERT INTO models (code, name, description) VALUES
   ('GCN', 'GCN', 'Graph Convolution Network'),
   ('HYBRID', 'Hybrid', 'GCN + TCN (hybrid)');
 
--- Seed 3 demo operating points for GCN (model id = 2)
+-- Seed 3 demo operating points for TCN (model id = 1) using current deployment lock
 INSERT INTO operating_points (model_id, code, name, thr_detect, thr_low_conf, thr_high_conf, est_fa24h, est_recall) VALUES
-  (2, 'OP-1', 'High Sensitivity', 0.35, 0.20, 0.60, NULL, NULL),
-  (2, 'OP-2', 'Balanced',         0.50, 0.30, 0.70, NULL, NULL),
-  (2, 'OP-3', 'Low Sensitivity',  0.70, 0.50, 0.85, NULL, NULL);
+  (1, 'OP-1', 'High Sensitivity', 0.20, 0.1560, 0.20, NULL, NULL),
+  (1, 'OP-2', 'Balanced',         0.71, 0.5538, 0.71, NULL, NULL),
+  (1, 'OP-3', 'Low Sensitivity',  0.95, 0.7410, 0.95, NULL, NULL);
 
--- Default settings row (Balanced)
+-- Default settings row (Balanced, TCN)
 INSERT INTO system_settings (resident_id, active_model_code, active_operating_point, alert_cooldown_sec, notify_on_every_fall)
 VALUES (
   1,
-  'GCN',
-  (SELECT id FROM operating_points WHERE model_id=2 AND code='OP-2' LIMIT 1),
+  'TCN',
+  (SELECT id FROM operating_points WHERE model_id=1 AND code='OP-2' LIMIT 1),
   3,
   1
 );

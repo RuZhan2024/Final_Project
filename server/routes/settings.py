@@ -38,7 +38,7 @@ def _apply_yaml_override(system: Dict[str, Any]) -> None:
         )
         system["deploy_params"] = dp
         ui = dp.get("ui") or {}
-        system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.85)))
+        system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.71)))
         system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
         system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-2")))
         system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
@@ -77,11 +77,13 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
                         "active_model_code": _safe_get(row, "active_model_code", system.get("active_model_code", "TCN")),
                         "active_operating_point": _safe_get(row, "active_operating_point", system.get("active_operating_point")),
                         "active_op_code": _safe_get(row, "active_op_code", system.get("active_op_code", "OP-2")),
-                        "fall_threshold": float(_safe_get(row, "fall_threshold", system.get("fall_threshold", 0.85)) or 0.85),
+                        "fall_threshold": float(_safe_get(row, "fall_threshold", system.get("fall_threshold", 0.71)) or 0.71),
                         "alert_cooldown_sec": int(_safe_get(row, "alert_cooldown_sec", system.get("alert_cooldown_sec", 3)) or 3),
                         "store_event_clips": bool(_safe_get(row, "store_event_clips", system.get("store_event_clips", 0))),
                         "anonymize_skeleton_data": bool(_safe_get(row, "anonymize_skeleton_data", system.get("anonymize_skeleton_data", 1))),
                         "notify_on_every_fall": bool(_safe_get(row, "notify_on_every_fall", system.get("notify_on_every_fall", 1))),
+                        "notify_sms": bool(_safe_get(row, "notify_sms", system.get("notify_sms", 0))),
+                        "notify_phone": bool(_safe_get(row, "notify_phone", system.get("notify_phone", 0))),
                     }
                 )
                 deploy.update(
@@ -118,6 +120,8 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
                     ("store_event_clips", lambda v: system.__setitem__("store_event_clips", bool(v))),
                     ("anonymize_skeleton_data", lambda v: system.__setitem__("anonymize_skeleton_data", bool(v))),
                     ("notify_on_every_fall", lambda v: system.__setitem__("notify_on_every_fall", bool(v))),
+                    ("notify_sms", lambda v: system.__setitem__("notify_sms", bool(v))),
+                    ("notify_phone", lambda v: system.__setitem__("notify_phone", bool(v))),
                     ("fps", lambda v: deploy.__setitem__("fps", int(v))),
                     ("window_size", lambda v: deploy.setdefault("window", {}).__setitem__("W", int(v))),
                     ("stride", lambda v: deploy.setdefault("window", {}).__setitem__("S", int(v))),
@@ -162,7 +166,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
         "active_model_code": system.get("active_model_code", "TCN"),
         "active_operating_point": system.get("active_operating_point"),
         "active_op_code": system.get("active_op_code"),
-        "fall_threshold": system.get("fall_threshold", 0.85),
+        "fall_threshold": system.get("fall_threshold", 0.71),
         "alert_cooldown_sec": system.get("alert_cooldown_sec", 3),
     }
 
@@ -223,6 +227,21 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
                 if payload.notify_on_every_fall is not None:
                     sets.append("notify_on_every_fall=%s")
                     vals.append(1 if payload.notify_on_every_fall else 0)
+                    if payload.notify_on_every_fall is False:
+                        if _col_exists(conn, "settings", "notify_sms"):
+                            sets.append("notify_sms=%s")
+                            vals.append(0)
+                        if _col_exists(conn, "settings", "notify_phone"):
+                            sets.append("notify_phone=%s")
+                            vals.append(0)
+
+                if payload.notify_sms is not None and _col_exists(conn, "settings", "notify_sms"):
+                    sets.append("notify_sms=%s")
+                    vals.append(1 if payload.notify_sms else 0)
+
+                if payload.notify_phone is not None and _col_exists(conn, "settings", "notify_phone"):
+                    sets.append("notify_phone=%s")
+                    vals.append(1 if payload.notify_phone else 0)
 
                 if payload.active_model_code is not None:
                     sets.append("active_model_code=%s")
@@ -280,6 +299,15 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
 
             if payload.notify_on_every_fall is not None:
                 add("notify_on_every_fall", "notify_on_every_fall=%s", 1 if payload.notify_on_every_fall else 0)
+                if payload.notify_on_every_fall is False:
+                    add("notify_sms", "notify_sms=%s", 0)
+                    add("notify_phone", "notify_phone=%s", 0)
+
+            if payload.notify_sms is not None:
+                add("notify_sms", "notify_sms=%s", 1 if payload.notify_sms else 0)
+
+            if payload.notify_phone is not None:
+                add("notify_phone", "notify_phone=%s", 1 if payload.notify_phone else 0)
 
             if payload.active_dataset_code is not None:
                 add("active_dataset_code", "active_dataset_code=%s", normalize_dataset_code(payload.active_dataset_code))
