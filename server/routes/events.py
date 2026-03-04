@@ -30,6 +30,7 @@ from ..core import (
     _resident_exists,
 )
 from ..db import get_conn_optional
+from ..notifications_service import dispatch_fall_notifications
 
 
 router = APIRouter()
@@ -480,9 +481,17 @@ def test_fall() -> Dict[str, Any]:
                 )
                 cur.execute(sql, tuple(params))
                 new_id = cur.lastrowid
+                dispatch = dispatch_fall_notifications(
+                    conn,
+                    resident_id=int(rid),
+                    event_id=int(new_id),
+                    p_fall=0.99,
+                    source="events.test_fall",
+                )
                 cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
                 row = cur.fetchone()
-                return {"ok": True, "event": _jsonable(row)}
+                conn.commit()
+                return {"ok": True, "event": _jsonable(row), "notification_dispatch": dispatch}
 
             meta = {"source": "ui_test"}
             cur.execute(
@@ -491,9 +500,17 @@ def test_fall() -> Dict[str, Any]:
                 (rid, now, "fall", "high", "TCN", 0.99, json.dumps(meta)),
             )
             new_id = cur.lastrowid
+            dispatch = dispatch_fall_notifications(
+                conn,
+                resident_id=int(rid),
+                event_id=int(new_id),
+                p_fall=0.99,
+                source="events.test_fall",
+            )
             cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
             row = cur.fetchone()
-            return {"ok": True, "event": _jsonable(row)}
+            conn.commit()
+            return {"ok": True, "event": _jsonable(row), "notification_dispatch": dispatch}
 
 
 @router.post("/api/events/{event_id}/skeleton_clip")

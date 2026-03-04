@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import styles from "./Dashboard.module.css";
 
@@ -8,6 +8,8 @@ import { useDashboardSummary } from "./dashboard/hooks/useDashboardSummary";
 
 function Dashboard() {
   const navigate = useNavigate();
+  const [statusMsg, setStatusMsg] = useState("");
+  const [localErr, setLocalErr] = useState("");
 
   const { monitoringOn, toggleMonitoringOn, error: monitoringErr, settings, apiBase } = useMonitoring();
   const { data, loading, error } = useDashboardSummary(apiBase);
@@ -38,9 +40,39 @@ function Dashboard() {
       ? {}
       : { backgroundColor: "#EF4444", boxShadow: "0 0 0 4px #FEE2E2" };
 
+  const showToast = (msg) => {
+    setStatusMsg(msg);
+    window.setTimeout(() => setStatusMsg(""), 2800);
+  };
+
+  const onToggleMonitoring = async () => {
+    setLocalErr("");
+    const prev = Boolean(monitoringOn);
+    try {
+      const next = await toggleMonitoringOn();
+      if (next === prev) {
+        showToast(
+          next
+            ? "Monitoring remains ON. If you expected OFF, check monitor session state."
+            : "Monitoring remains OFF. If you expected ON, check camera permission and API status."
+        );
+        return;
+      }
+      showToast(
+        next
+          ? "Monitoring enabled from Dashboard. Live detection is now active."
+          : "Monitoring disabled from Dashboard. Live detection is now paused."
+      );
+    } catch (e) {
+      setLocalErr(`Could not change monitoring state. ${String(e?.message || e)}`);
+    }
+  };
+
   return (
     <div className={styles.container}>
       <h2 className={styles.pageTitle}>Dashboard</h2>
+      {statusMsg && <div className={`${styles.toast} ${styles.toastSuccess}`}>{statusMsg}</div>}
+      {localErr && <div className={`${styles.toast} ${styles.toastError}`}>{localErr}</div>}
 
       {/* --- Top Section (Two Columns) --- */}
       <div className={styles.topRow}>
@@ -106,8 +138,8 @@ function Dashboard() {
               {/* CSS-only Toggle Switch representation */}
               <div
                 className={styles.toggleSwitch}
-                onClick={toggleMonitoringOn}
-                title="Toggle monitoring"
+                onClick={onToggleMonitoring}
+                title="Enable or disable live monitoring"
                 style={{ backgroundColor: toggleBg }}
               >
                 <div className={styles.toggleKnob} style={knobStyle}></div>

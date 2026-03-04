@@ -26,6 +26,7 @@ from ..deploy_runtime import (
     get_specs as _get_deploy_specs,
     predict_spec as _predict_spec,
 )
+from ..notifications_service import dispatch_fall_notifications
 from ..online_alert import OnlineAlertTracker
 
 
@@ -851,6 +852,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         )
 
     saved_event_id = None
+    notification_dispatch: Optional[Dict[str, Any]] = None
 
     if mode == "tcn":
         # Use safety-channel alert gate if present (deployment-safe default).
@@ -948,6 +950,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                             ),
                         )
                         saved_event_id = cur.lastrowid
+                    notification_dispatch = dispatch_fall_notifications(
+                        conn,
+                        resident_id=int(resident_id),
+                        event_id=int(saved_event_id) if saved_event_id is not None else None,
+                        p_fall=float(p_display),
+                        source="monitor",
+                    )
                     conn.commit()
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
@@ -1002,4 +1011,5 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "op_code": op_code,
         "use_mc": bool(use_mc),
         "event_id": saved_event_id,
+        "notification_dispatch": notification_dispatch,
     }

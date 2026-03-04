@@ -5,11 +5,13 @@ import { apiRequest } from "../../../lib/apiClient";
 /**
  * Polls /api/summary so Monitor can show API health/latency.
  */
-export function useApiSummary(apiBase, intervalMs = 5000) {
+export function useApiSummary(apiBase, intervalMs = 5000, enabled = true) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (!enabled) return undefined;
+
     let cancelled = false;
 
     const tick = async () => {
@@ -29,7 +31,7 @@ export function useApiSummary(apiBase, intervalMs = 5000) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [apiBase, intervalMs]);
+  }, [apiBase, intervalMs, enabled]);
 
   return { summary, error };
 }

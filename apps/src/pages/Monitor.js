@@ -67,7 +67,7 @@ function Monitor({ isActive = true } = {}) {
   const targetFps = useMemo(() => targetFpsForDataset(activeDatasetCode), [activeDatasetCode]);
 
   // ---- Backend spec + model picking ----
-  const { models, error: modelsErr } = useApiSpec(apiBase);
+  const { models, error: modelsErr } = useApiSpec(apiBase, isActive);
 
   const chosen = useMemo(() => {
     if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
@@ -120,7 +120,7 @@ function Monitor({ isActive = true } = {}) {
   }, [tauHigh, fallThreshold, chosenSpec]);
 
   // ---- Optional server summary ----
-  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase);
+  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase, 5000, isActive);
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {

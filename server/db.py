@@ -86,8 +86,16 @@ def get_conn_optional() -> Iterator[Optional[object]]:
     - PyMySQL isn't installed, or
     - the DB isn't reachable.
     """
+    conn_cm = None
     try:
-        with get_conn() as conn:
-            yield conn
+        conn_cm = get_conn()
+        conn = conn_cm.__enter__()
     except (MySQLError, OSError, RuntimeError, ValueError, TypeError):
+        # DB unavailable only during connection setup.
         yield None
+        return
+    try:
+        yield conn
+    finally:
+        if conn_cm is not None:
+            conn_cm.__exit__(None, None, None)
