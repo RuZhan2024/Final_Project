@@ -11,7 +11,7 @@
 | Profile | Arch | Dataset | Ops YAML | Selected OP | Test Metrics Snapshot |
 |---|---|---|---|---|---|
 | FC1 promoted | TCN | CAUCAFall | `configs/ops/tcn_caucafall_cauc_hneg1_confirm0.yaml` | `op2` | `AP=0.9819, F1=0.8889, Recall=0.8000, FA24h=0.0` |
-| FC2 comparative | GCN | CAUCAFall | `configs/ops/gcn_caucafall_cauc_hneg1.yaml` | `op2` | `AP=0.9676, F1=0.8889, Recall=0.8000, FA24h=0.0` |
+| FC2 comparative | GCN | CAUCAFall | `configs/ops/gcn_caucafall.yaml` | `op2` | `AP=0.9640, F1=0.8889, Recall=0.8000, FA24h=0.0` |
 
 ## OP1/OP2/OP3 Stability Summary (Completed)
 Artifacts:
@@ -41,5 +41,5 @@ Implementation note:
 ## Validation Commands
 ```bash
 python scripts/eval_metrics.py --win_dir data/processed/caucafall/windows_eval_W48_S12/test --ckpt outputs/caucafall_tcn_W48S12_cauc_hneg1/best.pt --ops_yaml configs/ops/tcn_caucafall_cauc_hneg1_confirm0.yaml --out_json outputs/metrics/tcn_caucafall_cauc_hneg1_confirm0.json
-python scripts/eval_metrics.py --win_dir data/processed/caucafall/windows_eval_W48_S12/test --ckpt outputs/caucafall_gcn_W48S12_cauc_hneg1/best.pt --ops_yaml configs/ops/gcn_caucafall_cauc_hneg1.yaml --out_json outputs/metrics/gcn_caucafall_cauc_hneg1.json
+python scripts/eval_metrics.py --win_dir data/processed/caucafall/windows_eval_W48_S12/test --ckpt outputs/caucafall_gcn_W48S12/best.pt --ops_yaml configs/ops/gcn_caucafall.yaml --out_json outputs/metrics/gcn_caucafall.json
 ```

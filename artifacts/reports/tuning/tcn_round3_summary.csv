@@ -1,0 +1,4 @@
+exp,metrics_json,ops_yaml,ap,auc,op2_f1,op2_recall,op2_precision,op2_fa24h,op2_tau_high,op2_tau_low,op2_tp,op2_fn
+r1_augreg,outputs/metrics/tcn_caucafall_r1_augreg.json,configs/ops/tcn_caucafall_r1_augreg.yaml,0.9691012933101952,0.9790396341463414,1.0,1.0,1.0,0.0,0.7099999785423279,0.5537999868392944,5,0
+r3_mild_hneg,outputs/metrics/tcn_caucafall_r3_mild_hneg.json,configs/ops/tcn_caucafall_r3_mild_hneg.yaml,0.982433795893012,0.9904725609756098,0.7499999999999999,0.6,1.0,0.0,0.8499999642372131,0.6629999876022339,3,2
+r3_mild_nohneg,outputs/metrics/tcn_caucafall_r3_mild_nohneg.json,configs/ops/tcn_caucafall_r3_mild_nohneg.yaml,0.9827088515754561,0.990282012195122,0.888888888888889,0.8,1.0,0.0,0.8799999952316284,0.6863999962806702,4,1
