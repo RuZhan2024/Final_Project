@@ -56,9 +56,9 @@ LOCK_GCN_CAUC_TRAIN_DIR ?= $(OUT_DIR)/repro/caucafall_gcn_r2_recallpush_b
 LOCK_GCN_CAUC_RESUME    ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)/best.pt
 LOCK_GCN_CAUC_HNEG_LIST ?= $(OUT_DIR)/hardneg/gcn_caucafall_train_p50.txt
 
-LOCK_TCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)_r1_augreg/best.pt
+LOCK_TCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)_r1_ctrl/best.pt
 LOCK_GCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)_r2_recallpush_b/best.pt
-LOCK_TCN_CAUC_OPS  ?= $(OPS_DIR)/tcn_caucafall_locked.yaml
+LOCK_TCN_CAUC_OPS  ?= $(OPS_DIR)/tcn_caucafall_r1_ctrl.yaml
 LOCK_GCN_CAUC_OPS  ?= $(OPS_DIR)/gcn_caucafall_locked.yaml
 LOCK_TCN_CAUC_MET  ?= $(MET_DIR)/tcn_caucafall_locked.json
 LOCK_GCN_CAUC_MET  ?= $(MET_DIR)/gcn_caucafall_locked.json
@@ -988,17 +988,22 @@ apply-locked-ops-caucafall: repro-best-caucafall
 $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	@mkdir -p "$(@D)" "$(MET_DIR)"
 	@test -f "$(LOCK_TCN_CAUC_CKPT)" || (echo "[ERR] missing locked TCN ckpt: $(LOCK_TCN_CAUC_CKPT)" && exit 1)
-	$(RUN) scripts/fit_ops.py --arch tcn \
-	  --val_dir "$(call win_eval_dir,caucafall)/val" \
-	  --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
-	  --out "$@" \
-	  --fps_default "$(FPS_caucafall)" \
-	  --center "$(CENTER)" --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
-	  --ema_alpha "0.20" --k "2" --n "3" --cooldown_s "30" --tau_low_ratio "0.78" --confirm "0" --confirm_s "2.0" --confirm_min_lying "0.65" --confirm_max_motion "0.08" --confirm_require_low "1" \
-	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.01" --time_mode "center" --merge_gap_s "1.0" --overlap_slack_s "0.5" \
-	  --op1_recall "0.95" --op3_fa24h "1.0" --op2_objective "f1" --cost_fn "5.0" --cost_fp "1.0" \
-	  --ops_picker "conservative" --op_tie_break "max_thr" --tie_eps "1e-3" \
-	  --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.20"
+	@if [ "$@" = "$(OPS_DIR)/tcn_caucafall_r1_ctrl.yaml" ]; then \
+	  test -f "$@" || (echo "[ERR] missing precomputed locked TCN ops: $@" && exit 1); \
+	  echo "[ok] using precomputed locked TCN ops: $@"; \
+	else \
+	  $(RUN) scripts/fit_ops.py --arch tcn \
+	    --val_dir "$(call win_eval_dir,caucafall)/val" \
+	    --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
+	    --out "$@" \
+	    --fps_default "$(FPS_caucafall)" \
+	    --center "$(CENTER)" --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
+	    --ema_alpha "0.20" --k "2" --n "3" --cooldown_s "30" --tau_low_ratio "0.78" --confirm "0" --confirm_s "2.0" --confirm_min_lying "0.65" --confirm_max_motion "0.08" --confirm_require_low "1" \
+	    --thr_min "0.01" --thr_max "0.95" --thr_step "0.01" --time_mode "center" --merge_gap_s "1.0" --overlap_slack_s "0.5" \
+	    --op1_recall "0.95" --op3_fa24h "1.0" --op2_objective "f1" --cost_fn "5.0" --cost_fp "1.0" \
+	    --ops_picker "conservative" --op_tie_break "max_thr" --tie_eps "1e-3" \
+	    --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.20"; \
+	fi
 
 $(LOCK_GCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	@mkdir -p "$(@D)" "$(MET_DIR)"

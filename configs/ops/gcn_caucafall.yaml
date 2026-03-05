@@ -26,17 +26,17 @@ ops:
     n_true_alerts: 4
     n_false_alerts: 0
   OP3:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
-    precision: null
-    recall: 0.0
-    f1: null
+    tau_high: 0.3799999952316284
+    tau_low: 0.2964000105857849
+    precision: 1.0
+    recall: 0.800000011920929
+    f1: 0.8888888955116272
     fa24h: 0.0
-    mean_delay_s: null
-    median_delay_s: null
+    mean_delay_s: 3.0
+    median_delay_s: 2.86956524848938
     n_gt_events: 5
-    n_alert_events: 0
-    n_true_alerts: 0
+    n_alert_events: 4
+    n_true_alerts: 4
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
@@ -45,12 +45,14 @@ ops_meta:
   op1_recall: 0.95
   op3_fa24h: 1.0
   op2_objective: "cost_sensitive"
+  op1_fa24h_cap: -1.0
+  op3_recall_floor: -1.0
   cost_fn: 5.0
   cost_fp: 10.0
   idx:
     OP1: 30
     OP2: 37
-    OP3: 94
+    OP3: 37
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -92,15 +94,15 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "gcn_caucafall.sweep.json"
+sweep_json: "gcn_caucafall_locked.sweep.json"
 calibration:
   method: "temperature"
   T: 0.2395763397216797
   n_val: 144
   nll_before: 0.5303184986114502
   nll_after: 0.3586116433143616
-  ece_before: 0.38430892676115036
-  ece_after: 0.20627512759529051
+  ece_before: 0.3843089265541898
+  ece_after: 0.20627512795747152
 model:
   arch: "gcn"
   ckpt: "../../outputs/caucafall_gcn_W48S12_r2_recallpush_b/best.pt"
