@@ -916,6 +916,20 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st[low_fps_gate_key] = 0
         low_fps_confirm_count = 0
 
+    # Resolve channel states consistently for all modes.
+    safe_state_out = dual_policy_alerts.get("safe", {}).get("state")
+    recall_state_out = dual_policy_alerts.get("recall", {}).get("state")
+    if not safe_state_out:
+        if triage_state == "uncertain":
+            safe_state_out = "uncertain"
+        else:
+            safe_state_out = "fall" if bool(safe_alert) else "not_fall"
+    if not recall_state_out:
+        if triage_state == "uncertain":
+            recall_state_out = "uncertain"
+        else:
+            recall_state_out = "fall" if bool(recall_alert) else "not_fall"
+
     if persist and started_event and triage_state == "fall":
         meta = {
             "dataset": dataset_code,
@@ -928,9 +942,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "models": models_out,
             "policy_alerts": dual_policy_alerts,
             "safe_alert": safe_alert,
-            "safe_state": dual_policy_alerts.get("safe", {}).get("state"),
+            "safe_state": safe_state_out,
             "recall_alert": recall_alert,
-            "recall_state": dual_policy_alerts.get("recall", {}).get("state"),
+            "recall_state": recall_state_out,
         }
         try:
             with get_conn() as conn:
@@ -980,9 +994,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "models": models_out,
         "policy_alerts": dual_policy_alerts,
         "safe_alert": safe_alert,
-        "safe_state": dual_policy_alerts.get("safe", {}).get("state"),
+        "safe_state": safe_state_out,
         "recall_alert": recall_alert,
-        "recall_state": dual_policy_alerts.get("recall", {}).get("state"),
+        "recall_state": recall_state_out,
         "latency_ms": latency_ms,
         "capture_fps_est": cap_fps_est,
         "target_fps": expected_fps,

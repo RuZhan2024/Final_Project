@@ -132,6 +132,37 @@ def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float
     return m
 
 
+def augment_feature_tensor(
+    x: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    x_noise_std: float,
+    x_quant_step: float,
+    temporal_dropout_p: float,
+) -> np.ndarray:
+    """Apply lightweight robustness augmentation on canonical feature tensor [T,V,C].
+
+    This is intentionally generic (feature-space) so it works with current
+    canonical channels without changing data contracts.
+    """
+    out = np.asarray(x, dtype=np.float32).copy()
+    t, _, _ = out.shape
+
+    if temporal_dropout_p > 0:
+        drop_t = rng.random(t) < float(temporal_dropout_p)
+        if drop_t.any():
+            out[drop_t, :, :] = 0.0
+
+    if x_noise_std > 0:
+        out += rng.normal(0.0, float(x_noise_std), size=out.shape).astype(np.float32)
+
+    if x_quant_step > 0:
+        step = float(x_quant_step)
+        out = np.round(out / step) * step
+
+    return out
+
+
 def list_npz_files(root: str) -> List[str]:
     import glob
     pat = os.path.join(root, "**", "*.npz")
@@ -195,6 +226,9 @@ class WindowDatasetGCN(Dataset):
         two_stream: bool,
         mask_joint_p: float,
         mask_frame_p: float,
+        x_noise_std: float,
+        x_quant_step: float,
+        temporal_dropout_p: float,
         seed: int,
         extra_neg_files: Optional[List[str]] = None,
         extra_neg_mult: int = 1,
@@ -207,6 +241,9 @@ class WindowDatasetGCN(Dataset):
         self.two_stream = bool(two_stream)
         self.mask_joint_p = float(mask_joint_p)
         self.mask_frame_p = float(mask_frame_p)
+        self.x_noise_std = float(x_noise_std)
+        self.x_quant_step = float(x_quant_step)
+        self.temporal_dropout_p = float(temporal_dropout_p)
 
         files = list_npz_files(self.root)
         self.files: List[str] = []
@@ -308,6 +345,17 @@ class WindowDatasetGCN(Dataset):
         if self.split == "train" and (self.mask_joint_p > 0 or self.mask_frame_p > 0):
             m_aug = augment_mask(mask_used, self.rng, self.mask_joint_p, self.mask_frame_p)
             X = X * m_aug[..., None]
+        # Optional feature-space robustness augmentation (train only).
+        if self.split == "train" and (
+            self.x_noise_std > 0 or self.x_quant_step > 0 or self.temporal_dropout_p > 0
+        ):
+            X = augment_feature_tensor(
+                X,
+                self.rng,
+                x_noise_std=self.x_noise_std,
+                x_quant_step=self.x_quant_step,
+                temporal_dropout_p=self.temporal_dropout_p,
+            )
 
         y = 1 if int(meta.y) == 1 else 0
 
@@ -437,6 +485,9 @@ class TrainCfg:
 
     mask_joint_p: float = 0.0
     mask_frame_p: float = 0.0
+    x_noise_std: float = 0.0
+    x_quant_step: float = 0.0
+    temporal_dropout_p: float = 0.0
 
     # --- model (CTR-GCN-ish config used below) ---
     hidden: int = 128
@@ -562,6 +613,9 @@ def main() -> None:
 
     ap.add_argument("--mask_joint_p", type=float, default=0.05)
     ap.add_argument("--mask_frame_p", type=float, default=0.05)
+    ap.add_argument("--x_noise_std", type=float, default=0.0)
+    ap.add_argument("--x_quant_step", type=float, default=0.0)
+    ap.add_argument("--temporal_dropout_p", type=float, default=0.0)
 
     # NOTE: core/models.py GCNConfig expects gcn_hidden + tcn_hidden.
     # We keep --hidden as a convenient alias for gcn_hidden and derive tcn_hidden=2*hidden.
@@ -654,6 +708,9 @@ def main() -> None:
         two_stream=bool(cfg.two_stream),
         mask_joint_p=cfg.mask_joint_p,
         mask_frame_p=cfg.mask_frame_p,
+        x_noise_std=cfg.x_noise_std,
+        x_quant_step=cfg.x_quant_step,
+        temporal_dropout_p=cfg.temporal_dropout_p,
         seed=cfg.seed,
         extra_neg_files=extra_neg_files,
         extra_neg_mult=int(cfg.hard_neg_mult),
@@ -667,6 +724,9 @@ def main() -> None:
         two_stream=bool(cfg.two_stream),
         mask_joint_p=0.0,
         mask_frame_p=0.0,
+        x_noise_std=0.0,
+        x_quant_step=0.0,
+        temporal_dropout_p=0.0,
         seed=cfg.seed,
     )
 
