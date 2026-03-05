@@ -9,7 +9,15 @@ import { sliderBackground } from "../../lib/ui";
 import { useCaregivers } from "./hooks/useCaregivers";
 
 export default function SettingsPage() {
-  const { settings, loaded, error: globalError, updateSettings, refresh, apiBase } = useMonitoring();
+  const {
+    settings,
+    loaded,
+    error: globalError,
+    updateSettings,
+    refresh,
+    apiBase,
+    setMonitoringOn,
+  } = useMonitoring();
 
   const sys = settings?.system || {};
 
@@ -79,6 +87,25 @@ export default function SettingsPage() {
     } else {
       setLocalErr(`${actionLabel} could not be saved. Please check API/DB status and try again.`);
     }
+  }
+
+  async function handleMonitoringToggle(next) {
+    setLocalErr("");
+    const desired = Boolean(next);
+    const actual = await setMonitoringOn(desired);
+    if (actual === desired) {
+      showToast(
+        next
+          ? "Monitoring has been enabled. Live detection is now active."
+          : "Monitoring has been disabled. Live detection is now paused."
+      );
+      return;
+    }
+    setLocalErr(
+      desired
+        ? "Monitoring could not be enabled. Open Monitor page and check camera/permissions, then try again."
+        : "Monitoring could not be disabled due to API error. Please retry."
+    );
   }
 
   async function saveCaregiver() {
@@ -199,15 +226,7 @@ export default function SettingsPage() {
                 <input
                   type="checkbox"
                   checked={monitoringEnabled}
-                  onChange={(e) =>
-                    savePatch(
-                      { monitoring_enabled: e.target.checked },
-                      "Monitoring switch",
-                      e.target.checked
-                        ? "Monitoring has been enabled. Live detection can run now."
-                        : "Monitoring has been disabled. Live detection is now paused."
-                    )
-                  }
+                  onChange={(e) => handleMonitoringToggle(e.target.checked)}
                   disabled={!loaded}
                 />
                 <span className={styles.slider}></span>

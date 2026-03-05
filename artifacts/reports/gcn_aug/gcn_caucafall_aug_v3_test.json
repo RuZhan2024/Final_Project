@@ -1,0 +1,588 @@
+{
+  "arch": "gcn",
+  "ckpt": "outputs/caucafall_gcn_W48S12_aug_v3/best.pt",
+  "win_dir": "data/processed/caucafall/windows_eval_W48_S12/test",
+  "selected": {
+    "name": "op2",
+    "tau_high": 0.38999998569488525,
+    "tau_low": 0.3041999936103821
+  },
+  "alert_cfg": {
+    "ema_alpha": 0.2,
+    "k": 2,
+    "n": 3,
+    "tau_high": 0.38999998569488525,
+    "tau_low": 0.3041999936103821,
+    "cooldown_s": 30.0,
+    "confirm": false,
+    "confirm_s": 2.0,
+    "confirm_min_lying": 0.65,
+    "confirm_max_motion": 0.08,
+    "confirm_require_low": true,
+    "start_guard_max_lying": null,
+    "start_guard_prefixes": null
+  },
+  "event_cfg": {
+    "merge_gap_s": 1.0,
+    "overlap_slack_s": 0.0,
+    "time_mode": "center"
+  },
+  "policy": {
+    "tau_low_ratio": 0.78,
+    "ema_alpha": 0.2,
+    "k": 2,
+    "n": 3,
+    "tau_high": 0.5,
+    "tau_low": 0.4,
+    "cooldown_s": 30.0,
+    "confirm": false,
+    "confirm_s": 2.0,
+    "confirm_min_lying": 0.65,
+    "confirm_max_motion": 0.08,
+    "confirm_require_low": true,
+    "start_guard_max_lying": null,
+    "start_guard_prefixes": null
+  },
+  "ops": {
+    "op1": {
+      "tau_high": 0.3099999725818634,
+      "tau_low": 0.2417999804019928,
+      "n_videos": 10,
+      "n_windows": 146,
+      "n_gt_events": 5,
+      "n_alert_events": 6,
+      "n_true_alerts": 5,
+      "n_false_alerts": 1,
+      "sum_recall": 5.0,
+      "sum_recall_count": 5,
+      "sum_delay_s": 6.26086950302124,
+      "sum_delay_s_count": 5,
+      "total_duration_s": 91.82608695652172,
+      "avg_recall": 1.0,
+      "mean_delay_s": 1.252173900604248,
+      "fa_per_day": 940.9090909090911,
+      "fa24h": 940.9090909090911,
+      "precision": 0.8333333333333334,
+      "recall": 1.0,
+      "f1": 0.9090909090909091
+    },
+    "op2": {
+      "tau_high": 0.38999998569488525,
+      "tau_low": 0.3041999936103821,
+      "n_videos": 10,
+      "n_windows": 146,
+      "n_gt_events": 5,
+      "n_alert_events": 4,
+      "n_true_alerts": 4,
+      "n_false_alerts": 0,
+      "sum_recall": 4.0,
+      "sum_recall_count": 5,
+      "sum_delay_s": 15.65217399597168,
+      "sum_delay_s_count": 4,
+      "total_duration_s": 91.82608695652172,
+      "avg_recall": 0.8,
+      "mean_delay_s": 3.91304349899292,
+      "fa_per_day": 0.0,
+      "fa24h": 0.0,
+      "precision": 1.0,
+      "recall": 0.8,
+      "f1": 0.888888888888889
+    },
+    "op3": {
+      "tau_high": 0.949999988079071,
+      "tau_low": 0.7409999966621399,
+      "n_videos": 10,
+      "n_windows": 146,
+      "n_gt_events": 5,
+      "n_alert_events": 0,
+      "n_true_alerts": 0,
+      "n_false_alerts": 0,
+      "sum_recall": 0.0,
+      "sum_recall_count": 5,
+      "sum_delay_s": 0.0,
+      "sum_delay_s_count": 0,
+      "total_duration_s": 91.82608695652172,
+      "avg_recall": 0.0,
+      "mean_delay_s": NaN,
+      "fa_per_day": 0.0,
+      "fa24h": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    }
+  },
+  "sweep": [],
+  "totals": {
+    "n_videos": 10,
+    "n_windows": 146,
+    "n_gt_events": 5,
+    "n_alert_events": 4,
+    "n_true_alerts": 4,
+    "n_false_alerts": 0,
+    "sum_recall": 4.0,
+    "sum_recall_count": 5,
+    "sum_delay_s": 15.65217399597168,
+    "sum_delay_s_count": 4,
+    "total_duration_s": 91.82608695652172,
+    "avg_recall": 0.8,
+    "mean_delay_s": 3.91304349899292,
+    "fa_per_hour": 0.0,
+    "fa_per_day": 0.0,
+    "fa24h": 0.0,
+    "state_counts": {
+      "n_windows": 146,
+      "clear": 81,
+      "suspect": 42,
+      "alert": 19,
+      "suspect_time_s": 21.91303825378418,
+      "alert_time_s": 9.913041114807129,
+      "suspect_frac": 0.2876712328767123,
+      "alert_frac": 0.13013698630136986
+    }
+  },
+  "ap_auc": {
+    "ap": 0.9633765955240423,
+    "auc": 0.9716082317073171
+  },
+  "detail": {
+    "per_video": {
+      "Subject.6/Fall backwards": {
+        "event_metrics": {
+          "event_recall": 1.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": 4.69565224647522,
+          "median_delay_s": 4.69565224647522,
+          "n_gt_events": 1,
+          "n_alert_events": 1,
+          "n_matched_gt": 1,
+          "n_true_alerts": 1,
+          "n_false_alerts": 0,
+          "event_precision": 1.0,
+          "event_f1": 1.0,
+          "recall": 1.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": 1.0,
+          "f1": 1.0
+        },
+        "state_counts": {
+          "n_windows": 18,
+          "clear": 5,
+          "suspect": 7,
+          "alert": 5,
+          "suspect_frac": 0.3888888888888889,
+          "alert_frac": 0.2777777777777778,
+          "suspect_time_s": 3.6521730422973633,
+          "alert_time_s": 2.6086950302124023
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 3.1086957454681396,
+              "end_s": 9.891304016113281
+            }
+          ],
+          "alert_events": [
+            {
+              "start_idx": 13,
+              "end_idx": 17,
+              "start_time_s": 7.804347991943359,
+              "end_time_s": 9.891304016113281,
+              "peak_p": 0.3971380293369293
+            }
+          ]
+        },
+        "fps": 23.0,
+        "duration_s": 10.956521739130435
+      },
+      "Subject.6/Fall forward": {
+        "event_metrics": {
+          "event_recall": 1.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": 4.695652008056641,
+          "median_delay_s": 4.695652008056641,
+          "n_gt_events": 1,
+          "n_alert_events": 1,
+          "n_matched_gt": 1,
+          "n_true_alerts": 1,
+          "n_false_alerts": 0,
+          "event_precision": 1.0,
+          "event_f1": 1.0,
+          "recall": 1.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": 1.0,
+          "f1": 1.0
+        },
+        "state_counts": {
+          "n_windows": 13,
+          "clear": 0,
+          "suspect": 11,
+          "alert": 1,
+          "suspect_frac": 0.8461538461538461,
+          "alert_frac": 0.07692307692307693,
+          "suspect_time_s": 5.739129066467285,
+          "alert_time_s": 0.5217390060424805
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 2.58695650100708,
+              "end_s": 7.282608509063721
+            }
+          ],
+          "alert_events": [
+            {
+              "start_idx": 12,
+              "end_idx": 12,
+              "start_time_s": 7.282608509063721,
+              "end_time_s": 7.282608509063721,
+              "peak_p": 0.40008455514907837
+            }
+          ]
+        },
+        "fps": 23.0,
+        "duration_s": 8.347826086956522
+      },
+      "Subject.6/Fall left": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 16,
+          "clear": 3,
+          "suspect": 13,
+          "alert": 0,
+          "suspect_frac": 0.8125,
+          "alert_frac": 0.0,
+          "suspect_time_s": 6.782607078552246,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 1.54347825050354,
+              "end_s": 8.84782600402832
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 9.91304347826087
+      },
+      "Subject.6/Fall right": {
+        "event_metrics": {
+          "event_recall": 1.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": 4.17391300201416,
+          "median_delay_s": 4.17391300201416,
+          "n_gt_events": 1,
+          "n_alert_events": 1,
+          "n_matched_gt": 1,
+          "n_true_alerts": 1,
+          "n_false_alerts": 0,
+          "event_precision": 1.0,
+          "event_f1": 1.0,
+          "recall": 1.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": 1.0,
+          "f1": 1.0
+        },
+        "state_counts": {
+          "n_windows": 16,
+          "clear": 6,
+          "suspect": 4,
+          "alert": 5,
+          "suspect_frac": 0.25,
+          "alert_frac": 0.3125,
+          "suspect_time_s": 2.086956024169922,
+          "alert_time_s": 2.6086950302124023
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 2.58695650100708,
+              "end_s": 8.84782600402832
+            }
+          ],
+          "alert_events": [
+            {
+              "start_idx": 11,
+              "end_idx": 15,
+              "start_time_s": 6.76086950302124,
+              "end_time_s": 8.84782600402832,
+              "peak_p": 0.42659637331962585
+            }
+          ]
+        },
+        "fps": 23.0,
+        "duration_s": 9.91304347826087
+      },
+      "Subject.6/Fall sitting": {
+        "event_metrics": {
+          "event_recall": 1.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": 2.086956739425659,
+          "median_delay_s": 2.086956739425659,
+          "n_gt_events": 1,
+          "n_alert_events": 1,
+          "n_matched_gt": 1,
+          "n_true_alerts": 1,
+          "n_false_alerts": 0,
+          "event_precision": 1.0,
+          "event_f1": 1.0,
+          "recall": 1.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": 1.0,
+          "f1": 1.0
+        },
+        "state_counts": {
+          "n_windows": 17,
+          "clear": 5,
+          "suspect": 3,
+          "alert": 8,
+          "suspect_frac": 0.17647058823529413,
+          "alert_frac": 0.47058823529411764,
+          "suspect_time_s": 1.5652170181274414,
+          "alert_time_s": 4.173912048339844
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 3.63043475151062,
+              "end_s": 9.3695650100708
+            }
+          ],
+          "alert_events": [
+            {
+              "start_idx": 9,
+              "end_idx": 16,
+              "start_time_s": 5.717391490936279,
+              "end_time_s": 9.3695650100708,
+              "peak_p": 0.5756803750991821
+            }
+          ]
+        },
+        "fps": 23.0,
+        "duration_s": 10.434782608695652
+      },
+      "Subject.6/Hop": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 10,
+          "clear": 10,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 6.782608695652174
+      },
+      "Subject.6/Kneel": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 12,
+          "clear": 12,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 7.826086956521739
+      },
+      "Subject.6/Pick up object": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 13,
+          "clear": 9,
+          "suspect": 4,
+          "alert": 0,
+          "suspect_frac": 0.3076923076923077,
+          "alert_frac": 0.0,
+          "suspect_time_s": 2.086956024169922,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 8.347826086956522
+      },
+      "Subject.6/Sit down": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 12,
+          "clear": 12,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 7.826086956521739
+      },
+      "Subject.6/Walk": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 19,
+          "clear": 19,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 23.0,
+        "duration_s": 11.478260869565217
+      }
+    }
+  }
+}

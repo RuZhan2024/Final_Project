@@ -7,6 +7,9 @@ import { CLIP_POST_S, CLIP_PRE_S, MAX_PROC_FPS, NUM_JOINTS } from "../constants"
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
+const TRIAGE_FALL_CONFIRM_N = 2;
+const TRIAGE_SAFE_CONFIRM_N = 2;
+const TRIAGE_UNCERTAIN_CONFIRM_N = 4;
 
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
@@ -454,9 +457,9 @@ export function usePoseMonitor({
         st.uncertain = 0;
       }
       let triStable = st.last || "not_fall";
-      if (st.fall >= 2) triStable = "fall";
-      else if (st.safe >= 2) triStable = "not_fall";
-      else if (st.uncertain >= 2 && st.fall === 0) triStable = "uncertain";
+      if (st.fall >= TRIAGE_FALL_CONFIRM_N) triStable = "fall";
+      else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
+      else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
       st.last = triStable;
       setTriageState(triStable);
 
@@ -907,13 +910,11 @@ export function usePoseMonitor({
 
   const currentPrediction = useMemo(() => labelForTriage(triageState), [triageState]);
   const safePrediction = useMemo(() => {
-    if (mode === "gcn") return "N/A";
     if (safeState) return labelForTriage(safeState);
     if (safeAlert == null) return "—";
     return safeAlert ? "FALL DETECTED" : "SAFE";
-  }, [mode, safeState, safeAlert]);
+  }, [safeState, safeAlert]);
   const recallPrediction = useMemo(() => {
-    if (mode === "gcn") return "N/A";
     if (recallState) {
       const r = labelForTriage(recallState);
       const s = safeState ? labelForTriage(safeState) : null;
@@ -925,7 +926,7 @@ export function usePoseMonitor({
     if (recallAlert == null) return "—";
     if (recallAlert && String(safeState || "").toLowerCase() !== "fall") return "Watch";
     return recallAlert ? "FALL DETECTED" : "SAFE";
-  }, [mode, recallState, recallAlert, safeState]);
+  }, [recallState, recallAlert, safeState]);
 
   const captureFpsText = useMemo(() => {
     const v = streamFps;
