@@ -3,7 +3,16 @@ import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 
 import { apiRequest } from "../../../lib/apiClient";
-import { CLIP_POST_S, CLIP_PRE_S, MAX_PROC_FPS, NUM_JOINTS } from "../constants";
+import {
+  CLIP_POST_S,
+  CLIP_PRE_S,
+  LIVE_CAPTURE_HEIGHT,
+  LIVE_CAPTURE_WIDTH,
+  LIVE_DRAW_FPS,
+  LIVE_POSE_MODEL_COMPLEXITY,
+  MAX_PROC_FPS,
+  NUM_JOINTS,
+} from "../constants";
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
@@ -73,6 +82,7 @@ export function usePoseMonitor({
   // Throttle MediaPipe inference so navigation stays responsive when /Monitor isn't visible.
   const lastInferTsRef = useRef(0);
   const inferFpsRef = useRef(15);
+  const lastDrawMsRef = useRef(0);
 
   // Cap pose processing rate to reduce CPU.
   const lastProcMsRef = useRef(0);
@@ -140,7 +150,7 @@ export function usePoseMonitor({
 
     try {
       if (poseRef.current && poseRef.current.setOptions) {
-        poseRef.current.setOptions({ modelComplexity: isActiveRef.current ? 1 : 0 });
+        poseRef.current.setOptions({ modelComplexity: LIVE_POSE_MODEL_COMPLEXITY });
       }
     } catch {
       // ignore
@@ -573,6 +583,11 @@ export function usePoseMonitor({
 
       // Draw only when this page is active.
       if (doDraw && ctx) {
+        const drawNowMs = performance.now();
+        if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, LIVE_DRAW_FPS)) {
+          // Skip frequent repaint to reduce main-thread pressure.
+        } else {
+          lastDrawMsRef.current = drawNowMs;
         ensureCanvasMatchesVideo();
         const w = canvasEl.width;
         const h = canvasEl.height;
@@ -589,6 +604,7 @@ export function usePoseMonitor({
         ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
         ctx.fillStyle = "#94a3b8";
         ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
+        }
       }
 
       // Build raw frame
@@ -688,9 +704,9 @@ export function usePoseMonitor({
       } else {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: targetFps },
+            width: { ideal: LIVE_CAPTURE_WIDTH, max: LIVE_CAPTURE_WIDTH },
+            height: { ideal: LIVE_CAPTURE_HEIGHT, max: LIVE_CAPTURE_HEIGHT },
+            frameRate: { ideal: targetFps, max: targetFps },
           },
           audio: false,
         });
@@ -774,7 +790,7 @@ export function usePoseMonitor({
       });
 
       pose.setOptions({
-        modelComplexity: isActiveRef.current ? 1 : 0,
+        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
         smoothLandmarks: true,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5,
