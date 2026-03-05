@@ -258,7 +258,7 @@ TCN_TSM_FOLD_DIV ?= 8
 TCN_PATIENCE ?= 30
 TCN_GRAD_CLIP ?= 1.0
 
-TCN_DROPOUT ?= 0.30
+TCN_DROPOUT ?= 0.4
 TCN_DROPOUT_muvim ?= 0.20
 
 TCN_POS_WEIGHT ?= auto
@@ -267,10 +267,12 @@ TCN_POS_WEIGHT_muvim ?= none
 TCN_BALANCED_SAMPLER ?= 0
 TCN_BALANCED_SAMPLER_muvim ?= 1
 
-TCN_MASK_JOINT_P ?= 0.15
+TCN_MASK_JOINT_P ?= 0.12
 TCN_MASK_JOINT_P_muvim ?= 0.05
-TCN_MASK_FRAME_P ?= 0.10
+TCN_MASK_FRAME_P ?= 0.08
 TCN_MASK_FRAME_P_muvim ?= 0.03
+TCN_WEIGHT_DECAY ?= 0.0001
+TCN_LABEL_SMOOTHING ?= 0.0
 
 TCN_MONITOR ?= ap
 GCN_MONITOR ?= ap
@@ -285,6 +287,8 @@ TCN_FOCAL_GAMMA ?= 2.0
 TCN_RESUME ?=
 TCN_HARD_NEG_LIST ?=
 TCN_HARD_NEG_MULT ?= 1
+
+
 TCN_HARD_NEG_PREFIXES ?=
 TCN_HARD_NEG_PREFIX_MULT ?= 1
 
@@ -395,6 +399,7 @@ FITOPS_PICKER_FLAGS = \
   --save_sweep_json "$(strip $(FITOPS_SAVE_SWEEP_JSON))"
 
 FITOPS_MIN_TAU_HIGH ?= 0.20
+FITOPS_MIN_TAU_HIGH_CAUC ?= 0.40
 
 # Back-compat hooks (optional): allow old env vars to override without breaking defaults
 FITOPS_MIN_TAU_HIGH_le2i      ?= $(or $(strip $(FITOPS_MIN_TAU_HIGH_LE2I)),$(FITOPS_MIN_TAU_HIGH))
@@ -490,6 +495,7 @@ debug-%:
 	@echo "TCN_USE_TSM=$(TCN_USE_TSM) TCN_TSM_FOLD_DIV=$(TCN_TSM_FOLD_DIV)"
 	@echo "GCN_USE_ADAPTIVE_ADJ=$(GCN_USE_ADAPTIVE_ADJ) GCN_ADAPTIVE_ADJ_EMBED=$(GCN_ADAPTIVE_ADJ_EMBED)"
 	@echo "TCN_DROPOUT(resolved)=$(call get,TCN_DROPOUT,$*)"
+	@echo "TCN_WEIGHT_DECAY=$(TCN_WEIGHT_DECAY) TCN_LABEL_SMOOTHING=$(TCN_LABEL_SMOOTHING)"
 	@echo "GCN_DROPOUT(resolved)=$(call get,GCN_DROPOUT,$*)"
 	@echo "SPLIT_MODE=$(if $(filter caucafall,$*),$(CAUCA_SPLIT_GROUP_MODE),n/a)"
 	@echo "FITOPS_MIN_TAU_HIGH(resolved)=$(call get,FITOPS_MIN_TAU_HIGH,$*)"
@@ -520,6 +526,7 @@ help:
 	@echo ""
 	@echo "OP fitting / evaluation:"
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
+	@echo "  make fit-ops-gcn-caucafall-force-ckpt (explicit ckpt-only recalibration alias)"
 	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
 	@echo "  make eval-unlabeled-<ds> | eval-unlabeled-gcn-<ds>"
@@ -841,6 +848,7 @@ $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	  --monitor "$(call get,TCN_MONITOR,$*)" \
 	  --dropout "$(call get,TCN_DROPOUT,$*)" \
 	  --mask_joint_p "$(call get,TCN_MASK_JOINT_P,$*)" --mask_frame_p "$(call get,TCN_MASK_FRAME_P,$*)" \
+	  --weight_decay "$(TCN_WEIGHT_DECAY)" --label_smoothing "$(TCN_LABEL_SMOOTHING)" \
 	  --pos_weight "$(call get,TCN_POS_WEIGHT,$*)" $(if $(filter 1,$(call get,TCN_BALANCED_SAMPLER,$*)),--balanced_sampler,) \
 	  --save_dir "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)"
 	@test -f "$@"
@@ -879,11 +887,17 @@ $(addprefix fit-ops-,$(DATASETS)): fit-ops-%: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml
 $(addprefix fit-ops-gcn-,$(DATASETS)): fit-ops-gcn-%: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml
 	@:
 
+# Explicit alias: recalibrate CAUCAFall GCN using existing checkpoint only.
+.PHONY: fit-ops-gcn-caucafall-force-ckpt
+fit-ops-gcn-caucafall-force-ckpt:
+	@$(MAKE) -B fit-ops-gcn-caucafall ADAPTER_USE="$(ADAPTER_USE)" OUT_TAG="$(OUT_TAG)"
+
 # fit_ops → ops YAML
 # ============================================================
 
-$(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
+$(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
 	@mkdir -p "$(@D)" "$(CAL_DIR)"
+	@test -f "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-tcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
 	$(RUN) scripts/fit_ops.py --arch tcn \
 	  --val_dir "$(call win_eval_dir,$*)/val" \
 	  --ckpt "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
@@ -894,8 +908,9 @@ $(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/b
 	  --min_tau_high "$(call get,FITOPS_MIN_TAU_HIGH,$*)" \
 	  $(FITOPS_FA_ARG)
 
-$(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
+$(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
 	@mkdir -p "$(@D)" "$(CAL_DIR)"
+	@test -f "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-gcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
 	$(RUN) scripts/fit_ops.py --arch gcn \
 	  --val_dir "$(call win_eval_dir,$*)/val" \
 	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \

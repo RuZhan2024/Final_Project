@@ -365,6 +365,21 @@ Deployment scope is intentionally restricted to:
 - `caucafall`
 - `le2i`
 
+### GCN CAUCAFall deploy guard (default)
+
+For `fit-ops-gcn-caucafall`, the Makefile now enforces:
+- `FITOPS_MIN_TAU_HIGH_CAUC=0.40`
+
+Rationale:
+- prevents unsafe low-threshold OP picks that can cause high false-alert rates.
+- keeps CAUCAFall GCN OP selection in deploy-safe range by default.
+
+You can still override explicitly when needed:
+
+```bash
+make fit-ops-gcn-caucafall ADAPTER_USE=1 FITOPS_MIN_TAU_HIGH_CAUC=0.50
+```
+
 The frontend monitor/settings and backend deploy spec discovery only use these two datasets.
 
 Summarize persisted event meta dual-channel stats (last 24h):

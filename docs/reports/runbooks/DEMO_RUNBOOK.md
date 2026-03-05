@@ -47,14 +47,33 @@ curl -sS http://localhost:8000/api/spec
 ```
 Expected: non-empty `specs` and `models` for live inference demo.
 
+### CAUCAFall GCN guardrail check
+For CAUCAFall GCN deployments, verify OP fitting used `min_tau_high >= 0.40`.
+This avoids low-threshold high-false-alert operating points.
+
+Recalibrate (ckpt-only, no training):
+```bash
+make fit-ops-gcn-caucafall-force-ckpt ADAPTER_USE=1
+```
+
+Validate metrics:
+```bash
+python scripts/eval_metrics.py \
+  --win_dir data/processed/caucafall/windows_eval_W48_S12/test \
+  --ckpt outputs/caucafall_gcn_W48S12/best.pt \
+  --ops_yaml configs/ops/gcn_caucafall.yaml \
+  --out_json outputs/metrics/gcn_caucafall.json \
+  --fps_default 23
+```
+
 ## 5) Minimal inference request (JSON payload)
 Route signature uses JSON body (`MonitorPredictPayload`), not multipart upload.
 
 ```bash
 PYTHONPATH="$(pwd)/src:$(pwd)" python3 - <<'PY'
 import requests
-xy=[[[0.0,0.0] for _ in range(17)] for _ in range(48)]
-conf=[[1.0 for _ in range(17)] for _ in range(48)]
+xy=[[[0.0,0.0] for _ in range(33)] for _ in range(48)]
+conf=[[1.0 for _ in range(33)] for _ in range(48)]
 payload={
   "session_id":"examiner-1",
   "mode":"tcn",

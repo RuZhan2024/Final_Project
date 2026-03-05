@@ -1,0 +1,15 @@
+{
+  "name": "caucafall_tcn_r1_augreg_lock",
+  "source_exp_id": "exp_tcn_caucafall_r1_augreg_seed33724876",
+  "ops_yaml": "configs/ops/tcn_caucafall_r1_augreg.yaml",
+  "tcn_defaults": {
+    "dropout": 0.40,
+    "mask_joint_p": 0.12,
+    "mask_frame_p": 0.08,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.0,
+    "hard_neg_mult": 1,
+    "hard_neg_list": "",
+    "resume": ""
+  }
+}
