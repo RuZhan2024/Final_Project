@@ -3,6 +3,13 @@ import React from "react";
 import styles from "../../Monitor.module.css";
 
 export function TimelineCard({ markers, statusText }) {
+  const kindToColor = (kind) => {
+    if (kind === "fall") return "#d32f2f";
+    if (kind === "uncertain") return "#f5f508";
+    if (kind === "safe") return "#34dc31";
+    return "#d1fae5";
+  };
+
   return (
     <div className={styles.card}>
       <h3>Event Timeline</h3>
@@ -15,8 +22,8 @@ export function TimelineCard({ markers, statusText }) {
             className={styles.marker}
             style={{
               left: `${m.leftPct}%`,
-              opacity: m.kind === "safe" ? 0 : m.kind === "uncertain" ? 0.5 : 1,
-              backgroundColor: "#d32f2f",
+              "--marker-color": kindToColor(m.kind),
+              opacity: m.kind === "uncertain" ? 0.85 : 1,
             }}
             title={m.kind}
           />

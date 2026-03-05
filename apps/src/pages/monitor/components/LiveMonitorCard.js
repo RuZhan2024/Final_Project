@@ -2,6 +2,22 @@ import React from "react";
 
 import styles from "../../Monitor.module.css";
 
+function predictionToneStyle(prediction) {
+  const t = String(prediction || "").trim().toLowerCase();
+  if (t === "fall" || t === "fall detected") return { color: "#d32f2f" };
+  if (t === "uncertain" || t === "watch") return { color: "#f5f508" };
+  if (t === "no fall" || t === "safe" || t === "normal") return { color: "#34dc31" };
+  return undefined;
+}
+
+function predictionDisplayText(prediction) {
+  const raw = String(prediction || "").trim();
+  if (!raw) return raw;
+  const t = raw.toLowerCase();
+  if (t === "no fall") return "Normal";
+  return prediction;
+}
+
 export function LiveMonitorCard({
   videoRef,
   canvasRef,
@@ -46,7 +62,9 @@ export function LiveMonitorCard({
       <div className={styles.predictionBox}>
         <div className={styles.predictionItem}>
           <span className={styles.label}>Current Prediction</span>
-          <span className={styles.value}>{currentPrediction}</span>
+          <span className={styles.value} style={predictionToneStyle(currentPrediction)}>
+            {predictionDisplayText(currentPrediction)}
+          </span>
         </div>
         <div className={styles.predictionItem}>
           <span className={styles.label}>P (fall)</span>
@@ -54,11 +72,11 @@ export function LiveMonitorCard({
         </div>
         <div className={styles.predictionItem}>
           <span className={styles.label}>Safe Channel</span>
-          <span className={styles.value}>{safePrediction || "—"}</span>
+          <span className={styles.value}>{safePrediction ? predictionDisplayText(safePrediction) : "—"}</span>
         </div>
         <div className={styles.predictionItem}>
           <span className={styles.label}>Recall Channel (Aggressive)</span>
-          <span className={styles.value}>{recallPrediction || "—"}</span>
+          <span className={styles.value}>{recallPrediction ? predictionDisplayText(recallPrediction) : "—"}</span>
         </div>
       </div>
     </div>
