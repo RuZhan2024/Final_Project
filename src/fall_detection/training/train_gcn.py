@@ -602,6 +602,7 @@ def main() -> None:
 
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--fps_default", type=float, default=30.0)
+    ap.add_argument("--center", type=str, default="pelvis")
 
     ap.add_argument("--loss", type=str, default="bce", choices=["bce", "focal"])
     ap.add_argument("--focal_alpha", type=float, default=0.25)

@@ -132,6 +132,7 @@ function Monitor({ isActive = true } = {}) {
     recallPrediction,
     sigma,
     markers,
+    timelineStatusText,
     captureFpsText,
     modelFpsText,
     resetSession,
@@ -218,7 +219,7 @@ function Monitor({ isActive = true } = {}) {
             apiSummary={apiSummary}
           />
 
-          <TimelineCard markers={markers} />
+          <TimelineCard markers={markers} statusText={timelineStatusText} />
 
           <ModelInfoCard
             modelTag={modelTag}
