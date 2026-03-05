@@ -1328,8 +1328,8 @@
     "op1_recall": 0.95,
     "op3_fa24h": 1.0,
     "op2_objective": "cost_sensitive",
-    "op1_fa24h_cap": 1000.0,
-    "op3_recall_floor": 0.4,
+    "op1_fa24h_cap": -1.0,
+    "op3_recall_floor": -1.0,
     "cost_fn": 5.0,
     "cost_fp": 10.0,
     "idx": {

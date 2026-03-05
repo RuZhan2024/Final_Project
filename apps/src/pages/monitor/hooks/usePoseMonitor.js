@@ -97,8 +97,8 @@ export function usePoseMonitor({
   const [safeState, setSafeState] = useState(null);
   const [recallState, setRecallState] = useState(null);
 
-  // Timeline markers: store last 50 non-safe windows
-  const [timeline, setTimeline] = useState([]); // [{kind:'fall'|'uncertain', t: number}]
+  // Timeline markers: store last 50 prediction windows (safe/uncertain/fall)
+  const [timeline, setTimeline] = useState([]); // [{kind:'safe'|'fall'|'uncertain', t:number, seq:number}]
 
   // Frame buffer for windowing
   const rawFramesRef = useRef([]); // [{t,xy,conf}]
@@ -114,6 +114,7 @@ export function usePoseMonitor({
   // Session id for server-side state machine
   const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
   const triageStableRef = useRef({ fall: 0, uncertain: 0, safe: 0, last: "not_fall" });
+  const timelineSeqRef = useRef(0);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
@@ -233,6 +234,7 @@ export function usePoseMonitor({
     setSafeState(null);
     setRecallState(null);
     setTimeline([]);
+    timelineSeqRef.current = 0;
     triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
     setReplayCurrentS(0);
     setReplayDurationS(0);
@@ -275,7 +277,8 @@ export function usePoseMonitor({
   const addTimelineMarker = useCallback((kind) => {
     setTimeline((prev) => {
       const next = prev.slice(-49);
-      next.push({ kind, t: Date.now() });
+      timelineSeqRef.current += 1;
+      next.push({ kind, t: Date.now(), seq: timelineSeqRef.current });
       return next;
     });
   }, []);
@@ -514,10 +517,12 @@ export function usePoseMonitor({
       setPFall(mu);
       setSigma(sig);
 
-      // timeline markers
+      // Timeline must match Current Prediction exactly.
+      let markerKind = "safe";
       const triNorm = String(triStable || "").toLowerCase();
-      if (triNorm === "fall") addTimelineMarker("fall");
-      else if (triNorm === "uncertain") addTimelineMarker("uncertain");
+      if (triNorm === "fall") markerKind = "fall";
+      else if (triNorm === "uncertain") markerKind = "uncertain";
+      addTimelineMarker(markerKind);
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
       setPredictError(String(err?.message || err || "predict_window failed"));
@@ -945,14 +950,30 @@ export function usePoseMonitor({
   const pText = useMemo(() => (pFall == null ? "—" : Number(pFall).toFixed(3)), [pFall]);
 
   const markers = useMemo(() => {
-    const last50 = timeline.slice(-50);
-    const n = last50.length;
+    const cap = 50;
+    const last = timeline.slice(-cap);
+    const n = last.length;
     if (n === 0) return [];
 
-    return last50.map((m, idx) => ({
-      leftPct: ((idx + 1) / (n + 1)) * 100,
-      kind: m.kind,
-    }));
+    // Fixed 50-slot strip:
+    // - newest window always appears at the right edge slot
+    // - oldest window falls off the left edge when n > 50
+    const pad = cap - n;
+    return last.map((m, idx) => {
+      const slot = pad + idx;
+      return {
+        key: m.seq ?? m.t ?? idx,
+        leftPct: ((slot + 0.5) / cap) * 100,
+        kind: m.kind,
+      };
+    });
+  }, [timeline]);
+
+  const timelineStatusText = useMemo(() => {
+    if (!timeline.length) return "Waiting for prediction windows…";
+    const last = timeline[timeline.length - 1];
+    const ts = new Date(Number(last.t) || Date.now()).toLocaleTimeString();
+    return `Updated ${ts} · ${timeline.length}/50 windows`;
   }, [timeline]);
 
   // Optional: expose the server's OP-2 tau for debugging.
@@ -976,6 +997,7 @@ export function usePoseMonitor({
     recallPrediction,
 
     markers,
+    timelineStatusText,
     captureFpsText,
     modelFpsText,
 

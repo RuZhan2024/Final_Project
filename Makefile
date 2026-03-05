@@ -48,6 +48,21 @@ PLOT_DIR   ?= $(OUT_DIR)/plots
 
 STAMP_DIR  ?= .make
 
+# -------------------------
+# Locked reproducibility profiles (caucafall)
+# -------------------------
+LOCK_TCN_CAUC_TRAIN_DIR ?= $(OUT_DIR)/repro/caucafall_tcn_r1_augreg
+LOCK_GCN_CAUC_TRAIN_DIR ?= $(OUT_DIR)/repro/caucafall_gcn_r2_recallpush_b
+LOCK_GCN_CAUC_RESUME    ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)/best.pt
+LOCK_GCN_CAUC_HNEG_LIST ?= $(OUT_DIR)/hardneg/gcn_caucafall_train_p50.txt
+
+LOCK_TCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)_r1_ctrl/best.pt
+LOCK_GCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)_r2_recallpush_b/best.pt
+LOCK_TCN_CAUC_OPS  ?= $(OPS_DIR)/tcn_caucafall_r1_ctrl.yaml
+LOCK_GCN_CAUC_OPS  ?= $(OPS_DIR)/gcn_caucafall_locked.yaml
+LOCK_TCN_CAUC_MET  ?= $(MET_DIR)/tcn_caucafall_locked.json
+LOCK_GCN_CAUC_MET  ?= $(MET_DIR)/gcn_caucafall_locked.json
+
 # Standard per-dataset layout (functions)
 pose_raw_dir = $(INTERIM)/$(1)/pose_npz_raw
 pose_dir     = $(INTERIM)/$(1)/pose_npz
@@ -515,6 +530,7 @@ help:
 	@echo ""
 	@echo "Training:"
 	@echo "  make train-tcn-<ds> | train-gcn-<ds>"
+	@echo "  make train-best-tcn-caucafall | train-best-gcn-caucafall | train-best-caucafall"
 	@echo ""
 	@echo "Eval windows + FA windows:"
 	@echo "  make windows-eval-<ds>"
@@ -527,6 +543,8 @@ help:
 	@echo "OP fitting / evaluation:"
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
 	@echo "  make fit-ops-gcn-caucafall-force-ckpt (explicit ckpt-only recalibration alias)"
+	@echo "  make repro-best-tcn-caucafall | repro-best-gcn-caucafall | repro-best-caucafall"
+	@echo "  make apply-locked-ops-caucafall (promote locked ops to canonical deploy files)"
 	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
 	@echo "  make eval-unlabeled-<ds> | eval-unlabeled-gcn-<ds>"
@@ -824,6 +842,60 @@ $(STAMP_DIR)/fa_windows/%.stamp: $(STAMP_DIR)/windows_eval/%.stamp
 # ============================================================
 # Train artifacts
 # ============================================================
+.PHONY: train-best-tcn-caucafall train-best-gcn-caucafall train-best-caucafall
+
+train-best-tcn-caucafall: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt
+	@echo "[ok] locked TCN training finished: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt"
+
+train-best-gcn-caucafall: $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt
+	@echo "[ok] locked GCN training finished: $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt"
+
+train-best-caucafall: train-best-tcn-caucafall train-best-gcn-caucafall
+	@echo "[ok] locked TCN+GCN training finished for caucafall."
+
+$(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/train_tcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
+	  --epochs "200" --batch "128" --lr "0.001" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_caucafall)" \
+	  --center "pelvis" --use_motion "1" --use_conf_channel "1" --use_bone "1" --use_bone_length "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
+	  --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" \
+	  --hidden "128" --num_blocks "4" --kernel "3" \
+	  --use_tsm "0" --tsm_fold_div "8" \
+	  --grad_clip "1.0" --patience "30" --min_epochs "0" \
+	  --thr_min "0.05" --thr_max "0.95" --thr_step "0.01" \
+	  --monitor "ap" \
+	  --dropout "0.40" \
+	  --mask_joint_p "0.12" --mask_frame_p "0.08" \
+	  --weight_decay "1e-4" --label_smoothing "0.0" \
+	  --pos_weight "auto" \
+	  --num_workers "0" --deterministic "1" \
+	  --save_dir "$(LOCK_TCN_CAUC_TRAIN_DIR)"
+	@test -f "$@"
+
+$(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_GCN_CAUC_RESUME)" || (echo "[ERR] missing locked GCN resume ckpt: $(LOCK_GCN_CAUC_RESUME)" && exit 1)
+	@test -f "$(LOCK_GCN_CAUC_HNEG_LIST)" || (echo "[ERR] missing locked GCN hard-neg list: $(LOCK_GCN_CAUC_HNEG_LIST)" && exit 1)
+	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
+	  --epochs "80" --batch "128" --lr "0.0003" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_caucafall)" \
+	  --center "pelvis" \
+	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
+	  --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" \
+	  --hidden "96" --dropout "0.22" \
+	  --num_blocks "6" --temporal_kernel "9" --base_channels "48" \
+	  --two_stream "1" --fuse "concat" --use_adaptive_adj "0" --adaptive_adj_embed "16" \
+	  --grad_clip "1.0" --patience "18" --min_epochs "10" \
+	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.05" \
+	  --monitor "ap" \
+	  --mask_joint_p "0.05" --mask_frame_p "0.03" \
+	  --weight_decay "2e-4" --label_smoothing "0.0" \
+	  --pos_weight "auto" \
+	  --resume "$(LOCK_GCN_CAUC_RESUME)" \
+	  --hard_neg_list "$(LOCK_GCN_CAUC_HNEG_LIST)" --hard_neg_mult "1" \
+	  --num_workers "0" --prefetch_factor "2" --persistent_workers "1" --deterministic "1" \
+	  --save_dir "$(LOCK_GCN_CAUC_TRAIN_DIR)"
+	@test -f "$@"
+
 train-tcn-%: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
 	@:
 train-gcn-%: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
@@ -891,6 +963,82 @@ $(addprefix fit-ops-gcn-,$(DATASETS)): fit-ops-gcn-%: $(OPS_DIR)/gcn_%$(OUT_TAG)
 .PHONY: fit-ops-gcn-caucafall-force-ckpt
 fit-ops-gcn-caucafall-force-ckpt:
 	@$(MAKE) -B fit-ops-gcn-caucafall ADAPTER_USE="$(ADAPTER_USE)" OUT_TAG="$(OUT_TAG)"
+
+.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall
+repro-best-tcn-caucafall: $(LOCK_TCN_CAUC_OPS) $(LOCK_TCN_CAUC_MET)
+	@echo "[ok] tcn locked profile reproduced:"
+	@echo "     ops=$(LOCK_TCN_CAUC_OPS)"
+	@echo "     metrics=$(LOCK_TCN_CAUC_MET)"
+
+repro-best-gcn-caucafall: $(LOCK_GCN_CAUC_OPS) $(LOCK_GCN_CAUC_MET)
+	@echo "[ok] gcn locked profile reproduced:"
+	@echo "     ops=$(LOCK_GCN_CAUC_OPS)"
+	@echo "     metrics=$(LOCK_GCN_CAUC_MET)"
+
+repro-best-caucafall: repro-best-tcn-caucafall repro-best-gcn-caucafall
+	@echo "[ok] caucafall locked TCN+GCN profiles reproduced."
+
+apply-locked-ops-caucafall: repro-best-caucafall
+	@cp "$(LOCK_TCN_CAUC_OPS)" "$(OPS_DIR)/tcn_caucafall.yaml"
+	@cp "$(LOCK_GCN_CAUC_OPS)" "$(OPS_DIR)/gcn_caucafall.yaml"
+	@echo "[ok] canonical ops updated:"
+	@echo "     $(OPS_DIR)/tcn_caucafall.yaml"
+	@echo "     $(OPS_DIR)/gcn_caucafall.yaml"
+
+$(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
+	@mkdir -p "$(@D)" "$(MET_DIR)"
+	@test -f "$(LOCK_TCN_CAUC_CKPT)" || (echo "[ERR] missing locked TCN ckpt: $(LOCK_TCN_CAUC_CKPT)" && exit 1)
+	@if [ "$@" = "$(OPS_DIR)/tcn_caucafall_r1_ctrl.yaml" ]; then \
+	  test -f "$@" || (echo "[ERR] missing precomputed locked TCN ops: $@" && exit 1); \
+	  echo "[ok] using precomputed locked TCN ops: $@"; \
+	else \
+	  $(RUN) scripts/fit_ops.py --arch tcn \
+	    --val_dir "$(call win_eval_dir,caucafall)/val" \
+	    --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
+	    --out "$@" \
+	    --fps_default "$(FPS_caucafall)" \
+	    --center "$(CENTER)" --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
+	    --ema_alpha "0.20" --k "2" --n "3" --cooldown_s "30" --tau_low_ratio "0.78" --confirm "0" --confirm_s "2.0" --confirm_min_lying "0.65" --confirm_max_motion "0.08" --confirm_require_low "1" \
+	    --thr_min "0.01" --thr_max "0.95" --thr_step "0.01" --time_mode "center" --merge_gap_s "1.0" --overlap_slack_s "0.5" \
+	    --op1_recall "0.95" --op3_fa24h "1.0" --op2_objective "f1" --cost_fn "5.0" --cost_fp "1.0" \
+	    --ops_picker "conservative" --op_tie_break "max_thr" --tie_eps "1e-3" \
+	    --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.20"; \
+	fi
+
+$(LOCK_GCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
+	@mkdir -p "$(@D)" "$(MET_DIR)"
+	@test -f "$(LOCK_GCN_CAUC_CKPT)" || (echo "[ERR] missing locked GCN ckpt: $(LOCK_GCN_CAUC_CKPT)" && exit 1)
+	$(RUN) scripts/fit_ops.py --arch gcn \
+	  --val_dir "$(call win_eval_dir,caucafall)/val" \
+	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
+	  --out "$@" \
+	  --fps_default "$(FPS_caucafall)" \
+	  --center "$(CENTER)" --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
+	  --ema_alpha "0.20" --k "2" --n "3" --cooldown_s "30" --tau_low_ratio "0.78" --confirm "0" --confirm_s "2.0" --confirm_min_lying "0.65" --confirm_max_motion "0.08" --confirm_require_low "1" \
+	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.01" --time_mode "center" --merge_gap_s "1.0" --overlap_slack_s "0.5" \
+	  --op1_recall "0.95" --op3_fa24h "1.0" --op2_objective "cost_sensitive" --cost_fn "5.0" --cost_fp "10" \
+	  --ops_picker "conservative" --op_tie_break "max_thr" --tie_eps "1e-3" \
+	  --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.30"
+
+$(LOCK_TCN_CAUC_MET): $(LOCK_TCN_CAUC_OPS)
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,caucafall)/test" \
+	  --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
+	  --ops_yaml "$(LOCK_TCN_CAUC_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_caucafall)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(LOCK_GCN_CAUC_MET): $(LOCK_GCN_CAUC_OPS)
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,caucafall)/test" \
+	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
+	  --ops_yaml "$(LOCK_GCN_CAUC_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_caucafall)" \
+	  $(METRICS_SWEEP_FLAGS)
 
 # fit_ops → ops YAML
 # ============================================================

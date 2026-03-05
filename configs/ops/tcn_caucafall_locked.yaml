@@ -1,58 +1,58 @@
 ops:
   OP1:
-    tau_high: 0.3099999725818634
-    tau_low: 0.2417999804019928
+    tau_high: 0.20000000298023224
+    tau_low: 0.15600000321865082
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 2.4782607555389404
-    median_delay_s: 2.3478260040283203
+    mean_delay_s: 0.730434775352478
+    median_delay_s: 0.5217390060424805
     n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
   OP2:
-    tau_high: 0.3799999952316284
-    tau_low: 0.2964000105857849
+    tau_high: 0.85999995470047
+    tau_low: 0.670799970626831
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 3.0
-    median_delay_s: 2.86956524848938
+    mean_delay_s: 4.382608413696289
+    median_delay_s: 4.695652008056641
     n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
   OP3:
-    tau_high: 0.3799999952316284
-    tau_low: 0.2964000105857849
+    tau_high: 0.85999995470047
+    tau_low: 0.670799970626831
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 3.0
-    median_delay_s: 2.86956524848938
+    mean_delay_s: 4.382608413696289
+    median_delay_s: 4.695652008056641
     n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
   tie_break: "max_thr"
-  min_tau_high: 0.3
+  min_tau_high: 0.2
   op1_recall: 0.95
   op3_fa24h: 1.0
-  op2_objective: "cost_sensitive"
+  op2_objective: "f1"
   op1_fa24h_cap: -1.0
   op3_recall_floor: -1.0
   cost_fn: 5.0
-  cost_fp: 10.0
+  cost_fp: 1.0
   idx:
-    OP1: 30
-    OP2: 37
-    OP3: 37
+    OP1: 19
+    OP2: 85
+    OP3: 85
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -94,34 +94,27 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "gcn_caucafall_repro_try1.sweep.json"
+sweep_json: "tcn_caucafall_locked.sweep.json"
 calibration:
   method: "temperature"
-  T: 0.2395763397216797
+  T: 1.5888422727584839
   n_val: 144
-  nll_before: 0.5303184986114502
-  nll_after: 0.3586116433143616
-  ece_before: 0.3843089265541898
-  ece_after: 0.20627512795747152
+  nll_before: 0.07575614005327225
+  nll_after: 0.06458017975091934
+  ece_before: 0.02551397332499791
+  ece_after: 0.030487372306197347
 model:
-  arch: "gcn"
-  ckpt: "../../outputs/caucafall_gcn_W48S12_r2_recallpush_b/best.pt"
+  arch: "tcn"
+  ckpt: "../../outputs/caucafall_tcn_W48S12_r1_ctrl/best.pt"
   model_cfg:
+    hidden: 128
+    dropout: 0.3
+    num_blocks: 4
+    kernel: 3
+    use_tsm: false
+    tsm_fold_div: 8
+    in_ch: 264
     num_joints: 33
-    gcn_hidden: 96
-    tcn_hidden: 192
-    dropout: 0.22
-    use_se: true
-    two_stream: true
-    fuse: "concat"
-    use_adaptive_adj: false
-    adaptive_adj_embed: 16
-    use_ctr_gcn_lite: false
-    ctr_rank: 4
-    stream_drop_joint_p: 0.0
-    stream_drop_motion_p: 0.0
-    in_feats_j: 6
-    in_feats_m: 2
   feat_cfg:
     center: "pelvis"
     use_motion: true

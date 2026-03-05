@@ -1,39 +1,57 @@
 # Deployment Lock (Current Recommended)
 
-Date: 2026-03-04
+Date: 2026-03-06
 
 ## Purpose
 
-Freeze one known-good deployment profile so frontend, backend, and ML artifacts stay aligned.
+Freeze one known-good profile and provide one-command reproducibility for:
+- locked training params (TCN + GCN),
+- locked fit/eval params,
+- locked deployment ops promotion.
 
-## Locked profile
+## Locked checkpoints (reference)
 
-- Dataset: `caucafall`
-- Primary model: `TCN`
-- Operating point: `OP-2`
-- OP-2 thresholds (from locked ops YAML):
-  - `tau_high = 0.7099999785`
-  - `tau_low = 0.5537999868`
-- Confirmation: `off` (as stored in `alert_cfg.confirm=false`)
+- TCN (caucafall): `outputs/caucafall_tcn_W48S12_r1_augreg/best.pt`
+- GCN (caucafall): `outputs/caucafall_gcn_W48S12_r2_recallpush_b/best.pt`
 
-## Locked artifacts
+## Locked one-command workflow (Makefile)
 
-- Ops YAML (runtime canonical):
-  - `configs/ops/tcn_caucafall.yaml`
-- Checkpoint referenced by canonical ops:
-  - `outputs/caucafall_tcn_W48S12_r1_augreg/best.pt`
+### 1) Reproduce locked training hyperparameters
 
-## Runtime defaults synced
+- `make train-best-tcn-caucafall`
+- `make train-best-gcn-caucafall`
+- `make train-best-caucafall` (runs both)
 
-- Backend default settings:
-  - `active_dataset_code = caucafall`
-  - `active_model_code = TCN`
-  - `active_op_code = OP-2`
-  - `fall_threshold ~= 0.71` (fallback)
-- Frontend settings fallback threshold:
-  - `~0.71`
+Outputs:
+- `outputs/repro/caucafall_tcn_r1_augreg/best.pt`
+- `outputs/repro/caucafall_gcn_r2_recallpush_b/best.pt`
+
+### 2) Reproduce locked fit+eval artifacts
+
+- `make repro-best-tcn-caucafall`
+- `make repro-best-gcn-caucafall`
+- `make repro-best-caucafall` (runs both)
+
+Outputs:
+- `configs/ops/tcn_caucafall_locked.yaml`
+- `configs/ops/gcn_caucafall_locked.yaml`
+- `outputs/metrics/tcn_caucafall_locked.json`
+- `outputs/metrics/gcn_caucafall_locked.json`
+
+### 3) Promote locked ops to runtime canonical files
+
+- `make apply-locked-ops-caucafall`
+
+Copies to:
+- `configs/ops/tcn_caucafall.yaml`
+- `configs/ops/gcn_caucafall.yaml`
 
 ## Notes
 
-- `GCN` remains available for comparison/auxiliary signal, but not recommended as autonomous alert source in current lock.
-- If lock changes, update this file and re-run a quick replay sanity check before release.
+- Locked targets are explicit and parameterized in `Makefile` variables:
+  - `LOCK_TCN_CAUC_*`
+  - `LOCK_GCN_CAUC_*`
+- If lock changes, update:
+  - this document,
+  - locked variable values in `Makefile`,
+  - evidence entries in `docs/project_targets/THESIS_EVIDENCE_MAP.md`.

@@ -147,6 +147,8 @@ def pick_ops_from_sweep_conservative(
     *,
     op1_recall: float,
     op3_fa24h: float,
+    op1_fa24h_cap: float = -1.0,
+    op3_recall_floor: float = -1.0,
     op2_objective: str = "f1",
     cost_fn: float = 5.0,
     cost_fp: float = 1.0,
@@ -161,10 +163,11 @@ def pick_ops_from_sweep_conservative(
 
     Strategy
       OP2: maximize F1, tie-break by thr (default: max_thr).
-      OP1: among points with recall>=op1_recall, maximize F1, tie-break by thr.
-           If none meet recall, fall back to max recall (tie-break by thr).
-      OP3: among points with fa24h<=op3_fa24h, maximize recall, then minimize
-           fa24h, then tie-break by thr. If none meet fa, fall back to minimum
+      OP1: among points with recall>=op1_recall (and optional fa24h<=op1_fa24h_cap),
+           maximize F1, tie-break by thr. If none meet, fall back to max recall.
+      OP3: among points with fa24h<=op3_fa24h (and optional recall>=op3_recall_floor),
+           maximize recall, then minimize fa24h, then tie-break by thr.
+           If none meet, relax optional floor first, then fall back to minimum
            fa24h (then max recall), then tie-break by thr.
     """
 
@@ -235,6 +238,11 @@ def pick_ops_from_sweep_conservative(
     # ---------- OP1 (recall target) ----------
     rec_ok = np.isfinite(rec) & ok_thr
     meet = rec_ok & (rec >= float(op1_recall) - eps)
+    if float(op1_fa24h_cap) >= 0:
+        fa_cap_ok = np.isfinite(fa24h) & (fa24h <= float(op1_fa24h_cap) + eps)
+        meet_cap = meet & fa_cap_ok
+        if meet_cap.any():
+            meet = meet_cap
     if meet.any():
         # maximize F1 among those meeting recall
         f1_meet_ok = np.isfinite(f1) & meet
@@ -256,6 +264,11 @@ def pick_ops_from_sweep_conservative(
     # ---------- OP3 (FA constraint) ----------
     fa_ok = np.isfinite(fa24h) & ok_thr
     meet_fa = fa_ok & (fa24h <= float(op3_fa24h) + eps)
+    if float(op3_recall_floor) >= 0:
+        rec_floor_ok = np.isfinite(rec) & (rec >= float(op3_recall_floor) - eps)
+        meet_fa_floor = meet_fa & rec_floor_ok
+        if meet_fa_floor.any():
+            meet_fa = meet_fa_floor
     if meet_fa.any() and np.isfinite(rec).any():
         # maximize recall, then minimize fa24h
         rec_meet = rec.copy()
@@ -281,6 +294,19 @@ def pick_ops_from_sweep_conservative(
     else:
         i3 = i2
 
+    # Practical guard:
+    # If OP2 already satisfies the FA target, do not make OP3 strictly worse
+    # in recall. This avoids degenerate "ultra-conservative" OP3 choices where
+    # OP1/OP2 already have FA≈0 but OP3 collapses recall/F1.
+    if (
+        np.isfinite(fa24h[i2])
+        and float(fa24h[i2]) <= float(op3_fa24h) + eps
+        and np.isfinite(rec[i2])
+        and np.isfinite(rec[i3])
+        and float(rec[i3]) + eps < float(rec[i2])
+    ):
+        i3 = int(i2)
+
     # If all OPs collapse to one threshold (common on near-perfect sweeps),
     # enforce a stable ordering for UI/deploy semantics:
     # OP-1 (high sensitivity) <= OP-2 (balanced) <= OP-3 (low sensitivity).
@@ -292,7 +318,19 @@ def pick_ops_from_sweep_conservative(
             i1 = int(cand1[np.argmin(thr[cand1])])
 
             # OP3: highest threshold among FA-meeting points if available.
+            # If OP2 already satisfies FA target, keep OP3 from collapsing
+            # recall below OP2 during this "all-collapsed" re-order step.
             cand3 = np.where(meet_fa)[0] if meet_fa.any() else valid
+            if (
+                cand3.size > 0
+                and np.isfinite(fa24h[i2])
+                and float(fa24h[i2]) <= float(op3_fa24h) + eps
+                and np.isfinite(rec[i2])
+            ):
+                r2 = float(rec[i2])
+                cand3_keep = cand3[np.where(np.isfinite(rec[cand3]) & (rec[cand3] >= r2 - eps))[0]]
+                if cand3_keep.size > 0:
+                    cand3 = cand3_keep
             i3 = int(cand3[np.argmax(thr[cand3])])
 
             # OP2: pick best-F1 between OP1..OP3 region (fallback to midpoint).
@@ -321,6 +359,8 @@ def pick_ops_from_sweep_conservative(
         "op1_recall": float(op1_recall),
         "op3_fa24h": float(op3_fa24h),
         "op2_objective": str(op2_obj),
+        "op1_fa24h_cap": float(op1_fa24h_cap),
+        "op3_recall_floor": float(op3_recall_floor),
         "cost_fn": float(cost_fn),
         "cost_fp": float(cost_fp),
         "idx": {"OP1": int(i1), "OP2": int(i2), "OP3": int(i3)},
@@ -620,6 +660,8 @@ def main() -> None:
     # OP selection targets
     ap.add_argument("--op1_recall", type=float, default=0.95)
     ap.add_argument("--op3_fa24h", type=float, default=2.0)
+    ap.add_argument("--op1_fa24h_cap", type=float, default=-1.0, help="Optional FA/24h cap for OP1; <0 disables")
+    ap.add_argument("--op3_recall_floor", type=float, default=-1.0, help="Optional recall floor for OP3; <0 disables")
     ap.add_argument("--op2_objective", type=_strip_lower, default="f1", choices=["f1", "cost_sensitive"])
     ap.add_argument("--cost_fn", type=float, default=5.0)
     ap.add_argument("--cost_fp", type=float, default=1.0)
@@ -851,6 +893,8 @@ def main() -> None:
             sweep,
             op1_recall=float(args.op1_recall),
             op3_fa24h=float(args.op3_fa24h),
+            op1_fa24h_cap=float(args.op1_fa24h_cap),
+            op3_recall_floor=float(args.op3_recall_floor),
             op2_objective=str(args.op2_objective),
             cost_fn=float(args.cost_fn),
             cost_fp=float(args.cost_fp),
