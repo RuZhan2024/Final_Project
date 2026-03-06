@@ -1,64 +1,73 @@
-/* --- Page Layout --- */
+/* --- Page Layout (aligned to Settings) --- */
 .pageContainer {
-  padding: 20px;
-  background-color: #f4f6f8; /* Light grey background from image */
+  padding: 32px;
+  background-color: #F0F2F5;
   min-height: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  font-family: 'Roboto', sans-serif;
 }
 
 .pageTitle {
-  margin-bottom: 20px;
-  color: #333;
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 500;
+  color: #202124;
 }
 
 .content {
   display: flex;
-  gap: 24px; /* Space between Left and Right columns */
-  align-items: flex-start; /* Aligns cards to top */
+  gap: 24px;
+  align-items: flex-start;
 }
 
-/* --- Columns (The 2/3 vs 1/3 Logic) --- */
+/* --- Columns --- */
 .leftColumn {
-  flex: 2 1 0; /* 2/3 width */
-  min-width: 0;
+  flex: 2 1 0;
+  min-width: 300px;
 }
 
 .rightColumn {
-  flex: 1 1 0; /* 1/3 width */
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: 300px;
   display: flex;
   flex-direction: column;
-  gap: 24px; /* Space between the 3 cards on the right */
+  gap: 24px;
 }
 
-/* --- Shared Card Styles --- */
+/* --- Shared Card Styles (Settings-like) --- */
 .card {
-  background-color: white;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); /* Subtle shadow */
-  border: 1px solid #e0e0e0;
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 32px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  border: none;
 }
 
 .card h3 {
-  margin: 0 0 8px 0;
-  font-size: 1.25rem;
-  color: #222;
+  margin: 0 0 24px 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: #202124;
 }
 
 .card p, .subText {
-  color: #888;
-  font-size: 0.9rem;
+  color: #5F6368;
+  font-size: 0.875rem;
   margin: 0 0 16px 0;
 }
 
 /* --- Left Column Specifics --- */
 .videoPlaceholder {
   width: 100%;
-  aspect-ratio: 16 / 9; /* Standard video ratio */
-  background-color: #f9f9f9;
-  border: 1px solid #ccc;
+  aspect-ratio: 16 / 9;
+  background-color: #F8F9FA;
+  border: 1px solid #DADCE0;
+  border-radius: 8px;
   margin-bottom: 24px;
   position: relative;
+  overflow: hidden;
 }
 
 .videoPlaceholder svg {
@@ -68,9 +77,10 @@
 }
 
 .predictionBox {
-  border: 1px solid #ccc;
+  border: 1px solid #DADCE0;
   border-radius: 8px;
   padding: 16px 24px;
+  background-color: #F8F9FA;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -83,14 +93,15 @@
 }
 
 .label {
-  font-size: 0.85rem;
-  color: #666;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #5F6368;
 }
 
 .value {
-  font-size: 1.2rem;
-  font-weight: bold;
-  color: #333;
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: #202124;
 }
 
 /* --- Right Column Controls --- */
@@ -100,23 +111,38 @@
 }
 
 .buttonGroup button {
-  flex: 1; /* Make buttons equal width */
-  padding: 10px;
-  border: none;
-  border-radius: 6px;
-  font-weight: 600;
+  flex: 1;
+  padding: 12px;
+  border: 1px solid #DADCE0;
+  border-radius: 4px;
+  font-weight: 500;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.875rem;
+  transition: all 0.2s;
 }
 
 .btnGray {
-  background-color: #f0f0f0;
-  color: #333;
+  background-color: #fff;
+  color: #1A73E8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btnGray:hover {
+  background-color: #F8F9FA;
+  border-color: #1A73E8;
 }
 
 .btnRed {
-  background-color: #d32f2f; /* Standard Error Red */
-  color: white;
+  background-color: #fff5f5;
+  color: #B3261E;
+  border-color: #f1bdb9;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btnRed:hover {
+  background-color: #fdecea;
 }
 
 /* --- Right Column Timeline --- */
@@ -154,14 +180,16 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.95rem;
-  color: #444;
+  font-size: 0.875rem;
+  color: #3C4043;
 }
 
 .tag {
-  background-color: #e0e0e0;
+  background-color: #E8F0FE;
+  color: #174EA6;
+  border: 1px solid #D2E3FC;
   padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: bold;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
 }

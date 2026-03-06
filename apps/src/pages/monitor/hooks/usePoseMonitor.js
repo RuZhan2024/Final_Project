@@ -22,9 +22,10 @@ import {
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
-const TRIAGE_FALL_CONFIRM_N = 1;
-const TRIAGE_SAFE_CONFIRM_N = 1;
-const TRIAGE_UNCERTAIN_CONFIRM_N = 2;
+const TRIAGE_FALL_CONFIRM_N = 2;
+const TRIAGE_SAFE_CONFIRM_N = 2;
+const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
+const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 const CAPTURE_RESOLUTIONS = {
   "480p": { w: 640, h: 480 },
   "540p": { w: 960, h: 540 },
@@ -158,6 +159,8 @@ export function usePoseMonitor({
   const windowSeqRef = useRef(0);
   const triageStableRef = useRef({ fall: 0, uncertain: 0, safe: 0, last: "not_fall" });
   const timelineSeqRef = useRef(0);
+  const timelineSeenEventIdsRef = useRef(new Set());
+  const lastFallHistoryTsRef = useRef(0);
   const wsRef = useRef(null);
   const wsReadyRef = useRef(false);
   const wsPendingRef = useRef(null);
@@ -319,6 +322,8 @@ export function usePoseMonitor({
     setRecallState(null);
     setTimeline([]);
     timelineSeqRef.current = 0;
+    timelineSeenEventIdsRef.current = new Set();
+    lastFallHistoryTsRef.current = 0;
     windowSeqRef.current = 0;
     triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
     setReplayCurrentS(0);
@@ -365,11 +370,25 @@ export function usePoseMonitor({
     setCaptureResolutionPreset(String(preset));
   }, []);
 
-  const addTimelineMarker = useCallback((kind) => {
+  const addTimelineMarker = useCallback((kind, options = {}) => {
+    const now = Date.now();
+    const { force = false, eventId = null, dedupMs = FALL_HISTORY_DEDUP_MS_DEFAULT } = options || {};
+    if (!force && kind === "fall") {
+      if (eventId != null) {
+        const key = String(eventId);
+        if (timelineSeenEventIdsRef.current.has(key)) {
+          return;
+        }
+        timelineSeenEventIdsRef.current.add(key);
+      } else if (now - Number(lastFallHistoryTsRef.current || 0) < Math.max(1000, Number(dedupMs) || 0)) {
+        return;
+      }
+      lastFallHistoryTsRef.current = now;
+    }
     setTimeline((prev) => {
       const next = prev.slice(-49);
       timelineSeqRef.current += 1;
-      next.push({ kind, t: Date.now(), seq: timelineSeqRef.current });
+      next.push({ kind, t: now, seq: timelineSeqRef.current });
       return next;
     });
   }, []);
@@ -788,7 +807,16 @@ export function usePoseMonitor({
       const triNorm = String(triStable || "").toLowerCase();
       if (triNorm === "fall") markerKind = "fall";
       else if (triNorm === "uncertain") markerKind = "uncertain";
-      addTimelineMarker(markerKind);
+      const dedupMs = Math.round(
+        Math.max(
+          1000,
+          1000 * Number(settingsPayload?.system?.alert_cooldown_sec || FALL_HISTORY_DEDUP_MS_DEFAULT / 1000)
+        )
+      );
+      addTimelineMarker(markerKind, {
+        eventId: markerKind === "fall" ? data?.event_id ?? null : null,
+        dedupMs,
+      });
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
       setPredictError(String(err?.message || err || "predict_window failed"));
@@ -1226,7 +1254,7 @@ export function usePoseMonitor({
         body: { resident_id: 1, model_code: prettyModelTag(settingsPayload?.system?.active_model_code) },
       });
       if (data || data?.ok) {
-        addTimelineMarker("fall");
+        addTimelineMarker("fall", { force: true });
         return;
       }
     } catch {
@@ -1244,7 +1272,7 @@ export function usePoseMonitor({
     }
 
     // 3) UI-only marker
-    addTimelineMarker("fall");
+    addTimelineMarker("fall", { force: true });
   }, [addTimelineMarker, apiBase, settingsPayload]);
 
   const currentPrediction = useMemo(() => labelForTriage(triageState), [triageState]);
