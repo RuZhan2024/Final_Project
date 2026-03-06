@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 import yaml
 
 try:
@@ -33,24 +33,27 @@ from ..online_alert import OnlineAlertTracker
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _DUAL_POLICY_CFG_CACHE: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
-_LIVE_MIN_MOTION_FOR_FALL = {
-    "caucafall": 0.020,
-    "le2i": 0.020,
-}
 _LIVE_EFFECTIVE_FPS_MIN = 10.0
-_LIVE_LOW_FPS_MODE_THRESHOLD = 16.0
-_LIVE_LOW_FPS_FALL_PERSIST_N = 3
-_LIVE_MIN_FPS_RATIO = {
-    "caucafall": 0.70,
-    "le2i": 0.70,
+_DEFAULT_LIVE_GUARD_GLOBAL = {
+    "low_fps_mode_threshold": 16.0,
+    "low_fps_fall_persist_n": 3,
+    "min_frames_ratio": 0.60,
+    "min_coverage_ratio": 0.85,
+    "min_joints_med": 20,
 }
-_LIVE_MIN_FRAMES_RATIO = 0.60
-_LIVE_MIN_COVERAGE_RATIO = 0.85
-_LIVE_MIN_CONF_MEAN = {
-    "caucafall": 0.35,
-    "le2i": 0.35,
+_DEFAULT_LIVE_GUARD_BY_DATASET = {
+    "caucafall": {
+        "min_motion_for_fall": 0.020,
+        "min_fps_ratio": 0.70,
+        "min_conf_mean": 0.35,
+    },
+    "le2i": {
+        "min_motion_for_fall": 0.020,
+        "min_fps_ratio": 0.70,
+        "min_conf_mean": 0.35,
+    },
 }
-_LIVE_MIN_JOINTS_MED = 20
+_MONITOR_Q_SCALE = 1000.0
 
 
 def _norm_op_code(op_code: str) -> str:
@@ -62,6 +65,81 @@ def _norm_op_code(op_code: str) -> str:
     if c in {"OP3", "OP-3", "3"}:
         return "OP-3"
     return "OP-2"
+
+
+def _coerce_bool(v: Any, default: bool) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off"}:
+            return False
+    return bool(default)
+
+
+def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_code: str) -> Dict[str, Any]:
+    """Resolve live guard config from ops.<OP*>.live_guard with sane defaults."""
+    ds_defaults = _DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {})
+    d_min_motion = float(ds_defaults.get("min_motion_for_fall", 0.020))
+    d_low_fps_thr = float(_DEFAULT_LIVE_GUARD_GLOBAL.get("low_fps_mode_threshold", 16.0))
+    d_low_fps_persist_n = int(_DEFAULT_LIVE_GUARD_GLOBAL.get("low_fps_fall_persist_n", 3))
+    d_min_fps_ratio = float(ds_defaults.get("min_fps_ratio", 0.70))
+    d_min_frames_ratio = float(_DEFAULT_LIVE_GUARD_GLOBAL.get("min_frames_ratio", 0.60))
+    d_min_coverage_ratio = float(_DEFAULT_LIVE_GUARD_GLOBAL.get("min_coverage_ratio", 0.85))
+    d_min_conf_mean = float(ds_defaults.get("min_conf_mean", 0.35))
+    d_min_joints_med = int(_DEFAULT_LIVE_GUARD_GLOBAL.get("min_joints_med", 20))
+    out = {
+        "min_motion_for_fall": d_min_motion,
+        "low_fps_mode_threshold": d_low_fps_thr,
+        "low_fps_fall_persist_n": d_low_fps_persist_n,
+        "min_fps_ratio": d_min_fps_ratio,
+        "min_frames_ratio": d_min_frames_ratio,
+        "min_coverage_ratio": d_min_coverage_ratio,
+        "min_conf_mean": d_min_conf_mean,
+        "min_joints_med": d_min_joints_med,
+        "enable_stale_drop": True,
+        "enable_low_motion_gate": True,
+        "enable_occlusion_gate": True,
+        "enable_structural_gate": True,
+        "enable_low_fps_persist_gate": True,
+    }
+    try:
+        spec = specs.get(spec_key)
+        ops = spec.ops if spec is not None and hasattr(spec, "ops") else {}
+        op = (ops or {}).get(_norm_op_code(op_code)) or {}
+        lg = op.get("live_guard") if isinstance(op, dict) else {}
+        if isinstance(lg, dict):
+            out["min_motion_for_fall"] = float(lg.get("min_motion_for_fall", out["min_motion_for_fall"]))
+            out["low_fps_mode_threshold"] = float(lg.get("low_fps_mode_threshold", out["low_fps_mode_threshold"]))
+            out["low_fps_fall_persist_n"] = int(lg.get("low_fps_fall_persist_n", out["low_fps_fall_persist_n"]))
+            out["min_fps_ratio"] = float(lg.get("min_fps_ratio", out["min_fps_ratio"]))
+            out["min_frames_ratio"] = float(lg.get("min_frames_ratio", out["min_frames_ratio"]))
+            out["min_coverage_ratio"] = float(lg.get("min_coverage_ratio", out["min_coverage_ratio"]))
+            out["min_conf_mean"] = float(lg.get("min_conf_mean", out["min_conf_mean"]))
+            out["min_joints_med"] = int(lg.get("min_joints_med", out["min_joints_med"]))
+            out["enable_stale_drop"] = _coerce_bool(lg.get("enable_stale_drop"), out["enable_stale_drop"])
+            out["enable_low_motion_gate"] = _coerce_bool(lg.get("enable_low_motion_gate"), out["enable_low_motion_gate"])
+            out["enable_occlusion_gate"] = _coerce_bool(lg.get("enable_occlusion_gate"), out["enable_occlusion_gate"])
+            out["enable_structural_gate"] = _coerce_bool(lg.get("enable_structural_gate"), out["enable_structural_gate"])
+            out["enable_low_fps_persist_gate"] = _coerce_bool(
+                lg.get("enable_low_fps_persist_gate"), out["enable_low_fps_persist_gate"]
+            )
+    except (TypeError, ValueError, AttributeError):
+        pass
+    # Clamp to safe bounds.
+    out["min_motion_for_fall"] = float(max(0.0, out["min_motion_for_fall"]))
+    out["low_fps_mode_threshold"] = float(max(5.0, out["low_fps_mode_threshold"]))
+    out["low_fps_fall_persist_n"] = int(max(1, out["low_fps_fall_persist_n"]))
+    out["min_fps_ratio"] = float(min(1.5, max(0.1, out["min_fps_ratio"])))
+    out["min_frames_ratio"] = float(min(1.0, max(0.1, out["min_frames_ratio"])))
+    out["min_coverage_ratio"] = float(min(1.2, max(0.1, out["min_coverage_ratio"])))
+    out["min_conf_mean"] = float(min(1.0, max(0.0, out["min_conf_mean"])))
+    out["min_joints_med"] = int(max(1, out["min_joints_med"]))
+    return out
 
 
 def _load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str) -> Optional[Dict[str, Any]]:
@@ -255,6 +333,57 @@ def _raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, An
     return stats
 
 
+def _decode_quantized_raw_window(
+    raw_xy_q: Any,
+    raw_conf_q: Any,
+    raw_shape: Any,
+) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+    """Decode compact quantized window payload into nested xy/conf arrays."""
+    try:
+        if not isinstance(raw_shape, (list, tuple)) or len(raw_shape) < 2:
+            return None, None
+        n = int(raw_shape[0])
+        j = int(raw_shape[1])
+        if n <= 0 or j <= 0:
+            return None, None
+    except (TypeError, ValueError):
+        return None, None
+
+    if not isinstance(raw_xy_q, list) or len(raw_xy_q) != n * j * 2:
+        return None, None
+    if raw_conf_q is not None and (not isinstance(raw_conf_q, list) or len(raw_conf_q) != n * j):
+        return None, None
+
+    xy_out: List[Any] = []
+    conf_out: List[Any] = []
+    qi = 0
+    ci = 0
+    for _ in range(n):
+        fxy: List[Any] = []
+        fconf: List[Any] = []
+        for _j in range(j):
+            try:
+                x = float(raw_xy_q[qi]) / _MONITOR_Q_SCALE
+                y = float(raw_xy_q[qi + 1]) / _MONITOR_Q_SCALE
+            except (TypeError, ValueError, IndexError):
+                x = 0.0
+                y = 0.0
+            qi += 2
+            fxy.append([x, y])
+            if raw_conf_q is not None:
+                try:
+                    c = float(raw_conf_q[ci]) / _MONITOR_Q_SCALE
+                except (TypeError, ValueError, IndexError):
+                    c = 0.0
+                ci += 1
+            else:
+                c = 1.0
+            fconf.append(c)
+        xy_out.append(fxy)
+        conf_out.append(fconf)
+    return xy_out, conf_out
+
+
 def _window_quality_block(
     *,
     raw_stats: Dict[str, Any],
@@ -262,6 +391,9 @@ def _window_quality_block(
     effective_fps: float,
     target_T: int,
     dataset_code: str,
+    min_fps_ratio_override: Optional[float] = None,
+    min_frames_ratio_override: Optional[float] = None,
+    min_coverage_ratio_override: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Return quality diagnostics + whether this window should be alert-blocked."""
     need_s = max(1e-6, (max(2, int(target_T)) - 1) / max(1e-6, float(effective_fps)))
@@ -273,10 +405,25 @@ def _window_quality_block(
     frame_ratio = (float(raw_len) / float(target_T)) if target_T > 0 else None
     coverage_ratio = (float(raw_dur) / float(need_s)) if raw_dur is not None and need_s > 0 else None
 
-    min_fps_ratio = float(_LIVE_MIN_FPS_RATIO.get(dataset_code, 0.75))
+    ds_defaults = _DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {})
+    min_fps_ratio = float(
+        min_fps_ratio_override
+        if min_fps_ratio_override is not None
+        else ds_defaults.get("min_fps_ratio", 0.75)
+    )
+    min_frames_ratio = float(
+        min_frames_ratio_override
+        if min_frames_ratio_override is not None
+        else _DEFAULT_LIVE_GUARD_GLOBAL.get("min_frames_ratio", 0.60)
+    )
+    min_coverage_ratio = float(
+        min_coverage_ratio_override
+        if min_coverage_ratio_override is not None
+        else _DEFAULT_LIVE_GUARD_GLOBAL.get("min_coverage_ratio", 0.85)
+    )
     low_fps = bool(fps_ratio is not None and fps_ratio < min_fps_ratio)
-    low_frames = bool(frame_ratio is not None and frame_ratio < _LIVE_MIN_FRAMES_RATIO)
-    low_coverage = bool(coverage_ratio is not None and coverage_ratio < _LIVE_MIN_COVERAGE_RATIO)
+    low_frames = bool(frame_ratio is not None and frame_ratio < min_frames_ratio)
+    low_coverage = bool(coverage_ratio is not None and coverage_ratio < min_coverage_ratio)
 
     return {
         "need_duration_s": float(need_s),
@@ -284,8 +431,8 @@ def _window_quality_block(
         "frame_ratio": float(frame_ratio) if frame_ratio is not None else None,
         "coverage_ratio": float(coverage_ratio) if coverage_ratio is not None else None,
         "min_fps_ratio": float(min_fps_ratio),
-        "min_frames_ratio": float(_LIVE_MIN_FRAMES_RATIO),
-        "min_coverage_ratio": float(_LIVE_MIN_COVERAGE_RATIO),
+        "min_frames_ratio": float(min_frames_ratio),
+        "min_coverage_ratio": float(min_coverage_ratio),
         "low_fps": low_fps,
         "low_frames": low_frames,
         "low_coverage": low_coverage,
@@ -470,6 +617,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     # Inputs
     # -------------
     session_id = str(payload_d.get("session_id") or "default")
+    input_source = str(payload_d.get("input_source") or "").strip().lower()
+    is_replay = input_source in {"video", "replay", "file"}
 
     requested_mode = str(payload_d.get("mode") or "tcn").lower().strip()
     mode = requested_mode
@@ -489,8 +638,18 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     target_T = int(payload_d.get("target_T") or 48)
     raw_xy = payload_d.get("raw_xy")
     raw_conf = payload_d.get("raw_conf")
+    raw_xy_q = payload_d.get("raw_xy_q")
+    raw_conf_q = payload_d.get("raw_conf_q")
+    raw_shape = payload_d.get("raw_shape")
     raw_t_ms = payload_d.get("raw_t_ms")
     window_end_t_ms = payload_d.get("window_end_t_ms", None)
+    window_seq = payload_d.get("window_seq", None)
+    if raw_xy is None and raw_xy_q is not None:
+        dec_xy, dec_conf = _decode_quantized_raw_window(raw_xy_q, raw_conf_q, raw_shape)
+        if dec_xy is not None:
+            raw_xy = dec_xy
+            raw_conf = dec_conf
+
     raw_stats = _raw_window_stats(raw_t_ms, raw_xy, raw_conf)
 
     xy: List[Any] = []
@@ -570,9 +729,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "le2i": 25,
         "caucafall": 23,
     }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 23))
-    effective_fps = _effective_target_fps(
-        expected_fps=float(expected_fps),
-        raw_fps_est=raw_stats.get("raw_fps_est"),
+    effective_fps = (
+        float(expected_fps)
+        if is_replay
+        else _effective_target_fps(
+            expected_fps=float(expected_fps),
+            raw_fps_est=raw_stats.get("raw_fps_est"),
+        )
     )
 
     if raw_xy is not None and raw_t_ms is not None:
@@ -611,44 +774,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     started_tcn = False
     started_gcn = False
 
-    # Precompute live gating signals before feeding tracker state machines.
-    min_motion = _LIVE_MIN_MOTION_FOR_FALL.get(dataset_code, 0.006)
-    low_motion_block = bool(motion_score is not None and motion_score < float(min_motion))
-    qdiag = _window_quality_block(
-        raw_stats=raw_stats,
-        expected_fps=float(expected_fps),
-        effective_fps=float(effective_fps),
-        target_T=int(target_T),
-        dataset_code=dataset_code,
-    )
-    structural_quality_block = bool(qdiag.get("low_frames", False) or qdiag.get("low_coverage", False))
-    low_quality_block = bool(qdiag.get("low_quality_block", False))
-    raw_fps_est = raw_stats.get("raw_fps_est")
-    low_fps_mode = bool(
-        raw_fps_est is not None
-        and math.isfinite(float(raw_fps_est))
-        and float(raw_fps_est) < float(_LIVE_LOW_FPS_MODE_THRESHOLD)
-    )
-    sampling_mode = "low_fps" if low_fps_mode else "normal"
-    conf_mean = raw_stats.get("conf_mean")
-    joints_med = int(raw_stats.get("joints_per_frame_med") or 0)
-    low_conf_block = bool(
-        conf_mean is not None
-        and math.isfinite(float(conf_mean))
-        and float(conf_mean) < float(_LIVE_MIN_CONF_MEAN.get(dataset_code, 0.35))
-    )
-    low_joints_block = bool(joints_med > 0 and joints_med < int(_LIVE_MIN_JOINTS_MED))
-    occlusion_block = bool(low_conf_block or low_joints_block)
-
-    def _guard_alert_p(p_raw: float, tau_low: float) -> float:
-        """Clamp tracker input when live sampling/motion quality is insufficient."""
-        if low_motion_block or structural_quality_block:
-            return float(min(float(p_raw), float(tau_low) - 0.02))
-        return float(p_raw)
-
-    # -------------
-    # Inference
-    # -------------
     specs = _get_deploy_specs()
 
     def resolve_spec_key(arch: str, preferred: str) -> str:
@@ -681,6 +806,128 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                 status_code=404,
                 detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
             )
+
+    guard_spec_key = tcn_key if mode in {"tcn", "hybrid"} else gcn_key
+    live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
+    min_motion = float(live_guard["min_motion_for_fall"])
+    low_motion_block = bool(motion_score is not None and motion_score < min_motion)
+    qdiag = _window_quality_block(
+        raw_stats=raw_stats,
+        expected_fps=float(expected_fps),
+        effective_fps=float(effective_fps),
+        target_T=int(target_T),
+        dataset_code=dataset_code,
+        min_fps_ratio_override=float(live_guard["min_fps_ratio"]),
+        min_frames_ratio_override=float(live_guard["min_frames_ratio"]),
+        min_coverage_ratio_override=float(live_guard["min_coverage_ratio"]),
+    )
+    structural_quality_block = bool(qdiag.get("low_frames", False) or qdiag.get("low_coverage", False))
+    low_quality_block = bool(qdiag.get("low_quality_block", False))
+    raw_fps_est = raw_stats.get("raw_fps_est")
+    low_fps_mode = bool(
+        raw_fps_est is not None
+        and math.isfinite(float(raw_fps_est))
+        and float(raw_fps_est) < float(live_guard["low_fps_mode_threshold"])
+    )
+    sampling_mode = "low_fps" if low_fps_mode else "normal"
+    conf_mean = raw_stats.get("conf_mean")
+    joints_med = int(raw_stats.get("joints_per_frame_med") or 0)
+    low_conf_block = bool(
+        conf_mean is not None
+        and math.isfinite(float(conf_mean))
+        and float(conf_mean) < float(live_guard["min_conf_mean"])
+    )
+    low_joints_block = bool(joints_med > 0 and joints_med < int(live_guard["min_joints_med"]))
+    occlusion_block = bool(low_conf_block or low_joints_block)
+
+    # Soft stale-drop guard: only drop severely stale windows when current window is low risk.
+    seq_in: Optional[int] = None
+    try:
+        if window_seq is not None:
+            seq_in = int(window_seq)
+    except (TypeError, ValueError):
+        seq_in = None
+    seq_prev: Optional[int] = None
+    try:
+        if st.get("last_window_seq") is not None:
+            seq_prev = int(st.get("last_window_seq"))
+    except (TypeError, ValueError):
+        seq_prev = None
+
+    stale_drop = False
+    stale_reason = None
+    if (not is_replay) and bool(live_guard["enable_stale_drop"]) and seq_in is not None and seq_prev is not None:
+        lag = int(seq_prev - seq_in)
+        severe_stale = bool(lag >= 2)
+        low_risk_window = bool(low_motion_block or structural_quality_block or low_quality_block)
+        if severe_stale and low_risk_window:
+            stale_drop = True
+            stale_reason = f"seq_lag={lag},low_risk=1"
+
+    if stale_drop:
+        tri_prev = str(st.get("last_triage_state") or "not_fall")
+        st["last_window_seq"] = seq_in
+        st["last_triage_state"] = tri_prev
+        latency_ms = int((time.time() - t0) * 1000)
+        return {
+            "triage_state": tri_prev,
+            "models": {},
+            "policy_alerts": {},
+            "safe_alert": False,
+            "safe_state": "not_fall",
+            "recall_alert": False,
+            "recall_state": "not_fall",
+            "latency_ms": latency_ms,
+            "capture_fps_est": cap_fps_est,
+            "target_fps": expected_fps,
+            "effective_fps": float(effective_fps),
+            "target_T": target_T,
+            "motion_score": motion_score,
+            "low_motion_block": low_motion_block,
+            "min_motion_for_fall": float(min_motion),
+            "low_quality_block": low_quality_block,
+            "structural_quality_block": structural_quality_block,
+            "occlusion_block": occlusion_block,
+            "low_conf_block": low_conf_block,
+            "low_joints_block": low_joints_block,
+            "min_conf_mean": float(live_guard["min_conf_mean"]),
+            "min_joints_med": int(live_guard["min_joints_med"]),
+            "live_guard": live_guard,
+            "sampling_mode": sampling_mode,
+            "low_fps_mode": low_fps_mode,
+            "low_fps_confirm_count": 0,
+            "low_fps_confirm_need": int(live_guard["low_fps_fall_persist_n"]),
+            "low_fps_gate_reason": "stale_drop",
+            "quality": qdiag,
+            "raw_stats": raw_stats,
+            "dataset_code": dataset_code,
+            "requested_mode": requested_mode,
+            "effective_mode": mode,
+            "op_code": op_code,
+            "use_mc": bool(use_mc),
+            "event_id": None,
+            "notification_dispatch": None,
+            "stale_drop": True,
+            "stale_reason": stale_reason,
+            "window_seq": seq_in,
+            "last_window_seq": seq_prev,
+        }
+
+    def _guard_alert_p(p_raw: float, tau_low: float) -> float:
+        """Clamp tracker input when live sampling/motion quality is insufficient."""
+        if (
+            (not is_replay)
+            and (
+                (bool(live_guard["enable_low_motion_gate"]) and low_motion_block)
+                or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
+            )
+        ):
+            return float(min(float(p_raw), float(tau_low) - 0.02))
+        return float(p_raw)
+
+    # -------------
+    # Inference
+    # -------------
 
     models_out: Dict[str, Any] = {}
     tri_tcn = None
@@ -869,26 +1116,27 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"
     low_fps_confirm_count = int(st.get(low_fps_gate_key, 0) or 0)
     low_fps_gate_reason: Optional[str] = None
-    if low_motion_block and triage_state == "fall":
+    if (not is_replay) and bool(live_guard["enable_low_motion_gate"]) and low_motion_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
         if recall_alert is not None:
             recall_alert = False
-    if occlusion_block and triage_state == "fall":
+    if (not is_replay) and bool(live_guard["enable_occlusion_gate"]) and occlusion_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
         if recall_alert is not None:
             recall_alert = False
-    if structural_quality_block and triage_state == "fall":
+    if (not is_replay) and bool(live_guard["enable_structural_gate"]) and structural_quality_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
         if recall_alert is not None:
             recall_alert = False
 
-    if triage_state == "fall" and low_fps_mode:
+    low_fps_need = int(live_guard["low_fps_fall_persist_n"])
+    if (not is_replay) and bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
         safe_gate_ok = bool(safe_alert) if mode in {"tcn", "hybrid"} else True
         motion_gate_ok = not low_motion_block
         structure_gate_ok = not structural_quality_block
@@ -896,7 +1144,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         if safe_gate_ok and motion_gate_ok and structure_gate_ok and occlusion_gate_ok:
             low_fps_confirm_count += 1
             st[low_fps_gate_key] = low_fps_confirm_count
-            if low_fps_confirm_count < int(_LIVE_LOW_FPS_FALL_PERSIST_N):
+            if low_fps_confirm_count < low_fps_need:
                 low_fps_gate_reason = "need_more_consecutive_fall_windows"
                 triage_state = "uncertain"
                 started_event = False
@@ -988,6 +1236,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     core.LAST_PRED_DECISION = str(triage_state)
     core.LAST_PRED_MODEL_CODE = str(active_model_code)
     core.LAST_PRED_TS_ISO = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    st["last_window_seq"] = seq_in
+    st["last_triage_state"] = str(triage_state)
 
     return {
         "triage_state": triage_state,
@@ -1010,12 +1260,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "occlusion_block": occlusion_block,
         "low_conf_block": low_conf_block,
         "low_joints_block": low_joints_block,
-        "min_conf_mean": float(_LIVE_MIN_CONF_MEAN.get(dataset_code, 0.35)),
-        "min_joints_med": int(_LIVE_MIN_JOINTS_MED),
+        "min_conf_mean": float(live_guard["min_conf_mean"]),
+        "min_joints_med": int(live_guard["min_joints_med"]),
+        "live_guard": live_guard,
         "sampling_mode": sampling_mode,
         "low_fps_mode": low_fps_mode,
         "low_fps_confirm_count": int(low_fps_confirm_count),
-        "low_fps_confirm_need": int(_LIVE_LOW_FPS_FALL_PERSIST_N),
+        "low_fps_confirm_need": int(low_fps_need),
         "low_fps_gate_reason": low_fps_gate_reason,
         "quality": qdiag,
         "raw_stats": raw_stats,
@@ -1026,4 +1277,39 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "use_mc": bool(use_mc),
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
+        "stale_drop": False,
+        "stale_reason": None,
+        "window_seq": seq_in,
+        "last_window_seq": seq_prev,
     }
+
+
+@router.websocket("/api/monitor/ws")
+@router.websocket("/api/v1/monitor/ws")
+async def monitor_ws(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_json()
+            try:
+                payload = MonitorPredictPayload.model_validate(data)
+                out = predict_window(payload)
+                await websocket.send_json(out)
+            except HTTPException as exc:
+                await websocket.send_json(
+                    {
+                        "error": True,
+                        "detail": exc.detail,
+                        "status_code": exc.status_code,
+                    }
+                )
+            except (TypeError, ValueError) as exc:
+                await websocket.send_json(
+                    {
+                        "error": True,
+                        "detail": str(exc),
+                        "status_code": 400,
+                    }
+                )
+    except WebSocketDisconnect:
+        return

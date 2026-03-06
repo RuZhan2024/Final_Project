@@ -26,6 +26,8 @@ export function LiveMonitorCard({
   safePrediction,
   recallPrediction,
   inputSource,
+  captureFpsText,
+  modelFpsText,
 }) {
   return (
     <div className={styles.card}>
@@ -77,6 +79,12 @@ export function LiveMonitorCard({
         <div className={styles.predictionItem}>
           <span className={styles.label}>Recall Channel (Aggressive)</span>
           <span className={styles.value}>{recallPrediction ? predictionDisplayText(recallPrediction) : "—"}</span>
+        </div>
+        <div className={styles.predictionItem}>
+          <span className={styles.label}>Capture FPS / Target FPS</span>
+          <span className={styles.value}>
+            {captureFpsText || "—"} / {modelFpsText || "—"}
+          </span>
         </div>
       </div>
     </div>

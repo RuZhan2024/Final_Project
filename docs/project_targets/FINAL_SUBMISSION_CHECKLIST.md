@@ -57,3 +57,7 @@ Use this before final handoff/demo.
   - `bash tools/run_deployment_lock_validation.sh`
   - `python tools/check_release_bundle.py`
 - [ ] Re-open `artifacts/reports/deployment_lock_validation.md` and confirm PASS remains checked.
+- [ ] Run replay/live acceptance lock and fill manual outcomes:
+  - `bash tools/run_replay_live_acceptance.sh`
+  - update `artifacts/reports/replay_live_acceptance.md`
+  - follow `docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md`
