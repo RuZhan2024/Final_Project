@@ -3,13 +3,34 @@ import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 
 import { apiRequest } from "../../../lib/apiClient";
-import { CLIP_POST_S, CLIP_PRE_S, MAX_PROC_FPS, NUM_JOINTS } from "../constants";
+import {
+  CLIP_POST_S,
+  CLIP_PRE_S,
+  DEGRADED_POSE_MODEL_COMPLEXITY,
+  DEGRADED_DRAW_FPS,
+  DEGRADED_INFER_FPS,
+  LIVE_DRAW_FPS,
+  LIVE_POSE_MODEL_COMPLEXITY,
+  LOW_FPS_ENTER,
+  LOW_FPS_EXIT,
+  LOW_FPS_HOLD_MS,
+  MAX_PROC_FPS,
+  MONITOR_PAYLOAD_Q_SCALE,
+  NUM_JOINTS,
+  REPLAY_UI_UPDATE_MS,
+} from "../constants";
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
-const TRIAGE_FALL_CONFIRM_N = 2;
-const TRIAGE_SAFE_CONFIRM_N = 2;
-const TRIAGE_UNCERTAIN_CONFIRM_N = 4;
+const TRIAGE_FALL_CONFIRM_N = 1;
+const TRIAGE_SAFE_CONFIRM_N = 1;
+const TRIAGE_UNCERTAIN_CONFIRM_N = 2;
+const CAPTURE_RESOLUTIONS = {
+  "480p": { w: 640, h: 480 },
+  "540p": { w: 960, h: 540 },
+  "720p": { w: 1280, h: 720 },
+  "1080p": { w: 1920, h: 1080 },
+};
 
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
@@ -73,6 +94,13 @@ export function usePoseMonitor({
   // Throttle MediaPipe inference so navigation stays responsive when /Monitor isn't visible.
   const lastInferTsRef = useRef(0);
   const inferFpsRef = useRef(15);
+  const poseSendBusyRef = useRef(false);
+  const lastDrawMsRef = useRef(0);
+  const adaptiveDrawFpsRef = useRef(LIVE_DRAW_FPS);
+  const adaptiveInferFpsRef = useRef(0);
+  const degradedModeRef = useRef(false);
+  const lowFpsSinceMsRef = useRef(0);
+  const lastReplayUiMsRef = useRef(0);
 
   // Cap pose processing rate to reduce CPU.
   const lastProcMsRef = useRef(0);
@@ -81,6 +109,7 @@ export function usePoseMonitor({
   const [liveRunning, setLiveRunning] = useState(false);
   const [streamFps, setStreamFps] = useState(null);
   const [inputSource, setInputSource] = useState("camera"); // camera | video
+  const [captureResolutionPreset, setCaptureResolutionPreset] = useState("720p");
   const [selectedVideoName, setSelectedVideoName] = useState("");
   const [replayFile, setReplayFile] = useState(null);
   const [startError, setStartError] = useState("");
@@ -96,6 +125,15 @@ export function usePoseMonitor({
   const [recallAlert, setRecallAlert] = useState(null);
   const [safeState, setSafeState] = useState(null);
   const [recallState, setRecallState] = useState(null);
+  const lastUiRef = useRef({
+    triageState: "not_fall",
+    safeAlert: null,
+    recallAlert: null,
+    safeState: null,
+    recallState: null,
+    pFall: null,
+    sigma: null,
+  });
 
   // Timeline markers: store last 50 prediction windows (safe/uncertain/fall)
   const [timeline, setTimeline] = useState([]); // [{kind:'safe'|'fall'|'uncertain', t:number, seq:number}]
@@ -106,6 +144,10 @@ export function usePoseMonitor({
   const fpsDeltasRef = useRef([]);
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
+  const predictInFlightRef = useRef(false);
+  const payloadTRef = useRef([]);
+  const payloadXYRef = useRef([]);
+  const payloadConfRef = useRef([]);
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
@@ -113,12 +155,25 @@ export function usePoseMonitor({
 
   // Session id for server-side state machine
   const sessionIdRef = useRef(`monitor-${Math.random().toString(16).slice(2)}`);
+  const windowSeqRef = useRef(0);
   const triageStableRef = useRef({ fall: 0, uncertain: 0, safe: 0, last: "not_fall" });
   const timelineSeqRef = useRef(0);
+  const wsRef = useRef(null);
+  const wsReadyRef = useRef(false);
+  const wsPendingRef = useRef(null);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
     isActiveRef.current = Boolean(isActive);
+    if (!isActiveRef.current) {
+      const canvasEl = canvasRef.current;
+      if (canvasEl) {
+        const ctx = canvasEl.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        }
+      }
+    }
   }, [isActive]);
 
   const autoStopMonitoring = useCallback(() => {
@@ -140,7 +195,10 @@ export function usePoseMonitor({
 
     try {
       if (poseRef.current && poseRef.current.setOptions) {
-        poseRef.current.setOptions({ modelComplexity: isActiveRef.current ? 1 : 0 });
+        poseRef.current.setOptions({
+          modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
+          smoothLandmarks: true,
+        });
       }
     } catch {
       // ignore
@@ -151,12 +209,21 @@ export function usePoseMonitor({
   useEffect(() => {
     if (!liveRunning) {
       setStreamFps(null);
+      adaptiveDrawFpsRef.current = LIVE_DRAW_FPS;
+      adaptiveInferFpsRef.current = 0;
+      degradedModeRef.current = false;
+      lowFpsSinceMsRef.current = 0;
       return;
     }
 
     const id = setInterval(() => {
       const v = fpsEstimateRef.current;
-      setStreamFps(v == null ? null : v);
+      const next = v == null ? null : Number(v);
+      setStreamFps((prev) => {
+        if (prev == null && next == null) return prev;
+        if (prev == null || next == null) return next;
+        return Math.abs(prev - next) < 0.2 ? prev : next;
+      });
     }, 500);
 
     return () => clearInterval(id);
@@ -214,6 +281,23 @@ export function usePoseMonitor({
       }
       videoObjectUrlRef.current = null;
     }
+    if (wsPendingRef.current) {
+      try {
+        wsPendingRef.current.reject?.(new Error("ws closed"));
+      } catch {
+        // ignore
+      }
+      wsPendingRef.current = null;
+    }
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {
+        // ignore
+      }
+    }
+    wsRef.current = null;
+    wsReadyRef.current = false;
 
     // Clear buffer
     rawFramesRef.current = [];
@@ -235,9 +319,11 @@ export function usePoseMonitor({
     setRecallState(null);
     setTimeline([]);
     timelineSeqRef.current = 0;
+    windowSeqRef.current = 0;
     triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
     setReplayCurrentS(0);
     setReplayDurationS(0);
+    lastReplayUiMsRef.current = 0;
     setStartError("");
     setPredictError("");
   }, []);
@@ -272,6 +358,11 @@ export function usePoseMonitor({
       setSelectedVideoName("");
     }
     setStartError("");
+  }, []);
+
+  const setCaptureResolution = useCallback((preset) => {
+    if (!Object.prototype.hasOwnProperty.call(CAPTURE_RESOLUTIONS, preset)) return;
+    setCaptureResolutionPreset(String(preset));
   }, []);
 
   const addTimelineMarker = useCallback((kind) => {
@@ -315,6 +406,17 @@ export function usePoseMonitor({
     }
 
     try {
+      const nFrames = frames.length;
+      const tMs = new Array(nFrames);
+      const xy = new Array(nFrames);
+      const conf = new Array(nFrames);
+      for (let i = 0; i < nFrames; i++) {
+        const fr = frames[i];
+        tMs[i] = fr.t;
+        xy[i] = fr.xy;
+        conf[i] = fr.conf;
+      }
+
       const clipPayload = {
         resident_id: 1,
         dataset_code: pending.ctx?.dataset_code,
@@ -324,9 +426,9 @@ export function usePoseMonitor({
         mc_M: pending.ctx?.mc_M,
         pre_s: pending.preMs / 1000,
         post_s: pending.postMs / 1000,
-        t_ms: frames.map((fr) => fr.t),
-        xy: frames.map((fr) => fr.xy),
-        conf: frames.map((fr) => fr.conf),
+        t_ms: tMs,
+        xy,
+        conf,
       };
 
       const data = await apiRequest(
@@ -345,7 +447,124 @@ export function usePoseMonitor({
     }
   }, [apiBase, settingsPayload]);
 
+  const ensurePredictWs = useCallback(async () => {
+    if (wsRef.current && wsReadyRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      return wsRef.current;
+    }
+
+    if (!apiBase) {
+      throw new Error("Missing apiBase for WebSocket connection");
+    }
+
+    let base = String(apiBase || "").trim();
+    if (!base) throw new Error("Empty apiBase");
+    if (base.endsWith("/")) base = base.slice(0, -1);
+    let wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+    let wsPath = "/api/monitor/ws";
+    try {
+      const u = new URL(base);
+      wsBase = u.origin.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+      wsPath = (u.pathname || "").replace(/\/+$/, "") + "/api/monitor/ws";
+      wsPath = wsPath.replace(/\/{2,}/g, "/");
+    } catch {
+      // ignore and use fallback from raw string replacement
+    }
+    const wsUrl = `${wsBase}${wsPath}`;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    wsReadyRef.current = false;
+
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const t = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        reject(new Error("WebSocket connect timeout"));
+      }, 3000);
+
+      ws.onopen = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(t);
+        wsReadyRef.current = true;
+        resolve(ws);
+      };
+      ws.onerror = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(t);
+        reject(new Error("WebSocket connect failed"));
+      };
+      ws.onclose = () => {
+        wsReadyRef.current = false;
+        if (wsRef.current === ws) wsRef.current = null;
+        if (wsPendingRef.current) {
+          try {
+            wsPendingRef.current.reject?.(new Error("WebSocket closed"));
+          } catch {
+            // ignore
+          }
+          wsPendingRef.current = null;
+        }
+      };
+      ws.onmessage = (evt) => {
+        const pending = wsPendingRef.current;
+        if (!pending) return;
+        try {
+          const msg = JSON.parse(String(evt?.data || "{}"));
+          if (msg?.error) {
+            pending.reject(new Error(String(msg?.detail || "predict_window ws error")));
+          } else {
+            pending.resolve(msg);
+          }
+        } catch (err) {
+          pending.reject(err);
+        } finally {
+          wsPendingRef.current = null;
+        }
+      };
+    });
+  }, [apiBase]);
+
+  const predictViaWs = useCallback(async (payload) => {
+    const ws = await ensurePredictWs();
+    return await new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        if (wsPendingRef.current) {
+          wsPendingRef.current = null;
+        }
+        reject(new Error("WebSocket predict timeout"));
+      }, 5000);
+
+      wsPendingRef.current = {
+        resolve: (msg) => {
+          window.clearTimeout(timeoutId);
+          resolve(msg);
+        },
+        reject: (err) => {
+          window.clearTimeout(timeoutId);
+          reject(err);
+        },
+      };
+
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch (err) {
+        wsPendingRef.current = null;
+        window.clearTimeout(timeoutId);
+        reject(err);
+      }
+    });
+  }, [ensurePredictWs]);
+
   const maybeSendWindow = useCallback(async () => {
+    if (predictInFlightRef.current) return;
     const now = performance.now();
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     if (now - lastSentRef.current < minGapMs) return;
@@ -366,13 +585,47 @@ export function usePoseMonitor({
     while (i0 < raw.length && raw[i0].t < startNeed) i0++;
     const startIdx = Math.max(0, i0 - 1);
     const slice = raw.slice(startIdx);
+    const nSlice = slice.length;
 
     lastSentRef.current = now;
 
     const { storeEventClips } = getClipFlags(settingsPayload);
 
+    // Reuse arrays to reduce per-request allocations (guarded by in-flight mutex).
+    const tArr = payloadTRef.current;
+    const xyArr = payloadXYRef.current;
+    const confArr = payloadConfRef.current;
+    tArr.length = nSlice;
+    xyArr.length = nSlice;
+    confArr.length = nSlice;
+    for (let i = 0; i < nSlice; i++) {
+      const fr = slice[i];
+      tArr[i] = fr.t;
+      xyArr[i] = fr.xy;
+      confArr[i] = fr.conf;
+    }
+
+    const xyQ = new Array(nSlice * NUM_JOINTS * 2);
+    const confQ = new Array(nSlice * NUM_JOINTS);
+    let q = 0;
+    let c = 0;
+    for (let i = 0; i < nSlice; i++) {
+      const fr = slice[i];
+      const pts = fr.xy || [];
+      const cf = fr.conf || [];
+      for (let j = 0; j < NUM_JOINTS; j++) {
+        const p = pts[j] || [0, 0];
+        const v = cf[j] == null ? 1 : cf[j];
+        xyQ[q++] = Math.round(clamp01(Number(p[0]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
+        xyQ[q++] = Math.round(clamp01(Number(p[1]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
+        confQ[c++] = Math.round(clamp01(Number(v) || 0) * MONITOR_PAYLOAD_Q_SCALE);
+      }
+    }
+
     const payload = {
+      window_seq: ++windowSeqRef.current,
       session_id: sessionIdRef.current,
+      input_source: inputSourceRef.current || "camera",
       resident_id: 1,
       mode,
       dataset_code: activeDatasetCode,
@@ -398,24 +651,17 @@ export function usePoseMonitor({
       persist: Boolean(monitoringOn || storeEventClips),
 
       // Raw pose samples (variable FPS)
-      raw_t_ms: slice.map((fr) => fr.t),
-      raw_xy: slice.map((fr) => fr.xy),
-      raw_conf: slice.map((fr) => fr.conf),
+      raw_t_ms: tArr,
+      raw_shape: [nSlice, NUM_JOINTS],
+      raw_xy_q: xyQ,
+      raw_conf_q: confQ,
 
       window_end_t_ms: endTs,
     };
 
     try {
-      let data;
-      try {
-        data = await apiRequest(apiBase, "/api/monitor/predict_window", { method: "POST", body: payload });
-      } catch (err) {
-        if (Number(err?.status) === 404) {
-          data = await apiRequest(apiBase, "/api/v1/monitor/predict_window", { method: "POST", body: payload });
-        } else {
-          throw err;
-        }
-      }
+      predictInFlightRef.current = true;
+      const data = await predictViaWs(payload);
       setPredictError("");
 
       const safeObj = data?.policy_alerts?.safe;
@@ -434,17 +680,28 @@ export function usePoseMonitor({
           : typeof recallObj?.alert === "boolean"
           ? recallObj.alert
           : null;
-      setSafeAlert(safeBool);
-      setRecallAlert(recallBool);
-      setSafeState((data?.safe_state || safeObj?.state || null) ?? null);
-      setRecallState((data?.recall_state || recallObj?.state || null) ?? null);
+      const nextSafeState = (data?.safe_state || safeObj?.state || null) ?? null;
+      const nextRecallState = (data?.recall_state || recallObj?.state || null) ?? null;
+      if (lastUiRef.current.safeAlert !== safeBool) {
+        lastUiRef.current.safeAlert = safeBool;
+        setSafeAlert(safeBool);
+      }
+      if (lastUiRef.current.recallAlert !== recallBool) {
+        lastUiRef.current.recallAlert = recallBool;
+        setRecallAlert(recallBool);
+      }
+      if (lastUiRef.current.safeState !== nextSafeState) {
+        lastUiRef.current.safeState = nextSafeState;
+        setSafeState(nextSafeState);
+      }
+      if (lastUiRef.current.recallState !== nextRecallState) {
+        lastUiRef.current.recallState = nextRecallState;
+        setRecallState(nextRecallState);
+      }
 
-      // UI hysteresis to suppress noisy flips between fall/uncertain/not_fall.
+      // In high-performance mode, current prediction should follow backend safe channel directly.
       let triCandidate = safeStateRaw || triRaw || "not_fall";
       if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
-      if (data?.low_quality_block || data?.occlusion_block || data?.low_motion_block) {
-        triCandidate = "not_fall";
-      }
       const st = triageStableRef.current;
       if (triCandidate === "fall" && safeBool !== false) {
         st.fall += 1;
@@ -464,7 +721,10 @@ export function usePoseMonitor({
       else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
       else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
       st.last = triStable;
-      setTriageState(triStable);
+      if (lastUiRef.current.triageState !== triStable) {
+        lastUiRef.current.triageState = triStable;
+        setTriageState(triStable);
+      }
 
       // Schedule a skeleton clip upload (pre + post seconds around this window end)
       try {
@@ -514,8 +774,14 @@ export function usePoseMonitor({
         sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
       }
 
-      setPFall(mu);
-      setSigma(sig);
+      if (lastUiRef.current.pFall !== mu) {
+        lastUiRef.current.pFall = mu;
+        setPFall(mu);
+      }
+      if (lastUiRef.current.sigma !== sig) {
+        lastUiRef.current.sigma = sig;
+        setSigma(sig);
+      }
 
       // Timeline must match Current Prediction exactly.
       let markerKind = "safe";
@@ -526,11 +792,12 @@ export function usePoseMonitor({
     } catch (err) {
       console.error("Error calling /api/monitor/predict_window", err);
       setPredictError(String(err?.message || err || "predict_window failed"));
+    } finally {
+      predictInFlightRef.current = false;
     }
   }, [
     activeDatasetCode,
     addTimelineMarker,
-    apiBase,
     chosen,
     deployS,
     deployW,
@@ -539,6 +806,7 @@ export function usePoseMonitor({
     mode,
     monitoringOn,
     opCode,
+    predictViaWs,
     settingsPayload,
     streamFps,
     targetFps,
@@ -548,8 +816,47 @@ export function usePoseMonitor({
     (results) => {
       // Cap processing rate.
       const nowMs = performance.now();
-      if (nowMs - lastProcMsRef.current < 1000 / MAX_PROC_FPS) return;
+      const procCap = Math.min(MAX_PROC_FPS, Math.max(8, Number(targetFps) + 2));
+      if (nowMs - lastProcMsRef.current < 1000 / procCap) return;
       lastProcMsRef.current = nowMs;
+
+      // Adaptive draw FPS: if capture FPS stays low, reduce draw load temporarily.
+      const estFps = Number(fpsEstimateRef.current);
+      if (Number.isFinite(estFps) && estFps > 0) {
+        if (estFps < LOW_FPS_ENTER) {
+          if (!lowFpsSinceMsRef.current) lowFpsSinceMsRef.current = nowMs;
+          if (nowMs - lowFpsSinceMsRef.current > LOW_FPS_HOLD_MS) {
+            adaptiveDrawFpsRef.current = DEGRADED_DRAW_FPS;
+            adaptiveInferFpsRef.current = DEGRADED_INFER_FPS;
+            if (!degradedModeRef.current && poseRef.current?.setOptions) {
+              degradedModeRef.current = true;
+              try {
+                poseRef.current.setOptions({
+                  modelComplexity: DEGRADED_POSE_MODEL_COMPLEXITY,
+                  smoothLandmarks: false,
+                });
+              } catch {
+                // ignore
+              }
+            }
+          }
+        } else if (estFps > LOW_FPS_EXIT) {
+          lowFpsSinceMsRef.current = 0;
+          adaptiveDrawFpsRef.current = LIVE_DRAW_FPS;
+          adaptiveInferFpsRef.current = 0;
+          if (degradedModeRef.current && poseRef.current?.setOptions) {
+            degradedModeRef.current = false;
+            try {
+              poseRef.current.setOptions({
+                modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
+                smoothLandmarks: true,
+              });
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
 
       const canvasEl = canvasRef.current;
       if (!canvasEl) return;
@@ -561,6 +868,11 @@ export function usePoseMonitor({
       // No pose detected.
       if (!landmarks || !landmarks.length) {
         if (doDraw && ctx) {
+          const drawNowMs = performance.now();
+          if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
+            return;
+          }
+          lastDrawMsRef.current = drawNowMs;
           ensureCanvasMatchesVideo();
           ctx.fillStyle = "#020617";
           ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
@@ -573,6 +885,11 @@ export function usePoseMonitor({
 
       // Draw only when this page is active.
       if (doDraw && ctx) {
+        const drawNowMs = performance.now();
+        if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
+          // Skip frequent repaint to reduce main-thread pressure.
+        } else {
+          lastDrawMsRef.current = drawNowMs;
         ensureCanvasMatchesVideo();
         const w = canvasEl.width;
         const h = canvasEl.height;
@@ -589,6 +906,7 @@ export function usePoseMonitor({
         ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
         ctx.fillStyle = "#94a3b8";
         ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
+        }
       }
 
       // Build raw frame
@@ -686,11 +1004,12 @@ export function usePoseMonitor({
         videoEl.playsInline = true;
         videoEl.preload = "auto";
       } else {
+        const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: targetFps },
+            width: { ideal: cap.w, max: cap.w },
+            height: { ideal: cap.h, max: cap.h },
+            frameRate: { ideal: targetFps, max: targetFps },
           },
           audio: false,
         });
@@ -774,7 +1093,7 @@ export function usePoseMonitor({
       });
 
       pose.setOptions({
-        modelComplexity: isActiveRef.current ? 1 : 0,
+        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
         smoothLandmarks: true,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -791,25 +1110,40 @@ export function usePoseMonitor({
           return;
         }
         if ((inputSourceRef.current || "camera") === "video") {
-          const ct = Number(videoEl.currentTime || 0);
-          const du = Number(videoEl.duration || 0);
-          if (Number.isFinite(ct)) setReplayCurrentS(ct);
-          if (Number.isFinite(du)) setReplayDurationS(du);
+          const drawNowMs = performance.now();
+          if (drawNowMs - lastReplayUiMsRef.current >= REPLAY_UI_UPDATE_MS) {
+            lastReplayUiMsRef.current = drawNowMs;
+            const ct = Number(videoEl.currentTime || 0);
+            const du = Number(videoEl.duration || 0);
+            if (Number.isFinite(ct)) {
+              setReplayCurrentS((prev) => (Math.abs(Number(prev || 0) - ct) < 0.08 ? prev : ct));
+            }
+            if (Number.isFinite(du)) {
+              setReplayDurationS((prev) => (Math.abs(Number(prev || 0) - du) < 0.08 ? prev : du));
+            }
+          }
         }
 
         const now = performance.now();
-        const target = Math.max(1, Number(inferFpsRef.current) || 15);
+        const target = Math.max(
+          1,
+          Number(adaptiveInferFpsRef.current) || Number(inferFpsRef.current) || 15
+        );
         const minIntervalMs = 1000 / target;
 
         if (now - lastInferTsRef.current >= minIntervalMs) {
           lastInferTsRef.current = now;
 
-          if (videoEl.readyState >= 2 && poseRef.current) {
-            try {
-              await poseRef.current.send({ image: videoEl });
-            } catch (err) {
-              console.error("pose.send error", err);
-            }
+          if (videoEl.readyState >= 2 && poseRef.current && !poseSendBusyRef.current) {
+            poseSendBusyRef.current = true;
+            poseRef.current
+              .send({ image: videoEl })
+              .catch((err) => {
+                console.error("pose.send error", err);
+              })
+              .finally(() => {
+                poseSendBusyRef.current = false;
+              });
           }
         }
 
@@ -824,7 +1158,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
+  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -1004,6 +1338,8 @@ export function usePoseMonitor({
     resetSession,
     testFall,
     inputSource,
+    captureResolutionPreset,
+    setCaptureResolution,
     selectedVideoName,
     setVideoFile,
     setInputMode,

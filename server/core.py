@@ -114,6 +114,7 @@ class MonitorPredictPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     session_id: Optional[str] = None
+    input_source: Optional[str] = None
     mode: Optional[str] = None
     dataset_code: Optional[str] = None
     dataset: Optional[str] = None
@@ -135,10 +136,14 @@ class MonitorPredictPayload(BaseModel):
     capture_fps: Optional[float] = None
     timestamp_ms: Optional[float] = None
     window_end_t_ms: Optional[float] = None
+    window_seq: Optional[int] = None
 
     raw_t_ms: Any = None
     raw_xy: Any = None
     raw_conf: Any = None
+    raw_xy_q: Any = None
+    raw_conf_q: Any = None
+    raw_shape: Any = None
     xy: Any = None
     conf: Any = None
 

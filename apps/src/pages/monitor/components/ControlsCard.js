@@ -12,6 +12,8 @@ export function ControlsCard({
   hasReplayFile,
   onSwitchRealtime,
   onSwitchReplay,
+  captureResolutionPreset,
+  onChangeCaptureResolution,
   onPickVideo,
   onClearReplay,
   replayCurrentS,
@@ -88,6 +90,25 @@ export function ControlsCard({
       <p className={styles.subText}>
         Source: {inputSource === "video" ? `Replay (${selectedVideoName || "no file"})` : "Realtime Camera"}
       </p>
+
+      {inputSource === "camera" ? (
+        <div style={{ marginBottom: 12 }}>
+          <label className={styles.subText} htmlFor="capture-resolution-select" style={{ display: "block", marginBottom: 6 }}>
+            Capture Resolution
+          </label>
+          <select
+            id="capture-resolution-select"
+            value={captureResolutionPreset || "720p"}
+            onChange={(e) => onChangeCaptureResolution?.(e.target.value)}
+            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff" }}
+          >
+            <option value="480p">480p (640×480)</option>
+            <option value="540p">540p (960×540)</option>
+            <option value="720p">720p (1280×720)</option>
+            <option value="1080p">1080p (1920×1080)</option>
+          </select>
+        </div>
+      ) : null}
 
       {inputSource === "video" ? (
         <>

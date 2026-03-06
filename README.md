@@ -201,7 +201,8 @@ Useful endpoints:
 - `GET /api/health`
 - `GET /api/spec`
 - `GET /api/settings?resident_id=1`
-- `POST /api/monitor/predict_window`
+- `POST /api/monitor/predict_window` (legacy HTTP path, still available)
+- `WS /api/monitor/ws` (live monitor primary inference path)
 
 OpenAPI:
 - `http://127.0.0.1:8000/openapi.json`
@@ -224,7 +225,33 @@ API base URL is configured in frontend config/env (default localhost backend).
 
 ---
 
-## 9) Quality and Audit Commands
+## 9) Replay + Live Acceptance Lock
+
+Use this to verify:
+1. replay mode is stable/repeatable
+2. live mode is acceptable on target hardware
+
+One command:
+
+```bash
+bash tools/run_replay_live_acceptance.sh
+```
+
+Outputs:
+- `artifacts/reports/replay_live_acceptance.md`
+
+Detailed lock/runbook:
+- `docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md`
+
+Recommended profile for acceptance:
+- dataset: `caucafall`
+- model: `TCN` (primary), `GCN` (secondary)
+- op: `OP-2`
+- transport: `WebSocket` (`/api/monitor/ws`)
+
+---
+
+## 10) Quality and Audit Commands
 
 Quick integrity checks:
 
@@ -248,9 +275,9 @@ PYTHONPATH="$(pwd)/src:$(pwd)" python3 scripts/smoke_api_contract.py
 
 ---
 
-## 10) Common Issues
+## 11) Common Issues
 
-## 10.1 `pipeline-auto-*` fails at extraction
+## 11.1 `pipeline-auto-*` fails at extraction
 
 You likely do not have raw files matching expected glob patterns. Use raw-free mode:
 
@@ -298,4 +325,3 @@ Check:
 - Backend details: `server/README.md`
 - Reports/checklists: `docs/reports/`
 - Project targets and execution plan: `docs/project_targets/`
-

@@ -5,7 +5,6 @@ import styles from "./Monitor.module.css";
 import { useMonitoring } from "../monitoring/MonitoringContext";
 
 import { useApiSpec } from "./monitor/hooks/useApiSpec";
-import { useApiSummary } from "./monitor/hooks/useApiSummary";
 import { useOperatingPointParams } from "./monitor/hooks/useOperatingPointParams";
 import { usePoseMonitor } from "./monitor/hooks/usePoseMonitor";
 
@@ -119,8 +118,9 @@ function Monitor({ isActive = true } = {}) {
     return null;
   }, [tauHigh, fallThreshold, chosenSpec]);
 
-  // ---- Optional server summary ----
-  const { summary: apiSummary, error: summaryErr } = useApiSummary(apiBase, 5000, isActive);
+  // Monitor page no longer polls /api/summary (dashboard owns summary polling).
+  const apiSummary = null;
+  const summaryErr = "";
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {
@@ -138,6 +138,8 @@ function Monitor({ isActive = true } = {}) {
     resetSession,
     testFall,
     inputSource,
+    captureResolutionPreset,
+    setCaptureResolution,
     selectedVideoName,
     setVideoFile,
     setInputMode,
@@ -185,6 +187,8 @@ function Monitor({ isActive = true } = {}) {
             safePrediction={showPlaceholders ? "—" : safePrediction}
             recallPrediction={showPlaceholders ? "—" : recallPrediction}
             inputSource={inputSource}
+            captureFpsText={showPlaceholders ? "—" : captureFpsText}
+            modelFpsText={showPlaceholders ? "—" : modelFpsText}
           />
         </div>
 
@@ -205,6 +209,11 @@ function Monitor({ isActive = true } = {}) {
             onSwitchReplay={() => {
               if (monitoringOn) setMonitoringOn(false);
               setInputMode("video");
+            }}
+            captureResolutionPreset={captureResolutionPreset}
+            onChangeCaptureResolution={(preset) => {
+              if (monitoringOn) setMonitoringOn(false);
+              setCaptureResolution(preset);
             }}
             onPickVideo={setVideoFile}
             onClearReplay={() => setVideoFile(null)}
