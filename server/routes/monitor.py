@@ -856,7 +856,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     stale_drop = False
     stale_reason = None
-    if (not is_replay) and bool(live_guard["enable_stale_drop"]) and seq_in is not None and seq_prev is not None:
+    if bool(live_guard["enable_stale_drop"]) and seq_in is not None and seq_prev is not None:
         lag = int(seq_prev - seq_in)
         severe_stale = bool(lag >= 2)
         low_risk_window = bool(low_motion_block or structural_quality_block or low_quality_block)
@@ -916,11 +916,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     def _guard_alert_p(p_raw: float, tau_low: float) -> float:
         """Clamp tracker input when live sampling/motion quality is insufficient."""
         if (
-            (not is_replay)
-            and (
-                (bool(live_guard["enable_low_motion_gate"]) and low_motion_block)
-                or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
-            )
+            (bool(live_guard["enable_low_motion_gate"]) and low_motion_block)
+            or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
         ):
             return float(min(float(p_raw), float(tau_low) - 0.02))
         return float(p_raw)
@@ -998,6 +995,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             dual_policy_alerts[pol] = {
                 "state": pol_res.triage_state,
                 "alert": bool(pol_res.triage_state == "fall"),
+                "started_event": bool(pol_res.started_event),
                 "tau_low": float(pol_cfg.get("tau_low", 0.0)),
                 "tau_high": float(pol_cfg.get("tau_high", 0.0)),
                 "cooldown_remaining_s": pol_res.cooldown_remaining_s,
@@ -1104,31 +1102,36 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     if mode == "tcn":
         # Use safety-channel alert gate if present (deployment-safe default).
         if "safe" in dual_policy_alerts:
-            started_event = bool(dual_policy_alerts.get("safe", {}).get("alert"))
+            started_event = bool(dual_policy_alerts.get("safe", {}).get("started_event"))
         else:
             started_event = started_tcn
     elif mode == "gcn":
         started_event = started_gcn
     else:
-        started_event = bool(safe_alert)
+        # Hybrid safe alert may persist across many windows; persist only on rising edge.
+        edge_key = f"persist_edge:{resident_id}:{dataset_code}:{mode}:{op_code}"
+        prev_safe = bool(st.get(edge_key, False))
+        curr_safe = bool(safe_alert)
+        started_event = bool(curr_safe and (not prev_safe))
+        st[edge_key] = curr_safe
 
     # In low-fps mode, allow falls but require stricter persistence + motion + structure quality.
     low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"
     low_fps_confirm_count = int(st.get(low_fps_gate_key, 0) or 0)
     low_fps_gate_reason: Optional[str] = None
-    if (not is_replay) and bool(live_guard["enable_low_motion_gate"]) and low_motion_block and triage_state == "fall":
+    if bool(live_guard["enable_low_motion_gate"]) and low_motion_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
         if recall_alert is not None:
             recall_alert = False
-    if (not is_replay) and bool(live_guard["enable_occlusion_gate"]) and occlusion_block and triage_state == "fall":
+    if bool(live_guard["enable_occlusion_gate"]) and occlusion_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
         if recall_alert is not None:
             recall_alert = False
-    if (not is_replay) and bool(live_guard["enable_structural_gate"]) and structural_quality_block and triage_state == "fall":
+    if bool(live_guard["enable_structural_gate"]) and structural_quality_block and triage_state == "fall":
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
@@ -1136,7 +1139,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             recall_alert = False
 
     low_fps_need = int(live_guard["low_fps_fall_persist_n"])
-    if (not is_replay) and bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
+    if bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
         safe_gate_ok = bool(safe_alert) if mode in {"tcn", "hybrid"} else True
         motion_gate_ok = not low_motion_block
         structure_gate_ok = not structural_quality_block
@@ -1178,7 +1181,32 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         else:
             recall_state_out = "fall" if bool(recall_alert) else "not_fall"
 
-    if persist and started_event and triage_state == "fall":
+    # Persistence/notification dedup:
+    # - only save on event start (started_event)
+    # - enforce cooldown so one continuous fall segment produces one event/notification.
+    if mode == "tcn":
+        cooldown_s_for_persist = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
+    elif mode == "gcn":
+        cooldown_s_for_persist = float((models_out.get("gcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
+    else:
+        # Hybrid: use safe-channel cooldown when present, fallback to max model cooldown.
+        safe_pol = dual_policy_alerts.get("safe", {}) if isinstance(dual_policy_alerts.get("safe"), dict) else {}
+        c_tcn = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
+        c_gcn = float((models_out.get("gcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
+        cooldown_s_for_persist = float(safe_pol.get("cooldown_s", max(c_tcn, c_gcn)))
+    cooldown_s_for_persist = max(1.0, cooldown_s_for_persist)
+    persist_cd_key = f"persist_last_ts:{resident_id}:{dataset_code}:{mode}:{op_code}"
+    last_persist_ts = float(st.get(persist_cd_key, 0.0) or 0.0)
+    persist_in_cooldown = (_t_s - last_persist_ts) < cooldown_s_for_persist
+
+    persist_dedup_key = f"persist_dedup_hits:{resident_id}:{dataset_code}:{mode}:{op_code}"
+    persist_dedup_hits = int(st.get(persist_dedup_key, 0) or 0)
+    persist_suppressed = bool(persist and started_event and triage_state == "fall" and persist_in_cooldown)
+    if persist_suppressed:
+        persist_dedup_hits += 1
+        st[persist_dedup_key] = persist_dedup_hits
+
+    if persist and started_event and triage_state == "fall" and (not persist_in_cooldown):
         meta = {
             "dataset": dataset_code,
             "mode": mode,
@@ -1220,6 +1248,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                         source="monitor",
                     )
                     conn.commit()
+                    st[persist_cd_key] = float(_t_s)
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
                 "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
@@ -1277,6 +1306,12 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "use_mc": bool(use_mc),
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
+        "persist_dedup": {
+            "suppressed": persist_suppressed,
+            "cooldown_s": float(cooldown_s_for_persist),
+            "remaining_s": float(max(0.0, cooldown_s_for_persist - max(0.0, _t_s - last_persist_ts))),
+            "hits_session": int(st.get(persist_dedup_key, persist_dedup_hits) or 0),
+        },
         "stale_drop": False,
         "stale_reason": None,
         "window_seq": seq_in,

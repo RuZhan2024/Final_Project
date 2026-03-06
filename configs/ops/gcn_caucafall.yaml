@@ -2,6 +2,15 @@ ops:
   OP1:
     tau_high: 0.3099999725818634
     tau_low: 0.2417999804019928
+    ema_alpha: 0.2
+    k: 2
+    n: 3
+    cooldown_s: 30.0
+    confirm: false
+    confirm_s: 1.5
+    confirm_min_lying: 0.65
+    confirm_max_motion: 0.08
+    confirm_require_low: true
     live_guard:
       min_motion_for_fall: 0.012
       low_fps_mode_threshold: 14.0
@@ -27,21 +36,30 @@ ops:
     n_true_alerts: 4
     n_false_alerts: 0
   OP2:
-    tau_high: 0.3799999952316284
-    tau_low: 0.2964000105857849
+    tau_high: 0.5699999928474426
+    tau_low: 0.444599986076355
+    ema_alpha: 0.2
+    k: 2
+    n: 3
+    cooldown_s: 30.0
+    confirm: true
+    confirm_s: 2.0
+    confirm_min_lying: 0.65
+    confirm_max_motion: 0.08
+    confirm_require_low: true
     live_guard:
-      min_motion_for_fall: 0.010
-      low_fps_mode_threshold: 12.0
-      low_fps_fall_persist_n: 2
-      min_fps_ratio: 0.50
-      min_frames_ratio: 0.45
-      min_coverage_ratio: 0.65
-      min_conf_mean: 0.22
-      min_joints_med: 12
+      min_motion_for_fall: 0.018
+      low_fps_mode_threshold: 15.0
+      low_fps_fall_persist_n: 3
+      min_fps_ratio: 0.65
+      min_frames_ratio: 0.55
+      min_coverage_ratio: 0.80
+      min_conf_mean: 0.30
+      min_joints_med: 16
       enable_stale_drop: true
-      enable_low_motion_gate: false
-      enable_occlusion_gate: false
-      enable_structural_gate: false
+      enable_low_motion_gate: true
+      enable_occlusion_gate: true
+      enable_structural_gate: true
       enable_low_fps_persist_gate: true
     precision: 1.0
     recall: 0.800000011920929
@@ -54,17 +72,26 @@ ops:
     n_true_alerts: 4
     n_false_alerts: 0
   OP3:
-    tau_high: 0.3799999952316284
-    tau_low: 0.2964000105857849
+    tau_high: 0.7299999594688416
+    tau_low: 0.5693999528884888
+    ema_alpha: 0.2
+    k: 3
+    n: 4
+    cooldown_s: 30.0
+    confirm: true
+    confirm_s: 3.0
+    confirm_min_lying: 0.7
+    confirm_max_motion: 0.06
+    confirm_require_low: true
     live_guard:
-      min_motion_for_fall: 0.016
-      low_fps_mode_threshold: 15.0
-      low_fps_fall_persist_n: 3
-      min_fps_ratio: 0.60
-      min_frames_ratio: 0.55
-      min_coverage_ratio: 0.75
-      min_conf_mean: 0.30
-      min_joints_med: 16
+      min_motion_for_fall: 0.022
+      low_fps_mode_threshold: 17.0
+      low_fps_fall_persist_n: 4
+      min_fps_ratio: 0.75
+      min_frames_ratio: 0.60
+      min_coverage_ratio: 0.88
+      min_conf_mean: 0.35
+      min_joints_med: 20
       enable_stale_drop: true
       enable_low_motion_gate: true
       enable_occlusion_gate: true

@@ -288,13 +288,29 @@ def get_alert_cfg(spec_key: str, op_code: str = "OP-2") -> Dict[str, Any]:
         return {}
     op = _norm_op_code(op_code)
     base = dict(spec.alert_cfg or {})
-    # Override tau from ops if present
+    # Override alert params from ops if present.
     op_entry = (spec.ops or {}).get(op) or {}
     if isinstance(op_entry, dict):
         if "tau_low" in op_entry:
             base["tau_low"] = _safe_float(op_entry.get("tau_low"), _safe_float(base.get("tau_low"), 0.5))
         if "tau_high" in op_entry:
             base["tau_high"] = _safe_float(op_entry.get("tau_high"), _safe_float(base.get("tau_high"), 0.85))
+        # Optional per-OP tracker/confirm overrides (deployment policy tuning).
+        for key in (
+            "ema_alpha",
+            "k",
+            "n",
+            "cooldown_s",
+            "confirm",
+            "confirm_s",
+            "confirm_min_lying",
+            "confirm_max_motion",
+            "confirm_require_low",
+            "start_guard_max_lying",
+            "start_guard_prefixes",
+        ):
+            if key in op_entry:
+                base[key] = op_entry.get(key)
     return base
 
 
