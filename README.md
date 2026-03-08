@@ -186,6 +186,27 @@ Current canonical deploy files:
 - `configs/ops/tcn_caucafall.yaml`
 - `configs/ops/gcn_caucafall.yaml`
 
+LE2i paper-comparison diagnostic profile (GCN, scene-scoped start-guard):
+
+```bash
+make train-best-gcn-le2i-paper ADAPTER_USE=1
+make repro-best-gcn-le2i-paper ADAPTER_USE=1
+```
+
+Artifacts:
+- `configs/ops/gcn_le2i_paper_profile.yaml`
+- `outputs/metrics/gcn_le2i_opt33_r8_dataside_noise_paperops.json`
+- Full locked-parameter runbook:
+  - `docs/project_targets/LOCKED_PARAMS_RUNBOOK.md`
+
+Locked LE2i GCN training parameters (dataset-specific, does not alter global defaults):
+- resume: `outputs/le2i_gcn_W48S12_opt33_r4_recallpush_promoted/best.pt`
+- epochs/min_epochs: `45/8`, lr: `3e-4`, batch: `128`
+- features: `motion=1, conf=1, bone=1, bonelen=1, two_stream=1, fuse=concat`
+- robustness: `x_noise_std=0.01, x_quant_step=0.002`
+- regularization: `dropout=0.18, mask_joint_p=0.00, mask_frame_p=0.00`
+- training stability: `use_ema=1, ema_decay=0.999, deterministic=1, num_workers=0`
+
 ---
 
 ## 7) Backend API
@@ -322,6 +343,8 @@ Check:
 
 ## 12) Additional Docs
 
+- Documentation index: `docs/README.md`
+- Submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
 - Backend details: `server/README.md`
 - Reports/checklists: `docs/reports/`
 - Project targets and execution plan: `docs/project_targets/`

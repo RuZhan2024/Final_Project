@@ -1,0 +1,690 @@
+{
+  "arch": "gcn",
+  "ckpt": "outputs/le2i_gcn_W48S12_opt33_r4_recallpush_promoted/best.pt",
+  "win_dir": "data/processed/le2i/windows_eval_W48_S12/test",
+  "selected": {
+    "name": "op2",
+    "tau_high": 0.36,
+    "tau_low": 0.2808
+  },
+  "alert_cfg": {
+    "ema_alpha": 0.2,
+    "k": 2,
+    "n": 3,
+    "tau_high": 0.36,
+    "tau_low": 0.2808,
+    "cooldown_s": 30.0,
+    "confirm": true,
+    "confirm_s": 0.4,
+    "confirm_min_lying": 0.35,
+    "confirm_max_motion": 0.35,
+    "confirm_require_low": true,
+    "start_guard_max_lying": null,
+    "start_guard_prefixes": null
+  },
+  "event_cfg": {
+    "merge_gap_s": 1.0,
+    "overlap_slack_s": 0.0,
+    "time_mode": "center"
+  },
+  "policy": {
+    "tau_low_ratio": 0.78,
+    "ema_alpha": 0.2,
+    "k": 2,
+    "n": 3,
+    "tau_high": 0.36,
+    "tau_low": 0.2808,
+    "cooldown_s": 30.0,
+    "confirm": true,
+    "confirm_s": 0.4,
+    "confirm_min_lying": 0.35,
+    "confirm_max_motion": 0.35,
+    "confirm_require_low": true,
+    "start_guard_max_lying": null,
+    "start_guard_prefixes": null
+  },
+  "ops": {
+    "op1": {
+      "tau_high": 0.5499999523162842,
+      "tau_low": 0.42899996042251587,
+      "n_videos": 13,
+      "n_windows": 269,
+      "n_gt_events": 9,
+      "n_alert_events": 0,
+      "n_true_alerts": 0,
+      "n_false_alerts": 0,
+      "sum_recall": 0.0,
+      "sum_recall_count": 9,
+      "sum_delay_s": 0.0,
+      "sum_delay_s_count": 0,
+      "total_duration_s": 148.5597124717866,
+      "avg_recall": 0.0,
+      "mean_delay_s": NaN,
+      "fa_per_day": 0.0,
+      "fa24h": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "op2": {
+      "tau_high": 0.36,
+      "tau_low": 0.2808,
+      "n_videos": 13,
+      "n_windows": 269,
+      "n_gt_events": 9,
+      "n_alert_events": 0,
+      "n_true_alerts": 0,
+      "n_false_alerts": 0,
+      "sum_recall": 0.0,
+      "sum_recall_count": 9,
+      "sum_delay_s": 0.0,
+      "sum_delay_s_count": 0,
+      "total_duration_s": 148.5597124717866,
+      "avg_recall": 0.0,
+      "mean_delay_s": NaN,
+      "fa_per_day": 0.0,
+      "fa24h": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "op3": {
+      "tau_high": 0.6799999475479126,
+      "tau_low": 0.5303999781608582,
+      "n_videos": 13,
+      "n_windows": 269,
+      "n_gt_events": 9,
+      "n_alert_events": 0,
+      "n_true_alerts": 0,
+      "n_false_alerts": 0,
+      "sum_recall": 0.0,
+      "sum_recall_count": 9,
+      "sum_delay_s": 0.0,
+      "sum_delay_s_count": 0,
+      "total_duration_s": 148.5597124717866,
+      "avg_recall": 0.0,
+      "mean_delay_s": NaN,
+      "fa_per_day": 0.0,
+      "fa24h": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    }
+  },
+  "sweep": [],
+  "totals": {
+    "n_videos": 13,
+    "n_windows": 269,
+    "n_gt_events": 9,
+    "n_alert_events": 0,
+    "n_true_alerts": 0,
+    "n_false_alerts": 0,
+    "sum_recall": 0.0,
+    "sum_recall_count": 9,
+    "sum_delay_s": 0.0,
+    "sum_delay_s_count": 0,
+    "total_duration_s": 148.5597124717866,
+    "avg_recall": 0.0,
+    "mean_delay_s": NaN,
+    "fa_per_hour": 0.0,
+    "fa_per_day": 0.0,
+    "fa24h": 0.0,
+    "state_counts": {
+      "n_windows": 269,
+      "clear": 178,
+      "suspect": 12,
+      "alert": 0,
+      "suspect_time_s": 5.759999752044678,
+      "alert_time_s": 0.0,
+      "suspect_frac": 0.04460966542750929,
+      "alert_frac": 0.0
+    }
+  },
+  "ap_auc": {
+    "ap": 0.8434807842260167,
+    "auc": 0.9774016306274371
+  },
+  "detail": {
+    "per_video": {
+      "Coffee_room_01__Videos__video__16_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 11,
+          "clear": 0,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 0.9399999976158142,
+              "end_s": 3.3399999141693115
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 6.72
+      },
+      "Coffee_room_01__Videos__video__18_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 19,
+          "clear": 10,
+          "suspect": 1,
+          "alert": 0,
+          "suspect_frac": 0.05263157894736842,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.48000001907348633,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 5.260000228881836,
+              "end_s": 8.140000343322754
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 10.56
+      },
+      "Coffee_room_01__Videos__video__29_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 24,
+          "clear": 22,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 11.020000457763672,
+              "end_s": 11.979999542236328
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 12.96
+      },
+      "Coffee_room_01__Videos__video__35_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 16,
+          "clear": 4,
+          "suspect": 2,
+          "alert": 0,
+          "suspect_frac": 0.125,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.9600000381469727,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 2.380000114440918,
+              "end_s": 4.78000020980835
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 9.12
+      },
+      "Coffee_room_01__Videos__video__48_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 61,
+          "clear": 51,
+          "suspect": 1,
+          "alert": 0,
+          "suspect_frac": 0.01639344262295082,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.4799995422363281,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 25.420000076293945,
+              "end_s": 28.299999237060547
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 30.72
+      },
+      "Coffee_room_01__Videos__video__5_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 12,
+          "clear": 8,
+          "suspect": 1,
+          "alert": 0,
+          "suspect_frac": 0.08333333333333333,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.48000001907348633,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 4.300000190734863,
+              "end_s": 6.21999979019165
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 7.2
+      },
+      "Coffee_room_02__Videos__video__52_": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 14,
+          "clear": 5,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 8.16
+      },
+      "Coffee_room_02__Videos__video__59_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 17,
+          "clear": 5,
+          "suspect": 3,
+          "alert": 0,
+          "suspect_frac": 0.17647058823529413,
+          "alert_frac": 0.0,
+          "suspect_time_s": 1.440000057220459,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 4.78000020980835,
+              "end_s": 7.179999828338623
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 9.6
+      },
+      "Coffee_room_02__Videos__video__60_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 19,
+          "clear": 8,
+          "suspect": 1,
+          "alert": 0,
+          "suspect_frac": 0.05263157894736842,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.48000001907348633,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 4.300000190734863,
+              "end_s": 7.179999828338623
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 10.56
+      },
+      "Coffee_room_02__Videos__video__66_": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 21,
+          "clear": 21,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 11.52
+      },
+      "Coffee_room_02__Videos__video__67_": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 25,
+          "clear": 21,
+          "suspect": 3,
+          "alert": 0,
+          "suspect_frac": 0.12,
+          "alert_frac": 0.0,
+          "suspect_time_s": 1.440000057220459,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 25.0,
+        "duration_s": 13.44
+      },
+      "Home_01__Videos__video__4_": {
+        "event_metrics": {
+          "event_recall": 0.0,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 1,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": 0.0,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 17,
+          "clear": 10,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [
+            {
+              "start_s": 5.479079246520996,
+              "end_s": 7.4790472984313965
+            }
+          ],
+          "alert_events": []
+        },
+        "fps": 24.000383377075195,
+        "duration_s": 9.999840262103662
+      },
+      "Home_02__Videos__video__38_": {
+        "event_metrics": {
+          "event_recall": NaN,
+          "false_alerts_per_hour": 0.0,
+          "false_alerts_per_day": 0.0,
+          "mean_delay_s": NaN,
+          "median_delay_s": NaN,
+          "n_gt_events": 0,
+          "n_alert_events": 0,
+          "n_matched_gt": 0,
+          "n_true_alerts": 0,
+          "n_false_alerts": 0,
+          "event_precision": NaN,
+          "event_f1": NaN,
+          "recall": NaN,
+          "fa_per_day": 0.0,
+          "fa24h": 0.0,
+          "fa_per_hour": 0.0,
+          "precision": NaN,
+          "f1": NaN
+        },
+        "state_counts": {
+          "n_windows": 13,
+          "clear": 13,
+          "suspect": 0,
+          "alert": 0,
+          "suspect_frac": 0.0,
+          "alert_frac": 0.0,
+          "suspect_time_s": 0.0,
+          "alert_time_s": 0.0
+        },
+        "detail": {
+          "gt_events": [],
+          "alert_events": []
+        },
+        "fps": 24.000383377075195,
+        "duration_s": 7.99987220968293
+      }
+    }
+  }
+}

@@ -27,6 +27,8 @@ from collections import defaultdict
 # Silence verbose logs BEFORE importing mediapipe backends (best effort)
 os.environ.setdefault("GLOG_minloglevel", "2")     # 0=DEBUG,1=INFO,2=WARNING,3=ERROR
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+# Force CPU-safe graph startup in headless/CI/macOS shells where NSOpenGL may be unavailable.
+os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
 
 import numpy as np
 import cv2

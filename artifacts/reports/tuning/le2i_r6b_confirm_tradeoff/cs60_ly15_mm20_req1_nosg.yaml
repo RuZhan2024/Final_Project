@@ -1,0 +1,134 @@
+ops:
+  OP1:
+    tau_high: 0.5499999523162842
+    tau_low: 0.42899996042251587
+    precision: 0.9090909361839294
+    recall: 1.0
+    f1: 0.9523809552192688
+    fa24h: 440.0999450683594
+    mean_delay_s: 1.5739848613739014
+    median_delay_s: 1.4999756813049316
+    n_gt_events: 10
+    n_alert_events: 11
+    n_true_alerts: 10
+    n_false_alerts: 1
+  OP2:
+    tau_high: 0.36
+    tau_low: 0.2808
+    precision: 0.9090909361839294
+    recall: 1.0
+    f1: 0.9523809552192688
+    fa24h: 440.0999450683594
+    mean_delay_s: 1.5739848613739014
+    median_delay_s: 1.4999756813049316
+    n_gt_events: 10
+    n_alert_events: 11
+    n_true_alerts: 10
+    n_false_alerts: 1
+  OP3:
+    tau_high: 0.6799999475479126
+    tau_low: 0.5303999781608582
+    precision: 1.0
+    recall: 0.800000011920929
+    f1: 0.8888888955116272
+    fa24h: 0.0
+    mean_delay_s: 2.2624831199645996
+    median_delay_s: 2.199983835220337
+    n_gt_events: 10
+    n_alert_events: 8
+    n_true_alerts: 8
+    n_false_alerts: 0
+ops_meta:
+  picker: conservative
+  tie_break: max_thr
+  min_tau_high: 0.2
+  op1_recall: 0.95
+  op3_fa24h: 1.0
+  op2_objective: f1
+  op1_fa24h_cap: -1.0
+  op3_recall_floor: -1.0
+  cost_fn: 5.0
+  cost_fp: 1.0
+  idx:
+    OP1: 54
+    OP2: 54
+    OP3: 67
+  confirm_fallback: disabled_confirm_after_degenerate_sweep
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.36
+  tau_low: 0.2808
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 0.6
+  confirm_min_lying: 0.15
+  confirm_max_motion: 0.2
+  confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
+alert_base:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.5
+  tau_low: 0.4
+  cooldown_s: 30.0
+  confirm: false
+  confirm_s: 2.0
+  confirm_min_lying: 0.65
+  confirm_max_motion: 0.08
+  confirm_require_low: true
+  start_guard_max_lying: null
+  start_guard_prefixes: null
+sweep_meta:
+  n_videos: 13
+  total_duration_s: 196.319041572622
+  n_fa_videos: 0
+  total_duration_s_fa: 0.0
+  merge_gap_s: 1.0
+  time_mode: center
+  overlap_slack_s: 0.5
+sweep_cfg:
+  thr_min: 0.01
+  thr_max: 0.95
+  thr_step: 0.01
+  tau_low_ratio: 0.78
+sweep_json: gcn_le2i_opt33_r1.sweep.json
+calibration:
+  method: temperature
+  T: 1.176308512687683
+  n_val: 365
+  nll_before: 0.3014924228191376
+  nll_after: 0.29781457781791687
+  ece_before: 0.1437662257440149
+  ece_after: 0.15712800747284358
+model:
+  arch: gcn
+  ckpt: ../../outputs/le2i_gcn_W48S12_opt33_r1/best.pt
+  model_cfg:
+    num_joints: 33
+    gcn_hidden: 96
+    tcn_hidden: 192
+    dropout: 0.25
+    use_se: true
+    two_stream: true
+    fuse: concat
+    use_adaptive_adj: false
+    adaptive_adj_embed: 16
+    use_ctr_gcn_lite: false
+    ctr_rank: 4
+    stream_drop_joint_p: 0.0
+    stream_drop_motion_p: 0.0
+    in_feats_j: 6
+    in_feats_m: 2
+  feat_cfg:
+    center: pelvis
+    use_motion: true
+    use_bone: true
+    use_bone_length: true
+    use_conf_channel: true
+    motion_scale_by_fps: true
+    conf_gate: 0.2
+    use_precomputed_mask: true

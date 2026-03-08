@@ -63,6 +63,14 @@ LOCK_GCN_CAUC_OPS  ?= $(OPS_DIR)/gcn_caucafall_locked.yaml
 LOCK_TCN_CAUC_MET  ?= $(MET_DIR)/tcn_caucafall_locked.json
 LOCK_GCN_CAUC_MET  ?= $(MET_DIR)/gcn_caucafall_locked.json
 
+# Optional LE2i paper-comparison profile (scene-scoped start-guard diagnostic)
+LOCK_GCN_LE2I_TRAIN_DIR   ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r8_dataside_noise
+LOCK_GCN_LE2I_TRAIN_RESUME ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r4_recallpush_promoted/best.pt
+LOCK_GCN_LE2I_PAPER_CKPT ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r8_dataside_noise/best.pt
+LOCK_GCN_LE2I_PAPER_OPS  ?= $(OPS_DIR)/gcn_le2i_paper_profile.yaml
+LOCK_GCN_LE2I_PAPER_MET  ?= $(MET_DIR)/gcn_le2i_opt33_r8_dataside_noise_paperops.json
+LOCK_GCN_LE2I_DEPLOY_MET ?= $(MET_DIR)/gcn_le2i_deploy_locked.json
+
 # Standard per-dataset layout (functions)
 pose_raw_dir = $(INTERIM)/$(1)/pose_npz_raw
 pose_dir     = $(INTERIM)/$(1)/pose_npz
@@ -531,6 +539,7 @@ help:
 	@echo "Training:"
 	@echo "  make train-tcn-<ds> | train-gcn-<ds>"
 	@echo "  make train-best-tcn-caucafall | train-best-gcn-caucafall | train-best-caucafall"
+	@echo "  make train-best-gcn-le2i-paper"
 	@echo ""
 	@echo "Eval windows + FA windows:"
 	@echo "  make windows-eval-<ds>"
@@ -544,6 +553,8 @@ help:
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
 	@echo "  make fit-ops-gcn-caucafall-force-ckpt (explicit ckpt-only recalibration alias)"
 	@echo "  make repro-best-tcn-caucafall | repro-best-gcn-caucafall | repro-best-caucafall"
+	@echo "  make repro-deploy-gcn-le2i (locked LE2i GCN deploy profile)"
+	@echo "  make apply-deploy-ops-le2i-gcn (promote LE2i GCN paper-profile ops to canonical)"
 	@echo "  make apply-locked-ops-caucafall (promote locked ops to canonical deploy files)"
 	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
@@ -635,7 +646,10 @@ endef
 
 define EXTRACT_CMD_muvim
 $(RUN) scripts/extract_pose_images.py \
-  --images_glob "$(RAW_muvim)/ZED_RGB/**/*.jpg" "$(RAW_muvim)/ZED_RGB/**/*.png" \
+  --images_glob \
+    "$(RAW_muvim)/ZED_RGB/**/*.jpg" "$(RAW_muvim)/ZED_RGB/**/*.png" \
+    "$(RAW_muvim)/Fall/**/*.jpg" "$(RAW_muvim)/Fall/**/*.png" \
+    "$(RAW_muvim)/NonFall/**/*.jpg" "$(RAW_muvim)/NonFall/**/*.png" \
   --sequence_id_depth "2" \
   --out_dir "$(call pose_raw_dir,muvim)" \
   --dataset muvim \
@@ -702,10 +716,12 @@ $(RUN) scripts/make_labels_caucafall.py \
   --verbose
 endef
 
+MUVIM_ZED_ARGS = $(if $(strip $(MUVIM_ZED_CSV)),--zed_csv "$(MUVIM_ZED_CSV)",)
+
 define LABEL_CMD_muvim
 $(RUN) scripts/make_labels_muvim.py \
   --npz_dir "$(call pose_dir,muvim)" \
-  --zed_csv "$(MUVIM_ZED_CSV)" \
+  $(MUVIM_ZED_ARGS) \
   --out_labels "$(call labels_json,muvim)" \
   --out_spans  "$(call spans_json,muvim)" \
   --stop_inclusive
@@ -842,7 +858,7 @@ $(STAMP_DIR)/fa_windows/%.stamp: $(STAMP_DIR)/windows_eval/%.stamp
 # ============================================================
 # Train artifacts
 # ============================================================
-.PHONY: train-best-tcn-caucafall train-best-gcn-caucafall train-best-caucafall
+.PHONY: train-best-tcn-caucafall train-best-gcn-caucafall train-best-caucafall train-best-gcn-le2i-paper
 
 train-best-tcn-caucafall: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt
 	@echo "[ok] locked TCN training finished: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt"
@@ -852,6 +868,9 @@ train-best-gcn-caucafall: $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt
 
 train-best-caucafall: train-best-tcn-caucafall train-best-gcn-caucafall
 	@echo "[ok] locked TCN+GCN training finished for caucafall."
+
+train-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt
+	@echo "[ok] locked LE2i GCN training finished: $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt"
 
 $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	@mkdir -p "$(@D)"
@@ -894,6 +913,28 @@ $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	  --hard_neg_list "$(LOCK_GCN_CAUC_HNEG_LIST)" --hard_neg_mult "1" \
 	  --num_workers "0" --prefetch_factor "2" --persistent_workers "1" --deterministic "1" \
 	  --save_dir "$(LOCK_GCN_CAUC_TRAIN_DIR)"
+	@test -f "$@"
+
+$(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/le2i.stamp
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_GCN_LE2I_TRAIN_RESUME)" || (echo "[ERR] missing locked LE2i GCN resume ckpt: $(LOCK_GCN_LE2I_TRAIN_RESUME)" && exit 1)
+	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,le2i)/train" --val_dir "$(call win_dir,le2i)/val" \
+	  --epochs "45" --min_epochs "8" --batch "128" --lr "3e-4" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_le2i)" \
+	  --center "pelvis" \
+	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" \
+	  --loss "bce" --monitor "ap" --balanced_sampler --pos_weight "none" \
+	  --dropout "0.18" \
+	  --num_blocks "6" --temporal_kernel "9" --base_channels "48" \
+	  --two_stream "1" --fuse "concat" --use_adaptive_adj "0" --adaptive_adj_embed "16" \
+	  --mask_joint_p "0.00" --mask_frame_p "0.00" \
+	  --x_noise_std "0.01" --x_quant_step "0.002" --temporal_dropout_p "0.00" \
+	  --grad_clip "1.0" --patience "8" \
+	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.05" \
+	  --resume "$(LOCK_GCN_LE2I_TRAIN_RESUME)" \
+	  --use_ema "1" --ema_decay "0.999" \
+	  --hidden "96" \
+	  --num_workers "0" --prefetch_factor "2" --persistent_workers "1" --deterministic "1" \
+	  --save_dir "$(LOCK_GCN_LE2I_TRAIN_DIR)"
 	@test -f "$@"
 
 train-tcn-%: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
@@ -964,7 +1005,7 @@ $(addprefix fit-ops-gcn-,$(DATASETS)): fit-ops-gcn-%: $(OPS_DIR)/gcn_%$(OUT_TAG)
 fit-ops-gcn-caucafall-force-ckpt:
 	@$(MAKE) -B fit-ops-gcn-caucafall ADAPTER_USE="$(ADAPTER_USE)" OUT_TAG="$(OUT_TAG)"
 
-.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall
+.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall repro-best-gcn-le2i-paper repro-deploy-gcn-le2i apply-deploy-ops-le2i-gcn
 repro-best-tcn-caucafall: $(LOCK_TCN_CAUC_OPS) $(LOCK_TCN_CAUC_MET)
 	@echo "[ok] tcn locked profile reproduced:"
 	@echo "     ops=$(LOCK_TCN_CAUC_OPS)"
@@ -978,12 +1019,49 @@ repro-best-gcn-caucafall: $(LOCK_GCN_CAUC_OPS) $(LOCK_GCN_CAUC_MET)
 repro-best-caucafall: repro-best-tcn-caucafall repro-best-gcn-caucafall
 	@echo "[ok] caucafall locked TCN+GCN profiles reproduced."
 
+repro-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_PAPER_MET)
+	@echo "[ok] le2i gcn paper profile reproduced:"
+	@echo "     ops=$(LOCK_GCN_LE2I_PAPER_OPS)"
+	@echo "     metrics=$(LOCK_GCN_LE2I_PAPER_MET)"
+
+repro-deploy-gcn-le2i: repro-best-gcn-le2i-paper
+	@echo "[ok] LE2i GCN deployment profile is locked to paper_profile."
+
+apply-deploy-ops-le2i-gcn: repro-best-gcn-le2i-paper $(LOCK_GCN_LE2I_DEPLOY_MET)
+	@cp "$(LOCK_GCN_LE2I_PAPER_OPS)" "$(OPS_DIR)/gcn_le2i.yaml"
+	@echo "[ok] canonical LE2i GCN deploy ops updated:"
+	@echo "     $(OPS_DIR)/gcn_le2i.yaml"
+	@echo "     $(LOCK_GCN_LE2I_DEPLOY_MET)"
+
 apply-locked-ops-caucafall: repro-best-caucafall
 	@cp "$(LOCK_TCN_CAUC_OPS)" "$(OPS_DIR)/tcn_caucafall.yaml"
 	@cp "$(LOCK_GCN_CAUC_OPS)" "$(OPS_DIR)/gcn_caucafall.yaml"
 	@echo "[ok] canonical ops updated:"
 	@echo "     $(OPS_DIR)/tcn_caucafall.yaml"
 	@echo "     $(OPS_DIR)/gcn_caucafall.yaml"
+
+$(LOCK_GCN_LE2I_PAPER_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i paper-profile ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
+	@test -f "$(LOCK_GCN_LE2I_PAPER_OPS)" || (echo "[ERR] missing LE2i paper-profile ops: $(LOCK_GCN_LE2I_PAPER_OPS)" && exit 1)
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,le2i)/test" \
+	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
+	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_le2i)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(LOCK_GCN_LE2I_DEPLOY_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i deploy ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,le2i)/test" \
+	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
+	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_le2i)" \
+	  $(METRICS_SWEEP_FLAGS)
 
 $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	@mkdir -p "$(@D)" "$(MET_DIR)"

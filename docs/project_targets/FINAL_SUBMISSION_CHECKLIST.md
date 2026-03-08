@@ -1,63 +1,73 @@
 # Final Submission Checklist
 
-Use this before final handoff/demo.
+Use this checklist as the final release gate before hand-in.
 
-## A) Deployment Lock
+Reference standards:
+- `docs/project_targets/PROJECT_DELIVERY_EXCELLENCE_STANDARD.md`
+- `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
+- `docs/project_targets/SUBMISSION_PACK_INDEX.md`
 
-- [ ] `docs/project_targets/DEPLOYMENT_LOCK.md` exists and matches runtime profile.
-- [ ] `configs/ops/tcn_caucafall.yaml` points to intended checkpoint.
-- [ ] `artifacts/reports/deployment_lock_validation.md` shows:
-  - [ ] API health = yes
-  - [ ] predict endpoint exists = yes
-  - [ ] active model = TCN
-  - [ ] active dataset = caucafall
-  - [ ] active OP = OP-2
-  - [ ] manual replay non-fall PASS
-  - [ ] manual replay fall PASS
-  - [ ] verdict PASS checked
+## A) Code Snapshot (Mandatory)
 
-## B) Evidence Integrity
+- [ ] Final commit is pushed to remote.
+- [ ] Release tag is created for markable snapshot.
+- [ ] No unintended local-only files are included in release.
+- [ ] Root `README.md` quickstart has been re-tested.
 
-- [ ] `docs/project_targets/THESIS_EVIDENCE_MAP.md` includes latest rows:
-  - [ ] Tab-Overfit-Round1-13
-  - [ ] Tab-GCN-Policy-R2-14
-  - [ ] Tab-TCN-Train-R2-15
-  - [ ] Tab-Deploy-Lock-16
-- [ ] `artifacts/reports/release_snapshot.md` exists.
-- [ ] `artifacts/reports/release_bundle_status.json` exists and `"ok": true`.
-- [ ] `python tools/check_release_bundle.py` passes.
+## B) User Guide & Runbooks (Mandatory)
 
-## C) Experiment Record Completeness
+- [ ] User guide exists and is current:
+  - `docs/reports/runbooks/USER_GUIDE.md`
+- [ ] Demo runbook exists and is current:
+  - `docs/reports/runbooks/DEMO_RUNBOOK.md`
+- [ ] Final demo walkthrough exists and is current:
+  - `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md`
+- [ ] One clean-machine dry run has been completed (or explicitly documented as pending).
 
-- [ ] `artifacts/registry/overfit_experiment_registry.csv` includes planned/running/done/rejected transitions.
-- [ ] Round-1 summary exists:
-  - [ ] `artifacts/reports/tuning/overfit_round1_summary.md`
-- [ ] GCN policy Round-2 report exists:
-  - [ ] `docs/project_targets/GCN_POLICY_ROUND2_RESULTS.md`
-- [ ] TCN Round-2 report exists:
-  - [ ] `artifacts/reports/tuning/tcn_round2_results.md`
+## C) Working Artefact Evidence (Mandatory)
 
-## D) Demo Readiness
-
-- [ ] `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md` reviewed and followed once end-to-end.
-- [ ] Settings page can set `caucafall + TCN + OP-2` and persist.
-- [ ] Monitor replay can show one non-fall and one fall expected behavior.
-- [ ] Events/Dashboard load without API failures during demo path.
-
-## E) Packaging & Commit
-
-- [ ] `docs/project_targets/COMMIT_GROUPING_PLAN.md` reviewed.
-- [ ] Commits grouped by topic (experiments / lock / defaults).
-- [ ] No unintended files included.
-- [ ] Final tag/message prepared.
-
-## F) Optional Final Gate
-
-- [ ] Run a final quick check:
-  - `bash tools/run_deployment_lock_validation.sh`
+- [ ] Deployment lock document is current:
+  - `docs/project_targets/DEPLOYMENT_LOCK.md`
+- [ ] Deployment lock validation report is PASS:
+  - `artifacts/reports/deployment_lock_validation.md`
+- [ ] Evidence map has no stale/unmapped claim rows:
+  - `docs/project_targets/THESIS_EVIDENCE_MAP.md`
+- [ ] Release bundle checker passes:
   - `python tools/check_release_bundle.py`
-- [ ] Re-open `artifacts/reports/deployment_lock_validation.md` and confirm PASS remains checked.
-- [ ] Run replay/live acceptance lock and fill manual outcomes:
-  - `bash tools/run_replay_live_acceptance.sh`
-  - update `artifacts/reports/replay_live_acceptance.md`
-  - follow `docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md`
+
+## D) Demo Recording (Mandatory)
+
+- [ ] Demo video recorded (about 5 min).
+- [ ] Video shows:
+  - [ ] startup
+  - [ ] at least one non-fall case
+  - [ ] at least one fall case
+  - [ ] end-to-end output/result visibility
+- [ ] Video file/link is listed in `SUBMISSION_PACK_INDEX.md`.
+
+## E) Research Integrity (R1-R5 Gate)
+
+- [ ] `R1` Reproducibility: commands regenerate reported artifacts.
+- [ ] `R2` Integrity: no test leakage in policy fitting/selection.
+- [ ] `R3` Operability: backend + frontend + inference flow runs from docs.
+- [ ] `R4` Explainability: policy/decision behavior can be explained from outputs.
+- [ ] `R5` Limitations: known limitations are explicitly documented.
+
+## F) Parameter Promotion Gate (Mandatory)
+
+- [ ] Any “improved” metric result has passed both tracks:
+  - [ ] paper-comparison track improved
+  - [ ] deployment track not regressed (especially FA24h / stability)
+- [ ] Accepted parameter set is promoted to reproducible command targets (Makefile or equivalent).
+- [ ] Promotion is recorded in:
+  - [ ] `docs/project_targets/PARAM_PROMOTION_WORKFLOW.md`
+  - [ ] `docs/project_targets/FINAL_CANDIDATES.md`
+  - [ ] `docs/project_targets/THESIS_EVIDENCE_MAP.md`
+- [ ] Root `README.md` reflects the promoted one-command reproduction path.
+- [ ] No report/dissertation number depends on non-promoted ad-hoc command lines.
+
+## G) Final Verification Commands
+
+- [ ] `bash tools/run_deployment_lock_validation.sh`
+- [ ] `python tools/check_release_bundle.py`
+- [ ] Re-open generated reports and confirm PASS status remains valid.
