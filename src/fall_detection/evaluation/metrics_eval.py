@@ -331,6 +331,7 @@ def _aggregate_event_metrics(
         "n_videos": 0,
         "n_windows": 0,
         "n_gt_events": 0,
+        "n_matched_gt": 0,
         "n_alert_events": 0,
         "n_true_alerts": 0,
         "n_false_alerts": 0,
@@ -411,6 +412,7 @@ def _aggregate_event_metrics(
         totals["n_videos"] += 1
         totals["n_windows"] += int(len(p_v))
         totals["n_gt_events"] += int(_em_get(em, "n_gt_events", 0))
+        totals["n_matched_gt"] += int(_em_get(em, "n_matched_gt", 0))
         totals["n_alert_events"] += int(_em_get(em, "n_alert_events", 0))
         totals["n_true_alerts"] += int(_em_get(em, "n_true_alerts", 0))
         totals["n_false_alerts"] += int(_em_get(em, "n_false_alerts", 0))
@@ -496,6 +498,7 @@ def _aggregate_event_counts(
         "n_videos": 0,
         "n_windows": 0,
         "n_gt_events": 0,
+        "n_matched_gt": 0,
         "n_alert_events": 0,
         "n_true_alerts": 0,
         "n_false_alerts": 0,
@@ -545,6 +548,7 @@ def _aggregate_event_counts(
         totals["n_videos"] += 1
         totals["n_windows"] += int(len(p_v))
         totals["n_gt_events"] += int(_em_get(em, "n_gt_events", 0))
+        totals["n_matched_gt"] += int(_em_get(em, "n_matched_gt", 0))
         totals["n_alert_events"] += int(_em_get(em, "n_alert_events", 0))
         totals["n_true_alerts"] += int(_em_get(em, "n_true_alerts", 0))
         totals["n_false_alerts"] += int(_em_get(em, "n_false_alerts", 0))
@@ -566,13 +570,16 @@ def _aggregate_event_counts(
     dur_s = float(totals["total_duration_s"])
     fa_per_day = float(totals["n_false_alerts"] / (dur_s / 86400.0)) if dur_s > 0 else float("nan")
 
-    # Event-level precision/recall/F1 (across all videos)
+    # Event-level precision/recall/F1 (across all videos).
+    # Recall must use matched GT events (not true alerts), otherwise it can exceed 1.0
+    # when multiple alert events overlap a single GT event.
     n_true = float(totals["n_true_alerts"])
     n_false = float(totals["n_false_alerts"])
     n_gt = float(totals["n_gt_events"])
+    n_matched = float(totals["n_matched_gt"])
 
     precision = float(n_true / max(1e-9, (n_true + n_false)))
-    recall_ev = float(n_true / max(1e-9, n_gt))
+    recall_ev = float(n_matched / max(1e-9, n_gt))
     f1 = float(2 * precision * recall_ev / max(1e-9, (precision + recall_ev)))
 
     return {
