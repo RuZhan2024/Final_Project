@@ -71,6 +71,14 @@ LOCK_GCN_LE2I_PAPER_OPS  ?= $(OPS_DIR)/gcn_le2i_paper_profile.yaml
 LOCK_GCN_LE2I_PAPER_MET  ?= $(MET_DIR)/gcn_le2i_opt33_r8_dataside_noise_paperops.json
 LOCK_GCN_LE2I_DEPLOY_MET ?= $(MET_DIR)/gcn_le2i_deploy_locked.json
 
+# Optional MUVIM quick locked profile (best-known quick baseline)
+LOCK_TCN_MUVIM_CKPT ?= $(OUT_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S)_quick/best.pt
+LOCK_GCN_MUVIM_CKPT ?= $(OUT_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S)_quick/best.pt
+LOCK_TCN_MUVIM_OPS  ?= $(OPS_DIR)/tcn_muvim_quick.yaml
+LOCK_GCN_MUVIM_OPS  ?= $(OPS_DIR)/gcn_muvim_quick.yaml
+LOCK_TCN_MUVIM_MET  ?= $(MET_DIR)/tcn_muvim_locked.json
+LOCK_GCN_MUVIM_MET  ?= $(MET_DIR)/gcn_muvim_locked.json
+
 # Standard per-dataset layout (functions)
 pose_raw_dir = $(INTERIM)/$(1)/pose_npz_raw
 pose_dir     = $(INTERIM)/$(1)/pose_npz
@@ -553,6 +561,7 @@ help:
 	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
 	@echo "  make fit-ops-gcn-caucafall-force-ckpt (explicit ckpt-only recalibration alias)"
 	@echo "  make repro-best-tcn-caucafall | repro-best-gcn-caucafall | repro-best-caucafall"
+	@echo "  make repro-best-tcn-muvim | repro-best-gcn-muvim | repro-best-muvim"
 	@echo "  make repro-deploy-gcn-le2i (locked LE2i GCN deploy profile)"
 	@echo "  make apply-deploy-ops-le2i-gcn (promote LE2i GCN paper-profile ops to canonical)"
 	@echo "  make apply-locked-ops-caucafall (promote locked ops to canonical deploy files)"
@@ -1005,7 +1014,7 @@ $(addprefix fit-ops-gcn-,$(DATASETS)): fit-ops-gcn-%: $(OPS_DIR)/gcn_%$(OUT_TAG)
 fit-ops-gcn-caucafall-force-ckpt:
 	@$(MAKE) -B fit-ops-gcn-caucafall ADAPTER_USE="$(ADAPTER_USE)" OUT_TAG="$(OUT_TAG)"
 
-.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall repro-best-gcn-le2i-paper repro-deploy-gcn-le2i apply-deploy-ops-le2i-gcn
+.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall repro-best-gcn-le2i-paper repro-deploy-gcn-le2i apply-deploy-ops-le2i-gcn repro-best-tcn-muvim repro-best-gcn-muvim repro-best-muvim
 repro-best-tcn-caucafall: $(LOCK_TCN_CAUC_OPS) $(LOCK_TCN_CAUC_MET)
 	@echo "[ok] tcn locked profile reproduced:"
 	@echo "     ops=$(LOCK_TCN_CAUC_OPS)"
@@ -1018,6 +1027,19 @@ repro-best-gcn-caucafall: $(LOCK_GCN_CAUC_OPS) $(LOCK_GCN_CAUC_MET)
 
 repro-best-caucafall: repro-best-tcn-caucafall repro-best-gcn-caucafall
 	@echo "[ok] caucafall locked TCN+GCN profiles reproduced."
+
+repro-best-tcn-muvim: $(LOCK_TCN_MUVIM_MET)
+	@echo "[ok] muvim locked TCN profile reproduced:"
+	@echo "     ops=$(LOCK_TCN_MUVIM_OPS)"
+	@echo "     metrics=$(LOCK_TCN_MUVIM_MET)"
+
+repro-best-gcn-muvim: $(LOCK_GCN_MUVIM_MET)
+	@echo "[ok] muvim locked GCN profile reproduced:"
+	@echo "     ops=$(LOCK_GCN_MUVIM_OPS)"
+	@echo "     metrics=$(LOCK_GCN_MUVIM_MET)"
+
+repro-best-muvim: repro-best-tcn-muvim repro-best-gcn-muvim
+	@echo "[ok] muvim locked TCN+GCN profiles reproduced."
 
 repro-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_PAPER_MET)
 	@echo "[ok] le2i gcn paper profile reproduced:"
@@ -1061,6 +1083,30 @@ $(LOCK_GCN_LE2I_DEPLOY_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
 	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_le2i)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(LOCK_TCN_MUVIM_MET): $(LOCK_TCN_MUVIM_OPS)
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_TCN_MUVIM_CKPT)" || (echo "[ERR] missing MUVIM locked TCN ckpt: $(LOCK_TCN_MUVIM_CKPT)" && exit 1)
+	@test -f "$(LOCK_TCN_MUVIM_OPS)" || (echo "[ERR] missing MUVIM locked TCN ops: $(LOCK_TCN_MUVIM_OPS)" && exit 1)
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,muvim)/test" \
+	  --ckpt "$(LOCK_TCN_MUVIM_CKPT)" \
+	  --ops_yaml "$(LOCK_TCN_MUVIM_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_muvim)" \
+	  $(METRICS_SWEEP_FLAGS)
+
+$(LOCK_GCN_MUVIM_MET): $(LOCK_GCN_MUVIM_OPS)
+	@mkdir -p "$(@D)"
+	@test -f "$(LOCK_GCN_MUVIM_CKPT)" || (echo "[ERR] missing MUVIM locked GCN ckpt: $(LOCK_GCN_MUVIM_CKPT)" && exit 1)
+	@test -f "$(LOCK_GCN_MUVIM_OPS)" || (echo "[ERR] missing MUVIM locked GCN ops: $(LOCK_GCN_MUVIM_OPS)" && exit 1)
+	$(RUN) scripts/eval_metrics.py \
+	  --win_dir "$(call win_eval_dir,muvim)/test" \
+	  --ckpt "$(LOCK_GCN_MUVIM_CKPT)" \
+	  --ops_yaml "$(LOCK_GCN_MUVIM_OPS)" \
+	  --out_json "$@" \
+	  --fps_default "$(FPS_muvim)" \
 	  $(METRICS_SWEEP_FLAGS)
 
 $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp

@@ -73,7 +73,27 @@ Current locked LE2i paper-profile metrics snapshot:
 - F1 `0.9412`
 - FA24h `0.0`
 
-## 3) Notes
+## 3) MUVIM Locked Quick Profile (TCN + GCN)
+
+### 3.1 Locked evaluation reproduction
+- TCN ckpt: `outputs/muvim_tcn_W48S12_quick/best.pt`
+- GCN ckpt: `outputs/muvim_gcn_W48S12_quick/best.pt`
+- TCN ops: `configs/ops/tcn_muvim_quick.yaml`
+- GCN ops: `configs/ops/gcn_muvim_quick.yaml`
+- TCN metrics (locked output): `outputs/metrics/tcn_muvim_locked.json`
+- GCN metrics (locked output): `outputs/metrics/gcn_muvim_locked.json`
+
+Run:
+
+```bash
+make repro-best-muvim ADAPTER_USE=1
+```
+
+Notes:
+- This is a locked quick baseline for reproducibility and comparison.
+- It does not override CAUCAFall/LE2i deploy profiles.
+
+## 4) Notes
 
 - Locked targets are encoded via `LOCK_*` variables at the top of `Makefile`.
 - To update a locked profile in future:

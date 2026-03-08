@@ -1,43 +1,43 @@
 ops:
   OP1:
-    tau_high: 0.20000000298023224
-    tau_low: 0.15600000321865082
-    precision: 0.800000011920929
+    tau_high: 0.2799999713897705
+    tau_low: 0.21839997172355652
+    precision: 0.6904761791229248
     recall: 1.0
-    f1: 0.8888888955116272
-    fa24h: 274.1116638183594
-    mean_delay_s: 0.3999999165534973
-    median_delay_s: 0.3999999165534973
-    n_gt_events: 4
-    n_alert_events: 5
-    n_true_alerts: 4
-    n_false_alerts: 1
+    f1: 0.8169013857841492
+    fa24h: 427.7227783203125
+    mean_delay_s: 0.0
+    median_delay_s: 0.0
+    n_gt_events: 40
+    n_alert_events: 42
+    n_true_alerts: 29
+    n_false_alerts: 13
   OP2:
-    tau_high: 0.9299999475479126
-    tau_low: 0.7253999710083008
-    precision: 0.8333333134651184
+    tau_high: 0.2799999713897705
+    tau_low: 0.21839997172355652
+    precision: 0.6904761791229248
     recall: 1.0
-    f1: 0.9090909361839294
-    fa24h: 274.1116638183594
-    mean_delay_s: 33.900001525878906
-    median_delay_s: 31.19999885559082
-    n_gt_events: 4
-    n_alert_events: 6
-    n_true_alerts: 5
-    n_false_alerts: 1
+    f1: 0.8169013857841492
+    fa24h: 427.7227783203125
+    mean_delay_s: 0.0
+    median_delay_s: 0.0
+    n_gt_events: 40
+    n_alert_events: 42
+    n_true_alerts: 29
+    n_false_alerts: 13
   OP3:
     tau_high: 0.949999988079071
     tau_low: 0.7409999966621399
-    precision: 0.800000011920929
-    recall: 0.75
-    f1: 0.774193525314331
-    fa24h: 274.1116638183594
-    mean_delay_s: 21.19999885559082
-    median_delay_s: 0.3999999165534973
-    n_gt_events: 4
-    n_alert_events: 5
-    n_true_alerts: 4
-    n_false_alerts: 1
+    precision: 0.1666666716337204
+    recall: 0.05000000074505806
+    f1: 0.07692307978868484
+    fa24h: 329.01751708984375
+    mean_delay_s: 0.0
+    median_delay_s: 0.0
+    n_gt_events: 40
+    n_alert_events: 12
+    n_true_alerts: 2
+    n_false_alerts: 10
 ops_meta:
   picker: "conservative"
   tie_break: "max_thr"
@@ -50,10 +50,9 @@ ops_meta:
   cost_fn: 5.0
   cost_fp: 1.0
   idx:
-    OP1: 19
-    OP2: 92
+    OP1: 27
+    OP2: 27
     OP3: 94
-  confirm_fallback: "disabled_confirm_after_degenerate_sweep"
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -83,8 +82,8 @@ alert_base:
   start_guard_max_lying: null
   start_guard_prefixes: null
 sweep_meta:
-  n_videos: 5
-  total_duration_s: 315.2
+  n_videos: 40
+  total_duration_s: 2626.0000000000005
   n_fa_videos: 0
   total_duration_s_fa: 0.0
   merge_gap_s: 1.0
@@ -95,15 +94,15 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "tcn_muvim_quick.sweep.json"
+sweep_json: "tcn_muvim_quick_r2.sweep.json"
 calibration:
   method: "temperature"
-  T: 2.6076231002807617
-  n_val: 773
-  nll_before: 0.5551172494888306
-  nll_after: 0.3968924283981323
-  ece_before: 0.10574898322294786
-  ece_after: 0.05332830397925429
+  T: 3.5768561363220215
+  n_val: 6445
+  nll_before: 3.456911325454712
+  nll_after: 1.287872314453125
+  ece_before: 0.7759353825454396
+  ece_after: 0.6366867724965024
 model:
   arch: "tcn"
   ckpt: "../../outputs/muvim_tcn_W48S12_quick/best.pt"
