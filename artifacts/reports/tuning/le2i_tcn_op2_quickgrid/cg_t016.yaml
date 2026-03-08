@@ -1,0 +1,126 @@
+ops:
+  OP1:
+    tau_high: 0.20000000298023224
+    tau_low: 0.15600000321865082
+    precision: 1.0
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
+    fa24h: 0.0
+    mean_delay_s: 0.9028525352478027
+    median_delay_s: 0.49999189376831055
+    n_gt_events: 10
+    n_alert_events: 7
+    n_true_alerts: 7
+    n_false_alerts: 0
+  OP2:
+    tau_high: 0.4599999785423279
+    tau_low: 0.3587999939918518
+    precision: 1.0
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
+    fa24h: 0.0
+    mean_delay_s: 1.5428434610366821
+    median_delay_s: 1.4999756813049316
+    n_gt_events: 10
+    n_alert_events: 7
+    n_true_alerts: 7
+    n_false_alerts: 0
+  OP3:
+    tau_high: 0.4599999785423279
+    tau_low: 0.3587999939918518
+    precision: 1.0
+    recall: 0.699999988079071
+    f1: 0.8235294222831726
+    fa24h: 0.0
+    mean_delay_s: 1.5428434610366821
+    median_delay_s: 1.4999756813049316
+    n_gt_events: 10
+    n_alert_events: 7
+    n_true_alerts: 7
+    n_false_alerts: 0
+ops_meta:
+  picker: "conservative"
+  tie_break: "max_thr"
+  min_tau_high: 0.2
+  op1_recall: 0.95
+  op3_fa24h: 1.0
+  op2_objective: "f1"
+  op1_fa24h_cap: -1.0
+  op3_recall_floor: -1.0
+  cost_fn: 5.0
+  cost_fp: 1.0
+  idx:
+    OP1: 19
+    OP2: 45
+    OP3: 45
+alert_cfg:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.5
+  tau_low: 0.4
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 1.5
+  confirm_min_lying: 0.5
+  confirm_max_motion: 0.2
+  confirm_require_low: false
+  start_guard_max_lying: null
+  start_guard_prefixes: null
+alert_base:
+  ema_alpha: 0.2
+  k: 2
+  n: 3
+  tau_high: 0.5
+  tau_low: 0.4
+  cooldown_s: 30.0
+  confirm: true
+  confirm_s: 1.5
+  confirm_min_lying: 0.5
+  confirm_max_motion: 0.2
+  confirm_require_low: false
+  start_guard_max_lying: null
+  start_guard_prefixes: null
+sweep_meta:
+  n_videos: 13
+  total_duration_s: 196.319041572622
+  n_fa_videos: 0
+  total_duration_s_fa: 0.0
+  merge_gap_s: 1.0
+  time_mode: "center"
+  overlap_slack_s: 0.5
+sweep_cfg:
+  thr_min: 0.01
+  thr_max: 0.95
+  thr_step: 0.01
+  tau_low_ratio: 0.78
+sweep_json: "cg_t016.sweep.json"
+calibration:
+  method: "temperature"
+  T: 0.8968090415000916
+  n_val: 365
+  nll_before: 0.26684555411338806
+  nll_after: 0.2649773061275482
+  ece_before: 0.10938497752821143
+  ece_after: 0.09753112273684651
+model:
+  arch: "tcn"
+  ckpt: "../../../../outputs/le2i_tcn_W48S12_opt33_r2/best.pt"
+  model_cfg:
+    hidden: 128
+    dropout: 0.4
+    num_blocks: 4
+    kernel: 3
+    use_tsm: false
+    tsm_fold_div: 8
+    in_ch: 264
+    num_joints: 33
+  feat_cfg:
+    center: "pelvis"
+    use_motion: true
+    use_bone: true
+    use_bone_length: true
+    use_conf_channel: true
+    motion_scale_by_fps: true
+    conf_gate: 0.2
+    use_precomputed_mask: true

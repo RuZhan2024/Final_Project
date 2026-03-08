@@ -1,0 +1,189 @@
+[stage] extract
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/extract_pose_images.py --images_glob "data/raw/MUVIM/ZED_RGB/**/*.jpg" "data/raw/MUVIM/ZED_RGB/**/*.png" "data/raw/MUVIM/Fall/**/*.jpg" "data/raw/MUVIM/Fall/**/*.png" "data/raw/MUVIM/NonFall/**/*.jpg" "data/raw/MUVIM/NonFall/**/*.png" --sequence_id_depth "2" --out_dir "data/interim/muvim/pose_npz_raw" --dataset muvim --fps "30" --skip_existing
+Matplotlib created a temporary cache directory at /var/folders/sr/6s_d14c9695f35ht90qyptw80000gn/T/matplotlib-czzm4p0r because the default path (/Users/ruzhan/.matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1772835084.019547 7587669 gl_context_nsgl.cc:85] failed to create pixel format; trying without acceleration
+[INFO] Found 396 sequences, using 396 sequences
+Traceback (most recent call last):
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/extract_pose_images.py", line 7, in <module>
+    main()
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src/fall_detection/pose/extract_2d_images.py", line 274, in main
+    with mp_pose.Pose(
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/.venv/lib/python3.10/site-packages/mediapipe/python/solutions/pose.py", line 146, in __init__
+    super().__init__(
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/.venv/lib/python3.10/site-packages/mediapipe/python/solution_base.py", line 263, in __init__
+    self._graph.start_run(self._input_side_packets)
+RuntimeError: Service "kGpuService", required by node posedetectioncpu__ImageToTensorCalculator, was not provided and cannot be created: Could not create an NSOpenGLPixelFormat
+make: *** [.make/extract/muvim.stamp] Error 1
+[stage] preprocess/labels/splits/windows
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/extract_pose_images.py --images_glob "data/raw/MUVIM/ZED_RGB/**/*.jpg" "data/raw/MUVIM/ZED_RGB/**/*.png" "data/raw/MUVIM/Fall/**/*.jpg" "data/raw/MUVIM/Fall/**/*.png" "data/raw/MUVIM/NonFall/**/*.jpg" "data/raw/MUVIM/NonFall/**/*.png" --sequence_id_depth "2" --out_dir "data/interim/muvim/pose_npz_raw" --dataset muvim --fps "30" --skip_existing
+Matplotlib created a temporary cache directory at /var/folders/sr/6s_d14c9695f35ht90qyptw80000gn/T/matplotlib-sqz65tt1 because the default path (/Users/ruzhan/.matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/usr/local/var/cache/fontconfig
+	/Users/ruzhan/.cache/fontconfig
+	/Users/ruzhan/.fontconfig
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1772835141.119907 7589191 gl_context_nsgl.cc:85] failed to create pixel format; trying without acceleration
+[INFO] Found 396 sequences, using 396 sequences
+Traceback (most recent call last):
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/extract_pose_images.py", line 7, in <module>
+    main()
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src/fall_detection/pose/extract_2d_images.py", line 274, in main
+    with mp_pose.Pose(
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/.venv/lib/python3.10/site-packages/mediapipe/python/solutions/pose.py", line 146, in __init__
+    super().__init__(
+  File "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/.venv/lib/python3.10/site-packages/mediapipe/python/solution_base.py", line 263, in __init__
+    self._graph.start_run(self._input_side_packets)
+RuntimeError: Service "kGpuService", required by node posedetectioncpu__ImageToTensorCalculator, was not provided and cannot be created: Could not create an NSOpenGLPixelFormat
+make: *** [.make/extract/muvim.stamp] Error 1
+[stage] train
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/preprocess_pose.py \
+	  --in_dir  "data/interim/muvim/pose_npz_raw" \
+	  --out_dir "data/interim/muvim/pose_npz" \
+	  --recursive --skip_existing \
+	  --conf_thr "0.20" --smooth_k "5" --max_gap "4" \
+	  --normalize "torso" --pelvis_fill "nearest"
+[done] wrote 4 cleaned files to /Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/data/interim/muvim/pose_npz  (failed/skipped=0)
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_labels_muvim.py --npz_dir "data/interim/muvim/pose_npz" --zed_csv "data/raw/MUVIM/Labels.csv" --out_labels "configs/labels/muvim.json" --out_spans  "configs/labels/muvim_spans.json" --stop_inclusive
+[info] loaded spans for 297 video IDs from data/raw/MUVIM/Labels.csv
+[info] matched spans to 4 pose sequences (out of 4)
+[OK] wrote labels → configs/labels/muvim.json (total=4, fall=4, adl=0)
+[OK] wrote spans  → configs/labels/muvim_spans.json  (videos_with_spans=4)
+[summary] npz_total=4  matched_labels=4  missing_or_skipped=0
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_splits.py \
+	  --labels_json "configs/labels/muvim.json" \
+	  --out_dir "configs/splits" --prefix "muvim" \
+	   \
+	  --train "0.80" --val "0.10" --test "0.10" \
+	  --seed "33724876" \
+	  --summary_json "configs/splits/muvim_split_summary.json"
+[OK] wrote splits:
+  configs/splits/muvim_train.txt 2
+  configs/splits/muvim_val.txt 1
+  configs/splits/muvim_test.txt 1
+[OK] wrote summary: configs/splits/muvim_split_summary.json
+[class total] {'1': 4}
+[class train] {'1': 2}
+[class val]   {'1': 1}
+[class test]  {'1': 1}
+[group] mode=none groups=4 balance_by=stems
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_windows.py \
+	  --npz_dir "data/interim/muvim/pose_npz" \
+	  --labels_json "configs/labels/muvim.json" \
+	  --spans_json  "configs/labels/muvim_spans.json" \
+	  --out_dir "data/processed/muvim/windows_W48_S12" \
+	  --W "48" --stride "12" --fps_default "30" \
+	  --adapter_dataset "muvim" --adapter_urfall_target_fps "25.0" --adapter_joint_layout "mp33" \
+	  --train_list "configs/splits/muvim_train.txt" --val_list "configs/splits/muvim_val.txt" --test_list "configs/splits/muvim_test.txt" \
+	  --strategy balanced --min_overlap_frames 1 --pos_per_span 20 --neg_ratio 2.0 --max_neg_per_video 250 --max_windows_per_video_no_spans 120 --min_valid_frac 0.0 --spans_end_exclusive --fallback_if_no_span skip_fall
+[info] adapter enabled: dataset=muvim joint_layout=mp33
+[OK] windows saved to: data/processed/muvim/windows_W48_S12
+[count] total=72 pos=24 neg=48 skipped_quality=0 missing_seq=0
+[info] splits mode: enabled (processed only stems in split lists)
+[info] spans_end_exclusive=True req_overlap=1 strategy=balanced
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/train_tcn.py --train_dir "data/processed/muvim/windows_W48_S12/train" --val_dir "data/processed/muvim/windows_W48_S12/val" \
+	  --epochs "20" --batch "128" --lr "3e-4" --seed "33724876" --fps_default "30" \
+	  --center "pelvis" --use_motion "1" --use_conf_channel "1" --use_bone "1" --use_bone_length "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
+	   \
+	   \
+	  --hard_neg_mult "1" \
+	  --hard_neg_prefixes "" \
+	  --hard_neg_prefix_mult "1" \
+	  --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" \
+	  --hidden "128" --num_blocks "4" --kernel "3" \
+	  --use_tsm "0" --tsm_fold_div "8" \
+	  --grad_clip "1.0" --patience "30" \
+	  --thr_min "0.05" --thr_max "0.95" --thr_step "0.01" \
+	  --monitor "ap" \
+	  --dropout "0.20" \
+	  --mask_joint_p "0.05" --mask_frame_p "0.03" \
+	  --weight_decay "0.0001" --label_smoothing "0.0" \
+	  --pos_weight "none" --balanced_sampler \
+	  --save_dir "outputs/muvim_tcn_W48S12_labels"
+OMP: Error #179: Function Can't open SHM2 failed:
+OMP: System error #1: Operation not permitted
+/bin/bash: line 1: 20515 Abort trap: 6           PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/train_tcn.py --train_dir "data/processed/muvim/windows_W48_S12/train" --val_dir "data/processed/muvim/windows_W48_S12/val" --epochs "20" --batch "128" --lr "3e-4" --seed "33724876" --fps_default "30" --center "pelvis" --use_motion "1" --use_conf_channel "1" --use_bone "1" --use_bone_length "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" --hard_neg_mult "1" --hard_neg_prefixes "" --hard_neg_prefix_mult "1" --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" --hidden "128" --num_blocks "4" --kernel "3" --use_tsm "0" --tsm_fold_div "8" --grad_clip "1.0" --patience "30" --thr_min "0.05" --thr_max "0.95" --thr_step "0.01" --monitor "ap" --dropout "0.20" --mask_joint_p "0.05" --mask_frame_p "0.03" --weight_decay "0.0001" --label_smoothing "0.0" --pos_weight "none" --balanced_sampler --save_dir "outputs/muvim_tcn_W48S12_labels"
+make: *** [outputs/muvim_tcn_W48S12_labels/best.pt] Error 134
+[stage] fit/eval
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/preprocess_pose.py \
+	  --in_dir  "data/interim/muvim/pose_npz_raw" \
+	  --out_dir "data/interim/muvim/pose_npz" \
+	  --recursive --skip_existing \
+	  --conf_thr "0.20" --smooth_k "5" --max_gap "4" \
+	  --normalize "torso" --pelvis_fill "nearest"
+[done] wrote 4 cleaned files to /Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/data/interim/muvim/pose_npz  (failed/skipped=0)
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_labels_muvim.py --npz_dir "data/interim/muvim/pose_npz" --zed_csv "data/raw/MUVIM/Labels.csv" --out_labels "configs/labels/muvim.json" --out_spans  "configs/labels/muvim_spans.json" --stop_inclusive
+[info] loaded spans for 297 video IDs from data/raw/MUVIM/Labels.csv
+[info] matched spans to 4 pose sequences (out of 4)
+[OK] wrote labels → configs/labels/muvim.json (total=4, fall=4, adl=0)
+[OK] wrote spans  → configs/labels/muvim_spans.json  (videos_with_spans=4)
+[summary] npz_total=4  matched_labels=4  missing_or_skipped=0
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_splits.py \
+	  --labels_json "configs/labels/muvim.json" \
+	  --out_dir "configs/splits" --prefix "muvim" \
+	   \
+	  --train "0.80" --val "0.10" --test "0.10" \
+	  --seed "33724876" \
+	  --summary_json "configs/splits/muvim_split_summary.json"
+[OK] wrote splits:
+  configs/splits/muvim_train.txt 2
+  configs/splits/muvim_val.txt 1
+  configs/splits/muvim_test.txt 1
+[OK] wrote summary: configs/splits/muvim_split_summary.json
+[class total] {'1': 4}
+[class train] {'1': 2}
+[class val]   {'1': 1}
+[class test]  {'1': 1}
+[group] mode=none groups=4 balance_by=stems
+source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/make_windows.py \
+	  --npz_dir "data/interim/muvim/pose_npz" \
+	  --labels_json "configs/labels/muvim.json" \
+	  --spans_json  "configs/labels/muvim_spans.json" \
+	  --out_dir "data/processed/muvim/windows_eval_W48_S12" \
+	  --W "48" --stride "12" --fps_default "30" \
+	  --adapter_dataset "muvim" --adapter_urfall_target_fps "25.0" --adapter_joint_layout "mp33" \
+	  --train_list "configs/splits/muvim_train.txt" --val_list "configs/splits/muvim_val.txt" --test_list "configs/splits/muvim_test.txt" \
+	  --strategy "all" --min_overlap_frames 1 --min_valid_frac 0.0 --conf_gate "0.20" --use_precomputed_mask --seed "33724876" --skip_existing --fallback_if_no_span skip_fall   
+[info] adapter enabled: dataset=muvim joint_layout=mp33
+[OK] windows saved to: data/processed/muvim/windows_eval_W48_S12
+[count] total=0 pos=0 neg=0 skipped_quality=0 missing_seq=0
+[info] splits mode: enabled (processed only stems in split lists)
+[info] spans_end_exclusive=True req_overlap=1 strategy=all
+[ERR] missing checkpoint: outputs/muvim_tcn_W48S12_labels/best.pt. Run train-tcn-muvim first (or set OUT_TAG to an existing run).
+make: *** [configs/ops/tcn_muvim_labels.yaml] Error 1

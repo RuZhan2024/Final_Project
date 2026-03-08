@@ -1,5 +1,8 @@
 # INTEGRATION_STATUS_REPORT
 
+Detailed version:
+- `docs/reports/audit/INTEGRATION_STATUS_REPORT_DETAILED.md`
+
 ## Backend Import Hygiene
 Status: **Mostly PASS with cleanup debt**
 

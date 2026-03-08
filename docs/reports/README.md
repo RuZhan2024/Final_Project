@@ -4,7 +4,8 @@ This folder contains project reports, checklists, runbooks, plans, and notes.
 
 ## Audit
 - [GLOBAL_AUDIT_REPORT.md](./audit/GLOBAL_AUDIT_REPORT.md)
-- [INTEGRATION_STATUS_REPORT.md](./audit/INTEGRATION_STATUS_REPORT.md)
+- [INTEGRATION_STATUS_REPORT.md](./audit/INTEGRATION_STATUS_REPORT.md) (canonical summary)
+- [INTEGRATION_STATUS_REPORT_DETAILED.md](./audit/INTEGRATION_STATUS_REPORT_DETAILED.md) (full audit log/details)
 - [CONFIG_CONTRACT_MATRIX.md](./audit/CONFIG_CONTRACT_MATRIX.md)
 - [ARTIFACT_PORTABILITY_REPORT.md](./audit/ARTIFACT_PORTABILITY_REPORT.md)
 - [CODE_CLEANLINESS_REPORT.md](./audit/CODE_CLEANLINESS_REPORT.md)
@@ -18,6 +19,7 @@ This folder contains project reports, checklists, runbooks, plans, and notes.
 - [DEPLOYMENT_READINESS_CHECKLIST.md](./checklists/DEPLOYMENT_READINESS_CHECKLIST.md)
 
 ## Runbooks
+- [USER_GUIDE.md](./runbooks/USER_GUIDE.md)
 - [DEMO_RUNBOOK.md](./runbooks/DEMO_RUNBOOK.md)
 - [RELEASE_RUNBOOK.md](./runbooks/RELEASE_RUNBOOK.md)
 

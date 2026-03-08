@@ -164,6 +164,34 @@ Generalization limits and causes are evidence-based.
 - Execute:
   - `python scripts/plot_cross_dataset_transfer.py --manifest artifacts/reports/cross_dataset_manifest.json --out_fig artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png`
 
+## Task 4.5 — MUVIM Labels.csv Full Rerun (Pending)
+### Issue
+Current MUVIM labels run is incomplete (only 4 extracted sequences), so results are not usable for comparative evidence.
+### Resolve method
+Rerun MUVIM end-to-end using `data/raw/MUVIM/Labels.csv` as the authoritative span source, then regenerate train/eval artifacts for TCN and GCN.
+### How to do
+1. Execute extraction + preprocessing + labels/splits/windows with `MUVIM_ZED_CSV=data/raw/MUVIM/Labels.csv`.
+2. Train `muvim_tcn` and `muvim_gcn` with `OUT_TAG=_labels`.
+3. Run `fit-ops` and `eval` for both models.
+4. Update evidence map and comparative report with new artifact pointers.
+### Current blocker
+- MediaPipe extraction failed in agent runtime due OpenGL context issues; this task must be completed on local machine runtime where extraction can finish.
+- Last failed log: `artifacts/reports/muvim_labels_full.log`.
+### Target
+Full labels-based MUVIM artifacts exist and are reproducible.
+### How to get target
+- Required artifacts:
+  - `outputs/muvim_tcn_W48S12_labels/best.pt`
+  - `outputs/muvim_gcn_W48S12_labels/best.pt`
+  - `configs/ops/tcn_muvim_labels.yaml`
+  - `configs/ops/gcn_muvim_labels.yaml`
+  - `outputs/metrics/tcn_muvim_labels.json`
+  - `outputs/metrics/gcn_muvim_labels.json`
+- Reproduce command group:
+  - `make -B extract-muvim preprocess-muvim labels-muvim splits-muvim windows-muvim windows-eval-muvim ADAPTER_USE=1 MUVIM_ZED_CSV=data/raw/MUVIM/Labels.csv WIN_CLEAN=1 WIN_EVAL_CLEAN=1`
+  - `make -B train-tcn-muvim train-gcn-muvim ADAPTER_USE=1 OUT_TAG=_labels MUVIM_ZED_CSV=data/raw/MUVIM/Labels.csv EPOCHS=20 EPOCHS_GCN=20`
+  - `make -B fit-ops-muvim fit-ops-gcn-muvim eval-muvim eval-gcn-muvim ADAPTER_USE=1 OUT_TAG=_labels MUVIM_ZED_CSV=data/raw/MUVIM/Labels.csv`
+
 ## Task 5 — Significance Testing
 ### Issue
 Too many comparisons dilute statistical power.
