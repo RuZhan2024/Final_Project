@@ -1,10 +1,10 @@
 ops:
   OP1:
-    tau_high: 0.20000000298023224
-    tau_low: 0.15600000321865082
-    ema_alpha: 0.2
-    k: 2
-    n: 3
+    tau_high: 0.20
+    tau_low: 0.1560
+    ema_alpha: 0.0
+    k: 1
+    n: 2
     cooldown_s: 30.0
     confirm: false
     confirm_s: 1.5
@@ -26,14 +26,14 @@ ops:
       enable_structural_gate: false
       enable_low_fps_persist_gate: true
     precision: 1.0
-    recall: 1.0
-    f1: 1.0
+    recall: 0.6
+    f1: 0.75
     fa24h: 0.0
     mean_delay_s: 0.626086950302124
     median_delay_s: 0.5217390060424805
     n_gt_events: 5
     n_alert_events: 5
-    n_true_alerts: 5
+    n_true_alerts: 3
     n_false_alerts: 0
   OP2:
     tau_high: 0.92
@@ -53,8 +53,14 @@ ops:
       max_start_lying: 0.35
       min_mean_motion_high: 0.10
       max_event_start_s: 40.0
+    uncertain_promote:
+      enabled: true
+      video_only: true
+      min_p_alert: 0.88
+      min_motion: 0.25
+      max_lying: 0.20
     live_guard:
-      min_motion_for_fall: 0.018
+      min_motion_for_fall: 0.012
       low_fps_mode_threshold: 15.0
       low_fps_fall_persist_n: 3
       min_fps_ratio: 0.65
@@ -77,15 +83,15 @@ ops:
     mean_delay_s: 3.339130401611328
     median_delay_s: 3.13043475151062
     n_gt_events: 5
-    n_alert_events: 5
+    n_alert_events: 3
     n_true_alerts: 5
     n_false_alerts: 0
   OP3:
-    tau_high: 0.20000000298023224
-    tau_low: 0.15600000321865082
-    ema_alpha: 0.2
-    k: 2
-    n: 3
+    tau_high: 0.94
+    tau_low: 0.7332
+    ema_alpha: 0.0
+    k: 1
+    n: 2
     cooldown_s: 30.0
     confirm: false
     confirm_s: 1.5
@@ -107,14 +113,14 @@ ops:
       enable_structural_gate: false
       enable_low_fps_persist_gate: true
     precision: 1.0
-    recall: 1.0
-    f1: 1.0
+    recall: 0.6
+    f1: 0.75
     fa24h: 0.0
     mean_delay_s: 0.626086950302124
     median_delay_s: 0.5217390060424805
     n_gt_events: 5
     n_alert_events: 5
-    n_true_alerts: 5
+    n_true_alerts: 3
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
@@ -128,7 +134,8 @@ ops_meta:
   idx:
     OP1: 19
     OP2: 73
-    OP3: 19
+    OP3: null
+  online_fit_json: "artifacts/online_ops_fit_20260315/caucafall_tcn_refit.json"
 alert_cfg:
   ema_alpha: 0.2
   k: 2

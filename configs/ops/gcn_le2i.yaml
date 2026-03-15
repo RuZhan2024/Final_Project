@@ -1,7 +1,7 @@
 ops:
   OP1:
-    tau_high: 0.70
-    tau_low: 0.5460
+    tau_high: 0.32
+    tau_low: 0.2496
     ema_alpha: 0.0
     k: 1
     n: 2
@@ -17,8 +17,8 @@ ops:
     online_fp: 0
     online_fn: 0
   OP2:
-    tau_high: 0.70
-    tau_low: 0.5460
+    tau_high: 0.50
+    tau_low: 0.3900
     ema_alpha: 0.0
     k: 1
     n: 2
