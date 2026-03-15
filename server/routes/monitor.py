@@ -30,6 +30,12 @@ from ..deploy_runtime import (
 from ..notifications_service import dispatch_fall_notifications
 from ..online_alert import OnlineAlertTracker
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
+from fall_detection.pose.preprocess_pose_npz import (
+    linear_fill_small_gaps,
+    normalize_body_centric,
+    smooth_weighted_moving_average,
+    standardize_missing,
+)
 
 
 router = APIRouter()
@@ -63,6 +69,15 @@ _DEFAULT_LIVE_GUARD_BY_DATASET = {
 }
 _MONITOR_Q_SCALE = 1000.0
 _LOW_MOTION_MEMORY_WINDOWS = 5
+_ONLINE_RAW_PREPROC = {
+    "conf_thr": 0.2,
+    "smooth_k": 5,
+    "max_gap": 4,
+    "fill_conf": "thr",
+    "normalize": "torso",
+    "pelvis_fill": "nearest",
+    "rotate": "none",
+}
 
 
 def _norm_op_code(op_code: str) -> str:
@@ -250,6 +265,33 @@ def _op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str) -> Dic
                 out["min_mean_motion_high"] = float(gate.get("min_mean_motion_high"))
             if gate.get("max_event_start_s") is not None:
                 out["max_event_start_s"] = float(gate.get("max_event_start_s"))
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return out
+
+
+def _op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str) -> Dict[str, Any]:
+    out = {
+        "enabled": False,
+        "video_only": True,
+        "min_p_alert": None,
+        "min_motion": None,
+        "max_lying": None,
+    }
+    try:
+        spec = specs.get(spec_key)
+        ops = spec.ops if spec is not None and hasattr(spec, "ops") else {}
+        op = (ops or {}).get(_norm_op_code(op_code)) or {}
+        cfg = op.get("uncertain_promote") if isinstance(op, dict) else {}
+        if isinstance(cfg, dict):
+            out["enabled"] = _coerce_bool(cfg.get("enabled"), False)
+            out["video_only"] = _coerce_bool(cfg.get("video_only"), True)
+            if cfg.get("min_p_alert") is not None:
+                out["min_p_alert"] = float(cfg.get("min_p_alert"))
+            if cfg.get("min_motion") is not None:
+                out["min_motion"] = float(cfg.get("min_motion"))
+            if cfg.get("max_lying") is not None:
+                out["max_lying"] = float(cfg.get("max_lying"))
     except (TypeError, ValueError, AttributeError):
         pass
     return out
@@ -619,6 +661,47 @@ def _effective_target_fps(*, expected_fps: float, raw_fps_est: Optional[float]) 
     return float(max(lo, min(raw, hi)))
 
 
+def _preprocess_online_raw_window(xy: Any, conf: Any) -> Tuple[List[Any], List[Any]]:
+    """Match online raw inference to the same pose-preprocessed domain used offline."""
+    if not isinstance(xy, list) or len(xy) <= 0:
+        return [], []
+
+    xy_np = np.asarray(xy, dtype=np.float32)
+    conf_np = np.asarray(conf, dtype=np.float32) if isinstance(conf, list) and len(conf) == len(xy) else None
+    if conf_np is None:
+        conf_np = np.ones((xy_np.shape[0], xy_np.shape[1]), dtype=np.float32)
+
+    if xy_np.ndim != 3 or xy_np.shape[-1] != 2 or conf_np.ndim != 2:
+        return xy, conf if isinstance(conf, list) else []
+
+    cfg = _ONLINE_RAW_PREPROC
+    xy_np, conf_np = standardize_missing(xy_np, conf_np)
+    xy_np, conf_np, _ = linear_fill_small_gaps(
+        xy_np,
+        conf_np,
+        conf_thr=float(cfg["conf_thr"]),
+        max_gap=int(cfg["max_gap"]),
+        fill_conf=str(cfg["fill_conf"]),
+    )
+    xy_np = smooth_weighted_moving_average(
+        xy_np,
+        conf_np,
+        conf_thr=float(cfg["conf_thr"]),
+        k=int(cfg["smooth_k"]),
+    )
+    xy_np, _ = normalize_body_centric(
+        xy_np,
+        conf_np,
+        conf_thr=float(cfg["conf_thr"]),
+        mode=str(cfg["normalize"]),
+        pelvis_fill=str(cfg["pelvis_fill"]),
+        rotate=str(cfg["rotate"]),
+    )
+    xy_np = np.nan_to_num(xy_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+    conf_np = np.nan_to_num(conf_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+    return xy_np.tolist(), conf_np.tolist()
+
+
 
 def _resample_pose_window(
     *,
@@ -911,6 +994,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             target_T=target_T,
             window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
         )
+        if xy:
+            xy, conf = _preprocess_online_raw_window(xy, conf)
 
     if not xy:
         xy = payload_d.get("xy") or []
@@ -993,15 +1078,27 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         if not has_gcn:
             raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
     else:
-        if not has_tcn or not has_gcn:
+        if not has_tcn and not has_gcn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No deploy specs found for dataset '{dataset_code}'.",
+            )
+        if has_tcn and not has_gcn:
+            mode = "tcn"
+        elif has_gcn and not has_tcn:
+            mode = "gcn"
+        elif not has_tcn or not has_gcn:
             raise HTTPException(
                 status_code=404,
                 detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
             )
 
     guard_spec_key = tcn_key if mode in {"tcn", "hybrid"} else gcn_key
+    primary_spec_key = tcn_key if mode == "tcn" else gcn_key if mode == "gcn" else tcn_key
+    primary_model_key = "tcn" if mode == "tcn" else "gcn" if mode == "gcn" else "tcn"
     live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
-    delivery_gate = _op_delivery_gate(specs, tcn_key, op_code)
+    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code)
+    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code)
     min_motion = float(live_guard["min_motion_for_fall"])
     low_motion_block = bool(motion_score is not None and motion_score < min_motion)
     recent_motion_support = _recent_motion_support(
@@ -1418,8 +1515,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "mean_motion_high": None,
         "event_start_s": None,
     }
-    if mode == "tcn" and bool(delivery_gate.get("enabled", False)):
-        gate_state_key = f"delivery_gate:{tcn_key}:{_norm_op_code(op_code)}"
+    if mode in {"tcn", "gcn"} and bool(delivery_gate.get("enabled", False)):
+        gate_state_key = f"delivery_gate:{primary_spec_key}:{_norm_op_code(op_code)}"
         if triage_state == "fall":
             gate_state = st.setdefault(gate_state_key, {})
             if started_event or not bool(gate_state.get("active", False)):
@@ -1436,11 +1533,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                 gate_state["motion_high_count"] = 0
             if lying_score is not None and math.isfinite(float(lying_score)):
                 gate_state["max_lying"] = max(float(gate_state.get("max_lying", float("-inf"))), float(lying_score))
-            tau_high_live = float(models_out.get("tcn", {}).get("triage", {}).get("tau_high", 1.0))
+            tau_high_live = float(models_out.get(primary_model_key, {}).get("triage", {}).get("tau_high", 1.0))
             if (
                 confirm_motion_score is not None
                 and math.isfinite(float(confirm_motion_score))
-                and float(models_out.get("tcn", {}).get("p_alert_in", 0.0)) >= tau_high_live
+                and float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0)) >= tau_high_live
             ):
                 gate_state["motion_high_sum"] = float(gate_state.get("motion_high_sum", 0.0)) + float(confirm_motion_score)
                 gate_state["motion_high_count"] = int(gate_state.get("motion_high_count", 0)) + 1
@@ -1492,6 +1589,40 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                 delivery_gate_diag["reason"] = gate_reason
         else:
             st.pop(gate_state_key, None)
+
+    uncertain_promoted = False
+    if (
+        mode in {"tcn", "gcn"}
+        and triage_state == "uncertain"
+        and bool(uncertain_promote.get("enabled", False))
+        and (not bool(uncertain_promote.get("video_only", True)) or is_replay)
+    ):
+        p_alert_live = float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0) or 0.0)
+        p_ok = (
+            uncertain_promote.get("min_p_alert") is None
+            or p_alert_live >= float(uncertain_promote["min_p_alert"])
+        )
+        motion_ok = (
+            uncertain_promote.get("min_motion") is None
+            or (
+                confirm_motion_score is not None
+                and math.isfinite(float(confirm_motion_score))
+                and float(confirm_motion_score) >= float(uncertain_promote["min_motion"])
+            )
+        )
+        lying_ok = (
+            uncertain_promote.get("max_lying") is None
+            or (
+                lying_score is not None
+                and math.isfinite(float(lying_score))
+                and float(lying_score) <= float(uncertain_promote["max_lying"])
+            )
+        )
+        if p_ok and motion_ok and lying_ok:
+            triage_state = "fall"
+            safe_alert = True
+            recall_alert = True
+            uncertain_promoted = True
 
     # Resolve channel states consistently for all modes.
     safe_state_out = dual_policy_alerts.get("safe", {}).get("state")
@@ -1635,6 +1766,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "op_code": op_code,
         "use_mc": bool(use_mc),
         "delivery_gate": delivery_gate_diag,
+        "uncertain_promoted": bool(uncertain_promoted),
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
         "persist_dedup": {

@@ -1,5 +1,5 @@
 import React from "react";
-import {Routes, Route, Link, Navigate, NavLink, useLocation} from "react-router-dom";
+import {Routes, Route, Navigate, NavLink, useLocation} from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Monitor from "./pages/Monitor";
 import Events from "./pages/Events";

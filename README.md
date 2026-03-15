@@ -9,7 +9,7 @@ Canonical Python package code lives in `src/fall_detection`.
 
 ---
 
-## 1) Quick Start (Two Commands)
+## 1) Quick Start
 
 Run from repo root.
 
@@ -23,15 +23,21 @@ Notes:
 - `AUTO_DO_EXTRACT=0` means no raw extraction is triggered.
 - This assumes your `data/interim` / `data/processed` inputs already exist.
 
-### B. One command to start backend + frontend
+### B. One command to bootstrap + start backend + frontend
 
 ```bash
-bash -lc 'source .venv/bin/activate && PYTHONPATH="$(pwd)/src:$(pwd)" uvicorn server.app:app --host 127.0.0.1 --port 8000 & cd apps && npm start'
+make bootstrap-dev
 ```
 
 Open:
 - Frontend: `http://localhost:3000`
 - Backend health: `http://127.0.0.1:8000/api/health`
+
+Notes:
+- `make bootstrap-dev` creates `.venv` and installs missing frontend deps if needed.
+- If your environment is already prepared, `make dev` starts faster.
+- The command fails fast if port `8000` or `3000` is already in use.
+- When the frontend process exits, the script also stops the backend it started.
 
 ---
 
@@ -142,6 +148,11 @@ make eval-caucafall
 make eval-gcn-caucafall
 make plot-caucafall
 make plot-gcn-caucafall
+make plot-confmat-caucafall
+make plot-confmat-gcn-caucafall
+make plot-failure-caucafall
+make plot-failure-gcn-caucafall
+make plot-balance-caucafall
 ```
 
 ## 5.4 Full pipelines
@@ -174,6 +185,7 @@ Reproduce locked profiles:
 
 ```bash
 make repro-best-caucafall ADAPTER_USE=1
+make repro-best-muvim ADAPTER_USE=1
 ```
 
 Promote locked ops to canonical deploy ops:
@@ -345,6 +357,7 @@ Check:
 
 - Documentation index: `docs/README.md`
 - Submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
+- Plot selection guide for report/paper: `docs/project_targets/PLOT_SELECTION_FOR_REPORT.md`
 - Backend details: `server/README.md`
 - Reports/checklists: `docs/reports/`
 - Project targets and execution plan: `docs/project_targets/`

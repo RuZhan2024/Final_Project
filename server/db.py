@@ -86,6 +86,12 @@ def get_conn_optional() -> Iterator[Optional[object]]:
     - PyMySQL isn't installed, or
     - the DB isn't reachable.
     """
+    # Keep optional DB routes deterministic under pytest: tests should only hit
+    # a real DB when they explicitly monkeypatch the connection helper.
+    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("FALL_DETECTION_ALLOW_TEST_DB", "").strip() not in {"1", "true", "yes"}:
+        yield None
+        return
+
     conn_cm = None
     try:
         conn_cm = get_conn()

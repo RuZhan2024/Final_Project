@@ -18,6 +18,8 @@ This folder is the canonical documentation root.
 
 - Historical/legacy audit documents (kept for reference, not active source of truth):
   - `docs/archive/`
+- Archived teaching/tutorial material:
+  - `docs/archive/tutorial_materials/`
 
 ## Source-of-Truth Notes
 

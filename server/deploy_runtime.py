@@ -140,9 +140,6 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
         dataset = dataset_guess.lower().strip()
         if arch not in {"tcn", "gcn"}:
             continue
-        if dataset not in SUPPORTED_DATASETS:
-            continue
-
         ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
         if not ckpt_rel:
             continue

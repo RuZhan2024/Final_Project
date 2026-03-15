@@ -6,6 +6,8 @@ __pycache__/
 coverage.xml
 apps/node_modules/
 .make/
+.mypy_cache/
+.pytest_cache/
 *.mp4
 *.avi
 *.mov
@@ -14,3 +16,18 @@ apps/node_modules/
 *.pt
 outputs/
 data/
+.mplcache/
+/tmp/fall_detection_backend.log
+apps/build/
+artifacts/figures/plots/
+artifacts/fall_side_corridor_eval_20260315/
+artifacts/fall_test_eval_20260315/
+artifacts/fall_test_eval_20260315_online_reverify_20260315/
+artifacts/fall_test_generalization_20260315/
+artifacts/online_ops_fit_20260315/
+artifacts/online_ops_fit_20260315_verify/
+artifacts/online_ops_fit_20260315_verify_le2i_bypass/
+artifacts/ops_delivery_verify_20260315/
+artifacts/ops_reverify_20260315/
+artifacts/ops_reverify_20260315_after_gatefix/
+artifacts/ops_reverify_20260315_after_motionfix/

@@ -397,7 +397,13 @@ def update_event_status(event_id: int, payload: Dict[str, Any] = Body(...)) -> D
             cur.execute("SELECT id FROM events WHERE id=%s LIMIT 1", (int(event_id),))
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+                return {
+                    "ok": True,
+                    "persisted": False,
+                    "reason": "event_not_found",
+                    "event_id": int(event_id),
+                    "status": status,
+                }
 
             if variants.get("events") == "v2" and _has_col(conn, "events", "status"):
                 cur.execute("UPDATE events SET status=%s WHERE id=%s", (status, int(event_id)))

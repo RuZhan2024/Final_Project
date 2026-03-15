@@ -44,7 +44,7 @@ OPS_DIR    ?= $(CFG_DIR)/ops
 
 CAL_DIR    ?= $(OUT_DIR)/calibration
 MET_DIR    ?= $(OUT_DIR)/metrics
-PLOT_DIR   ?= $(OUT_DIR)/plots
+PLOT_DIR   ?= artifacts/figures/plots
 
 STAMP_DIR  ?= .make
 
@@ -479,7 +479,7 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
+.PHONY: help bootstrap-dev up dev release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
         eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
@@ -488,6 +488,18 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Utility targets
 # -------------------------
+bootstrap-dev up:
+	@bash scripts/bootstrap_dev.sh
+
+dev:
+	@bash scripts/start_fullstack.sh
+
+release-check:
+	@bash scripts/release_doctor.sh
+
+release-manifest:
+	@bash scripts/release_manifest.sh
+
 serve-dev:
 	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
 
@@ -540,6 +552,14 @@ help:
 	@echo ""
 	@echo "Fall Detection v2 — targets (datasets: $(DATASETS))"
 	@echo ""
+	@echo "App dev:"
+	@echo "  make bootstrap-dev      (install missing deps, then start backend + frontend)"
+	@echo "  make up                 (alias of bootstrap-dev)"
+	@echo "  make dev                (start backend + frontend with one command)"
+	@echo "  make release-manifest   (print the current delivery release subset)"
+	@echo "  make release-check      (static delivery checks)"
+	@echo "  make serve-dev          (start backend only)"
+	@echo ""
 	@echo "Data prep:"
 	@echo "  make pipeline-data-<ds>       (extract→preprocess→labels→splits→windows)"
 	@echo "  make pipeline-<ds>-noextract  (preprocess→labels→splits→windows; assumes pose_npz_raw exists)"
@@ -569,6 +589,9 @@ help:
 	@echo "  make eval-<ds>    | eval-gcn-<ds>"
 	@echo "  make eval-unlabeled-<ds> | eval-unlabeled-gcn-<ds>"
 	@echo "  make plot-<ds>    | plot-gcn-<ds>"
+	@echo "  make plot-confmat-<ds> | plot-confmat-gcn-<ds>"
+	@echo "  make plot-failure-<ds> | plot-failure-gcn-<ds>"
+	@echo "  make plot-balance-<ds>"
 	@echo ""
 	@echo "Adapter windows mode (optional):"
 	@echo "  make windows-<ds> ADAPTER_USE=1"
@@ -1256,7 +1279,7 @@ $(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unl
 # ============================================================
 # Plot
 # Dataset-scoped plot targets (avoid pattern collisions like 'plot-gcn-le2i' matching 'plot-%').
-.PHONY: $(addprefix plot-,$(DATASETS)) $(addprefix plot-gcn-,$(DATASETS))
+.PHONY: $(addprefix plot-,$(DATASETS)) $(addprefix plot-gcn-,$(DATASETS)) $(addprefix plot-confmat-,$(DATASETS)) $(addprefix plot-confmat-gcn-,$(DATASETS)) $(addprefix plot-failure-,$(DATASETS)) $(addprefix plot-failure-gcn-,$(DATASETS)) $(addprefix plot-balance-,$(DATASETS))
 
 $(addprefix plot-,$(DATASETS)): plot-%: \
   $(PLOT_DIR)/tcn_%$(OUT_TAG)_recall_vs_fa.png \
@@ -1266,6 +1289,26 @@ $(addprefix plot-,$(DATASETS)): plot-%: \
 $(addprefix plot-gcn-,$(DATASETS)): plot-gcn-%: \
   $(PLOT_DIR)/gcn_%$(OUT_TAG)_recall_vs_fa.png \
   $(PLOT_DIR)/gcn_%$(OUT_TAG)_f1_vs_tau.png
+	@:
+
+$(addprefix plot-confmat-,$(DATASETS)): plot-confmat-%: \
+  $(PLOT_DIR)/tcn_%$(OUT_TAG)_confusion_matrix.png
+	@:
+
+$(addprefix plot-confmat-gcn-,$(DATASETS)): plot-confmat-gcn-%: \
+  $(PLOT_DIR)/gcn_%$(OUT_TAG)_confusion_matrix.png
+	@:
+
+$(addprefix plot-failure-,$(DATASETS)): plot-failure-%: \
+  $(PLOT_DIR)/tcn_%$(OUT_TAG)_failure_scatter.png
+	@:
+
+$(addprefix plot-failure-gcn-,$(DATASETS)): plot-failure-gcn-%: \
+  $(PLOT_DIR)/gcn_%$(OUT_TAG)_failure_scatter.png
+	@:
+
+$(addprefix plot-balance-,$(DATASETS)): plot-balance-%: \
+  $(PLOT_DIR)/%$(OUT_TAG)_class_balance.png
 	@:
 
 # ============================================================
@@ -1285,6 +1328,26 @@ $(PLOT_DIR)/gcn_%$(OUT_TAG)_recall_vs_fa.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 $(PLOT_DIR)/gcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
+
+$(PLOT_DIR)/tcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
+
+$(PLOT_DIR)/gcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
+
+$(PLOT_DIR)/tcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
+
+$(PLOT_DIR)/gcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
+
+$(PLOT_DIR)/%$(OUT_TAG)_class_balance.png: $(LABELS_DIR)/%.json $(SPLITS_DIR)/%_train.txt $(SPLITS_DIR)/%_val.txt $(SPLITS_DIR)/%_test.txt
+	@mkdir -p "$(@D)"
+	$(RUN) scripts/plot_dataset_balance.py --dataset "$*" --labels_json "$(LABELS_DIR)/$*.json" --splits_dir "$(SPLITS_DIR)" --out_fig "$@"
 
 # ============================================================
 # Sanity checks
