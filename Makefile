@@ -479,7 +479,7 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help bootstrap-dev up dev release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
+.PHONY: help bootstrap-dev up dev compose-up compose-down release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
         eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
@@ -493,6 +493,20 @@ bootstrap-dev up:
 
 dev:
 	@bash scripts/start_fullstack.sh
+
+compose-up:
+	@command -v docker >/dev/null 2>&1 || { \
+	  echo "docker is not installed or not on PATH. Install and start Docker Desktop first."; \
+	  exit 1; \
+	}
+	@docker compose up
+
+compose-down:
+	@command -v docker >/dev/null 2>&1 || { \
+	  echo "docker is not installed or not on PATH. Install and start Docker Desktop first."; \
+	  exit 1; \
+	}
+	@docker compose down
 
 release-check:
 	@bash scripts/release_doctor.sh
@@ -556,6 +570,8 @@ help:
 	@echo "  make bootstrap-dev      (install missing deps, then start backend + frontend)"
 	@echo "  make up                 (alias of bootstrap-dev)"
 	@echo "  make dev                (start backend + frontend with one command)"
+	@echo "  make compose-up         (start frontend + backend + MySQL via docker compose)"
+	@echo "  make compose-down       (stop docker compose services)"
 	@echo "  make release-manifest   (print the current delivery release subset)"
 	@echo "  make release-check      (static delivery checks)"
 	@echo "  make serve-dev          (start backend only)"

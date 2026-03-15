@@ -39,6 +39,27 @@ Notes:
 - The command fails fast if port `8000` or `3000` is already in use.
 - When the frontend process exits, the script also stops the backend it started.
 
+### C. One command to start frontend + backend + MySQL with persistence
+
+```bash
+docker compose up
+```
+
+Open:
+- Frontend: `http://localhost:3000`
+- Backend health: `http://127.0.0.1:8000/api/health`
+
+Notes:
+- This starts `frontend`, `backend`, and `mysql` together.
+- MySQL data is persisted in the `mysql_data` Docker volume.
+- The first startup initializes the DB from `server/create_db.sql`.
+- This is the preferred full-system delivery mode when DB persistence needs to be demonstrated.
+- If host port `3306` is already occupied, keep the frontend/backend defaults and move only the exposed MySQL port:
+
+```bash
+MYSQL_PORT=3307 docker compose up
+```
+
 ---
 
 ## 2) Project Layout
@@ -87,6 +108,18 @@ cd ..
 ## 3.3 Optional: DB-backed endpoints
 
 If you want DB persistence for settings/events/caregivers, configure env vars (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`).
+
+Recommended delivery split:
+
+- lightweight review mode: `make bootstrap-dev`
+  - no MySQL required
+- full persistent-system mode: `docker compose up`
+  - Docker-backed frontend + backend + MySQL
+  - preferred for supervisor delivery when DB persistence needs to be demonstrated
+
+See:
+
+- `docs/reports/runbooks/SUPERVISOR_DELIVERY_MODES.md`
 
 ---
 

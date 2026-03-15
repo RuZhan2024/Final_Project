@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+.mypy_cache
+.make
+.mplcache
+data
+outputs
+artifacts
+baselines
+apps/node_modules
+apps/build
+artifacts/figures/plots
+server/event_clips
+*.pyc
+__pycache__
