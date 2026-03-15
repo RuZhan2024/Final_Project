@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
+import numpy as np
 import yaml
 
 try:
@@ -28,6 +29,7 @@ from ..deploy_runtime import (
 )
 from ..notifications_service import dispatch_fall_notifications
 from ..online_alert import OnlineAlertTracker
+from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 
 
 router = APIRouter()
@@ -46,14 +48,21 @@ _DEFAULT_LIVE_GUARD_BY_DATASET = {
         "min_motion_for_fall": 0.020,
         "min_fps_ratio": 0.70,
         "min_conf_mean": 0.35,
+        "allow_low_motion_high_conf_bypass": False,
+        "low_motion_high_conf_k": 0,
+        "low_motion_high_conf_max_lying": None,
     },
     "le2i": {
         "min_motion_for_fall": 0.020,
         "min_fps_ratio": 0.70,
         "min_conf_mean": 0.35,
+        "allow_low_motion_high_conf_bypass": False,
+        "low_motion_high_conf_k": 0,
+        "low_motion_high_conf_max_lying": None,
     },
 }
 _MONITOR_Q_SCALE = 1000.0
+_LOW_MOTION_MEMORY_WINDOWS = 5
 
 
 def _norm_op_code(op_code: str) -> str:
@@ -81,6 +90,72 @@ def _coerce_bool(v: Any, default: bool) -> bool:
     return bool(default)
 
 
+def _recent_motion_support(
+    st: Dict[str, Any],
+    *,
+    dataset_code: str,
+    mode: str,
+    motion_score: Optional[float],
+    min_motion: float,
+    memory_windows: int = _LOW_MOTION_MEMORY_WINDOWS,
+) -> bool:
+    """Remember short-term motion bursts so post-fall stillness is not misread.
+
+    A real fall often has one or two high-motion windows followed by low motion
+    while the person is lying on the floor. We keep a tiny per-session history
+    and allow that recent burst to support the current window.
+    """
+    hist_key = f"motion_hist:{dataset_code}:{mode}"
+    hist_raw = st.get(hist_key)
+    hist: List[float] = hist_raw if isinstance(hist_raw, list) else []
+    if motion_score is not None and math.isfinite(float(motion_score)):
+        hist.append(float(motion_score))
+    keep = max(1, int(memory_windows))
+    if len(hist) > keep:
+        hist = hist[-keep:]
+    st[hist_key] = hist
+    return any(float(v) >= float(min_motion) for v in hist)
+
+
+def _low_motion_high_conf_bypass(
+    st: Dict[str, Any],
+    *,
+    dataset_code: str,
+    mode: str,
+    p_raw: float,
+    tau_high: float,
+    lying_score: Optional[float],
+    enabled: bool,
+    min_hits: int,
+    max_lying: Optional[float],
+) -> bool:
+    """Allow specific low-motion clips through when confidence stays high.
+
+    This is meant for scenes where true falls can become nearly static very
+    quickly. We require a short streak of high-confidence windows, and if a
+    max-lying guard is configured every window in the streak must stay below it.
+    """
+    key = f"low_motion_high_conf:{dataset_code}:{mode}"
+    if not enabled or min_hits <= 0:
+        st.pop(key, None)
+        return False
+
+    prev = st.get(key)
+    count = int(prev.get("count", 0) or 0) if isinstance(prev, dict) else 0
+    current_ok = bool(float(p_raw) >= float(tau_high))
+    if current_ok and max_lying is not None:
+        if lying_score is None or (not math.isfinite(float(lying_score))) or float(lying_score) > float(max_lying):
+            current_ok = False
+
+    if current_ok:
+        count += 1
+        st[key] = {"count": count}
+    else:
+        st.pop(key, None)
+        count = 0
+    return bool(count >= int(min_hits))
+
+
 def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_code: str) -> Dict[str, Any]:
     """Resolve live guard config from ops.<OP*>.live_guard with sane defaults."""
     ds_defaults = _DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {})
@@ -106,6 +181,9 @@ def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_c
         "enable_occlusion_gate": True,
         "enable_structural_gate": True,
         "enable_low_fps_persist_gate": True,
+        "allow_low_motion_high_conf_bypass": _coerce_bool(ds_defaults.get("allow_low_motion_high_conf_bypass"), False),
+        "low_motion_high_conf_k": int(ds_defaults.get("low_motion_high_conf_k", 0) or 0),
+        "low_motion_high_conf_max_lying": ds_defaults.get("low_motion_high_conf_max_lying"),
     }
     try:
         spec = specs.get(spec_key)
@@ -128,6 +206,12 @@ def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_c
             out["enable_low_fps_persist_gate"] = _coerce_bool(
                 lg.get("enable_low_fps_persist_gate"), out["enable_low_fps_persist_gate"]
             )
+            out["allow_low_motion_high_conf_bypass"] = _coerce_bool(
+                lg.get("allow_low_motion_high_conf_bypass"), out["allow_low_motion_high_conf_bypass"]
+            )
+            out["low_motion_high_conf_k"] = int(lg.get("low_motion_high_conf_k", out["low_motion_high_conf_k"]))
+            if lg.get("low_motion_high_conf_max_lying") is not None:
+                out["low_motion_high_conf_max_lying"] = float(lg.get("low_motion_high_conf_max_lying"))
     except (TypeError, ValueError, AttributeError):
         pass
     # Clamp to safe bounds.
@@ -139,6 +223,35 @@ def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_c
     out["min_coverage_ratio"] = float(min(1.2, max(0.1, out["min_coverage_ratio"])))
     out["min_conf_mean"] = float(min(1.0, max(0.0, out["min_conf_mean"])))
     out["min_joints_med"] = int(max(1, out["min_joints_med"]))
+    out["low_motion_high_conf_k"] = int(max(0, out["low_motion_high_conf_k"]))
+    return out
+
+
+def _op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str) -> Dict[str, Any]:
+    out = {
+        "enabled": False,
+        "max_lying": None,
+        "max_start_lying": None,
+        "min_mean_motion_high": None,
+        "max_event_start_s": None,
+    }
+    try:
+        spec = specs.get(spec_key)
+        ops = spec.ops if spec is not None and hasattr(spec, "ops") else {}
+        op = (ops or {}).get(_norm_op_code(op_code)) or {}
+        gate = op.get("delivery_gate") if isinstance(op, dict) else {}
+        if isinstance(gate, dict):
+            out["enabled"] = _coerce_bool(gate.get("enabled"), False)
+            if gate.get("max_lying") is not None:
+                out["max_lying"] = float(gate.get("max_lying"))
+            if gate.get("max_start_lying") is not None:
+                out["max_start_lying"] = float(gate.get("max_start_lying"))
+            if gate.get("min_mean_motion_high") is not None:
+                out["min_mean_motion_high"] = float(gate.get("min_mean_motion_high"))
+            if gate.get("max_event_start_s") is not None:
+                out["max_event_start_s"] = float(gate.get("max_event_start_s"))
+    except (TypeError, ValueError, AttributeError):
+        pass
     return out
 
 
@@ -328,6 +441,57 @@ def _raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, An
         m = len(joints_counts) // 2
         stats["joints_per_frame_med"] = int(joints_counts[m])
 
+    if conf_vals:
+        stats["conf_mean"] = float(sum(conf_vals) / max(1, len(conf_vals)))
+    return stats
+
+
+def _direct_window_stats(xy: Any, conf: Any, *, effective_fps: float) -> Dict[str, Any]:
+    """Fallback stats for already-resampled direct windows.
+
+    When the caller sends fixed-length `xy/conf` directly, there is no raw timing
+    stream to derive coverage metrics from. Treat the payload as a complete window
+    at `effective_fps` so live quality gates do not misclassify it as structurally
+    incomplete.
+    """
+    stats: Dict[str, Any] = {
+        "raw_len": 0,
+        "raw_fps_est": None,
+        "raw_duration_s": None,
+        "joints_per_frame_med": None,
+        "conf_mean": None,
+    }
+    if not isinstance(xy, list) or len(xy) <= 0:
+        return stats
+
+    n = len(xy)
+    stats["raw_len"] = int(n)
+    fps_eff = float(effective_fps) if effective_fps and float(effective_fps) > 0 else None
+    if fps_eff is not None:
+        stats["raw_fps_est"] = fps_eff
+        if n >= 2:
+            stats["raw_duration_s"] = float((n - 1) / fps_eff)
+        else:
+            stats["raw_duration_s"] = 0.0
+
+    joint_counts: List[int] = []
+    conf_vals: List[float] = []
+    for i, frame in enumerate(xy):
+        if isinstance(frame, list):
+            joint_counts.append(len(frame))
+        cfr = conf[i] if isinstance(conf, list) and i < len(conf) else None
+        if isinstance(cfr, list):
+            for v in cfr:
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(fv):
+                    conf_vals.append(fv)
+
+    if joint_counts:
+        joint_counts.sort()
+        stats["joints_per_frame_med"] = int(joint_counts[len(joint_counts) // 2])
     if conf_vals:
         stats["conf_mean"] = float(sum(conf_vals) / max(1, len(conf_vals)))
     return stats
@@ -752,10 +916,22 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         xy = payload_d.get("xy") or []
         conf = payload_d.get("conf") or []
 
+    # Direct `xy/conf` payloads are already fixed-length windows; synthesize
+    # timing/coverage stats so live quality gates don't treat them as empty raw streams.
+    if (
+        (raw_xy is None or raw_t_ms is None)
+        and isinstance(xy, list)
+        and len(xy) > 0
+        and (raw_stats.get("raw_len") or 0) <= 0
+    ):
+        raw_stats = _direct_window_stats(xy, conf, effective_fps=float(effective_fps))
+
     if not xy:
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
 
     motion_score = _window_motion_score(xy)
+    lying_score = None
+    confirm_motion_score = None
 
     try:
         if window_end_t_ms is not None:
@@ -768,7 +944,23 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         _now_ms = time.time() * 1000.0
     _t_s = float(_now_ms) / 1000.0
 
+    try:
+        xy_np = np.asarray(xy, dtype=np.float32)
+        conf_np = np.asarray(conf, dtype=np.float32) if conf else None
+        raw_window = WindowRaw(
+            joints_xy=xy_np,
+            motion_xy=None,
+            conf=conf_np,
+            mask=None,
+            fps=float(effective_fps),
+            meta=None,
+        )
+        lying_score, confirm_motion_score = compute_confirm_scores(raw_window)
+    except Exception:
+        lying_score, confirm_motion_score = None, None
+
     st = core._SESSION_STATE.setdefault(session_id, {})
+    st.setdefault("session_start_t_s", _t_s)
     st_trackers = st.setdefault("trackers", {})
     st_trackers_cfg = st.setdefault("trackers_cfg", {})
     started_tcn = False
@@ -809,8 +1001,16 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     guard_spec_key = tcn_key if mode in {"tcn", "hybrid"} else gcn_key
     live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
+    delivery_gate = _op_delivery_gate(specs, tcn_key, op_code)
     min_motion = float(live_guard["min_motion_for_fall"])
     low_motion_block = bool(motion_score is not None and motion_score < min_motion)
+    recent_motion_support = _recent_motion_support(
+        st,
+        dataset_code=dataset_code,
+        mode=mode,
+        motion_score=motion_score,
+        min_motion=min_motion,
+    )
     qdiag = _window_quality_block(
         raw_stats=raw_stats,
         expected_fps=float(expected_fps),
@@ -884,6 +1084,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "target_T": target_T,
             "motion_score": motion_score,
             "low_motion_block": low_motion_block,
+            "recent_motion_support": recent_motion_support,
+            "low_motion_high_conf_bypass": low_motion_high_conf_bypass,
             "min_motion_for_fall": float(min_motion),
             "low_quality_block": low_quality_block,
             "structural_quality_block": structural_quality_block,
@@ -916,7 +1118,12 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     def _guard_alert_p(p_raw: float, tau_low: float) -> float:
         """Clamp tracker input when live sampling/motion quality is insufficient."""
         if (
-            (bool(live_guard["enable_low_motion_gate"]) and low_motion_block)
+            (
+                bool(live_guard["enable_low_motion_gate"])
+                and low_motion_block
+                and not recent_motion_support
+                and not low_motion_high_conf_bypass
+            )
             or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
         ):
             return float(min(float(p_raw), float(tau_low) - 0.02))
@@ -930,6 +1137,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     tri_tcn = None
     tri_gcn = None
     dual_policy_alerts: Dict[str, Any] = {}
+    low_motion_high_conf_bypass = False
 
     run_tcn = mode in {"tcn", "hybrid"}
     run_gcn = mode in {"gcn", "hybrid"}
@@ -948,9 +1156,24 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
         cfg_tcn = out_tcn.get("alert_cfg") or {}
         tau_low_tcn = float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0)))
+        tau_high_tcn = float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0)))
         p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
+        bypass_tcn = _low_motion_high_conf_bypass(
+            st,
+            dataset_code=dataset_code,
+            mode="tcn",
+            p_raw=p_raw_tcn,
+            tau_high=tau_high_tcn,
+            lying_score=lying_score,
+            enabled=bool(live_guard.get("allow_low_motion_high_conf_bypass", False)),
+            min_hits=int(live_guard.get("low_motion_high_conf_k", 0)),
+            max_lying=live_guard.get("low_motion_high_conf_max_lying"),
+        )
+        low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_tcn)
         p_alert_tcn = _guard_alert_p(p_raw_tcn, tau_low_tcn)
         out_tcn["p_alert_in"] = float(p_alert_tcn)
+        out_tcn["lying_score"] = None if lying_score is None else float(lying_score)
+        out_tcn["confirm_motion_score"] = None if confirm_motion_score is None else float(confirm_motion_score)
         trk = st_trackers.get(tcn_key)
         if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
             trk = OnlineAlertTracker(cfg_tcn)
@@ -965,7 +1188,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "ps": r.ps,
             "p_in": r.p_in,
             "tau_low": tau_low_tcn,
-            "tau_high": float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0))),
+            "tau_high": tau_high_tcn,
             "ema_alpha": float(cfg_tcn.get("ema_alpha", 0.0)),
             "k": int(cfg_tcn.get("k", 2)),
             "n": int(cfg_tcn.get("n", 3)),
@@ -1016,7 +1239,20 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
         cfg_gcn = out_gcn.get("alert_cfg") or {}
         tau_low_gcn = float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0)))
+        tau_high_gcn = float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0)))
         p_raw_gcn = float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0)
+        bypass_gcn = _low_motion_high_conf_bypass(
+            st,
+            dataset_code=dataset_code,
+            mode="gcn",
+            p_raw=p_raw_gcn,
+            tau_high=tau_high_gcn,
+            lying_score=lying_score,
+            enabled=bool(live_guard.get("allow_low_motion_high_conf_bypass", False)),
+            min_hits=int(live_guard.get("low_motion_high_conf_k", 0)),
+            max_lying=live_guard.get("low_motion_high_conf_max_lying"),
+        )
+        low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_gcn)
         p_alert_gcn = _guard_alert_p(p_raw_gcn, tau_low_gcn)
         out_gcn["p_alert_in"] = float(p_alert_gcn)
         trk = st_trackers.get(gcn_key)
@@ -1030,7 +1266,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "ps": res.ps,
             "p_in": res.p_in,
             "tau_low": tau_low_gcn,
-            "tau_high": float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0))),
+            "tau_high": tau_high_gcn,
             "ema_alpha": float(cfg_gcn.get("ema_alpha", 0.0)),
             "k": int(cfg_gcn.get("k", 2)),
             "n": int(cfg_gcn.get("n", 3)),
@@ -1119,7 +1355,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"
     low_fps_confirm_count = int(st.get(low_fps_gate_key, 0) or 0)
     low_fps_gate_reason: Optional[str] = None
-    if bool(live_guard["enable_low_motion_gate"]) and low_motion_block and triage_state == "fall":
+    if (
+        bool(live_guard["enable_low_motion_gate"])
+        and low_motion_block
+        and (not recent_motion_support)
+        and (not low_motion_high_conf_bypass)
+        and triage_state == "fall"
+    ):
         triage_state = "uncertain"
         started_event = False
         safe_alert = False
@@ -1166,6 +1408,90 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     else:
         st[low_fps_gate_key] = 0
         low_fps_confirm_count = 0
+
+    delivery_gate_diag: Dict[str, Any] = {
+        "enabled": bool(delivery_gate.get("enabled", False)),
+        "blocked": False,
+        "reason": None,
+        "start_lying": None,
+        "max_lying": None,
+        "mean_motion_high": None,
+        "event_start_s": None,
+    }
+    if mode == "tcn" and bool(delivery_gate.get("enabled", False)):
+        gate_state_key = f"delivery_gate:{tcn_key}:{_norm_op_code(op_code)}"
+        if triage_state == "fall":
+            gate_state = st.setdefault(gate_state_key, {})
+            if started_event or not bool(gate_state.get("active", False)):
+                gate_state.clear()
+                gate_state["active"] = True
+                gate_state["event_start_t_s"] = float(_t_s)
+                gate_state["start_lying"] = (
+                    float(lying_score) if lying_score is not None and math.isfinite(float(lying_score)) else float("-inf")
+                )
+                gate_state["max_lying"] = (
+                    float(lying_score) if lying_score is not None and math.isfinite(float(lying_score)) else float("-inf")
+                )
+                gate_state["motion_high_sum"] = 0.0
+                gate_state["motion_high_count"] = 0
+            if lying_score is not None and math.isfinite(float(lying_score)):
+                gate_state["max_lying"] = max(float(gate_state.get("max_lying", float("-inf"))), float(lying_score))
+            tau_high_live = float(models_out.get("tcn", {}).get("triage", {}).get("tau_high", 1.0))
+            if (
+                confirm_motion_score is not None
+                and math.isfinite(float(confirm_motion_score))
+                and float(models_out.get("tcn", {}).get("p_alert_in", 0.0)) >= tau_high_live
+            ):
+                gate_state["motion_high_sum"] = float(gate_state.get("motion_high_sum", 0.0)) + float(confirm_motion_score)
+                gate_state["motion_high_count"] = int(gate_state.get("motion_high_count", 0)) + 1
+
+            mean_motion_high = None
+            if int(gate_state.get("motion_high_count", 0)) > 0:
+                mean_motion_high = float(gate_state["motion_high_sum"]) / float(gate_state["motion_high_count"])
+            event_start_s = float(gate_state.get("event_start_t_s", _t_s)) - float(st.get("session_start_t_s", _t_s))
+            max_lying_seen = gate_state.get("max_lying")
+            start_lying_seen = gate_state.get("start_lying")
+            if isinstance(start_lying_seen, (int, float)) and math.isfinite(float(start_lying_seen)):
+                delivery_gate_diag["start_lying"] = float(start_lying_seen)
+            if isinstance(max_lying_seen, (int, float)) and math.isfinite(float(max_lying_seen)):
+                delivery_gate_diag["max_lying"] = float(max_lying_seen)
+            delivery_gate_diag["mean_motion_high"] = mean_motion_high
+            delivery_gate_diag["event_start_s"] = float(event_start_s)
+
+            gate_reason = None
+            if (
+                delivery_gate.get("max_start_lying") is not None
+                and delivery_gate_diag["start_lying"] is not None
+                and delivery_gate_diag["start_lying"] > float(delivery_gate["max_start_lying"])
+            ):
+                gate_reason = "start_lying"
+            elif (
+                delivery_gate.get("max_lying") is not None
+                and delivery_gate_diag["max_lying"] is not None
+                and delivery_gate_diag["max_lying"] > float(delivery_gate["max_lying"])
+            ):
+                gate_reason = "max_lying"
+            elif (
+                delivery_gate.get("min_mean_motion_high") is not None
+                and mean_motion_high is not None
+                and mean_motion_high < float(delivery_gate["min_mean_motion_high"])
+            ):
+                gate_reason = "mean_motion_high"
+            elif (
+                delivery_gate.get("max_event_start_s") is not None
+                and event_start_s > float(delivery_gate["max_event_start_s"])
+            ):
+                gate_reason = "event_start_s"
+
+            if gate_reason is not None:
+                triage_state = "uncertain"
+                started_event = False
+                safe_alert = False
+                recall_alert = False
+                delivery_gate_diag["blocked"] = True
+                delivery_gate_diag["reason"] = gate_reason
+        else:
+            st.pop(gate_state_key, None)
 
     # Resolve channel states consistently for all modes.
     safe_state_out = dual_policy_alerts.get("safe", {}).get("state")
@@ -1282,7 +1608,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "effective_fps": float(effective_fps),
         "target_T": target_T,
         "motion_score": motion_score,
+        "lying_score": lying_score,
+        "confirm_motion_score": confirm_motion_score,
         "low_motion_block": low_motion_block,
+        "recent_motion_support": recent_motion_support,
+        "low_motion_high_conf_bypass": low_motion_high_conf_bypass,
         "min_motion_for_fall": float(min_motion),
         "low_quality_block": low_quality_block,
         "structural_quality_block": structural_quality_block,
@@ -1304,6 +1634,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "effective_mode": mode,
         "op_code": op_code,
         "use_mc": bool(use_mc),
+        "delivery_gate": delivery_gate_diag,
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
         "persist_dedup": {

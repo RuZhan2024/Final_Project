@@ -36,17 +36,23 @@ ops:
     n_true_alerts: 5
     n_false_alerts: 0
   OP2:
-    tau_high: 0.7399999499320984
-    tau_low: 0.5771999359130859
-    ema_alpha: 0.2
+    tau_high: 0.92
+    tau_low: 0.42
+    ema_alpha: 0.0
     k: 2
-    n: 3
+    n: 2
     cooldown_s: 30.0
-    confirm: true
+    confirm: false
     confirm_s: 2.0
     confirm_min_lying: 0.65
     confirm_max_motion: 0.08
     confirm_require_low: true
+    delivery_gate:
+      enabled: true
+      max_lying: 0.75
+      max_start_lying: 0.35
+      min_mean_motion_high: 0.10
+      max_event_start_s: 40.0
     live_guard:
       min_motion_for_fall: 0.018
       low_fps_mode_threshold: 15.0
@@ -61,6 +67,9 @@ ops:
       enable_occlusion_gate: true
       enable_structural_gate: true
       enable_low_fps_persist_gate: true
+      allow_low_motion_high_conf_bypass: true
+      low_motion_high_conf_k: 2
+      low_motion_high_conf_max_lying: 0.35
     precision: 1.0
     recall: 1.0
     f1: 1.0
@@ -72,40 +81,40 @@ ops:
     n_true_alerts: 5
     n_false_alerts: 0
   OP3:
-    tau_high: 0.949999988079071
-    tau_low: 0.7409999966621399
+    tau_high: 0.20000000298023224
+    tau_low: 0.15600000321865082
     ema_alpha: 0.2
-    k: 3
-    n: 4
+    k: 2
+    n: 3
     cooldown_s: 30.0
-    confirm: true
-    confirm_s: 3.0
-    confirm_min_lying: 0.7
-    confirm_max_motion: 0.06
+    confirm: false
+    confirm_s: 1.5
+    confirm_min_lying: 0.65
+    confirm_max_motion: 0.08
     confirm_require_low: true
     live_guard:
-      min_motion_for_fall: 0.016
-      low_fps_mode_threshold: 15.0
-      low_fps_fall_persist_n: 3
+      min_motion_for_fall: 0.012
+      low_fps_mode_threshold: 14.0
+      low_fps_fall_persist_n: 2
       min_fps_ratio: 0.60
-      min_frames_ratio: 0.55
+      min_frames_ratio: 0.50
       min_coverage_ratio: 0.75
-      min_conf_mean: 0.30
+      min_conf_mean: 0.25
       min_joints_med: 16
-      enable_stale_drop: true
-      enable_low_motion_gate: true
-      enable_occlusion_gate: true
-      enable_structural_gate: true
+      enable_stale_drop: false
+      enable_low_motion_gate: false
+      enable_occlusion_gate: false
+      enable_structural_gate: false
       enable_low_fps_persist_gate: true
     precision: 1.0
-    recall: 0.20000000298023224
-    f1: 0.3333333432674408
+    recall: 1.0
+    f1: 1.0
     fa24h: 0.0
-    mean_delay_s: 7.304347515106201
-    median_delay_s: 7.304347515106201
+    mean_delay_s: 0.626086950302124
+    median_delay_s: 0.5217390060424805
     n_gt_events: 5
-    n_alert_events: 1
-    n_true_alerts: 1
+    n_alert_events: 5
+    n_true_alerts: 5
     n_false_alerts: 0
 ops_meta:
   picker: "conservative"
@@ -119,7 +128,7 @@ ops_meta:
   idx:
     OP1: 19
     OP2: 73
-    OP3: 94
+    OP3: 19
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -161,21 +170,21 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "tcn_caucafall_r1_ctrl.sweep.json"
+sweep_json: "tcn_caucafall_r2_train_hneg.sweep.json"
 calibration:
   method: "temperature"
-  T: 1.9176740646362305
+  T: 1.4493054151535034
   n_val: 144
-  nll_before: 0.14425796270370483
-  nll_after: 0.11203405261039734
-  ece_before: 0.04996091278418034
-  ece_after: 0.052360520871540445
+  nll_before: 0.1071380078792572
+  nll_after: 0.09894886612892151
+  ece_before: 0.04712495647113279
+  ece_after: 0.04879126019919669
 model:
   arch: "tcn"
-  ckpt: "../../outputs/caucafall_tcn_W48S12_r1_ctrl/best.pt"
+  ckpt: "../../outputs/caucafall_tcn_W48S12_r2_train_hneg/best.pt"
   model_cfg:
     hidden: 128
-    dropout: 0.3
+    dropout: 0.4
     num_blocks: 4
     kernel: 3
     use_tsm: false

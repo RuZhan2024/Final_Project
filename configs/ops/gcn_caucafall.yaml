@@ -1,112 +1,49 @@
 ops:
   OP1:
-    tau_high: 0.3099999725818634
-    tau_low: 0.2417999804019928
-    ema_alpha: 0.2
-    k: 2
-    n: 3
-    cooldown_s: 30.0
-    confirm: false
-    confirm_s: 1.5
-    confirm_min_lying: 0.65
-    confirm_max_motion: 0.08
-    confirm_require_low: true
+    tau_high: 0.40
+    tau_low: 0.3120
+    ema_alpha: 0.0
+    k: 1
+    n: 2
     live_guard:
-      min_motion_for_fall: 0.012
-      low_fps_mode_threshold: 14.0
-      low_fps_fall_persist_n: 2
-      min_fps_ratio: 0.60
-      min_frames_ratio: 0.50
-      min_coverage_ratio: 0.75
-      min_conf_mean: 0.25
-      min_joints_med: 16
-      enable_stale_drop: false
-      enable_low_motion_gate: false
-      enable_occlusion_gate: false
-      enable_structural_gate: false
-      enable_low_fps_persist_gate: true
+      min_motion_for_fall: 0.016
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
-    fa24h: 0.0
-    mean_delay_s: 2.4782607555389404
-    median_delay_s: 2.3478260040283203
-    n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
-    n_false_alerts: 0
+    recall: 1.0
+    f1: 1.0
+    online_tp: 5
+    online_tn: 5
+    online_fp: 0
+    online_fn: 0
   OP2:
-    tau_high: 0.5699999928474426
-    tau_low: 0.444599986076355
-    ema_alpha: 0.2
-    k: 2
-    n: 3
-    cooldown_s: 30.0
-    confirm: true
-    confirm_s: 2.0
-    confirm_min_lying: 0.65
-    confirm_max_motion: 0.08
-    confirm_require_low: true
+    tau_high: 0.40
+    tau_low: 0.3120
+    ema_alpha: 0.0
+    k: 1
+    n: 2
     live_guard:
-      min_motion_for_fall: 0.018
-      low_fps_mode_threshold: 15.0
-      low_fps_fall_persist_n: 3
-      min_fps_ratio: 0.65
-      min_frames_ratio: 0.55
-      min_coverage_ratio: 0.80
-      min_conf_mean: 0.30
-      min_joints_med: 16
-      enable_stale_drop: true
-      enable_low_motion_gate: true
-      enable_occlusion_gate: true
-      enable_structural_gate: true
-      enable_low_fps_persist_gate: true
+      min_motion_for_fall: 0.016
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
-    fa24h: 0.0
-    mean_delay_s: 3.0
-    median_delay_s: 2.86956524848938
-    n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
-    n_false_alerts: 0
+    recall: 1.0
+    f1: 1.0
+    online_tp: 5
+    online_tn: 5
+    online_fp: 0
+    online_fn: 0
   OP3:
-    tau_high: 0.7299999594688416
-    tau_low: 0.5693999528884888
-    ema_alpha: 0.2
-    k: 3
-    n: 4
-    cooldown_s: 30.0
-    confirm: true
-    confirm_s: 3.0
-    confirm_min_lying: 0.7
-    confirm_max_motion: 0.06
-    confirm_require_low: true
+    tau_high: 0.40
+    tau_low: 0.3120
+    ema_alpha: 0.0
+    k: 1
+    n: 2
     live_guard:
-      min_motion_for_fall: 0.022
-      low_fps_mode_threshold: 17.0
-      low_fps_fall_persist_n: 4
-      min_fps_ratio: 0.75
-      min_frames_ratio: 0.60
-      min_coverage_ratio: 0.88
-      min_conf_mean: 0.35
-      min_joints_med: 20
-      enable_stale_drop: true
-      enable_low_motion_gate: true
-      enable_occlusion_gate: true
-      enable_structural_gate: true
-      enable_low_fps_persist_gate: true
+      min_motion_for_fall: 0.016
     precision: 1.0
-    recall: 0.800000011920929
-    f1: 0.8888888955116272
-    fa24h: 0.0
-    mean_delay_s: 3.0
-    median_delay_s: 2.86956524848938
-    n_gt_events: 5
-    n_alert_events: 4
-    n_true_alerts: 4
-    n_false_alerts: 0
+    recall: 1.0
+    f1: 1.0
+    online_tp: 5
+    online_tn: 5
+    online_fp: 0
+    online_fn: 0
 ops_meta:
   picker: "conservative"
   tie_break: "max_thr"
@@ -119,9 +56,10 @@ ops_meta:
   cost_fn: 5.0
   cost_fp: 10.0
   idx:
-    OP1: 30
-    OP2: 37
-    OP3: 37
+    OP1: null
+    OP2: null
+    OP3: null
+  online_fit_json: "artifacts/online_ops_fit_20260315/caucafall_gcn.json"
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -163,7 +101,7 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "gcn_caucafall_locked.sweep.json"
+sweep_json: "gcn_caucafall_repro_try1.sweep.json"
 calibration:
   method: "temperature"
   T: 0.2395763397216797
