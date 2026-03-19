@@ -2,6 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiRequest } from "../../../lib/apiClient";
 
+function isTodayLocal(isoLike) {
+  const d = new Date(isoLike);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
 export function useEventsData(apiBase, residentId = 1) {
   const [events, setEvents] = useState([]);
   const [todaySummary, setTodaySummary] = useState({ falls: 0, pending: 0, false_alarms: 0 });
@@ -10,10 +21,10 @@ export function useEventsData(apiBase, residentId = 1) {
 
   const abortRef = useRef(null);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async ({ silent = false } = {}) => {
     try {
       setError(null);
-      setLoading(true);
+      if (!silent) setLoading(true);
       abortRef.current?.abort?.();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -32,11 +43,11 @@ export function useEventsData(apiBase, residentId = 1) {
         signal: ac.signal,
       });
       setEvents(Array.isArray(data?.events) ? data.events : []);
-      setLoading(false);
+      if (!silent) setLoading(false);
     } catch (e) {
       if (e?.name === "AbortError") return;
       setError(String(e?.message || e));
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [apiBase, residentId]);
 
@@ -51,7 +62,33 @@ export function useEventsData(apiBase, residentId = 1) {
         method: "PUT",
         body: { status },
       });
-      await reload();
+      let prevStatus = null;
+      let eventTime = null;
+      setEvents((prev) =>
+        prev.map((ev) => {
+          if (ev.id !== eventId) return ev;
+          prevStatus = String(ev.status || "pending_review").toLowerCase();
+          eventTime = ev.event_time;
+          return { ...ev, status };
+        })
+      );
+
+      if (isTodayLocal(eventTime)) {
+        setTodaySummary((prev) => {
+          const next = {
+            falls: Number(prev?.falls || 0),
+            pending: Number(prev?.pending || 0),
+            false_alarms: Number(prev?.false_alarms || 0),
+          };
+          if (prevStatus === "pending_review") next.pending = Math.max(0, next.pending - 1);
+          if (prevStatus === "false_alarm") next.false_alarms = Math.max(0, next.false_alarms - 1);
+          if (status === "pending_review") next.pending += 1;
+          if (status === "false_alarm") next.false_alarms += 1;
+          return next;
+        });
+      }
+
+      void reload({ silent: true });
     },
     [apiBase, reload]
   );

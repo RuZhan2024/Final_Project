@@ -94,6 +94,40 @@ def test_list_events_pagination_contract_v1(monkeypatch):
     assert params2[-2:] == (5, 5)
 
 
+def test_list_events_v1_promotes_meta_status(monkeypatch):
+    fake = _FakeConn(
+        responses=[
+            {"n": 1},
+            [
+                {
+                    "id": 102,
+                    "ts": "2026-02-26T10:05:00",
+                    "type": "fall",
+                    "severity": "high",
+                    "model_code": "TCN",
+                    "score": 0.78,
+                    "meta": "{\"status\":\"false_alarm\",\"source\":\"review\"}",
+                }
+            ],
+        ]
+    )
+
+    monkeypatch.setattr(events_route, "get_conn_optional", lambda: _with_conn(fake))
+    monkeypatch.setattr(events_route, "_resident_exists", lambda _conn, _rid: True)
+    monkeypatch.setattr(events_route, "_one_resident_id", lambda _conn: 1)
+    monkeypatch.setattr(events_route, "_detect_variants", lambda _conn: {"settings": "v1", "events": "v1", "ops": "v1"})
+    monkeypatch.setattr(events_route, "_event_time_col", lambda _conn: "ts")
+    monkeypatch.setattr(events_route, "_event_prob_col", lambda _conn: "score")
+
+    client = TestClient(app)
+    resp = client.get("/api/events?resident_id=1")
+    assert resp.status_code == 200
+
+    body = resp.json()
+    assert body["events"][0]["status"] == "false_alarm"
+    assert body["events"][0]["meta"]["status"] == "false_alarm"
+
+
 def test_list_events_filter_contract_v2(monkeypatch):
     fake = _FakeConn(
         responses=[

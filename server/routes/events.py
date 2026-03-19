@@ -267,6 +267,12 @@ def list_events(
                     except (TypeError, json.JSONDecodeError):
                         meta = {"raw": meta}
 
+                status_value = None
+                if isinstance(meta, dict):
+                    status_raw = meta.get("status")
+                    if status_raw is not None:
+                        status_value = str(status_raw).strip().lower() or None
+
                 ts = r.get("ts")
                 out.append(
                     {
@@ -276,8 +282,9 @@ def list_events(
                         "type": r.get("type"),
                         "severity": r.get("severity"),
                         "model_code": r.get("model_code"),
+                        "status": status_value or "pending_review",
                         "score": r.get("score"),
-                            "p_fall": r.get("score"),
+                        "p_fall": r.get("score"),
                         "meta": meta,
                     }
                 )

@@ -13,6 +13,9 @@ export default function Events() {
   const [eventType, setEventType] = useState("All");
   const [status, setStatus] = useState("All");
   const [model, setModel] = useState("All");
+  const [savingEventId, setSavingEventId] = useState(null);
+  const [reviewEvent, setReviewEvent] = useState(null);
+  const [reviewStatus, setReviewStatus] = useState("pending_review");
 
   const { events, todaySummary, loading, error, reload, updateStatus } = useEventsData(apiBase, 1);
 
@@ -62,22 +65,32 @@ export default function Events() {
     return { total, pending, confirmed, falseAlarms };
   }, [events]);
 
-  async function handleView(ev) {
-    const current = (ev.status || "pending_review").toLowerCase();
-    const next = window.prompt(
-      "Update event status?\nUse one of: pending_review, confirmed_fall, false_alarm, dismissed",
-      current
-    );
-    if (!next) return;
-    const ok = EVENT_STATUS_OPTIONS.includes(next.toLowerCase());
-    if (!ok) {
-      alert("Invalid status.");
-      return;
-    }
+  function openReview(ev) {
+    const current = String(ev?.status || "pending_review").toLowerCase();
+    setReviewEvent(ev);
+    setReviewStatus(EVENT_STATUS_OPTIONS.includes(current) ? current : "pending_review");
+  }
+
+  function closeReview(force = false) {
+    if (!force && savingEventId != null) return;
+    setReviewEvent(null);
+    setReviewStatus("pending_review");
+  }
+
+  async function submitReview() {
+    if (!reviewEvent) return;
+    const current = String(reviewEvent.status || "pending_review").toLowerCase();
+    const normalizedNext = String(reviewStatus || "").toLowerCase();
+    if (!normalizedNext || normalizedNext === current) return;
+    if (!EVENT_STATUS_OPTIONS.includes(normalizedNext)) return;
     try {
-      await updateStatus(ev.id, next.toLowerCase());
+      setSavingEventId(reviewEvent.id);
+      await updateStatus(reviewEvent.id, normalizedNext);
+      closeReview(true);
     } catch (e) {
       alert(`Failed to update status: ${String(e?.message || e)}`);
+    } finally {
+      setSavingEventId(null);
     }
   }
 
@@ -210,8 +223,12 @@ export default function Events() {
                     <span className={styles.statusBadge}>{eventStatusLabel(ev.status)}</span>
                   </td>
                   <td>
-                    <button className={styles.viewBtn} onClick={() => handleView(ev)}>
-                      View
+                    <button
+                      className={styles.viewBtn}
+                      onClick={() => openReview(ev)}
+                      disabled={savingEventId === ev.id}
+                    >
+                      Review
                     </button>
                   </td>
                 </tr>
@@ -220,6 +237,60 @@ export default function Events() {
           </tbody>
         </table>
       </div>
+
+      {reviewEvent && (
+        <div className={styles.modalOverlay} onClick={closeReview} role="presentation">
+          <div
+            className={styles.modalCard}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="event-review-title"
+          >
+            <div className={styles.modalHeader}>
+              <div>
+                <h3 id="event-review-title" className={styles.modalTitle}>
+                  Review Event
+                </h3>
+                <p className={styles.modalMeta}>
+                  {eventTypeLabel(reviewEvent.type)} · {(reviewEvent.model_code || "—").toUpperCase()} ·{" "}
+                  {parseDateSafe(reviewEvent.event_time)
+                    ? parseDateSafe(reviewEvent.event_time).toLocaleString()
+                    : String(reviewEvent.event_time)}
+                </p>
+              </div>
+              <button className={styles.modalCloseBtn} onClick={closeReview} disabled={savingEventId != null}>
+                Close
+              </button>
+            </div>
+
+            <div className={styles.reviewOptions}>
+              {EVENT_STATUS_OPTIONS.map((opt) => (
+                <label key={opt} className={styles.reviewOption}>
+                  <input
+                    type="radio"
+                    name="event-review-status"
+                    value={opt}
+                    checked={reviewStatus === opt}
+                    onChange={(e) => setReviewStatus(e.target.value)}
+                    disabled={savingEventId != null}
+                  />
+                  <span>{eventStatusLabel(opt)}</span>
+                </label>
+              ))}
+            </div>
+
+            <div className={styles.modalActions}>
+              <button className={styles.secondaryBtn} onClick={closeReview} disabled={savingEventId != null}>
+                Cancel
+              </button>
+              <button className={styles.primaryBtn} onClick={submitReview} disabled={savingEventId != null}>
+                {savingEventId != null ? "Saving..." : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
