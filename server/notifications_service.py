@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .core import _col_exists, _table_exists
+from .notifications import get_notification_manager
 
 
 def _as_bool(v: Any, default: bool = False) -> bool:
@@ -42,8 +43,10 @@ def dispatch_fall_notifications(
         "enabled": False,
         "channels": [],
         "rows_written": 0,
+        "safe_guard_enabled": False,
     }
     try:
+        out["safe_guard_enabled"] = bool(get_notification_manager().enabled)
         if not _table_exists(conn, "notifications_log"):
             out["reason"] = "notifications_log_missing"
             return out
@@ -132,4 +135,3 @@ def dispatch_fall_notifications(
     except Exception as e:
         out["error"] = str(e)
         return out
-

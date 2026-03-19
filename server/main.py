@@ -19,6 +19,7 @@ from .routes.notifications import router as notifications_router
 from .routes.operating_points import router as operating_points_router
 from .routes.settings import router as settings_router
 from .routes.specs import router as specs_router
+from .routes.twilio_webhook import router as twilio_webhook_router
 
 
 _DEFAULT_ALLOWED_ORIGINS = [
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(monitor_router)
     app.include_router(notifications_router)
     app.include_router(caregivers_router)
+    app.include_router(twilio_webhook_router)
 
     return app
 

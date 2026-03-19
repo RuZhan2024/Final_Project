@@ -126,6 +126,7 @@ class MonitorPredictPayload(BaseModel):
     model_id: Optional[str] = None
 
     resident_id: Optional[int] = None
+    location: Optional[str] = None
     use_mc: Optional[bool] = None
     mc_M: Optional[int] = None
     persist: Optional[bool] = None
@@ -382,28 +383,36 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
             pass
         return float(default)
 
+    def _op_or_acfg(p: Optional[Dict[str, Any]], k: str, default: float) -> float:
+        try:
+            if p and isinstance(p.get("op"), dict) and p["op"].get(k) is not None:
+                return float(p["op"][k])
+        except (TypeError, ValueError, KeyError):
+            pass
+        return _acfg(p, k, default)
+
     if mc == "TCN":
         tau_low = _tau(tcn, "tau_low", 0.0)
         tau_high = _tau(tcn, "tau_high", 0.85)
-        cooldown_s = _acfg(tcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(tcn, "ema_alpha", 0.0)
-        k = int(_acfg(tcn, "k", 2))
-        n = int(_acfg(tcn, "n", 3))
+        cooldown_s = _op_or_acfg(tcn, "cooldown_s", 3.0)
+        ema_alpha = _op_or_acfg(tcn, "ema_alpha", 0.0)
+        k = int(_op_or_acfg(tcn, "k", 2))
+        n = int(_op_or_acfg(tcn, "n", 3))
     elif mc == "GCN":
         tau_low = _tau(gcn, "tau_low", 0.0)
         tau_high = _tau(gcn, "tau_high", 0.85)
-        cooldown_s = _acfg(gcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(gcn, "ema_alpha", 0.0)
-        k = int(_acfg(gcn, "k", 2))
-        n = int(_acfg(gcn, "n", 3))
+        cooldown_s = _op_or_acfg(gcn, "cooldown_s", 3.0)
+        ema_alpha = _op_or_acfg(gcn, "ema_alpha", 0.0)
+        k = int(_op_or_acfg(gcn, "k", 2))
+        n = int(_op_or_acfg(gcn, "n", 3))
     else:
         # HYBRID UI defaults follow TCN-safe channel for primary auto-alert behavior.
         tau_low = _tau(tcn, "tau_low", _tau(gcn, "tau_low", 0.0))
         tau_high = _tau(tcn, "tau_high", _tau(gcn, "tau_high", 0.85))
-        cooldown_s = _acfg(tcn, "cooldown_s", _acfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = _acfg(tcn, "ema_alpha", _acfg(gcn, "ema_alpha", 0.0))
-        k = int(_acfg(tcn, "k", _acfg(gcn, "k", 2)))
-        n = int(_acfg(tcn, "n", _acfg(gcn, "n", 3)))
+        cooldown_s = _op_or_acfg(tcn, "cooldown_s", _op_or_acfg(gcn, "cooldown_s", 3.0))
+        ema_alpha = _op_or_acfg(tcn, "ema_alpha", _op_or_acfg(gcn, "ema_alpha", 0.0))
+        k = int(_op_or_acfg(tcn, "k", _op_or_acfg(gcn, "k", 2)))
+        n = int(_op_or_acfg(tcn, "n", _op_or_acfg(gcn, "n", 3)))
 
     return {
         "ui": {

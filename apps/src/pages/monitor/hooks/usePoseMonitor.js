@@ -165,6 +165,11 @@ export function usePoseMonitor({
   const wsReadyRef = useRef(false);
   const wsPendingRef = useRef(null);
 
+  const makeSessionId = useCallback(
+    () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
+    []
+  );
+
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
     isActiveRef.current = Boolean(isActive);
@@ -333,9 +338,42 @@ export function usePoseMonitor({
     setPredictError("");
   }, []);
 
+  const resetFrontendSessionState = useCallback(() => {
+    rawFramesRef.current = [];
+    lastPoseTsRef.current = null;
+    fpsDeltasRef.current = [];
+    lastSentRef.current = 0;
+    pendingClipRef.current = null;
+    uploadedClipIdsRef.current = new Set();
+    setPFall(null);
+    setSigma(null);
+    setTriageState("not_fall");
+    setSafeAlert(null);
+    setRecallAlert(null);
+    setSafeState(null);
+    setRecallState(null);
+    setTimeline([]);
+    timelineSeqRef.current = 0;
+    timelineSeenEventIdsRef.current = new Set();
+    lastFallHistoryTsRef.current = 0;
+    windowSeqRef.current = 0;
+    triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
+    lastUiRef.current = {
+      triageState: "not_fall",
+      safeAlert: null,
+      recallAlert: null,
+      safeState: null,
+      recallState: null,
+      pFall: null,
+      sigma: null,
+    };
+  }, []);
+
   const setVideoFile = useCallback((file) => {
     stopLive();
     autoStopMonitoring();
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
     if (file) {
       videoFileRef.current = file;
       setReplayFile(file);
@@ -351,10 +389,13 @@ export function usePoseMonitor({
       setInputSource("camera");
       setStartError("");
     }
-  }, [autoStopMonitoring, stopLive]);
+  }, [autoStopMonitoring, makeSessionId, resetFrontendSessionState, stopLive]);
 
   const setInputMode = useCallback((mode) => {
     const m = mode === "video" ? "video" : "camera";
+    stopLive();
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
     inputSourceRef.current = m;
     setInputSource(m);
     if (m === "camera") {
@@ -363,7 +404,7 @@ export function usePoseMonitor({
       setSelectedVideoName("");
     }
     setStartError("");
-  }, []);
+  }, [makeSessionId, resetFrontendSessionState, stopLive]);
 
   const setCaptureResolution = useCallback((preset) => {
     if (!Object.prototype.hasOwnProperty.call(CAPTURE_RESOLUTIONS, preset)) return;
@@ -635,17 +676,24 @@ export function usePoseMonitor({
       for (let j = 0; j < NUM_JOINTS; j++) {
         const p = pts[j] || [0, 0];
         const v = cf[j] == null ? 1 : cf[j];
-        xyQ[q++] = Math.round(clamp01(Number(p[0]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
-        xyQ[q++] = Math.round(clamp01(Number(p[1]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
+        xyQ[q++] = Math.round((Number.isFinite(Number(p[0])) ? Number(p[0]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
+        xyQ[q++] = Math.round((Number.isFinite(Number(p[1])) ? Number(p[1]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
         confQ[c++] = Math.round(clamp01(Number(v) || 0) * MONITOR_PAYLOAD_Q_SCALE);
       }
     }
 
+    const sourceMode = inputSourceRef.current || "camera";
+    const eventLocation =
+      sourceMode === "video"
+        ? String(selectedVideoName || videoFileRef.current?.name || "replay_video")
+        : "camera_live";
+
     const payload = {
       window_seq: ++windowSeqRef.current,
       session_id: sessionIdRef.current,
-      input_source: inputSourceRef.current || "camera",
+      input_source: sourceMode,
       resident_id: 1,
+      location: eventLocation,
       mode,
       dataset_code: activeDatasetCode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
@@ -947,7 +995,10 @@ export function usePoseMonitor({
           xyFrame[i] = [0, 0];
           confFrame[i] = 0;
         } else {
-          xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
+          xyFrame[i] = [
+            Number.isFinite(Number(lm.x)) ? Number(lm.x) : 0,
+            Number.isFinite(Number(lm.y)) ? Number(lm.y) : 0,
+          ];
           confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
         }
       }
@@ -988,11 +1039,38 @@ export function usePoseMonitor({
     [ensureCanvasMatchesVideo, maybeFinalizeClipUpload, maybeSendWindow, targetFps]
   );
 
+  const resetSession = useCallback(async () => {
+    try {
+      try {
+        await apiRequest(
+          apiBase,
+          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+          { method: "POST" }
+        );
+      } catch (err) {
+        if (Number(err?.status) === 404) {
+          await apiRequest(
+            apiBase,
+            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
+            { method: "POST" }
+          );
+        } else {
+          throw err;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [apiBase]);
+
   const startLive = useCallback(async () => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
     try {
+      sessionIdRef.current = makeSessionId();
+      resetFrontendSessionState();
+      await resetSession();
       setStartError("");
       liveFlagRef.current = true;
       setLiveRunning(true);
@@ -1186,7 +1264,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
+  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, handlePoseResults, makeSessionId, replayFile, resetFrontendSessionState, resetSession, stopLive, targetFps]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -1211,40 +1289,19 @@ export function usePoseMonitor({
     return () => stopLive();
   }, [stopLive]);
 
-  const resetSession = useCallback(async () => {
-    try {
-      try {
-        await apiRequest(
-          apiBase,
-          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-          { method: "POST" }
-        );
-      } catch (err) {
-        if (Number(err?.status) === 404) {
-          await apiRequest(
-            apiBase,
-            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-            { method: "POST" }
-          );
-        } else {
-          throw err;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, [apiBase]);
-
   const seekReplay = useCallback((ratio) => {
     const videoEl = videoRef.current;
     if (!videoEl) return;
     const du = Number(videoEl.duration || 0);
     if (!Number.isFinite(du) || du <= 0) return;
     const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
+    void resetSession();
     videoEl.currentTime = r * du;
     setReplayCurrentS(Number(videoEl.currentTime || 0));
     setReplayDurationS(du);
-  }, []);
+  }, [makeSessionId, resetFrontendSessionState, resetSession]);
 
   const testFall = useCallback(async () => {
     // 1) Try backend helper endpoint (if present)

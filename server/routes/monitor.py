@@ -28,6 +28,7 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..notifications_service import dispatch_fall_notifications
+from ..notifications import NotificationPreferences, SafeGuardEvent, get_notification_manager
 from ..online_alert import OnlineAlertTracker
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 from fall_detection.pose.preprocess_pose_npz import (
@@ -907,7 +908,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     # Defaults from DB (if available)
     # -------------
     resident_id = int(payload_d.get("resident_id") or 1)
+    event_location = str(payload_d.get("location") or input_source or "unknown").strip() or "unknown"
     active_model_code = mode.upper()
+    notify_on_every_fall = True
+    notify_sms = False
+    notify_phone = False
 
     try:
         with get_conn() as conn:
@@ -938,6 +943,24 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                     cooldown_sec = int(sys_row.get("alert_cooldown_sec"))
                 if sys_row.get("active_model_code"):
                     active_model_code = str(sys_row.get("active_model_code") or active_model_code)
+                if sys_row.get("notify_on_every_fall") is not None:
+                    notify_on_every_fall = (
+                        bool(int(sys_row.get("notify_on_every_fall")))
+                        if str(sys_row.get("notify_on_every_fall")).isdigit()
+                        else bool(sys_row.get("notify_on_every_fall"))
+                    )
+                if sys_row.get("notify_sms") is not None:
+                    notify_sms = (
+                        bool(int(sys_row.get("notify_sms")))
+                        if str(sys_row.get("notify_sms")).isdigit()
+                        else bool(sys_row.get("notify_sms"))
+                    )
+                if sys_row.get("notify_phone") is not None:
+                    notify_phone = (
+                        bool(int(sys_row.get("notify_phone")))
+                        if str(sys_row.get("notify_phone")).isdigit()
+                        else bool(sys_row.get("notify_phone"))
+                    )
 
                 if (not op_code) and sys_row.get("active_op_code"):
                     op_code = str(sys_row.get("active_op_code") or "").upper().strip()
@@ -1664,6 +1687,18 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st[persist_dedup_key] = persist_dedup_hits
 
     if persist and started_event and triage_state == "fall" and (not persist_in_cooldown):
+        primary_out = models_out.get(primary_model_key, {}) if isinstance(models_out.get(primary_model_key), dict) else {}
+        safe_guard_probability = float(primary_out.get("mu", p_display) or p_display)
+        safe_guard_uncertainty = float(primary_out.get("sigma", 0.0) or 0.0)
+        triage_cfg = primary_out.get("triage", {}) if isinstance(primary_out.get("triage"), dict) else {}
+        safe_guard_threshold = float(
+            triage_cfg.get(
+                "tau_high",
+                primary_out.get("tau_high", 0.0),
+            )
+            or 0.0
+        )
+        safe_guard_margin = float(safe_guard_probability - safe_guard_threshold)
         meta = {
             "dataset": dataset_code,
             "mode": mode,
@@ -1678,6 +1713,10 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "safe_state": safe_state_out,
             "recall_alert": recall_alert,
             "recall_state": recall_state_out,
+            "threshold": safe_guard_threshold,
+            "margin": safe_guard_margin,
+            "uncertainty": safe_guard_uncertainty,
+            "location": event_location,
         }
         try:
             with get_conn() as conn:
@@ -1706,6 +1745,45 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                     )
                     conn.commit()
                     st[persist_cd_key] = float(_t_s)
+                    try:
+                        if notify_on_every_fall and saved_event_id is not None:
+                            get_notification_manager().handle_event(
+                                SafeGuardEvent(
+                                    event_id=str(saved_event_id),
+                                    resident_id=int(resident_id),
+                                    location=event_location,
+                                    probability=float(safe_guard_probability),
+                                    uncertainty=float(safe_guard_uncertainty),
+                                    threshold=float(safe_guard_threshold),
+                                    margin=float(safe_guard_margin),
+                                    triage_state=str(triage_state),
+                                    safe_alert=bool(safe_alert),
+                                    recall_alert=bool(recall_alert),
+                                    model_code=str(active_model_code),
+                                    dataset_code=str(dataset_code),
+                                    op_code=str(op_code),
+                                    source="monitor",
+                                    meta={
+                                        "event_db_id": int(saved_event_id),
+                                        "requested_mode": requested_mode,
+                                        "effective_mode": mode,
+                                        "safe_state": safe_state_out,
+                                        "recall_state": recall_state_out,
+                                    },
+                                ),
+                                NotificationPreferences(
+                                    phone_enabled=bool(notify_phone),
+                                    sms_enabled=bool(notify_sms),
+                                    email_enabled=True,
+                                ),
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "safe_guard handle_event failed resident_id=%s event_id=%s: %s",
+                            resident_id,
+                            saved_event_id,
+                            exc,
+                        )
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
                 "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
