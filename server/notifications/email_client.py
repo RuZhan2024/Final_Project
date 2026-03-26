@@ -19,7 +19,7 @@ class EmailClient:
         self._cfg = config
 
     def send(self, msg: EmailMessage) -> DeliveryResult:
-        if not (self._cfg.smtp_host and self._cfg.email_from and self._cfg.caregiver_email):
+        if not (self._cfg.smtp_host and self._cfg.email_from and str(msg.get("To") or "").strip()):
             return DeliveryResult(channel="email", attempted=False, status="skipped_missing_config", detail="")
         try:
             with smtplib.SMTP(self._cfg.smtp_host, self._cfg.smtp_port, timeout=self._cfg.http_timeout_s) as smtp:

@@ -102,6 +102,9 @@ class SQLiteNotificationStore:
                     "phone_enabled": prefs.phone_enabled,
                     "sms_enabled": prefs.sms_enabled,
                     "email_enabled": prefs.email_enabled,
+                    "caregiver_name": prefs.caregiver_name,
+                    "caregiver_phone": prefs.caregiver_phone,
+                    "caregiver_email": prefs.caregiver_email,
                 },
             }
         )

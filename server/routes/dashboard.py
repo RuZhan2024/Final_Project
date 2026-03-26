@@ -18,6 +18,12 @@ from ..db import get_conn
 router = APIRouter()
 
 
+def _today_filter_sql(conn, col: str) -> str:
+    if str(getattr(conn, "db_backend", "mysql")).lower() == "sqlite":
+        return f"DATE({col}) = DATE('now', 'localtime')"
+    return f"DATE({col})=CURDATE()"
+
+
 @router.get("/api/dashboard/summary")
 @router.get("/api/v1/dashboard/summary")
 def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
@@ -77,7 +83,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                     falls_params = (rid,) if has_resident_id else tuple()
                     cur.execute(
                         "SELECT COUNT(*) AS c FROM events "
-                        "WHERE DATE(created_at)=CURDATE() AND UPPER(event_type) IN ('FALL','FALL_DETECTED','FALL_CONFIRMED')"
+                        f"WHERE {_today_filter_sql(conn, 'created_at')} AND UPPER(event_type) IN ('FALL','FALL_DETECTED','FALL_CONFIRMED')"
                         + resident_filter,
                         falls_params,
                     )
@@ -86,7 +92,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                     false_params = (rid,) if has_resident_id else tuple()
                     cur.execute(
                         "SELECT COUNT(*) AS c FROM events "
-                        "WHERE DATE(created_at)=CURDATE() AND UPPER(event_type) IN ('FALSE_ALARM','FALSE','FALSE_POSITIVE')"
+                        f"WHERE {_today_filter_sql(conn, 'created_at')} AND UPPER(event_type) IN ('FALSE_ALARM','FALSE','FALSE_POSITIVE')"
                         + resident_filter,
                         false_params,
                     )
@@ -100,7 +106,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                         "SELECT "
                         "SUM(CASE WHEN event_type='fall_detected' THEN 1 ELSE 0 END) AS falls_detected, "
                         "SUM(CASE WHEN event_type='false_alarm' THEN 1 ELSE 0 END) AS false_alarms "
-                        "FROM fall_events WHERE DATE(created_at)=CURDATE()" + resident_where,
+                        f"FROM fall_events WHERE {_today_filter_sql(conn, 'created_at')}" + resident_where,
                         params,
                     )
                     r = cur.fetchone() or {}

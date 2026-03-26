@@ -27,6 +27,10 @@ from ..db import get_conn
 router = APIRouter()
 
 
+def _updated_at_expr(conn) -> str:
+    return "CURRENT_TIMESTAMP" if str(getattr(conn, "db_backend", "mysql")).lower() == "sqlite" else "NOW()"
+
+
 def _apply_yaml_override(system: Dict[str, Any]) -> None:
     """Override UI thresholds/cooldown using YAML-derived deploy params (best-effort)."""
     try:
@@ -256,7 +260,7 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
                     vals.append(str(payload.active_op_code).upper())
 
                 if sets:
-                    sql = "UPDATE settings SET " + ", ".join(sets) + ", updated_at=NOW() WHERE resident_id=%s"
+                    sql = "UPDATE settings SET " + ", ".join(sets) + f", updated_at={_updated_at_expr(conn)} WHERE resident_id=%s"
                     vals.append(rid)
                     with conn.cursor() as cur:
                         cur.execute(sql, tuple(vals))
@@ -358,7 +362,7 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
                         cur.execute("INSERT INTO system_settings (resident_id) VALUES (%s)", (rid,))
                         conn.commit()
 
-                sql = "UPDATE system_settings SET " + ", ".join(sets) + ", updated_at=NOW() WHERE resident_id=%s"
+                sql = "UPDATE system_settings SET " + ", ".join(sets) + f", updated_at={_updated_at_expr(conn)} WHERE resident_id=%s"
                 vals.append(rid)
                 with conn.cursor() as cur:
                     cur.execute(sql, tuple(vals))

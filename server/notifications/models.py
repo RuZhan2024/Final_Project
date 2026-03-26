@@ -17,6 +17,9 @@ class NotificationPreferences:
     phone_enabled: bool = False
     sms_enabled: bool = False
     email_enabled: bool = True
+    caregiver_name: str = ""
+    caregiver_phone: str = ""
+    caregiver_email: str = ""
 
 
 @dataclass(frozen=True)

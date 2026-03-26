@@ -28,12 +28,105 @@ from ..core import (
     _one_resident_id,
     _read_clip_privacy_flags,
     _resident_exists,
+    _table_exists,
 )
 from ..db import get_conn_optional
+from ..notifications import get_notification_manager
+from ..notifications.models import NotificationPreferences, SafeGuardEvent
 from ..notifications_service import dispatch_fall_notifications
 
 
 router = APIRouter()
+
+
+def _dispatch_safe_guard_from_event(
+    conn: Any,
+    *,
+    resident_id: int,
+    event_id: int,
+    model_code: str,
+    dataset_code: str = "caucafall",
+    op_code: str = "OP-2",
+    p_fall: float = 0.99,
+    location: str = "events_test_fall",
+) -> None:
+    notify_on_every_fall = True
+    notify_sms = False
+    notify_phone = False
+    caregiver_name = ""
+    caregiver_email = ""
+    caregiver_phone = ""
+
+    if _table_exists(conn, "system_settings"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                (int(resident_id),),
+            )
+            s = cur.fetchone() or {}
+        if isinstance(s, dict):
+            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
+            notify_sms = bool(s.get("notify_sms", False))
+            notify_phone = bool(s.get("notify_phone", False))
+            if s.get("active_dataset_code"):
+                dataset_code = str(s.get("active_dataset_code") or dataset_code)
+            if s.get("active_op_code"):
+                op_code = str(s.get("active_op_code") or op_code).upper()
+            if s.get("active_model_code"):
+                model_code = str(s.get("active_model_code") or model_code)
+    elif _table_exists(conn, "settings"):
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (int(resident_id),))
+            s = cur.fetchone() or {}
+        if isinstance(s, dict):
+            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
+            notify_sms = bool(s.get("notify_sms", False))
+            notify_phone = bool(s.get("notify_phone", False))
+            if s.get("active_model_code"):
+                model_code = str(s.get("active_model_code") or model_code)
+
+    if _table_exists(conn, "caregivers"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                (int(resident_id),),
+            )
+            cg = cur.fetchone() or {}
+        if isinstance(cg, dict):
+            caregiver_name = str(cg.get("name") or "").strip()
+            caregiver_email = str(cg.get("email") or "").strip()
+            caregiver_phone = str(cg.get("phone") or "").strip()
+
+    if not notify_on_every_fall:
+        return
+
+    get_notification_manager().handle_event(
+        SafeGuardEvent(
+            event_id=str(event_id),
+            resident_id=int(resident_id),
+            location=location,
+            probability=float(p_fall),
+            uncertainty=0.0,
+            threshold=0.5,
+            margin=max(0.0, float(p_fall) - 0.5),
+            triage_state="fall",
+            safe_alert=True,
+            recall_alert=True,
+            model_code=str(model_code),
+            dataset_code=str(dataset_code),
+            op_code=str(op_code),
+            source="events.test_fall",
+            meta={"event_db_id": int(event_id)},
+        ),
+        NotificationPreferences(
+            phone_enabled=bool(notify_phone),
+            sms_enabled=bool(notify_sms),
+            email_enabled=True,
+            caregiver_name=caregiver_name,
+            caregiver_phone=caregiver_phone,
+            caregiver_email=caregiver_email,
+        ),
+    )
 
 
 @router.get("/api/events")
@@ -501,6 +594,15 @@ def test_fall() -> Dict[str, Any]:
                     p_fall=0.99,
                     source="events.test_fall",
                 )
+                try:
+                    _dispatch_safe_guard_from_event(
+                        conn,
+                        resident_id=int(rid),
+                        event_id=int(new_id),
+                        model_code="TCN",
+                    )
+                except Exception:
+                    pass
                 cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
                 row = cur.fetchone()
                 conn.commit()
@@ -520,6 +622,15 @@ def test_fall() -> Dict[str, Any]:
                 p_fall=0.99,
                 source="events.test_fall",
             )
+            try:
+                _dispatch_safe_guard_from_event(
+                    conn,
+                    resident_id=int(rid),
+                    event_id=int(new_id),
+                    model_code="TCN",
+                )
+            except Exception:
+                pass
             cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
             row = cur.fetchone()
             conn.commit()

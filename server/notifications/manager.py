@@ -64,19 +64,21 @@ class NotificationManager:
         accepted = self._worker.submit(
             DispatchJob(
                 event_id=event.event_id,
-                fn=lambda: self._dispatch(event, decision),
+                fn=lambda: self._dispatch(event, decision, prefs),
             )
         )
         if not accepted:
             logger.warning("safe_guard enqueue failed event_id=%s", event.event_id)
 
-    def _dispatch(self, event: SafeGuardEvent, decision: TierDecision) -> None:
+    def _dispatch(self, event: SafeGuardEvent, decision: TierDecision, prefs: NotificationPreferences) -> None:
         results = []
+        caregiver_email = str(prefs.caregiver_email or self._cfg.caregiver_email or "").strip()
+        caregiver_phone = str(prefs.caregiver_phone or self._cfg.caregiver_phone or "").strip()
         if decision.actions.get("email", False):
             email_msg = build_email_message(
                 event,
                 decision,
-                caregiver_email=self._cfg.caregiver_email,
+                caregiver_email=caregiver_email,
                 email_from=self._cfg.email_from,
                 app_base_url=self._cfg.app_base_url,
             )
@@ -86,7 +88,7 @@ class NotificationManager:
             results.append(
                 self._with_retry(
                     lambda: self._twilio.sms(
-                        to_phone=self._cfg.caregiver_phone,
+                        to_phone=caregiver_phone,
                         message=build_sms_message(event, decision),
                     )
                 )
@@ -96,7 +98,7 @@ class NotificationManager:
             results.append(
                 self._with_retry(
                     lambda: self._twilio.call(
-                        to_phone=self._cfg.caregiver_phone,
+                        to_phone=caregiver_phone,
                         message=build_phone_message(event),
                     )
                 )

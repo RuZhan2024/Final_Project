@@ -75,7 +75,6 @@ class SettingsUpdatePayload(BaseModel):
 
     # v2-style extras
     risk_profile: Optional[str] = None
-    notify_email: Optional[str] = None
     notify_sms: Optional[bool] = None
     notify_phone: Optional[bool] = None
 
@@ -202,12 +201,19 @@ def _list_tables(conn) -> Set[str]:
         return _TABLE_CACHE
     try:
         with conn.cursor() as cur:
-            cur.execute("SHOW TABLES")
-            rows = cur.fetchall() or []
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                rows = cur.fetchall() or []
+            else:
+                cur.execute("SHOW TABLES")
+                rows = cur.fetchall() or []
         tables: Set[str] = set()
         for r in rows:
             if isinstance(r, dict):
-                v = next(iter(r.values()), None)
+                v = r.get("name")
+                if v is None:
+                    v = next(iter(r.values()), None)
                 if v:
                     tables.add(str(v))
             else:
@@ -227,12 +233,21 @@ def _cols(conn, table: str) -> Set[str]:
         return _COL_CACHE[table]
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SHOW COLUMNS FROM `{table}`")
-            rows = cur.fetchall() or []
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute(f"PRAGMA table_info(`{table}`)")
+                rows = cur.fetchall() or []
+            else:
+                cur.execute(f"SHOW COLUMNS FROM `{table}`")
+                rows = cur.fetchall() or []
     except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         _COL_CACHE[table] = set()
         return set()
-    cols = {r.get("Field") for r in rows if isinstance(r, dict) and r.get("Field")}
+    cols = {
+        r.get("Field") or r.get("name")
+        for r in rows
+        if isinstance(r, dict) and (r.get("Field") or r.get("name"))
+    }
     _COL_CACHE[table] = set(cols)
     return _COL_CACHE[table]
 
@@ -638,20 +653,36 @@ def _ensure_caregivers_table(conn) -> None:
         return
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS caregivers (
-                  id INT AUTO_INCREMENT PRIMARY KEY,
-                  resident_id INT NOT NULL,
-                  name VARCHAR(120) NULL,
-                  email VARCHAR(200) NULL,
-                  phone VARCHAR(80) NULL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                  INDEX idx_resident (resident_id)
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS caregivers (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      resident_id INTEGER NOT NULL,
+                      name TEXT NULL,
+                      email TEXT NULL,
+                      phone TEXT NULL,
+                      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
-                """
-            )
+            else:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS caregivers (
+                      id INT AUTO_INCREMENT PRIMARY KEY,
+                      resident_id INT NOT NULL,
+                      name VARCHAR(120) NULL,
+                      email VARCHAR(200) NULL,
+                      phone VARCHAR(80) NULL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      INDEX idx_resident (resident_id)
+                    )
+                    """
+                )
         conn.commit()
         global _TABLE_CACHE
         _TABLE_CACHE = None

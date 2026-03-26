@@ -913,6 +913,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     notify_on_every_fall = True
     notify_sms = False
     notify_phone = False
+    caregiver_name = ""
+    caregiver_email = ""
+    caregiver_phone = ""
 
     try:
         with get_conn() as conn:
@@ -976,6 +979,18 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                         r = cur.fetchone() or {}
                         if isinstance(r, dict) and r.get("code"):
                             op_code = str(r.get("code") or "").upper()
+
+                if _table_exists(conn, "caregivers"):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                            (resident_id,),
+                        )
+                        cg_row = cur.fetchone() or {}
+                    if isinstance(cg_row, dict):
+                        caregiver_name = str(cg_row.get("name") or "").strip()
+                        caregiver_email = str(cg_row.get("email") or "").strip()
+                        caregiver_phone = str(cg_row.get("phone") or "").strip()
     except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
         logger.warning(
             "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
@@ -1775,6 +1790,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                                     phone_enabled=bool(notify_phone),
                                     sms_enabled=bool(notify_sms),
                                     email_enabled=True,
+                                    caregiver_name=caregiver_name,
+                                    caregiver_phone=caregiver_phone,
+                                    caregiver_email=caregiver_email,
                                 ),
                             )
                     except Exception as exc:
