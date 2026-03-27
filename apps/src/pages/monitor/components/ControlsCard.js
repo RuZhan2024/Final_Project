@@ -23,10 +23,6 @@ export function ControlsCard({
   replayCurrentS,
   replayDurationS,
   onSeekReplay,
-  startError,
-  startInfo,
-  summaryErr,
-  apiSummary,
 }) {
   const replayPct = replayDurationS > 0 ? Math.max(0, Math.min(100, (replayCurrentS / replayDurationS) * 100)) : 0;
   const groupedReplayClips = (replayClips || []).reduce(
@@ -47,20 +43,6 @@ export function ControlsCard({
   return (
     <div className={styles.card}>
       <h3>Controls</h3>
-
-      <div className={styles.statusStack}>
-        {startInfo && !startError && (
-          <p className={styles.subText} style={{ color: "#1D4ED8" }}>
-            {startInfo}
-          </p>
-        )}
-
-        {!summaryErr && apiSummary?.system && (
-          <p className={styles.subText}>
-            API: {apiSummary.system.api_online ? "Online" : "Offline"} • Last latency: {apiSummary.system.last_latency_ms ?? "—"} ms
-          </p>
-        )}
-      </div>
 
       <div className={styles.buttonGroup}>
         <button

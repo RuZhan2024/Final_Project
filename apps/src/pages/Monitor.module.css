@@ -101,6 +101,11 @@
   border-left: 4px solid #D97706;
 }
 
+.toastInfo {
+  color: #1D4ED8;
+  border-left: 4px solid #1D4ED8;
+}
+
 .toastError {
   color: #DC2626;
   border-left: 4px solid #DC2626;

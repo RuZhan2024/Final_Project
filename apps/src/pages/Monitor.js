@@ -128,7 +128,6 @@ function Monitor({ isActive = true } = {}) {
   }, [tauHigh, fallThreshold, chosenSpec]);
 
   // Monitor page no longer polls /api/summary (dashboard owns summary polling).
-  const apiSummary = null;
   const summaryErr = "";
 
   // ---- Live pipeline (camera + pose + inference) ----
@@ -187,10 +186,12 @@ function Monitor({ isActive = true } = {}) {
         replayClipsError && inputSource === "video"
           ? { key: `replay-${replayClipsError}`, tone: "warning", text: `Replay clips error: ${replayClipsError}` }
           : null,
+        summaryErr ? { key: `summary-${summaryErr}`, tone: "warning", text: `Summary error: ${summaryErr}` } : null,
         startError ? { key: `start-${startError}`, tone: "error", text: `Start error: ${startError}` } : null,
+        startInfo && !startError ? { key: `info-${startInfo}`, tone: "info", text: startInfo } : null,
         predictError ? { key: `predict-${predictError}`, tone: "error", text: `Predict error: ${predictError}` } : null,
       ].filter(Boolean),
-    [inputSource, modelsErr, monitoringErr, predictError, replayClipsError, startError]
+    [inputSource, modelsErr, monitoringErr, predictError, replayClipsError, startError, startInfo, summaryErr]
   );
 
   // If settings are still loading, keep UI stable but show placeholders.
@@ -202,7 +203,13 @@ function Monitor({ isActive = true } = {}) {
         {toastMessages.map((toast) => (
           <div
             key={toast.key}
-            className={`${styles.toastItem} ${toast.tone === "error" ? styles.toastError : styles.toastWarning}`}
+            className={`${styles.toastItem} ${
+              toast.tone === "error"
+                ? styles.toastError
+                : toast.tone === "info"
+                  ? styles.toastInfo
+                  : styles.toastWarning
+            }`}
           >
             {toast.text}
           </div>
@@ -265,10 +272,6 @@ function Monitor({ isActive = true } = {}) {
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}
             onSeekReplay={seekReplay}
-            startError={startError}
-            startInfo={startInfo}
-            summaryErr={summaryErr}
-            apiSummary={apiSummary}
           />
 
           <TimelineCard markers={markers} statusText={timelineStatusText} />
