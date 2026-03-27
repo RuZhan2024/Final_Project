@@ -7,6 +7,7 @@ import { useMonitoring } from "../monitoring/MonitoringContext";
 import { useApiSpec } from "./monitor/hooks/useApiSpec";
 import { useOperatingPointParams } from "./monitor/hooks/useOperatingPointParams";
 import { usePoseMonitor } from "./monitor/hooks/usePoseMonitor";
+import { useReplayClips } from "./monitor/hooks/useReplayClips";
 
 import { ControlsCard } from "./monitor/components/ControlsCard";
 import { LiveMonitorCard } from "./monitor/components/LiveMonitorCard";
@@ -67,6 +68,14 @@ function Monitor({ isActive = true } = {}) {
 
   // ---- Backend spec + model picking ----
   const { models, error: modelsErr } = useApiSpec(apiBase, isActive);
+  const {
+    clips: replayClips,
+    loading: replayClipsLoading,
+    error: replayClipsError,
+    configuredDir: replayClipsDir,
+    available: replayClipsAvailable,
+    refresh: refreshReplayClips,
+  } = useReplayClips(apiBase, isActive);
 
   const chosen = useMemo(() => {
     if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
@@ -141,9 +150,11 @@ function Monitor({ isActive = true } = {}) {
     captureResolutionPreset,
     setCaptureResolution,
     selectedVideoName,
-    setVideoFile,
+    replayClip,
+    setReplayClip,
     setInputMode,
     startError,
+    startInfo,
     predictError,
     replayCurrentS,
     replayDurationS,
@@ -202,6 +213,12 @@ function Monitor({ isActive = true } = {}) {
             inputSource={inputSource}
             selectedVideoName={selectedVideoName}
             hasReplayFile={hasReplayFile}
+            replayClips={replayClips}
+            replayClipsLoading={replayClipsLoading}
+            replayClipsError={replayClipsError}
+            replayClipsDir={replayClipsDir}
+            replayClipsAvailable={replayClipsAvailable}
+            selectedReplayClipId={replayClip?.id || ""}
             onSwitchRealtime={() => {
               if (monitoringOn) setMonitoringOn(false);
               setInputMode("camera");
@@ -215,12 +232,17 @@ function Monitor({ isActive = true } = {}) {
               if (monitoringOn) setMonitoringOn(false);
               setCaptureResolution(preset);
             }}
-            onPickVideo={setVideoFile}
-            onClearReplay={() => setVideoFile(null)}
+            onSelectReplayClip={(clipId) => {
+              const nextClip = replayClips.find((clip) => clip.id === clipId) || null;
+              setReplayClip(nextClip);
+            }}
+            onRefreshReplayClips={refreshReplayClips}
+            onClearReplay={() => setReplayClip(null)}
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}
             onSeekReplay={seekReplay}
             startError={startError}
+            startInfo={startInfo}
             predictError={predictError}
             modelsErr={modelsErr}
             monitoringErr={monitoringErr}

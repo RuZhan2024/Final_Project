@@ -50,6 +50,9 @@ export default function SettingsPage() {
   const notifyOnEveryFall = Boolean(sys.notify_on_every_fall ?? true);
   const notifySms = Boolean(sys.notify_sms ?? false);
   const notifyPhone = Boolean(sys.notify_phone ?? false);
+  const caregiverNameReady = Boolean(String(cgName || "").trim());
+  const caregiverEmailReady = Boolean(String(cgEmail || "").trim());
+  const caregiverPhoneReady = Boolean(String(cgPhone || "").trim());
 
   const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
   const mcEnabled = Boolean(sys.mc_enabled ?? true);
@@ -297,6 +300,22 @@ export default function SettingsPage() {
                 />
                 <span className={styles.slider}></span>
               </label>
+            </div>
+
+            <div style={{ marginTop: 6, marginBottom: 14, padding: 12, borderRadius: 6, background: "#F8F9FA", color: "#3C4043", fontSize: "0.84rem", lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 500, marginBottom: 6 }}>Notification Policy</div>
+              <div>Email report: always sent with detailed fall analysis to the caregiver email on file.</div>
+              <div>SMS: optional brief alert.</div>
+              <div>Phone call: optional short voice alert.</div>
+              <div style={{ marginTop: 8 }}>
+                Caregiver status:
+                {` Name ${caregiverNameReady ? "ready" : "missing"}, Email ${caregiverEmailReady ? "ready" : "missing"}, Phone ${caregiverPhoneReady ? "ready" : "missing"}.`}
+              </div>
+              {!caregiverEmailReady && (
+                <div style={{ color: "#B45309", marginTop: 4 }}>
+                  Detailed email reports cannot be delivered until a caregiver email is saved.
+                </div>
+              )}
             </div>
 
             <button

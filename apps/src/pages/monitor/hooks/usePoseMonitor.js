@@ -55,6 +55,14 @@ function getVideoLoadErrorMessage(videoEl, file) {
   return `${base}${hint} Try an H.264 MP4 (AAC) or WebM file.`;
 }
 
+async function fetchReplayClipBlob(clipUrl) {
+  const resp = await fetch(String(clipUrl || ""), { method: "GET" });
+  if (!resp.ok) {
+    throw new Error(`Replay clip fetch failed: HTTP ${resp.status}`);
+  }
+  return await resp.blob();
+}
+
 /**
  * Owns:
  * - camera + MediaPipe Pose
@@ -86,7 +94,7 @@ export function usePoseMonitor({
   const isActiveRef = useRef(Boolean(isActive));
   const poseRef = useRef(null);
   const streamRef = useRef(null);
-  const videoFileRef = useRef(null);
+  const replayClipRef = useRef(null);
   const videoObjectUrlRef = useRef(null);
   const inputSourceRef = useRef("camera");
   const rafRef = useRef(null);
@@ -112,8 +120,9 @@ export function usePoseMonitor({
   const [inputSource, setInputSource] = useState("camera"); // camera | video
   const [captureResolutionPreset, setCaptureResolutionPreset] = useState("720p");
   const [selectedVideoName, setSelectedVideoName] = useState("");
-  const [replayFile, setReplayFile] = useState(null);
+  const [replayClip, setReplayClipState] = useState(null);
   const [startError, setStartError] = useState("");
+  const [startInfo, setStartInfo] = useState("");
   const [predictError, setPredictError] = useState("");
   const [replayCurrentS, setReplayCurrentS] = useState(0);
   const [replayDurationS, setReplayDurationS] = useState(0);
@@ -335,6 +344,7 @@ export function usePoseMonitor({
     setReplayDurationS(0);
     lastReplayUiMsRef.current = 0;
     setStartError("");
+    setStartInfo("");
     setPredictError("");
   }, []);
 
@@ -369,24 +379,24 @@ export function usePoseMonitor({
     };
   }, []);
 
-  const setVideoFile = useCallback((file) => {
+  const setReplayClip = useCallback((clip) => {
     stopLive();
     autoStopMonitoring();
     sessionIdRef.current = makeSessionId();
     resetFrontendSessionState();
-    if (file) {
-      videoFileRef.current = file;
-      setReplayFile(file);
-      setSelectedVideoName(String(file.name || "video"));
+    if (clip && typeof clip === "object") {
+      replayClipRef.current = clip;
+      setReplayClipState(clip);
+      setSelectedVideoName(String(clip.name || clip.filename || clip.id || "video"));
       inputSourceRef.current = "video";
       setInputSource("video");
       setStartError("");
     } else {
-      videoFileRef.current = null;
-      setReplayFile(null);
+      replayClipRef.current = null;
+      setReplayClipState(null);
       setSelectedVideoName("");
-      inputSourceRef.current = "camera";
-      setInputSource("camera");
+      inputSourceRef.current = "video";
+      setInputSource("video");
       setStartError("");
     }
   }, [autoStopMonitoring, makeSessionId, resetFrontendSessionState, stopLive]);
@@ -399,8 +409,8 @@ export function usePoseMonitor({
     inputSourceRef.current = m;
     setInputSource(m);
     if (m === "camera") {
-      videoFileRef.current = null;
-      setReplayFile(null);
+      replayClipRef.current = null;
+      setReplayClipState(null);
       setSelectedVideoName("");
     }
     setStartError("");
@@ -685,7 +695,7 @@ export function usePoseMonitor({
     const sourceMode = inputSourceRef.current || "camera";
     const eventLocation =
       sourceMode === "video"
-        ? String(selectedVideoName || videoFileRef.current?.name || "replay_video")
+        ? String(selectedVideoName || replayClipRef.current?.name || "replay_video")
         : "camera_live";
 
     const payload = {
@@ -1039,6 +1049,28 @@ export function usePoseMonitor({
     [ensureCanvasMatchesVideo, maybeFinalizeClipUpload, maybeSendWindow, targetFps]
   );
 
+  const initPosePipeline = useCallback(async (videoEl, { warmup = false } = {}) => {
+    if (!poseRef.current) {
+      const pose = new mpPose.Pose({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+
+      pose.setOptions({
+        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      pose.onResults(handlePoseResults);
+      poseRef.current = pose;
+    }
+
+    if (warmup && videoEl?.readyState >= 2 && poseRef.current) {
+      await poseRef.current.send({ image: videoEl });
+    }
+  }, [handlePoseResults]);
+
   const resetSession = useCallback(async () => {
     try {
       try {
@@ -1072,14 +1104,17 @@ export function usePoseMonitor({
       resetFrontendSessionState();
       await resetSession();
       setStartError("");
+      setStartInfo("");
       liveFlagRef.current = true;
       setLiveRunning(true);
 
       const source = inputSourceRef.current || "camera";
-      const file = videoFileRef.current || replayFile;
       const useVideoFile = source === "video";
-      if (useVideoFile && !file) {
-        throw new Error("Replay mode selected but no video file is loaded.");
+      const clip = replayClipRef.current || replayClip;
+      const clipFile = clip?.file instanceof File ? clip.file : null;
+      const clipUrl = typeof clip?.url === "string" && clip.url ? clip.url : "";
+      if (useVideoFile && !clipFile && !clipUrl) {
+        throw new Error("Replay mode selected but no replay clip is loaded.");
       }
       if (useVideoFile) {
         if (videoObjectUrlRef.current) {
@@ -1102,9 +1137,17 @@ export function usePoseMonitor({
         } catch {
           // ignore
         }
-        const u = URL.createObjectURL(file);
-        videoObjectUrlRef.current = u;
-        videoEl.src = u;
+        if (clipFile) {
+          const u = URL.createObjectURL(clipFile);
+          videoObjectUrlRef.current = u;
+          videoEl.src = u;
+        } else {
+          setStartInfo("Loading replay clip...");
+          const blob = await fetchReplayClipBlob(clipUrl);
+          const u = URL.createObjectURL(blob);
+          videoObjectUrlRef.current = u;
+          videoEl.src = u;
+        }
         videoEl.currentTime = 0;
         videoEl.muted = true;
         videoEl.playsInline = true;
@@ -1124,7 +1167,7 @@ export function usePoseMonitor({
       }
 
       await new Promise((resolve, reject) => {
-        if (videoEl.readyState >= 1) {
+        if (videoEl.readyState >= 2) {
           resolve();
           return;
         }
@@ -1136,12 +1179,20 @@ export function usePoseMonitor({
           reject(new Error("Video metadata load timeout"));
         }, 10000);
         const cleanup = () => {
-          videoEl.removeEventListener("loadedmetadata", onLoaded);
+          videoEl.removeEventListener("loadedmetadata", onLoadedMeta);
+          videoEl.removeEventListener("loadeddata", onLoadedFrame);
           videoEl.removeEventListener("canplay", onCanPlay);
           videoEl.removeEventListener("error", onErr);
           window.clearTimeout(timer);
         };
-        const onLoaded = () => {
+        const onLoadedMeta = () => {
+          if (videoEl.readyState < 2) return;
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const onLoadedFrame = () => {
           if (done) return;
           done = true;
           cleanup();
@@ -1157,9 +1208,10 @@ export function usePoseMonitor({
           if (done) return;
           done = true;
           cleanup();
-          reject(new Error(getVideoLoadErrorMessage(videoEl, file)));
+          reject(new Error(getVideoLoadErrorMessage(videoEl, clipFile || clip)));
         };
-        videoEl.addEventListener("loadedmetadata", onLoaded, { once: true });
+        videoEl.addEventListener("loadedmetadata", onLoadedMeta, { once: true });
+        videoEl.addEventListener("loadeddata", onLoadedFrame, { once: true });
         videoEl.addEventListener("canplay", onCanPlay, { once: true });
         videoEl.addEventListener("error", onErr, { once: true });
         try {
@@ -1169,10 +1221,17 @@ export function usePoseMonitor({
         }
       });
 
+      if (useVideoFile) {
+        setStartInfo("Preparing replay detector...");
+      }
+
       try {
         await videoEl.play();
       } catch (e) {
         throw new Error(`Video play failed: ${String(e?.message || e)}`);
+      }
+      if (useVideoFile) {
+        setStartInfo("");
       }
       ensureCanvasMatchesVideo();
       if (useVideoFile) {
@@ -1194,19 +1253,7 @@ export function usePoseMonitor({
         }
       }
 
-      const pose = new mpPose.Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-      });
-
-      pose.setOptions({
-        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-
-      pose.onResults(handlePoseResults);
-      poseRef.current = pose;
+      await initPosePipeline(videoEl, { warmup: false });
 
       const loop = async () => {
         if (!liveFlagRef.current) return;
@@ -1264,7 +1311,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, handlePoseResults, makeSessionId, replayFile, resetFrontendSessionState, resetSession, stopLive, targetFps]);
+  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, replayClip, resetFrontendSessionState, resetSession, stopLive, targetFps]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -1426,9 +1473,11 @@ export function usePoseMonitor({
     captureResolutionPreset,
     setCaptureResolution,
     selectedVideoName,
-    setVideoFile,
+    replayClip,
+    setReplayClip,
     setInputMode,
     startError,
+    startInfo,
     predictError,
     replayCurrentS,
     replayDurationS,

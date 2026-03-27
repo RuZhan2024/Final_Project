@@ -37,6 +37,28 @@ npm start
 
 Open `http://localhost:3000`.
 
+## Replay Clips
+
+The Monitor replay dropdown is populated by the backend from:
+
+- default: `data/replay_clips`
+- override: `REPLAY_CLIPS_DIR=/absolute/path/to/replay_clips`
+
+Supported replay extensions:
+
+- `.mp4`
+- `.mov`
+- `.webm`
+- `.m4v`
+
+Quick check:
+
+```bash
+curl -s http://localhost:8000/api/replay/clips
+```
+
+If this returns an empty `clips` list, the replay selector in the UI will also be empty.
+
 ## Quick API Checks
 
 Health:

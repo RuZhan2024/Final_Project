@@ -10,16 +10,24 @@ export function ControlsCard({
   inputSource,
   selectedVideoName,
   hasReplayFile,
+  replayClips,
+  replayClipsLoading,
+  replayClipsError,
+  replayClipsDir,
+  replayClipsAvailable,
+  selectedReplayClipId,
   onSwitchRealtime,
   onSwitchReplay,
   captureResolutionPreset,
   onChangeCaptureResolution,
-  onPickVideo,
+  onSelectReplayClip,
+  onRefreshReplayClips,
   onClearReplay,
   replayCurrentS,
   replayDurationS,
   onSeekReplay,
   startError,
+  startInfo,
   predictError,
   modelsErr,
   monitoringErr,
@@ -27,6 +35,14 @@ export function ControlsCard({
   apiSummary,
 }) {
   const replayPct = replayDurationS > 0 ? Math.max(0, Math.min(100, (replayCurrentS / replayDurationS) * 100)) : 0;
+  const groupedReplayClips = (replayClips || []).reduce(
+    (acc, clip) => {
+      const key = clip?.group === "fall" ? "fall" : clip?.group === "adl" ? "adl" : "other";
+      acc[key].push(clip);
+      return acc;
+    },
+    { fall: [], adl: [], other: [] }
+  );
   const fmt = (s) => {
     const v = Math.max(0, Math.floor(Number(s) || 0));
     const mm = String(Math.floor(v / 60)).padStart(2, "0");
@@ -58,9 +74,19 @@ export function ControlsCard({
           Start error: {startError}
         </p>
       )}
+      {startInfo && !startError && (
+        <p className={styles.subText} style={{ color: "#1D4ED8" }}>
+          {startInfo}
+        </p>
+      )}
       {predictError && (
         <p className={styles.subText} style={{ color: "#B91C1C" }}>
           Predict error: {predictError}
+        </p>
+      )}
+      {replayClipsError && inputSource === "video" && (
+        <p className={styles.subText} style={{ color: "#B45309" }}>
+          Replay clips error: {replayClipsError}
         </p>
       )}
 
@@ -88,7 +114,7 @@ export function ControlsCard({
       </div>
 
       <p className={styles.subText}>
-        Source: {inputSource === "video" ? `Replay (${selectedVideoName || "no file"})` : "Realtime Camera"}
+        Source: {inputSource === "video" ? `Replay (${selectedVideoName || "no clip selected"})` : "Realtime Camera"}
       </p>
 
       {inputSource === "camera" ? (
@@ -112,38 +138,59 @@ export function ControlsCard({
 
       {inputSource === "video" ? (
         <>
-          <div className={styles.buttonGroup}>
-            <input
-              type="file"
-              accept="video/*"
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            <label className={styles.subText} htmlFor="replay-clip-select" style={{ display: "block" }}>
+              Replay Clip
+            </label>
+            <select
+              id="replay-clip-select"
+              value={selectedReplayClipId || ""}
+              disabled={replayClipsLoading || !(replayClips || []).length}
               onChange={(e) => {
                 if (monitoringOn) setMonitoringOn(false);
-                onPickVideo?.(e?.target?.files?.[0] || null);
+                onSelectReplayClip?.(e.target.value);
               }}
-              style={{ maxWidth: 180 }}
-            />
-            <button
-              className={styles.btnGray}
-              onClick={() => {
-                if (monitoringOn) setMonitoringOn(false);
-                onClearReplay?.();
-              }}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff" }}
             >
-              Clear File
-            </button>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={replayPct}
-              onChange={(e) => onSeekReplay?.(Number(e.target.value) / 100)}
-              disabled={!hasReplayFile || replayDurationS <= 0}
-            />
-            <span className={styles.subText}>
-              Replay: {fmt(replayCurrentS)} / {fmt(replayDurationS)}
-            </span>
+              <option value="">{replayClipsLoading ? "Loading clips..." : "Select a replay clip"}</option>
+              {groupedReplayClips.fall.length ? (
+                <optgroup label="Fall Clips">
+                  {groupedReplayClips.fall.map((clip) => (
+                    <option key={clip.id} value={clip.id}>
+                      {clip.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {groupedReplayClips.adl.length ? (
+                <optgroup label="ADL Clips">
+                  {groupedReplayClips.adl.map((clip) => (
+                    <option key={clip.id} value={clip.id}>
+                      {clip.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {groupedReplayClips.other.length ? (
+                <optgroup label="Other Clips">
+                  {groupedReplayClips.other.map((clip) => (
+                    <option key={clip.id} value={clip.id}>
+                      {clip.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </select>
+            <p className={styles.subText} style={{ margin: 0 }}>
+              {replayClipsAvailable
+                ? `${(replayClips || []).length} clip(s) found${replayClipsDir ? ` in ${replayClipsDir}` : ""}.`
+                : `No replay directory found${replayClipsDir ? ` at ${replayClipsDir}` : ""}.`}
+            </p>
+            <div className={styles.buttonGroup}>
+              <button className={styles.btnGray} onClick={() => onRefreshReplayClips?.()} disabled={replayClipsLoading}>
+                {replayClipsLoading ? "Refreshing..." : "Refresh Clips"}
+              </button>
+            </div>
           </div>
           <div className={styles.buttonGroup}>
             {!monitoringOn ? (
@@ -163,9 +210,28 @@ export function ControlsCard({
                 Stop Replay
               </button>
             )}
-            <button className={styles.btnRed} onClick={testFall}>
-              Test Fall
+            <button
+              className={styles.btnGray}
+              onClick={() => {
+                if (monitoringOn) setMonitoringOn(false);
+                onClearReplay?.();
+              }}
+            >
+              Clear
             </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={replayPct}
+              onChange={(e) => onSeekReplay?.(Number(e.target.value) / 100)}
+              disabled={!hasReplayFile || replayDurationS <= 0}
+            />
+            <span className={styles.subText}>
+              Replay: {fmt(replayCurrentS)} / {fmt(replayDurationS)}
+            </span>
           </div>
         </>
       ) : (

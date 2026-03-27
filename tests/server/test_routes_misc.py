@@ -71,6 +71,29 @@ def test_deploy_specs_alias(monkeypatch):
     assert resp.json() == {"specs": [], "models": [], "datasets": []}
 
 
+def test_replay_clips_routes(monkeypatch, tmp_path):
+    clip_path = tmp_path / "demo.mp4"
+    clip_path.write_bytes(b"demo-video")
+    (tmp_path / "ignore.txt").write_text("ignore", encoding="utf-8")
+    monkeypatch.setenv("REPLAY_CLIPS_DIR", str(tmp_path))
+
+    client = TestClient(app)
+
+    list_resp = client.get("/api/replay/clips")
+    assert list_resp.status_code == 200
+    body = list_resp.json()
+    assert body["available"] is True
+    assert len(body["clips"]) == 1
+    assert body["clips"][0]["name"] == "demo.mp4"
+
+    file_resp = client.get(body["clips"][0]["url"])
+    assert file_resp.status_code == 200
+    assert file_resp.content == b"demo-video"
+
+    blocked_resp = client.get("/api/replay/clips/../secret.mp4")
+    assert blocked_resp.status_code == 404
+
+
 def test_operating_points_yaml_fallback(monkeypatch):
     @contextmanager
     def _broken():
