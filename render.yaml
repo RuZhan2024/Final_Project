@@ -51,6 +51,10 @@ services:
     buildCommand: npm ci && npm run build
     staticPublishPath: build
     autoDeployTrigger: commit
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: REACT_APP_API_BASE
         sync: false
