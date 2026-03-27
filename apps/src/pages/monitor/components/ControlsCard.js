@@ -114,9 +114,6 @@ export function ControlsCard({
 
       {inputSource === "camera" ? (
         <div style={{ marginBottom: 12 }}>
-          <label className={styles.subText} htmlFor="capture-resolution-select" style={{ display: "block", marginBottom: 6 }}>
-            Capture Resolution
-          </label>
           <select
             id="capture-resolution-select"
             value={captureResolutionPreset || "720p"}
@@ -134,9 +131,6 @@ export function ControlsCard({
       {inputSource === "video" ? (
         <>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-            <label className={styles.subText} htmlFor="replay-clip-select" style={{ display: "block" }}>
-              Replay Clip
-            </label>
             <select
               id="replay-clip-select"
               value={selectedReplayClipId || ""}
