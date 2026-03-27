@@ -36,3 +36,5 @@ artifacts/ops_reverify_20260315_after_motionfix/
 !deploy_assets/
 !deploy_assets/checkpoints/
 !deploy_assets/checkpoints/*.pt
+!deploy_assets/replay_clips/
+!deploy_assets/replay_clips/**
