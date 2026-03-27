@@ -173,6 +173,7 @@ export function usePoseMonitor({
   const wsRef = useRef(null);
   const wsReadyRef = useRef(false);
   const wsPendingRef = useRef(null);
+  const wsClosingRef = useRef(false);
 
   const makeSessionId = useCallback(
     () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
@@ -300,13 +301,16 @@ export function usePoseMonitor({
     }
     if (wsPendingRef.current) {
       try {
-        wsPendingRef.current.reject?.(new Error("ws closed"));
+        const err = new Error("WebSocket closed during mode switch");
+        err.name = "AbortError";
+        wsPendingRef.current.reject?.(err);
       } catch {
         // ignore
       }
       wsPendingRef.current = null;
     }
     if (wsRef.current) {
+      wsClosingRef.current = true;
       try {
         wsRef.current.close();
       } catch {
@@ -576,12 +580,17 @@ export function usePoseMonitor({
         if (wsRef.current === ws) wsRef.current = null;
         if (wsPendingRef.current) {
           try {
-            wsPendingRef.current.reject?.(new Error("WebSocket closed"));
+            const err = new Error(
+              wsClosingRef.current ? "WebSocket closed during mode switch" : "WebSocket closed"
+            );
+            err.name = wsClosingRef.current ? "AbortError" : "Error";
+            wsPendingRef.current.reject?.(err);
           } catch {
             // ignore
           }
           wsPendingRef.current = null;
         }
+        wsClosingRef.current = false;
       };
       ws.onmessage = (evt) => {
         const pending = wsPendingRef.current;
@@ -876,6 +885,10 @@ export function usePoseMonitor({
         dedupMs,
       });
     } catch (err) {
+      if (String(err?.name || "") === "AbortError") {
+        setPredictError("");
+        return;
+      }
       console.error("Error calling /api/monitor/predict_window", err);
       setPredictError(String(err?.message || err || "predict_window failed"));
     } finally {
