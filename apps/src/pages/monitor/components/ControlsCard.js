@@ -108,7 +108,7 @@ export function ControlsCard({
                 </optgroup>
               ) : null}
               {groupedReplayClips.other.length ? (
-                <optgroup label="Other Clips">
+                <optgroup label="Fall Clips">
                   {groupedReplayClips.other.map((clip) => (
                     <option key={clip.id} value={clip.id}>
                       {clip.name}
