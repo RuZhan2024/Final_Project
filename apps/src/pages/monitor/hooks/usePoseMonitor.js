@@ -26,6 +26,8 @@ const TRIAGE_FALL_CONFIRM_N = 2;
 const TRIAGE_SAFE_CONFIRM_N = 2;
 const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
+const WS_CONNECT_TIMEOUT_MS = 7000;
+const WS_PREDICT_TIMEOUT_MS = 12000;
 const CAPTURE_RESOLUTIONS = {
   "480p": { w: 640, h: 480 },
   "540p": { w: 960, h: 540 },
@@ -568,7 +570,7 @@ export function usePoseMonitor({
           // ignore
         }
         reject(new Error("WebSocket connect timeout"));
-      }, 3000);
+      }, WS_CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
         if (settled) return;
@@ -620,34 +622,62 @@ export function usePoseMonitor({
   }, [apiBase]);
 
   const predictViaWs = useCallback(async (payload) => {
-    const ws = await ensurePredictWs();
-    return await new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        if (wsPendingRef.current) {
-          wsPendingRef.current = null;
-        }
-        reject(new Error("WebSocket predict timeout"));
-      }, 5000);
+    const sendOnce = async () => {
+      const ws = await ensurePredictWs();
+      return await new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          if (wsPendingRef.current) {
+            wsPendingRef.current = null;
+          }
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+          reject(new Error("WebSocket predict timeout"));
+        }, WS_PREDICT_TIMEOUT_MS);
 
-      wsPendingRef.current = {
-        resolve: (msg) => {
-          window.clearTimeout(timeoutId);
-          resolve(msg);
-        },
-        reject: (err) => {
+        wsPendingRef.current = {
+          resolve: (msg) => {
+            window.clearTimeout(timeoutId);
+            resolve(msg);
+          },
+          reject: (err) => {
+            window.clearTimeout(timeoutId);
+            reject(err);
+          },
+        };
+
+        try {
+          ws.send(JSON.stringify(payload));
+        } catch (err) {
+          wsPendingRef.current = null;
           window.clearTimeout(timeoutId);
           reject(err);
-        },
-      };
+        }
+      });
+    };
 
-      try {
-        ws.send(JSON.stringify(payload));
-      } catch (err) {
-        wsPendingRef.current = null;
-        window.clearTimeout(timeoutId);
-        reject(err);
+    try {
+      return await sendOnce();
+    } catch (err) {
+      const msg = String(err?.message || err || "");
+      if (!/WebSocket predict timeout|WebSocket closed|WebSocket connect failed/i.test(msg)) {
+        throw err;
       }
-    });
+
+      wsClosingRef.current = true;
+      try {
+        wsRef.current?.close();
+      } catch {
+        // ignore
+      }
+      wsRef.current = null;
+      wsReadyRef.current = false;
+      wsClosingRef.current = false;
+
+      return await sendOnce();
+    }
   }, [ensurePredictWs]);
 
   const maybeSendWindow = useCallback(async () => {

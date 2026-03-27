@@ -179,12 +179,36 @@ function Monitor({ isActive = true } = {}) {
   });
 
   const hasReplayFile = useMemo(() => Boolean(selectedVideoName), [selectedVideoName]);
+  const toastMessages = useMemo(
+    () =>
+      [
+        modelsErr ? { key: `models-${modelsErr}`, tone: "warning", text: `Backend error: ${modelsErr}` } : null,
+        monitoringErr ? { key: `settings-${monitoringErr}`, tone: "warning", text: `Settings error: ${monitoringErr}` } : null,
+        replayClipsError && inputSource === "video"
+          ? { key: `replay-${replayClipsError}`, tone: "warning", text: `Replay clips error: ${replayClipsError}` }
+          : null,
+        startError ? { key: `start-${startError}`, tone: "error", text: `Start error: ${startError}` } : null,
+        predictError ? { key: `predict-${predictError}`, tone: "error", text: `Predict error: ${predictError}` } : null,
+      ].filter(Boolean),
+    [inputSource, modelsErr, monitoringErr, predictError, replayClipsError, startError]
+  );
 
   // If settings are still loading, keep UI stable but show placeholders.
   const showPlaceholders = !settingsLoaded;
 
   return (
     <div className={styles.pageContainer}>
+      <div className={styles.toastContainer}>
+        {toastMessages.map((toast) => (
+          <div
+            key={toast.key}
+            className={`${styles.toastItem} ${toast.tone === "error" ? styles.toastError : styles.toastWarning}`}
+          >
+            {toast.text}
+          </div>
+        ))}
+      </div>
+
       <h2 className={styles.pageTitle}>Live Monitor</h2>
 
       <div className={styles.content}>
@@ -243,9 +267,6 @@ function Monitor({ isActive = true } = {}) {
             onSeekReplay={seekReplay}
             startError={startError}
             startInfo={startInfo}
-            predictError={predictError}
-            modelsErr={modelsErr}
-            monitoringErr={monitoringErr}
             summaryErr={summaryErr}
             apiSummary={apiSummary}
           />

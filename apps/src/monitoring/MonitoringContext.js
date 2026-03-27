@@ -13,6 +13,7 @@ import { apiRequest } from "../lib/apiClient";
 
 const API_BASE = getApiBase();
 const MonitoringContext = createContext(null);
+const SETTINGS_RETRY_DELAYS_MS = [700, 1500];
 
 function readDesired(data) {
   const sys = data?.system || data || {};
@@ -42,6 +43,26 @@ function safeStop(ctrl) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function fetchSettingsWithRetry() {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= SETTINGS_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await apiRequest(API_BASE, "/api/settings");
+    } catch (err) {
+      lastError = err;
+      if (attempt >= SETTINGS_RETRY_DELAYS_MS.length) break;
+      await sleep(SETTINGS_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError || new Error("Failed to fetch settings");
+}
+
 export function MonitoringProvider({ children }) {
   const [monitoringOn, setMonitoringOnState] = useState(false);
   const [monitoringDesired, setMonitoringDesired] = useState(false);
@@ -68,7 +89,7 @@ export function MonitoringProvider({ children }) {
     try {
       setError(null);
 
-      const data = await apiRequest(API_BASE, "/api/settings");
+      const data = await fetchSettingsWithRetry();
       setSettingsPayload(data);
 
       const desired = readDesired(data);

@@ -25,9 +25,6 @@ export function ControlsCard({
   onSeekReplay,
   startError,
   startInfo,
-  predictError,
-  modelsErr,
-  monitoringErr,
   summaryErr,
   apiSummary,
 }) {
@@ -52,39 +49,9 @@ export function ControlsCard({
       <h3>Controls</h3>
 
       <div className={styles.statusStack}>
-        {modelsErr && (
-          <p className={styles.subText} style={{ color: "#B45309" }}>
-            Backend error: {modelsErr}
-          </p>
-        )}
-        {monitoringErr && (
-          <p className={styles.subText} style={{ color: "#B45309" }}>
-            Settings error: {monitoringErr}
-          </p>
-        )}
-        {summaryErr && (
-          <p className={styles.subText} style={{ color: "#B45309" }}>
-            Summary error: {summaryErr}
-          </p>
-        )}
-        {startError && (
-          <p className={styles.subText} style={{ color: "#B91C1C" }}>
-            Start error: {startError}
-          </p>
-        )}
         {startInfo && !startError && (
           <p className={styles.subText} style={{ color: "#1D4ED8" }}>
             {startInfo}
-          </p>
-        )}
-        {predictError && (
-          <p className={styles.subText} style={{ color: "#B91C1C" }}>
-            Predict error: {predictError}
-          </p>
-        )}
-        {replayClipsError && inputSource === "video" && (
-          <p className={styles.subText} style={{ color: "#B45309" }}>
-            Replay clips error: {replayClipsError}
           </p>
         )}
 
