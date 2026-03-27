@@ -13,6 +13,8 @@ services:
       mountPath: /var/data
       sizeGB: 1
     envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src/src:/opt/render/project/src
       - key: DB_BACKEND
         value: sqlite
       - key: SQLITE_PATH
