@@ -58,6 +58,17 @@
   margin: 0 0 16px 0;
 }
 
+.statusStack {
+  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.statusStack:empty {
+  min-height: 16px;
+}
+
 /* --- Left Column Specifics --- */
 .videoPlaceholder {
   width: 100%;

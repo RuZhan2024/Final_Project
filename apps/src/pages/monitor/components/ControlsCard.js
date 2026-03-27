@@ -8,13 +8,10 @@ export function ControlsCard({
   resetSession,
   testFall,
   inputSource,
-  selectedVideoName,
   hasReplayFile,
   replayClips,
   replayClipsLoading,
   replayClipsError,
-  replayClipsDir,
-  replayClipsAvailable,
   selectedReplayClipId,
   onSwitchRealtime,
   onSwitchReplay,
@@ -54,47 +51,49 @@ export function ControlsCard({
     <div className={styles.card}>
       <h3>Controls</h3>
 
-      {modelsErr && (
-        <p className={styles.subText} style={{ color: "#B45309" }}>
-          Backend error: {modelsErr}
-        </p>
-      )}
-      {monitoringErr && (
-        <p className={styles.subText} style={{ color: "#B45309" }}>
-          Settings error: {monitoringErr}
-        </p>
-      )}
-      {summaryErr && (
-        <p className={styles.subText} style={{ color: "#B45309" }}>
-          Summary error: {summaryErr}
-        </p>
-      )}
-      {startError && (
-        <p className={styles.subText} style={{ color: "#B91C1C" }}>
-          Start error: {startError}
-        </p>
-      )}
-      {startInfo && !startError && (
-        <p className={styles.subText} style={{ color: "#1D4ED8" }}>
-          {startInfo}
-        </p>
-      )}
-      {predictError && (
-        <p className={styles.subText} style={{ color: "#B91C1C" }}>
-          Predict error: {predictError}
-        </p>
-      )}
-      {replayClipsError && inputSource === "video" && (
-        <p className={styles.subText} style={{ color: "#B45309" }}>
-          Replay clips error: {replayClipsError}
-        </p>
-      )}
+      <div className={styles.statusStack}>
+        {modelsErr && (
+          <p className={styles.subText} style={{ color: "#B45309" }}>
+            Backend error: {modelsErr}
+          </p>
+        )}
+        {monitoringErr && (
+          <p className={styles.subText} style={{ color: "#B45309" }}>
+            Settings error: {monitoringErr}
+          </p>
+        )}
+        {summaryErr && (
+          <p className={styles.subText} style={{ color: "#B45309" }}>
+            Summary error: {summaryErr}
+          </p>
+        )}
+        {startError && (
+          <p className={styles.subText} style={{ color: "#B91C1C" }}>
+            Start error: {startError}
+          </p>
+        )}
+        {startInfo && !startError && (
+          <p className={styles.subText} style={{ color: "#1D4ED8" }}>
+            {startInfo}
+          </p>
+        )}
+        {predictError && (
+          <p className={styles.subText} style={{ color: "#B91C1C" }}>
+            Predict error: {predictError}
+          </p>
+        )}
+        {replayClipsError && inputSource === "video" && (
+          <p className={styles.subText} style={{ color: "#B45309" }}>
+            Replay clips error: {replayClipsError}
+          </p>
+        )}
 
-      {!summaryErr && apiSummary?.system && (
-        <p className={styles.subText}>
-          API: {apiSummary.system.api_online ? "Online" : "Offline"} • Last latency: {apiSummary.system.last_latency_ms ?? "—"} ms
-        </p>
-      )}
+        {!summaryErr && apiSummary?.system && (
+          <p className={styles.subText}>
+            API: {apiSummary.system.api_online ? "Online" : "Offline"} • Last latency: {apiSummary.system.last_latency_ms ?? "—"} ms
+          </p>
+        )}
+      </div>
 
       <div className={styles.buttonGroup}>
         <button
@@ -112,10 +111,6 @@ export function ControlsCard({
           Replay Mode
         </button>
       </div>
-
-      <p className={styles.subText}>
-        Source: {inputSource === "video" ? `Replay (${selectedVideoName || "no clip selected"})` : "Realtime Camera"}
-      </p>
 
       {inputSource === "camera" ? (
         <div style={{ marginBottom: 12 }}>
@@ -181,11 +176,6 @@ export function ControlsCard({
                 </optgroup>
               ) : null}
             </select>
-            <p className={styles.subText} style={{ margin: 0 }}>
-              {replayClipsAvailable
-                ? `${(replayClips || []).length} clip(s) found${replayClipsDir ? ` in ${replayClipsDir}` : ""}.`
-                : `No replay directory found${replayClipsDir ? ` at ${replayClipsDir}` : ""}.`}
-            </p>
             <div className={styles.buttonGroup}>
               <button className={styles.btnGray} onClick={() => onRefreshReplayClips?.()} disabled={replayClipsLoading}>
                 {replayClipsLoading ? "Refreshing..." : "Refresh Clips"}
