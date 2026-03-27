@@ -1467,6 +1467,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             },
         )
 
+    prev_triage_state = str(st.get("last_triage_state") or "not_fall")
     saved_event_id = None
     notification_dispatch: Optional[Dict[str, Any]] = None
 
@@ -1690,18 +1691,26 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         c_gcn = float((models_out.get("gcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
         cooldown_s_for_persist = float(safe_pol.get("cooldown_s", max(c_tcn, c_gcn)))
     cooldown_s_for_persist = max(1.0, cooldown_s_for_persist)
-    persist_cd_key = f"persist_last_ts:{resident_id}:{dataset_code}:{mode}:{op_code}"
-    last_persist_ts = float(st.get(persist_cd_key, 0.0) or 0.0)
-    persist_in_cooldown = (_t_s - last_persist_ts) < cooldown_s_for_persist
 
-    persist_dedup_key = f"persist_dedup_hits:{resident_id}:{dataset_code}:{mode}:{op_code}"
+    persist_event_type: Optional[str] = None
+    if is_replay:
+        if triage_state in {"fall", "uncertain"} and prev_triage_state != str(triage_state):
+            persist_event_type = str(triage_state)
+    elif started_event and triage_state == "fall":
+        persist_event_type = "fall"
+
+    persist_cd_key = f"persist_last_ts:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
+    last_persist_ts = float(st.get(persist_cd_key, 0.0) or 0.0)
+    persist_in_cooldown = bool(persist_event_type) and ((_t_s - last_persist_ts) < cooldown_s_for_persist)
+
+    persist_dedup_key = f"persist_dedup_hits:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
     persist_dedup_hits = int(st.get(persist_dedup_key, 0) or 0)
-    persist_suppressed = bool(persist and started_event and triage_state == "fall" and persist_in_cooldown)
+    persist_suppressed = bool(persist and persist_event_type and persist_in_cooldown)
     if persist_suppressed:
         persist_dedup_hits += 1
         st[persist_dedup_key] = persist_dedup_hits
 
-    if persist and started_event and triage_state == "fall" and (not persist_in_cooldown):
+    if persist and persist_event_type and (not persist_in_cooldown):
         primary_out = models_out.get(primary_model_key, {}) if isinstance(models_out.get(primary_model_key), dict) else {}
         safe_guard_probability = float(primary_out.get("mu", p_display) or p_display)
         safe_guard_uncertainty = float(primary_out.get("sigma", 0.0) or 0.0)
@@ -1732,6 +1741,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "margin": safe_guard_margin,
             "uncertainty": safe_guard_uncertainty,
             "location": event_location,
+            "input_source": input_source,
+            "event_source": "replay" if is_replay else "realtime",
+            "persist_event_type": persist_event_type,
         }
         try:
             with get_conn() as conn:
@@ -1742,8 +1754,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                             "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                             (
                                 resident_id,
-                                "fall",
-                                "high",
+                                str(persist_event_type),
+                                "high" if persist_event_type == "fall" else "medium",
                                 active_model_code,
                                 None,
                                 float(p_display),
@@ -1757,11 +1769,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                         event_id=int(saved_event_id) if saved_event_id is not None else None,
                         p_fall=float(p_display),
                         source="monitor",
-                    )
+                    ) if persist_event_type == "fall" else None
                     conn.commit()
                     st[persist_cd_key] = float(_t_s)
                     try:
-                        if notify_on_every_fall and saved_event_id is not None:
+                        if persist_event_type == "fall" and notify_on_every_fall and saved_event_id is not None:
                             get_notification_manager().handle_event(
                                 SafeGuardEvent(
                                     event_id=str(saved_event_id),

@@ -126,6 +126,10 @@ export function usePoseMonitor({
   const [predictError, setPredictError] = useState("");
   const [replayCurrentS, setReplayCurrentS] = useState(0);
   const [replayDurationS, setReplayDurationS] = useState(0);
+  // MediaPipe result callbacks can outlive the render that started monitoring.
+  // Read the latest persisted-monitoring flag from a ref so replay windows do not
+  // keep sending stale `persist: false` after monitoring is toggled on.
+  const monitoringOnRef = useRef(Boolean(monitoringOn));
 
   // Prediction UI
   const [triageState, setTriageState] = useState("not_fall");
@@ -193,6 +197,10 @@ export function usePoseMonitor({
       }
     }
   }, [isActive]);
+
+  useEffect(() => {
+    monitoringOnRef.current = Boolean(monitoringOn);
+  }, [monitoringOn]);
 
   const autoStopMonitoring = useCallback(() => {
     try {
@@ -734,7 +742,7 @@ export function usePoseMonitor({
       mc_M: mcCfg?.M,
 
       // Persist events when monitoring is on OR when we need an event_id for clip saving.
-      persist: Boolean(monitoringOn || storeEventClips),
+      persist: Boolean(monitoringOnRef.current || storeEventClips),
 
       // Raw pose samples (variable FPS)
       raw_t_ms: tArr,
@@ -903,7 +911,6 @@ export function usePoseMonitor({
     mcCfg,
     mcEnabled,
     mode,
-    monitoringOn,
     opCode,
     predictViaWs,
     settingsPayload,
@@ -964,26 +971,28 @@ export function usePoseMonitor({
       const doDraw = isActiveRef.current;
       const landmarks = results.poseLandmarks;
 
+      const hasLandmarks = Boolean(landmarks && landmarks.length);
+
       // No pose detected.
-      if (!landmarks || !landmarks.length) {
+      if (!hasLandmarks) {
         if (doDraw && ctx) {
           const drawNowMs = performance.now();
           if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
-            return;
+            // Keep processing so replay/live still advance the raw window buffer.
+          } else {
+            lastDrawMsRef.current = drawNowMs;
+            ensureCanvasMatchesVideo();
+            ctx.fillStyle = "#020617";
+            ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+            ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
+            ctx.fillStyle = "#94a3b8";
+            ctx.fillText("No pose detected…", 16, 24);
           }
-          lastDrawMsRef.current = drawNowMs;
-          ensureCanvasMatchesVideo();
-          ctx.fillStyle = "#020617";
-          ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.fillStyle = "#94a3b8";
-          ctx.fillText("No pose detected…", 16, 24);
         }
-        return;
       }
 
       // Draw only when this page is active.
-      if (doDraw && ctx) {
+      if (hasLandmarks && doDraw && ctx) {
         const drawNowMs = performance.now();
         if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
           // Skip frequent repaint to reduce main-thread pressure.
@@ -1013,7 +1022,7 @@ export function usePoseMonitor({
       const confFrame = new Array(NUM_JOINTS);
 
       for (let i = 0; i < NUM_JOINTS; i++) {
-        const lm = landmarks[i];
+        const lm = hasLandmarks ? landmarks[i] : null;
         if (!lm) {
           xyFrame[i] = [0, 0];
           confFrame[i] = 0;

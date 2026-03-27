@@ -26,6 +26,21 @@ class _DummyTracker:
         )
 
 
+class _DummyUncertainTracker:
+    def __init__(self, _cfg):
+        self._calls = 0
+
+    def step(self, p, t_s):
+        self._calls += 1
+        return SimpleNamespace(
+            triage_state="uncertain",
+            ps=float(p),
+            p_in=float(p),
+            cooldown_remaining_s=0.0,
+            started_event=False,
+        )
+
+
 def _mock_predict_spec(*, spec_key, **_kwargs):
     if spec_key.endswith("_tcn"):
         mu = 0.91
@@ -614,6 +629,7 @@ def test_predict_window_uses_db_settings_and_persists_event(monkeypatch):
         json={
             "session_id": "s-db",
             "mode": "tcn",
+            "input_source": "video",
             "xy": [[[0.0, 0.0]], [[0.1, 0.1]]],
             "conf": [[1.0], [1.0]],
             "target_T": 2,
@@ -635,6 +651,8 @@ def test_predict_window_uses_db_settings_and_persists_event(monkeypatch):
             insert_params = params
             break
     assert insert_params is not None
+    assert insert_params[1] == "fall"
+    assert insert_params[2] == "high"
     meta_json = None
     for v in insert_params:
         if isinstance(v, str) and "\"models\"" in v and "\"dataset\"" in v:
@@ -644,6 +662,75 @@ def test_predict_window_uses_db_settings_and_persists_event(monkeypatch):
     meta = json.loads(meta_json)
     assert meta.get("mc_sigma_tol") == 0.025
     assert meta.get("mc_se_tol") == 0.012
+    assert meta.get("input_source") == "video"
+    assert meta.get("persist_event_type") == "fall"
+
+
+def test_predict_window_persists_replay_uncertain_event(monkeypatch):
+    cfg_conn = _FakeConn(
+        responses=[
+            {
+                "active_dataset_code": "muvim",
+                "mc_enabled": 0,
+                "mc_M": 7,
+                "active_model_code": "TCN",
+                "active_op_code": None,
+                "active_operating_point_id": 2,
+            },
+            {"code": "OP-2"},
+        ]
+    )
+    ins_conn = _FakeConn(lastrowid=77)
+    conns = [cfg_conn, ins_conn]
+
+    def _get_conn():
+        return _conn_cm(conns.pop(0))
+
+    monkeypatch.setattr(monitor_route, "get_conn", _get_conn)
+    monkeypatch.setattr(monitor_route, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
+    monkeypatch.setattr(monitor_route, "_ensure_system_settings_schema", lambda _c: None)
+    monkeypatch.setattr(monitor_route, "_table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
+    monkeypatch.setattr(
+        monitor_route.core,
+        "_cols",
+        lambda _c, _t: {"resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta", "ts"},
+    )
+    monkeypatch.setattr(monitor_route, "_get_deploy_specs", lambda: {"muvim_tcn": object(), "muvim_gcn": object()})
+    monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
+    monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyUncertainTracker)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/monitor/predict_window",
+        json={
+            "session_id": "s-replay-uncertain",
+            "mode": "tcn",
+            "input_source": "video",
+            "xy": [[[0.0, 0.0]], [[0.1, 0.1]]],
+            "conf": [[1.0], [1.0]],
+            "target_T": 2,
+            "persist": True,
+            "resident_id": 1,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["triage_state"] == "uncertain"
+    assert body["event_id"] == 77
+    assert body["notification_dispatch"] is None
+
+    insert_params = None
+    for sql, params in ins_conn.executed:
+        if "INSERT INTO events" in sql:
+            insert_params = params
+            break
+    assert insert_params is not None
+    assert insert_params[1] == "uncertain"
+    assert insert_params[2] == "medium"
+    meta = json.loads(insert_params[-1])
+    assert meta.get("input_source") == "video"
+    assert meta.get("persist_event_type") == "uncertain"
 
 
 def test_runtime_defaults_cache_hits_within_ttl(monkeypatch):

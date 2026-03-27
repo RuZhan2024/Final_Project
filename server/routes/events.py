@@ -237,12 +237,18 @@ def list_events(
                     where.append("LOWER(e.`status`)=%s")
                     params.append(status.lower())
 
-                # v2 model filter uses models table
-                join_models = "LEFT JOIN models m ON m.id = e.model_id"
+                # v2 model filter uses models table when the schema actually has model_id.
+                has_model_id = _has_col(conn, "events", "model_id")
+                has_models_table = _table_exists(conn, "models")
+                join_models = "LEFT JOIN models m ON m.id = e.model_id" if (has_model_id and has_models_table) else ""
                 if model is not None:
-                    where.append("(UPPER(m.code)=%s OR UPPER(m.family)=%s)")
                     u = model.upper()
-                    params.extend([u, u])
+                    if join_models:
+                        where.append("(UPPER(m.code)=%s OR UPPER(m.family)=%s)")
+                        params.extend([u, u])
+                    else:
+                        where.append("UPPER(e.model_code)=%s")
+                        params.append(u)
 
                 where_sql = " AND ".join(where)
 
@@ -265,8 +271,8 @@ def list_events(
                                  e.`status` AS status,
                                  {select_prob}
                                  e.operating_point_id,
-                                 m.code AS model_code,
-                                 m.family AS model_family,
+                                 {("m.code AS model_code," if join_models else "e.model_code AS model_code,")}
+                                 {("m.family AS model_family," if join_models else "NULL AS model_family,")}
                                  e.notes,
                                  e.fa24h_snapshot,
                                  e.payload_json
@@ -289,6 +295,12 @@ def list_events(
                     if r.get("payload_json") is not None:
                         meta["payload_json"] = r.get("payload_json")
 
+                    source_value = None
+                    if isinstance(meta, dict):
+                        source_raw = meta.get("event_source") or meta.get("input_source")
+                        if source_raw is not None:
+                            source_value = str(source_raw).strip().lower() or None
+
                     ts = r.get("ts")
                     out.append(
                         {
@@ -302,6 +314,7 @@ def list_events(
                             "p_fall": r.get("score"),
                             "model_code": r.get("model_code") or r.get("model_family"),
                             "operating_point_id": r.get("operating_point_id"),
+                            "source": source_value or "realtime",
                             "meta": meta,
                         }
                     )
@@ -361,10 +374,14 @@ def list_events(
                         meta = {"raw": meta}
 
                 status_value = None
+                source_value = None
                 if isinstance(meta, dict):
                     status_raw = meta.get("status")
                     if status_raw is not None:
                         status_value = str(status_raw).strip().lower() or None
+                    source_raw = meta.get("event_source") or meta.get("input_source")
+                    if source_raw is not None:
+                        source_value = str(source_raw).strip().lower() or None
 
                 ts = r.get("ts")
                 out.append(
@@ -378,6 +395,7 @@ def list_events(
                         "status": status_value or "pending_review",
                         "score": r.get("score"),
                         "p_fall": r.get("score"),
+                        "source": source_value or "realtime",
                         "meta": meta,
                     }
                 )
