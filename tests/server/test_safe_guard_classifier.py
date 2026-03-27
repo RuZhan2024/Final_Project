@@ -23,13 +23,17 @@ def _cfg() -> NotificationConfig:
         twilio_auth_token="",
         twilio_from_phone="",
         caregiver_phone="",
-        smtp_host="",
-        smtp_port=587,
-        smtp_username="",
-        smtp_password="",
+        resend_api_key="",
         email_from="",
         caregiver_email="",
         app_base_url="http://localhost:3000",
+        ai_provider="openai",
+        openai_api_key="",
+        openai_model="gpt-4.1-mini",
+        gemini_api_key="",
+        gemini_model="gemini-2.0-flash",
+        openai_timeout_s=12.0,
+        ai_reports_enabled=True,
     )
 
 

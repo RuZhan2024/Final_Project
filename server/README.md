@@ -100,6 +100,8 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 Important environment variables:
 
 ```bash
+DB_BACKEND=sqlite
+SQLITE_PATH=server/cloud_demo.sqlite3
 SAFE_GUARD_ENABLED=1
 SAFE_GUARD_SQLITE_PATH=server/safe_guard_notifications.sqlite3
 HIGH_CONF_MARGIN=0.08
@@ -110,17 +112,35 @@ TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_FROM_PHONE=
 CAREGIVER_PHONE=
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USERNAME=
-SMTP_PASSWORD=
+RESEND_API_KEY=
 EMAIL_FROM=
 CAREGIVER_EMAIL=
+AI_REPORTS_ENABLED=1
+AI_PROVIDER=gemini
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+OPENAI_TIMEOUT_S=12
 APP_BASE_URL=http://127.0.0.1:3000
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000
 ```
 
-If Twilio / SMTP credentials are not configured, Safe Guard still runs in
+If Twilio / Resend credentials are not configured, Safe Guard still runs in
 audit mode and records skipped delivery attempts in SQLite.
+
+For Render-style cloud deployment, prefer:
+
+- `DB_BACKEND=sqlite`
+- `SQLITE_PATH` on a persistent disk mount
+- caregiver contact details stored in the app database
+- Resend and AI provider keys stored as Render environment variables
+- Render persistent disks require a paid web-service plan
+
+Email behavior:
+
+- a detailed caregiver email is attempted for each fall-like event
+- the email includes an AI-generated event analysis section when the selected AI provider key is configured
+- if AI generation fails or is disabled, the email falls back to a deterministic summary
+- SMS and phone-call escalation remain optional and are controlled by settings
 
 ### Runtime integration
 
@@ -250,7 +270,7 @@ Verify key fields exist and are populated:
 - `sms_status`
 - `email_status`
 
-If Twilio / SMTP are not configured, delivery status should show skipped or failed audit entries without crashing the server.
+If Twilio / Resend are not configured, delivery status should show skipped or failed audit entries without crashing the server.
 
 ### 4. Runtime monitor integration
 
@@ -311,10 +331,7 @@ After configuring:
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_FROM_PHONE`
 - `CAREGIVER_PHONE`
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_USERNAME`
-- `SMTP_PASSWORD`
+- `RESEND_API_KEY`
 - `EMAIL_FROM`
 - `CAREGIVER_EMAIL`
 

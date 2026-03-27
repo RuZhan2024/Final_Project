@@ -24,13 +24,17 @@ def _cfg() -> NotificationConfig:
         twilio_auth_token="token",
         twilio_from_phone="+10000000000",
         caregiver_phone="+19999999999",
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_username="",
-        smtp_password="",
+        resend_api_key="re_test_key",
         email_from="noreply@example.com",
         caregiver_email="default@example.com",
         app_base_url="http://localhost:3000",
+        ai_provider="openai",
+        openai_api_key="",
+        openai_model="gpt-4.1-mini",
+        gemini_api_key="",
+        gemini_model="gemini-2.0-flash",
+        openai_timeout_s=12.0,
+        ai_reports_enabled=True,
     )
 
 
@@ -55,10 +59,11 @@ def _event() -> SafeGuardEvent:
 
 def test_notification_manager_dispatch_prefers_caregiver_contacts(monkeypatch):
     manager = NotificationManager(config=_cfg())
-    sent = {"email_to": None, "sms_to": None, "phone_to": None}
+    sent = {"email_to": None, "sms_to": None, "phone_to": None, "email_body": None}
 
     def _fake_email_send(msg: EmailMessage):
         sent["email_to"] = msg["To"]
+        sent["email_body"] = msg.get_content()
         return DeliveryResult(channel="email", attempted=True, status="sent", detail="")
 
     def _fake_sms(*, to_phone: str, message: str):
@@ -101,3 +106,4 @@ def test_notification_manager_dispatch_prefers_caregiver_contacts(monkeypatch):
     assert sent["email_to"] == "alice@example.com"
     assert sent["sms_to"] == "+447700900123"
     assert sent["phone_to"] == "+447700900123"
+    assert "ai_analysis_report:" in (sent["email_body"] or "")

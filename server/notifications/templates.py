@@ -34,6 +34,7 @@ def build_email_message(
     caregiver_email: str,
     email_from: str,
     app_base_url: str,
+    analysis_report: str,
 ) -> EmailMessage:
     msg = EmailMessage()
     msg["To"] = caregiver_email
@@ -57,6 +58,9 @@ def build_email_message(
             f"interpretation: {decision.reason}",
             f"recommendation: {decision.recommendation}",
             f"event_history_url: {event_url}",
+            "",
+            "ai_analysis_report:",
+            analysis_report.strip() if analysis_report.strip() else "AI analysis unavailable.",
         ]
     )
     msg.set_content(body)

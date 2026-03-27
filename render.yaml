@@ -1,0 +1,52 @@
+services:
+  - name: fall-detection-backend
+    type: web
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt -r requirements_server.txt
+    startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    disk:
+      name: sqlite-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DB_BACKEND
+        value: sqlite
+      - key: SQLITE_PATH
+        value: /var/data/cloud_demo.sqlite3
+      - key: SAFE_GUARD_ENABLED
+        value: "1"
+      - key: SAFE_GUARD_SQLITE_PATH
+        value: /var/data/safe_guard_notifications.sqlite3
+      - key: AI_REPORTS_ENABLED
+        value: "1"
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: OPENAI_TIMEOUT_S
+        value: "12"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+  - name: fall-detection-frontend
+    type: web
+    runtime: static
+    rootDir: apps
+    buildCommand: npm ci && npm run build
+    staticPublishPath: build
+    autoDeployTrigger: commit
+    envVars:
+      - key: REACT_APP_API_BASE
+        sync: false

@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from .classifier import EventClassifier
+from .ai_report import generate_event_ai_report
 from .config import NotificationConfig, load_notification_config
 from .email_client import EmailClient
 from .models import NotificationPreferences, SafeGuardEvent, TierDecision
@@ -75,12 +76,14 @@ class NotificationManager:
         caregiver_email = str(prefs.caregiver_email or self._cfg.caregiver_email or "").strip()
         caregiver_phone = str(prefs.caregiver_phone or self._cfg.caregiver_phone or "").strip()
         if decision.actions.get("email", False):
+            analysis_report = generate_event_ai_report(event, decision, self._cfg)
             email_msg = build_email_message(
                 event,
                 decision,
                 caregiver_email=caregiver_email,
                 email_from=self._cfg.email_from,
                 app_base_url=self._cfg.app_base_url,
+                analysis_report=analysis_report,
             )
             results.append(self._with_retry(lambda: self._email.send(email_msg)))
 

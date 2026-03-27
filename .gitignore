@@ -1,5 +1,6 @@
 .venv/
 .env
+.env.local.private
 __pycache__/
 .DS_Store
 .coverage
@@ -8,6 +9,7 @@ apps/node_modules/
 .make/
 .mypy_cache/
 .pytest_cache/
+server/*.sqlite3
 *.mp4
 *.avi
 *.mov

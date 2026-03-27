@@ -47,13 +47,17 @@ class NotificationConfig:
     twilio_auth_token: str
     twilio_from_phone: str
     caregiver_phone: str
-    smtp_host: str
-    smtp_port: int
-    smtp_username: str
-    smtp_password: str
+    resend_api_key: str
     email_from: str
     caregiver_email: str
     app_base_url: str
+    ai_provider: str
+    openai_api_key: str
+    openai_model: str
+    gemini_api_key: str
+    gemini_model: str
+    openai_timeout_s: float
+    ai_reports_enabled: bool
 
 
 def load_notification_config() -> NotificationConfig:
@@ -72,11 +76,15 @@ def load_notification_config() -> NotificationConfig:
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
         twilio_from_phone=os.getenv("TWILIO_FROM_PHONE", "").strip(),
         caregiver_phone=os.getenv("CAREGIVER_PHONE", "").strip(),
-        smtp_host=os.getenv("SMTP_HOST", "").strip(),
-        smtp_port=max(1, _get_int("SMTP_PORT", 587)),
-        smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
-        smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
+        resend_api_key=os.getenv("RESEND_API_KEY", "").strip(),
         email_from=os.getenv("EMAIL_FROM", "").strip(),
         caregiver_email=os.getenv("CAREGIVER_EMAIL", "").strip(),
         app_base_url=os.getenv("APP_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
+        ai_provider=os.getenv("AI_PROVIDER", "openai").strip().lower(),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip(),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip(),
+        openai_timeout_s=max(3.0, _get_float("OPENAI_TIMEOUT_S", 12.0)),
+        ai_reports_enabled=_get_bool("AI_REPORTS_ENABLED", True),
     )
