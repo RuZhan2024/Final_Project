@@ -97,15 +97,13 @@ export function ControlsCard({
 
       <div className={styles.buttonGroup}>
         <button
-          className={styles.btnGray}
-          style={{ opacity: inputSource === "camera" ? 1 : 0.75 }}
+          className={`${styles.btnGray} ${inputSource === "camera" ? styles.btnActive : ""}`}
           onClick={onSwitchRealtime}
         >
           Realtime Mode
         </button>
         <button
-          className={styles.btnGray}
-          style={{ opacity: inputSource === "video" ? 1 : 0.75 }}
+          className={`${styles.btnGray} ${inputSource === "video" ? styles.btnActive : ""}`}
           onClick={onSwitchReplay}
         >
           Replay Mode
