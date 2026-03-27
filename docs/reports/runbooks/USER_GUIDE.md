@@ -51,8 +51,34 @@ Open: `http://localhost:3000`
 1. Open Monitor page.
 2. Select dataset/model/op profile in Settings (recommended: locked deployment profile).
 3. Switch to Replay mode.
-4. Load a prepared video clip and play.
+4. Select a prepared replay clip from the dropdown and play.
 5. Observe prediction state, `P(fall)`, and event behavior.
+
+Replay clip source:
+
+- Backend discovers replay videos from `data/replay_clips` by default.
+- Override with `REPLAY_CLIPS_DIR=/absolute/path/to/replay_clips` before starting `uvicorn`.
+- Supported extensions: `.mp4`, `.mov`, `.webm`, `.m4v`.
+- The Monitor UI loads these clips via `/api/replay/clips`.
+
+### Exact Recommended Replay Inputs
+
+Use these exact cases for examiner-facing replay checks:
+
+- Non-fall replay:
+  - LE2i identifier: `Office__video__27_`
+  - Stable internal artifact path: `data/interim/le2i/pose_npz/Office__video__27_.npz`
+  - Expected behavior: no fall alert / no repeated false events
+- Fall replay 1:
+  - CAUCAFall identifier: `Subject.1__Fall_forward__80e1655b`
+  - Stable internal artifact path: `data/interim/caucafall/pose_npz/Subject.1__Fall_forward__80e1655b.npz`
+  - Expected behavior: one clear fall event
+- Fall replay 2:
+  - CAUCAFall identifier: `Subject.4__Fall_backwards__2ea12ecd`
+  - Stable internal artifact path: `data/interim/caucafall/pose_npz/Subject.4__Fall_backwards__2ea12ecd.npz`
+  - Expected behavior: one clear fall event
+
+The locked demo evidence in `artifacts/reports/deployment_lock_validation.md` uses `LE2i Office video 27` as the non-fall case and two CAUCAFall fall clips as the positive cases. Name the replay video files with the same identifiers so they are easy to select from the Monitor dropdown.
 
 ### Live Mode (optional)
 

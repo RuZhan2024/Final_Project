@@ -34,6 +34,15 @@ source .venv/bin/activate
 PYTHONPATH="$(pwd)/src:$(pwd)" uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
+Optional replay clip override:
+```bash
+REPLAY_CLIPS_DIR=/absolute/path/to/replay_clips \
+PYTHONPATH="$(pwd)/src:$(pwd)" uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
+
+Expected replay clip location if no override is set:
+- `data/replay_clips`
+
 ## 4) Health and spec checks (curl)
 ### Health
 ```bash
@@ -109,7 +118,15 @@ Open: `http://localhost:3000`
 4. Select dataset/model/op if UI exposes controls.
 5. Observe `p_fall`, triage state, timeline events.
 
-## 8) Optional profiling evidence (for viva/demo appendix)
+## 8) Replay monitor walk-through
+1. Open Monitor page.
+2. Switch to Replay mode.
+3. Confirm the clip dropdown is populated from `/api/replay/clips`.
+4. Select the recommended non-fall clip and run replay.
+5. Select the recommended fall clip and run replay.
+6. Confirm timeline/event behavior matches the locked demo notes.
+
+## 9) Optional profiling evidence (for viva/demo appendix)
 ```bash
 cd /path/to/repo
 source .venv/bin/activate
@@ -123,11 +140,14 @@ python3 scripts/profile_infer.py \
   --out_json artifacts/reports/infer_profile_cpu_local_tcn_le2i.json
 ```
 
-## 9) Troubleshooting quick map
+## 10) Troubleshooting quick map
 - `ModuleNotFoundError: server` when running scripts:
   - use `PYTHONPATH="$(pwd)/src:$(pwd)"` prefix.
 - `/api/spec` empty:
   - missing `configs/ops/*.yaml` and/or missing checkpoint files.
+- Replay dropdown empty:
+  - verify `data/replay_clips` exists or set `REPLAY_CLIPS_DIR`.
+  - check `curl -sS http://localhost:8000/api/replay/clips`.
 - Monitor predict 404 for dataset/model:
   - deploy spec key not discovered.
 - DB-related warnings/errors:
