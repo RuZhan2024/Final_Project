@@ -240,6 +240,9 @@ def list_events(
                 # v2 model filter uses models table when the schema actually has model_id.
                 has_model_id = _has_col(conn, "events", "model_id")
                 has_models_table = _table_exists(conn, "models")
+                has_notes = _has_col(conn, "events", "notes")
+                has_fa24h_snapshot = _has_col(conn, "events", "fa24h_snapshot")
+                has_payload_json = _has_col(conn, "events", "payload_json")
                 join_models = "LEFT JOIN models m ON m.id = e.model_id" if (has_model_id and has_models_table) else ""
                 if model is not None:
                     u = model.upper()
@@ -273,9 +276,9 @@ def list_events(
                                  e.operating_point_id,
                                  {("m.code AS model_code," if join_models else "e.model_code AS model_code,")}
                                  {("m.family AS model_family," if join_models else "NULL AS model_family,")}
-                                 e.notes,
-                                 e.fa24h_snapshot,
-                                 e.payload_json
+                                 {("e.notes AS notes," if has_notes else "NULL AS notes,")}
+                                 {("e.fa24h_snapshot AS fa24h_snapshot," if has_fa24h_snapshot else "NULL AS fa24h_snapshot,")}
+                                 {("e.payload_json AS payload_json" if has_payload_json else "NULL AS payload_json")}
                           FROM events e
                           {join_models}
                           WHERE {where_sql}
