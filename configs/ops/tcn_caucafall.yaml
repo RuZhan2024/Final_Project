@@ -188,7 +188,7 @@ calibration:
   ece_after: 0.04879126019919669
 model:
   arch: "tcn"
-  ckpt: "../../outputs/caucafall_tcn_W48S12_r2_train_hneg/best.pt"
+  ckpt: "../../deploy_assets/checkpoints/caucafall_tcn_best.pt"
   model_cfg:
     hidden: 128
     dropout: 0.4

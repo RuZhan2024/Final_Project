@@ -20,6 +20,12 @@ ops:
     ema_alpha: 0.0
     k: 1
     n: 2
+    delivery_gate:
+      enabled: true
+      max_lying: 0.75
+      max_start_lying: 0.35
+      min_mean_motion_high: 0.10
+      max_event_start_s: 40.0
     live_guard:
       min_motion_for_fall: 0.016
     precision: 1.0
@@ -112,7 +118,7 @@ calibration:
   ece_after: 0.20627512795747152
 model:
   arch: "gcn"
-  ckpt: "../../outputs/caucafall_gcn_W48S12_r2_recallpush_b/best.pt"
+  ckpt: "../../deploy_assets/checkpoints/caucafall_gcn_best.pt"
   model_cfg:
     num_joints: 33
     gcn_hidden: 96
