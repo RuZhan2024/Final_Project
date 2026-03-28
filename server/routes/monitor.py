@@ -358,6 +358,56 @@ def _load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str) -> 
     return cfg
 
 
+def _replay_relaxed_alert_cfg(alert_cfg: Dict[str, Any], *, is_replay: bool) -> Dict[str, Any]:
+    """Relax alert persistence for replay demos only."""
+    cfg = dict(alert_cfg or {})
+    if not is_replay:
+        return cfg
+    cfg["k"] = 1
+    cfg["n"] = 3
+    return cfg
+
+
+def _replay_relaxed_delivery_gate(delivery_gate: Dict[str, Any], *, is_replay: bool) -> Dict[str, Any]:
+    """Tighten replay gate just enough to cut late ADL promotions.
+
+    Replay clips are deterministic and short. False positives we observed tend to
+    appear late in long sit/lie ADL clips, so we cap event start time more
+    aggressively and require a bit more mean high-motion support.
+    """
+    gate = dict(delivery_gate or {})
+    if not is_replay:
+        return gate
+    if gate.get("max_event_start_s") is None:
+        gate["max_event_start_s"] = 20.0
+    else:
+        gate["max_event_start_s"] = min(float(gate["max_event_start_s"]), 20.0)
+    if gate.get("min_mean_motion_high") is None:
+        gate["min_mean_motion_high"] = 0.16
+    else:
+        gate["min_mean_motion_high"] = max(float(gate["min_mean_motion_high"]), 0.16)
+    if gate.get("max_start_lying") is None:
+        gate["max_start_lying"] = 0.20
+    else:
+        gate["max_start_lying"] = min(float(gate["max_start_lying"]), 0.20)
+    if gate.get("max_lying") is None:
+        gate["max_lying"] = 0.65
+    else:
+        gate["max_lying"] = min(float(gate["max_lying"]), 0.65)
+    return gate
+
+
+def _replay_relaxed_uncertain_promote(cfg: Dict[str, Any], *, is_replay: bool) -> Dict[str, Any]:
+    out = dict(cfg or {})
+    if not is_replay:
+        return out
+    if out.get("max_lying") is None:
+        out["max_lying"] = 0.12
+    else:
+        out["max_lying"] = min(float(out["max_lying"]), 0.12)
+    return out
+
+
 def _window_motion_score(xy: Any) -> Optional[float]:
     """Robust per-window motion score on normalized XY coordinates.
 
@@ -1135,8 +1185,14 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     primary_spec_key = tcn_key if mode == "tcn" else gcn_key if mode == "gcn" else tcn_key
     primary_model_key = "tcn" if mode == "tcn" else "gcn" if mode == "gcn" else "tcn"
     live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
-    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code)
-    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code)
+    delivery_gate = _replay_relaxed_delivery_gate(
+        _op_delivery_gate(specs, primary_spec_key, op_code),
+        is_replay=is_replay,
+    )
+    uncertain_promote = _replay_relaxed_uncertain_promote(
+        _op_uncertain_promote(specs, primary_spec_key, op_code),
+        is_replay=is_replay,
+    )
     min_motion = float(live_guard["min_motion_for_fall"])
     low_motion_block = bool(motion_score is not None and motion_score < min_motion)
     recent_motion_support = _recent_motion_support(
@@ -1174,6 +1230,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     )
     low_joints_block = bool(joints_med > 0 and joints_med < int(live_guard["min_joints_med"]))
     occlusion_block = bool(low_conf_block or low_joints_block)
+    low_motion_high_conf_bypass = False
 
     # Soft stale-drop guard: only drop severely stale windows when current window is low risk.
     seq_in: Optional[int] = None
@@ -1289,7 +1346,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             mc_M=int(mc_M),
         )
 
-        cfg_tcn = out_tcn.get("alert_cfg") or {}
+        cfg_tcn = _replay_relaxed_alert_cfg(out_tcn.get("alert_cfg") or {}, is_replay=is_replay)
         tau_low_tcn = float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0)))
         tau_high_tcn = float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0)))
         p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
@@ -1372,7 +1429,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         )
         models_out["gcn"] = out_gcn
 
-        cfg_gcn = out_gcn.get("alert_cfg") or {}
+        cfg_gcn = _replay_relaxed_alert_cfg(out_gcn.get("alert_cfg") or {}, is_replay=is_replay)
         tau_low_gcn = float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0)))
         tau_high_gcn = float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0)))
         p_raw_gcn = float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0)
@@ -1673,7 +1730,24 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         replay_promote_min = max(tau_low_live, tau_high_live - 0.05)
         quality_ok = not (low_quality_block or structural_quality_block or occlusion_block)
         motion_ok = (motion_score is None) or float(motion_score) >= (float(min_motion) * 0.9)
-        if p_alert_live >= replay_promote_min and quality_ok and motion_ok:
+        delivery_gate_blocked = bool(delivery_gate_diag.get("blocked"))
+        lying_ok = (
+            lying_score is None
+            or (math.isfinite(float(lying_score)) and float(lying_score) <= 0.20)
+        )
+        low_p_motion_ok = (p_alert_live >= 0.88) or (
+            confirm_motion_score is not None
+            and math.isfinite(float(confirm_motion_score))
+            and float(confirm_motion_score) >= 0.65
+        )
+        if (
+            (not delivery_gate_blocked)
+            and p_alert_live >= replay_promote_min
+            and quality_ok
+            and motion_ok
+            and lying_ok
+            and low_p_motion_ok
+        ):
             triage_state = "fall"
             safe_alert = True
             recall_alert = True
