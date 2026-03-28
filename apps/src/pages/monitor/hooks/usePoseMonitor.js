@@ -1005,7 +1005,7 @@ export function usePoseMonitor({
       if (sourceMode === "video") {
         syncReplayPlaybackRate(videoEl, { busy: false });
         if (replayPendingSendRef.current) {
-          scheduleReplayRetry(minGapMs);
+          void maybeSendWindow();
         }
       }
     }
