@@ -1076,6 +1076,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         use_mc = True
     if mc_M is None:
         mc_M = 10
+    effective_use_mc = bool(use_mc) and (not is_replay)
+    effective_mc_M = int(mc_M) if effective_use_mc else 1
 
     expected_fps = {
         "le2i": 25,
@@ -1313,7 +1315,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "requested_mode": requested_mode,
             "effective_mode": mode,
             "op_code": op_code,
-            "use_mc": bool(use_mc),
+            "use_mc": bool(effective_use_mc),
+            "requested_use_mc": bool(use_mc),
+            "mc_M": int(effective_mc_M),
             "event_id": None,
             "notification_dispatch": None,
             "stale_drop": True,
@@ -1371,8 +1375,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             fps=float(expected_fps),
             target_T=target_T,
             op_code=op_code,
-            use_mc=bool(use_mc),
-            mc_M=int(mc_M),
+            use_mc=effective_use_mc,
+            mc_M=effective_mc_M,
         )
 
         cfg_tcn = out_tcn.get("alert_cfg") or {}
@@ -1455,8 +1459,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             fps=float(expected_fps),
             target_T=target_T,
             op_code=op_code,
-            use_mc=bool(use_mc),
-            mc_M=int(mc_M),
+            use_mc=effective_use_mc,
+            mc_M=effective_mc_M,
         )
         models_out["gcn"] = out_gcn
 
@@ -1965,7 +1969,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "requested_mode": requested_mode,
         "effective_mode": mode,
         "op_code": op_code,
-        "use_mc": bool(use_mc),
+        "use_mc": bool(effective_use_mc),
+        "requested_use_mc": bool(use_mc),
+        "mc_M": int(effective_mc_M),
         "delivery_gate": delivery_gate_diag,
         "uncertain_promoted": bool(uncertain_promoted),
         "event_id": saved_event_id,
