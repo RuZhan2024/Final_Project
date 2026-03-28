@@ -183,6 +183,7 @@ export function usePoseMonitor({
   const wsReadyRef = useRef(false);
   const wsPendingRef = useRef(null);
   const wsClosingRef = useRef(false);
+  const runTokenRef = useRef(0);
 
   const makeSessionId = useCallback(
     () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
@@ -272,20 +273,7 @@ export function usePoseMonitor({
     if (canvasEl.height !== vh) canvasEl.height = vh;
   }, []);
 
-  const stopLive = useCallback(() => {
-    liveFlagRef.current = false;
-    setLiveRunning(false);
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
-
-    try {
-      poseRef.current?.close?.();
-    } catch {
-      // ignore
-    }
-    poseRef.current = null;
-
+  const resetVideoSource = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -304,6 +292,7 @@ export function usePoseMonitor({
         videoEl.load?.();
       }
     }
+
     if (videoObjectUrlRef.current) {
       try {
         URL.revokeObjectURL(videoObjectUrlRef.current);
@@ -312,6 +301,9 @@ export function usePoseMonitor({
       }
       videoObjectUrlRef.current = null;
     }
+  }, []);
+
+  const resetPredictionTransport = useCallback(() => {
     if (wsPendingRef.current) {
       try {
         const err = new Error("WebSocket closed during mode switch");
@@ -332,6 +324,19 @@ export function usePoseMonitor({
     }
     wsRef.current = null;
     wsReadyRef.current = false;
+  }, []);
+
+  const stopLive = useCallback(() => {
+    runTokenRef.current += 1;
+    liveFlagRef.current = false;
+    setLiveRunning(false);
+
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    poseSendBusyRef.current = false;
+
+    resetVideoSource();
+    resetPredictionTransport();
 
     // Clear buffer
     rawFramesRef.current = [];
@@ -363,7 +368,7 @@ export function usePoseMonitor({
     setStartError("");
     setStartInfo("");
     setPredictError("");
-  }, []);
+  }, [resetPredictionTransport, resetVideoSource]);
 
   const resetFrontendSessionState = useCallback(() => {
     rawFramesRef.current = [];
@@ -1150,6 +1155,95 @@ export function usePoseMonitor({
     }
   }, [handlePoseResults]);
 
+  const awaitVideoReady = useCallback(async (videoEl, clipLabel) => {
+    await new Promise((resolve, reject) => {
+      if (videoEl.readyState >= 2) {
+        resolve();
+        return;
+      }
+
+      let done = false;
+      const timer = window.setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error("Video metadata load timeout"));
+      }, 10000);
+
+      const cleanup = () => {
+        videoEl.removeEventListener("loadedmetadata", onReady);
+        videoEl.removeEventListener("loadeddata", onReady);
+        videoEl.removeEventListener("canplay", onReady);
+        videoEl.removeEventListener("error", onErr);
+        window.clearTimeout(timer);
+      };
+
+      const onReady = () => {
+        if (done || videoEl.readyState < 2) return;
+        done = true;
+        cleanup();
+        resolve();
+      };
+
+      const onErr = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error(getVideoLoadErrorMessage(videoEl, clipLabel)));
+      };
+
+      videoEl.addEventListener("loadedmetadata", onReady, { once: true });
+      videoEl.addEventListener("loadeddata", onReady, { once: true });
+      videoEl.addEventListener("canplay", onReady, { once: true });
+      videoEl.addEventListener("error", onErr, { once: true });
+
+      try {
+        videoEl.load?.();
+      } catch {
+        // ignore
+      }
+    });
+  }, []);
+
+  const prepareReplayVideo = useCallback(async (videoEl, clip, clipUrl) => {
+    const clipFile = clip?.file instanceof File ? clip.file : null;
+
+    resetVideoSource();
+    if (clipFile) {
+      const objectUrl = URL.createObjectURL(clipFile);
+      videoObjectUrlRef.current = objectUrl;
+      videoEl.src = objectUrl;
+    } else {
+      setStartInfo("Loading replay clip...");
+      const blob = await fetchReplayClipBlob(clipUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      videoObjectUrlRef.current = objectUrl;
+      videoEl.src = objectUrl;
+    }
+
+    videoEl.currentTime = 0;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.preload = "auto";
+
+    await awaitVideoReady(videoEl, clipFile || clip);
+  }, [awaitVideoReady, resetVideoSource]);
+
+  const prepareCameraStream = useCallback(async (videoEl) => {
+    const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: cap.w, max: cap.w },
+        height: { ideal: cap.h, max: cap.h },
+        frameRate: { ideal: targetFps, max: targetFps },
+      },
+      audio: false,
+    });
+    streamRef.current = stream;
+    videoEl.srcObject = stream;
+    await awaitVideoReady(videoEl, null);
+  }, [awaitVideoReady, captureResolutionPreset, targetFps]);
+
   const resetSession = useCallback(async () => {
     try {
       try {
@@ -1178,6 +1272,9 @@ export function usePoseMonitor({
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
+    const runToken = runTokenRef.current + 1;
+    runTokenRef.current = runToken;
+
     try {
       sessionIdRef.current = makeSessionId();
       resetFrontendSessionState();
@@ -1195,122 +1292,20 @@ export function usePoseMonitor({
       if (useVideoFile && !clipFile && !clipUrl) {
         throw new Error("Replay mode selected but no replay clip is loaded.");
       }
-      if (useVideoFile) {
-        if (videoObjectUrlRef.current) {
-          try {
-            URL.revokeObjectURL(videoObjectUrlRef.current);
-          } catch {
-            // ignore
-          }
-          videoObjectUrlRef.current = null;
-        }
-        try {
-          videoEl.pause();
-        } catch {
-          // ignore
-        }
-        videoEl.srcObject = null;
-        videoEl.removeAttribute("src");
-        try {
-          videoEl.load?.();
-        } catch {
-          // ignore
-        }
-        if (clipFile) {
-          const u = URL.createObjectURL(clipFile);
-          videoObjectUrlRef.current = u;
-          videoEl.src = u;
-        } else {
-          setStartInfo("Loading replay clip...");
-          const blob = await fetchReplayClipBlob(clipUrl);
-          const u = URL.createObjectURL(blob);
-          videoObjectUrlRef.current = u;
-          videoEl.src = u;
-        }
-        videoEl.currentTime = 0;
-        videoEl.muted = true;
-        videoEl.playsInline = true;
-        videoEl.preload = "auto";
-      } else {
-        const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: cap.w, max: cap.w },
-            height: { ideal: cap.h, max: cap.h },
-            frameRate: { ideal: targetFps, max: targetFps },
-          },
-          audio: false,
-        });
-        streamRef.current = stream;
-        videoEl.srcObject = stream;
-      }
-
-      await new Promise((resolve, reject) => {
-        if (videoEl.readyState >= 2) {
-          resolve();
-          return;
-        }
-        let done = false;
-        const timer = window.setTimeout(() => {
-          if (done) return;
-          done = true;
-          cleanup();
-          reject(new Error("Video metadata load timeout"));
-        }, 10000);
-        const cleanup = () => {
-          videoEl.removeEventListener("loadedmetadata", onLoadedMeta);
-          videoEl.removeEventListener("loadeddata", onLoadedFrame);
-          videoEl.removeEventListener("canplay", onCanPlay);
-          videoEl.removeEventListener("error", onErr);
-          window.clearTimeout(timer);
-        };
-        const onLoadedMeta = () => {
-          if (videoEl.readyState < 2) return;
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve();
-        };
-        const onLoadedFrame = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve();
-        };
-        const onCanPlay = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve();
-        };
-        const onErr = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          reject(new Error(getVideoLoadErrorMessage(videoEl, clipFile || clip)));
-        };
-        videoEl.addEventListener("loadedmetadata", onLoadedMeta, { once: true });
-        videoEl.addEventListener("loadeddata", onLoadedFrame, { once: true });
-        videoEl.addEventListener("canplay", onCanPlay, { once: true });
-        videoEl.addEventListener("error", onErr, { once: true });
-        try {
-          videoEl.load?.();
-        } catch {
-          // ignore
-        }
-      });
 
       if (useVideoFile) {
+        await prepareReplayVideo(videoEl, clip, clipUrl);
+        if (runTokenRef.current !== runToken) return false;
         setStartInfo("Preparing replay detector...");
+      } else {
+        await prepareCameraStream(videoEl);
+        if (runTokenRef.current !== runToken) return false;
       }
 
       try {
         await videoEl.play();
       } catch (e) {
         throw new Error(`Video play failed: ${String(e?.message || e)}`);
-      }
-      if (useVideoFile) {
-        setStartInfo("");
       }
       ensureCanvasMatchesVideo();
       if (useVideoFile) {
@@ -1332,10 +1327,14 @@ export function usePoseMonitor({
         }
       }
 
-      await initPosePipeline(videoEl, { warmup: false });
+      await initPosePipeline(videoEl, { warmup: true });
+      if (runTokenRef.current !== runToken) return false;
+      if (useVideoFile) {
+        setStartInfo("");
+      }
 
       const loop = async () => {
-        if (!liveFlagRef.current) return;
+        if (!liveFlagRef.current || runTokenRef.current !== runToken) return;
         if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
           stopLive();
           autoStopMonitoring();
@@ -1366,15 +1365,26 @@ export function usePoseMonitor({
         if (now - lastInferTsRef.current >= minIntervalMs) {
           lastInferTsRef.current = now;
 
-          if (videoEl.readyState >= 2 && poseRef.current && !poseSendBusyRef.current) {
+          if (
+            videoEl.readyState >= 2 &&
+            videoEl.videoWidth > 0 &&
+            videoEl.videoHeight > 0 &&
+            poseRef.current &&
+            !poseSendBusyRef.current
+          ) {
             poseSendBusyRef.current = true;
             poseRef.current
               .send({ image: videoEl })
               .catch((err) => {
-                console.error("pose.send error", err);
+                const msg = String(err?.message || err || "");
+                if (!/no video|ROI width and height must be > 0|Aborted\(native code called abort\)/i.test(msg)) {
+                  console.error("pose.send error", err);
+                }
               })
               .finally(() => {
-                poseSendBusyRef.current = false;
+                if (runTokenRef.current === runToken) {
+                  poseSendBusyRef.current = false;
+                }
               });
           }
         }
@@ -1390,7 +1400,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, replayClip, resetFrontendSessionState, resetSession, stopLive, targetFps]);
+  }, [autoStopMonitoring, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, prepareCameraStream, prepareReplayVideo, replayClip, resetFrontendSessionState, resetSession, stopLive]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -1412,7 +1422,15 @@ export function usePoseMonitor({
 
   // Cleanup
   useEffect(() => {
-    return () => stopLive();
+    return () => {
+      stopLive();
+      try {
+        poseRef.current?.close?.();
+      } catch {
+        // ignore
+      }
+      poseRef.current = null;
+    };
   }, [stopLive]);
 
   const seekReplay = useCallback((ratio) => {
