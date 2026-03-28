@@ -111,13 +111,13 @@ function Dashboard() {
         <h3 className={styles.cardTitle}>System Status</h3>
 
         {error && (
-          <div style={{ marginBottom: 12, color: "#B45309" }}>
+          <div className={styles.statusNotice}>
             Backend error: {error}
           </div>
         )}
 
         {monitoringErr && (
-          <div style={{ marginBottom: 12, color: "#B45309" }}>
+          <div className={styles.statusNotice}>
             Settings error: {monitoringErr}
           </div>
         )}
@@ -170,7 +170,7 @@ function Dashboard() {
         </div>
 
         {loading && (
-          <div style={{ marginTop: 12, color: "#6B7280", fontSize: "0.9rem" }}>
+          <div className={styles.mutedNotice}>
             Loading…
           </div>
         )}

@@ -9,6 +9,7 @@
   flex-direction: column;
   gap: 24px;
   font-family: 'Roboto', sans-serif;
+  min-width: 0;
 }
 
 .pageTitle {
@@ -22,12 +23,14 @@
   display: flex;
   gap: 24px;
   align-items: flex-start;
+  min-width: 0;
 }
 
 /* 2-Column Layout Logic */
 .leftColumn {
   flex: 1;
   min-width: 300px;
+  min-width: 0;
 }
 
 .rightColumn {
@@ -36,6 +39,7 @@
   flex-direction: column;
   gap: 24px;
   min-width: 300px;
+  min-width: 0;
 }
 
 /* --- Card Styles --- */
@@ -115,6 +119,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
   font-size: 0.875rem;
   color: #3C4043;
   margin: 17px 0;
@@ -169,6 +174,7 @@ input:checked + .slider:before {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   margin-bottom: 24px;
 }
 
@@ -182,6 +188,8 @@ input:checked + .slider:before {
 .radioGroup {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .radioLabel {
@@ -282,10 +290,12 @@ input:checked + .slider:before {
   display: flex;
   gap: 12px;
   margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 .presetBtn {
   flex: 1;
+  min-width: 120px;
   padding: 8px 12px;
   background-color: white;
   border: 1px solid #DADCE0;
@@ -415,13 +425,52 @@ input:checked + .slider:before {
   border: 1px solid #F1F3F4;
 }
 
+.buttonRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.buttonRow .actionBtn {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.inlineInfo {
+  margin-top: 6px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 6px;
+  background: #F8F9FA;
+  color: #3C4043;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.inlineInfoTitle {
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.inlineInfoWarning {
+  color: #B45309;
+  margin-top: 4px;
+}
+
+.subtleMeta {
+  font-size: 0.8rem;
+  color: #9CA3AF;
+  margin-top: 8px;
+}
+
 /* Responsive */
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .contentGrid {
     flex-direction: column;
   }
   .leftColumn, .rightColumn {
     width: 100%;
+    min-width: 0;
   }
 }
 
@@ -473,4 +522,80 @@ input:checked + .slider:before {
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-20px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 760px) {
+  .container {
+    padding: 24px 20px;
+    gap: 20px;
+  }
+
+  .pageTitle {
+    font-size: 1.5rem;
+  }
+
+  .card {
+    padding: 20px 16px;
+  }
+
+  .cardTitle {
+    margin-bottom: 18px;
+  }
+
+  .toastContainer {
+    top: 12px;
+    width: calc(100% - 24px);
+    max-width: none;
+  }
+
+  .row,
+  .toggleRow,
+  .privacyItem {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .radioGroup {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .switch {
+    align-self: flex-end;
+  }
+
+  .privacyText {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .container {
+    padding: 20px 16px 24px;
+    gap: 16px;
+  }
+
+  .pageTitle {
+    font-size: 1.35rem;
+  }
+
+  .presetButtons,
+  .buttonRow {
+    flex-direction: column;
+  }
+
+  .presetBtn,
+  .buttonRow .actionBtn,
+  .actionBtn {
+    width: 100%;
+  }
+
+  .radioGroup {
+    gap: 10px;
+  }
+
+  .radioLabel {
+    width: 100%;
+    justify-content: space-between;
+  }
 }

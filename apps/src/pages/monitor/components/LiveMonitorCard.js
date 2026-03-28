@@ -39,23 +39,13 @@ export function LiveMonitorCard({
           ref={videoRef}
           muted
           playsInline
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-            opacity: inputSource === "video" ? 0.35 : 0, // show replay video under skeleton
-          }}
+          className={`${styles.videoLayer} ${
+            inputSource === "video" ? styles.videoLayerReplay : styles.videoLayerHidden
+          }`}
         />
         <canvas
           ref={canvasRef}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-          }}
+          className={styles.canvasLayer}
         />
       </div>
 

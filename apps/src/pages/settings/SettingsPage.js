@@ -202,7 +202,7 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div style={{ display: "flex", gap: 8 }}>
+              <div className={styles.buttonRow}>
                 <button
                   className={styles.actionBtn}
                   onClick={() => setEditingCaregiver(true)}
@@ -304,17 +304,17 @@ export default function SettingsPage() {
               </label>
             </div>
 
-            <div style={{ marginTop: 6, marginBottom: 14, padding: 12, borderRadius: 6, background: "#F8F9FA", color: "#3C4043", fontSize: "0.84rem", lineHeight: 1.5 }}>
-              <div style={{ fontWeight: 500, marginBottom: 6 }}>Notification Policy</div>
+            <div className={styles.inlineInfo}>
+              <div className={styles.inlineInfoTitle}>Notification Policy</div>
               <div>Email report: always sent with detailed fall analysis to the caregiver email on file.</div>
               <div>SMS: optional brief alert.</div>
               <div>Phone call: optional short voice alert.</div>
-              <div style={{ marginTop: 8 }}>
+              <div className={styles.subtleMeta}>
                 Caregiver status:
                 {` Name ${caregiverNameReady ? "ready" : "missing"}, Email ${caregiverEmailReady ? "ready" : "missing"}, Phone ${caregiverPhoneReady ? "ready" : "missing"}.`}
               </div>
               {!caregiverEmailReady && (
-                <div style={{ color: "#B45309", marginTop: 4 }}>
+                <div className={styles.inlineInfoWarning}>
                   Detailed email reports cannot be delivered until a caregiver email is saved.
                 </div>
               )}
@@ -322,7 +322,6 @@ export default function SettingsPage() {
 
             <button
               className={styles.actionBtn}
-              style={{ marginTop: 24, fontSize: "0.8rem" }}
               onClick={reloadSettingsWithToast}
               disabled={!loaded}
             >
@@ -492,7 +491,7 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}>
+              <div className={styles.subtleMeta}>
                 Active Op Code: <strong>{activeOpCode}</strong>
               </div>
             </div>

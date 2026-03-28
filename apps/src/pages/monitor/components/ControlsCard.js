@@ -60,12 +60,12 @@ export function ControlsCard({
       </div>
 
       {inputSource === "camera" ? (
-        <div style={{ marginTop: 16, marginBottom: 24 }}>
+        <div className={styles.controlSection}>
           <select
             id="capture-resolution-select"
             value={captureResolutionPreset || "720p"}
             onChange={(e) => onChangeCaptureResolution?.(e.target.value)}
-            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff" }}
+            className={styles.selectInput}
           >
             <option value="480p">480p (640×480)</option>
             <option value="540p">540p (960×540)</option>
@@ -77,7 +77,7 @@ export function ControlsCard({
 
       {inputSource === "video" ? (
         <>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16, marginBottom: 24 }}>
+          <div className={`${styles.controlSection} ${styles.stackSection}`}>
             <select
               id="replay-clip-select"
               value={selectedReplayClipId || ""}
@@ -86,7 +86,7 @@ export function ControlsCard({
                 if (monitoringOn) setMonitoringOn(false);
                 onSelectReplayClip?.(e.target.value);
               }}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff" }}
+              className={styles.selectInput}
             >
               <option value="">{replayClipsLoading ? "Loading clips..." : "Select a replay clip"}</option>
               {groupedReplayClips.fall.length ? (
@@ -151,8 +151,9 @@ export function ControlsCard({
               Clear
             </button>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+          <div className={styles.rangeSection}>
             <input
+              className={styles.rangeInput}
               type="range"
               min={0}
               max={100}
