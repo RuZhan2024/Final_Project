@@ -164,9 +164,9 @@ export function usePoseMonitor({
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
   const predictInFlightRef = useRef(false);
-  const replayPendingSendRef = useRef(false);
   const replayPredictLatencyMsRef = useRef(0);
-  const replayRetryTimerRef = useRef(null);
+  const replayNextWindowEndRef = useRef(null);
+  const replayWindowQueueRef = useRef([]);
   const payloadTRef = useRef([]);
   const payloadXYRef = useRef([]);
   const payloadConfRef = useRef([]);
@@ -193,15 +193,12 @@ export function usePoseMonitor({
     []
   );
 
-  const syncReplayPlaybackRate = useCallback((videoEl, { busy = false } = {}) => {
+  const syncReplayPlaybackRate = useCallback((videoEl) => {
     if (!videoEl || (inputSourceRef.current || "camera") !== "video") return;
 
     const latencyMs = Number(replayPredictLatencyMsRef.current) || 0;
     let nextRate = 1.0;
-    if (busy) nextRate = 0.5;
-    else if (latencyMs >= 1200) nextRate = 0.5;
-    else if (latencyMs >= 800) nextRate = 0.65;
-    else if (latencyMs >= 450) nextRate = 0.8;
+    if (latencyMs >= 2200) nextRate = 0.9;
 
     if (Math.abs(Number(videoEl.playbackRate || 1) - nextRate) < 0.01) return;
     try {
@@ -355,10 +352,6 @@ export function usePoseMonitor({
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
     poseSendBusyRef.current = false;
-    if (replayRetryTimerRef.current) {
-      window.clearTimeout(replayRetryTimerRef.current);
-      replayRetryTimerRef.current = null;
-    }
 
     resetVideoSource();
     resetPredictionTransport();
@@ -368,8 +361,9 @@ export function usePoseMonitor({
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
     lastSentRef.current = 0;
-    replayPendingSendRef.current = false;
     replayPredictLatencyMsRef.current = 0;
+    replayNextWindowEndRef.current = null;
+    replayWindowQueueRef.current = [];
 
     // Clip upload state
     pendingClipRef.current = null;
@@ -402,6 +396,9 @@ export function usePoseMonitor({
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
     lastSentRef.current = 0;
+    replayPredictLatencyMsRef.current = 0;
+    replayNextWindowEndRef.current = null;
+    replayWindowQueueRef.current = [];
     pendingClipRef.current = null;
     uploadedClipIdsRef.current = new Set();
     setPFall(null);
@@ -724,74 +721,175 @@ export function usePoseMonitor({
     [apiBase]
   );
 
-  const maybeSendWindow = useCallback(async () => {
-    const sourceMode = inputSourceRef.current || "camera";
-    const videoEl = videoRef.current;
-    const scheduleReplayRetry = (delayMs) => {
-      if (sourceMode !== "video") return;
-      if (replayRetryTimerRef.current) return;
-      replayRetryTimerRef.current = window.setTimeout(() => {
-        replayRetryTimerRef.current = null;
-        void maybeSendWindow();
-      }, Math.max(0, Math.ceil(delayMs)));
-    };
-    if (predictInFlightRef.current) {
-      if (sourceMode === "video") {
-        replayPendingSendRef.current = true;
-        syncReplayPlaybackRate(videoEl, { busy: true });
+  const applyPredictionResponse = useCallback((data) => {
+    const endTs = Number(data?.window_end_t_ms || data?.window_end_ts || 0);
+    if (Number.isFinite(endTs) && endTs > 0) {
+      void maybeFinalizeClipUpload();
+    }
+
+    const safeObj = data?.policy_alerts?.safe;
+    const recallObj = data?.policy_alerts?.recall;
+    const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
+    const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
+    const safeBool =
+      typeof data?.safe_alert === "boolean"
+        ? data.safe_alert
+        : typeof safeObj?.alert === "boolean"
+        ? safeObj.alert
+        : null;
+    const recallBool =
+      typeof data?.recall_alert === "boolean"
+        ? data.recall_alert
+        : typeof recallObj?.alert === "boolean"
+        ? recallObj.alert
+        : null;
+    const nextSafeState = (data?.safe_state || safeObj?.state || null) ?? null;
+    const nextRecallState = (data?.recall_state || recallObj?.state || null) ?? null;
+    if (lastUiRef.current.safeAlert !== safeBool) {
+      lastUiRef.current.safeAlert = safeBool;
+      setSafeAlert(safeBool);
+    }
+    if (lastUiRef.current.recallAlert !== recallBool) {
+      lastUiRef.current.recallAlert = recallBool;
+      setRecallAlert(recallBool);
+    }
+    if (lastUiRef.current.safeState !== nextSafeState) {
+      lastUiRef.current.safeState = nextSafeState;
+      setSafeState(nextSafeState);
+    }
+    if (lastUiRef.current.recallState !== nextRecallState) {
+      lastUiRef.current.recallState = nextRecallState;
+      setRecallState(nextRecallState);
+    }
+
+    let triCandidate = safeStateRaw || triRaw || "not_fall";
+    if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
+    const st = triageStableRef.current;
+    if (triCandidate === "fall" && safeBool !== false) {
+      st.fall += 1;
+      st.uncertain = 0;
+      st.safe = 0;
+    } else if (triCandidate === "uncertain") {
+      st.uncertain += 1;
+      st.fall = 0;
+      st.safe = 0;
+    } else {
+      st.safe += 1;
+      st.fall = 0;
+      st.uncertain = 0;
+    }
+    let triStable = st.last || "not_fall";
+    if (st.fall >= TRIAGE_FALL_CONFIRM_N) triStable = "fall";
+    else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
+    else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
+    st.last = triStable;
+    if (lastUiRef.current.triageState !== triStable) {
+      lastUiRef.current.triageState = triStable;
+      setTriageState(triStable);
+    }
+
+    try {
+      const { storeEventClips } = getClipFlags(settingsPayload);
+      const evId = data?.event_id;
+      if (storeEventClips && evId != null && Number.isFinite(endTs) && endTs > 0) {
+        const sent = uploadedClipIdsRef.current;
+        const already = sent && sent.has(String(evId));
+        const pending = pendingClipRef.current;
+
+        if (!already && (!pending || String(pending.eventId) !== String(evId))) {
+          pendingClipRef.current = {
+            eventId: evId,
+            triggerEndTs: endTs,
+            deadlineTs: endTs + CLIP_POST_S * 1000,
+            preMs: CLIP_PRE_S * 1000,
+            postMs: CLIP_POST_S * 1000,
+            ctx: {
+              dataset_code: activeDatasetCode,
+              mode,
+              op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+              use_mc: Boolean(mcEnabled),
+              mc_M: mcCfg?.M,
+            },
+          };
+        }
       }
-      return;
-    }
-    const now = performance.now();
-    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
-    const gapRemainMs = minGapMs - (now - lastSentRef.current);
-    if (gapRemainMs > 0) {
-      scheduleReplayRetry(gapRemainMs);
-      return;
+    } catch {
+      // ignore
     }
 
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return;
+    let mu = null;
+    let sig = null;
+    const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
+    if (mOut) {
+      mu = mOut?.triage?.ps != null
+        ? Number(mOut.triage.ps)
+        : mOut?.p_alert_in != null
+          ? Number(mOut.p_alert_in)
+          : mOut?.mu != null
+            ? Number(mOut.mu)
+            : mOut?.p_det != null
+              ? Number(mOut.p_det)
+              : null;
+      sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
+    }
+    if (lastUiRef.current.pFall !== mu) {
+      lastUiRef.current.pFall = mu;
+      setPFall(mu);
+    }
+    if (lastUiRef.current.sigma !== sig) {
+      lastUiRef.current.sigma = sig;
+      setSigma(sig);
+    }
 
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - needMs;
+    let markerKind = "safe";
+    const triNorm = String(triStable || "").toLowerCase();
+    if (triNorm === "fall") markerKind = "fall";
+    else if (triNorm === "uncertain") markerKind = "uncertain";
+    const dedupMs = Math.round(
+      Math.max(
+        1000,
+        1000 * Number(settingsPayload?.system?.alert_cooldown_sec || FALL_HISTORY_DEDUP_MS_DEFAULT / 1000)
+      )
+    );
+    addTimelineMarker(markerKind, {
+      eventId: markerKind === "fall" ? data?.event_id ?? null : null,
+      dedupMs,
+    });
+  }, [
+    activeDatasetCode,
+    addTimelineMarker,
+    mcCfg,
+    mcEnabled,
+    mode,
+    opCode,
+    settingsPayload,
+    maybeFinalizeClipUpload,
+  ]);
 
-    // Wait until we have enough history to cover the full window duration.
-    if (raw[0].t > startNeed) return;
-
-    // Include one frame before startNeed for interpolation on the server.
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    const slice = raw.slice(startIdx);
-    const nSlice = slice.length;
-
-    lastSentRef.current = now;
+  const buildPredictionPayload = useCallback(({ sourceMode, frames, windowEndTs, location }) => {
+    const nFrames = Array.isArray(frames) ? frames.length : 0;
+    if (nFrames < 2) return null;
 
     const { storeEventClips } = getClipFlags(settingsPayload);
-
-    // Reuse arrays to reduce per-request allocations (guarded by in-flight mutex).
     const tArr = payloadTRef.current;
     const xyArr = payloadXYRef.current;
     const confArr = payloadConfRef.current;
-    tArr.length = nSlice;
-    xyArr.length = nSlice;
-    confArr.length = nSlice;
-    for (let i = 0; i < nSlice; i++) {
-      const fr = slice[i];
+    tArr.length = nFrames;
+    xyArr.length = nFrames;
+    confArr.length = nFrames;
+    for (let i = 0; i < nFrames; i++) {
+      const fr = frames[i];
       tArr[i] = fr.t;
       xyArr[i] = fr.xy;
       confArr[i] = fr.conf;
     }
 
-    const xyQ = new Array(nSlice * NUM_JOINTS * 2);
-    const confQ = new Array(nSlice * NUM_JOINTS);
+    const xyQ = new Array(nFrames * NUM_JOINTS * 2);
+    const confQ = new Array(nFrames * NUM_JOINTS);
     let q = 0;
     let c = 0;
-    for (let i = 0; i < nSlice; i++) {
-      const fr = slice[i];
+    for (let i = 0; i < nFrames; i++) {
+      const fr = frames[i];
       const pts = fr.xy || [];
       const cf = fr.conf || [];
       for (let j = 0; j < NUM_JOINTS; j++) {
@@ -803,228 +901,190 @@ export function usePoseMonitor({
       }
     }
 
-    const eventLocation =
-      sourceMode === "video"
-        ? String(selectedVideoName || replayClipRef.current?.name || "replay_video")
-        : "camera_live";
-
-    const payload = {
+    return {
       window_seq: ++windowSeqRef.current,
       session_id: sessionIdRef.current,
       input_source: sourceMode,
       resident_id: 1,
-      location: eventLocation,
+      location,
       mode,
       dataset_code: activeDatasetCode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-
       model_tcn: mode !== "gcn" ? chosen.tcn : null,
       model_gcn: mode !== "tcn" ? chosen.gcn : null,
       model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
-
-      // The model expects this FPS after resampling.
       fps: targetFps,
       target_fps: targetFps,
       target_T: deployW,
-
-      // Useful for debugging / dashboards (does NOT affect inference)
       capture_fps: streamFps || fpsEstimateRef.current || null,
-
       timestamp_ms: Date.now(),
       use_mc: Boolean(mcEnabled),
       mc_M: mcCfg?.M,
-
-      // Persist events when monitoring is on OR when we need an event_id for clip saving.
       persist: Boolean(monitoringOnRef.current || storeEventClips),
       compact_response: sourceMode === "video",
-
-      // Raw pose samples (variable FPS)
       raw_t_ms: tArr,
-      raw_shape: [nSlice, NUM_JOINTS],
+      raw_shape: [nFrames, NUM_JOINTS],
       raw_xy_q: xyQ,
       raw_conf_q: confQ,
-
-      window_end_t_ms: endTs,
+      window_end_t_ms: windowEndTs,
     };
-
-    try {
-      predictInFlightRef.current = true;
-      replayPendingSendRef.current = false;
-      const t0 = performance.now();
-      if (sourceMode === "video") {
-        syncReplayPlaybackRate(videoEl, { busy: true });
-      }
-      const data =
-        sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
-      replayPredictLatencyMsRef.current = Math.max(0, performance.now() - t0);
-      setPredictError("");
-
-      const safeObj = data?.policy_alerts?.safe;
-      const recallObj = data?.policy_alerts?.recall;
-      const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
-      const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
-      const safeBool =
-        typeof data?.safe_alert === "boolean"
-          ? data.safe_alert
-          : typeof safeObj?.alert === "boolean"
-          ? safeObj.alert
-          : null;
-      const recallBool =
-        typeof data?.recall_alert === "boolean"
-          ? data.recall_alert
-          : typeof recallObj?.alert === "boolean"
-          ? recallObj.alert
-          : null;
-      const nextSafeState = (data?.safe_state || safeObj?.state || null) ?? null;
-      const nextRecallState = (data?.recall_state || recallObj?.state || null) ?? null;
-      if (lastUiRef.current.safeAlert !== safeBool) {
-        lastUiRef.current.safeAlert = safeBool;
-        setSafeAlert(safeBool);
-      }
-      if (lastUiRef.current.recallAlert !== recallBool) {
-        lastUiRef.current.recallAlert = recallBool;
-        setRecallAlert(recallBool);
-      }
-      if (lastUiRef.current.safeState !== nextSafeState) {
-        lastUiRef.current.safeState = nextSafeState;
-        setSafeState(nextSafeState);
-      }
-      if (lastUiRef.current.recallState !== nextRecallState) {
-        lastUiRef.current.recallState = nextRecallState;
-        setRecallState(nextRecallState);
-      }
-
-      // In high-performance mode, current prediction should follow backend safe channel directly.
-      let triCandidate = safeStateRaw || triRaw || "not_fall";
-      if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
-      const st = triageStableRef.current;
-      if (triCandidate === "fall" && safeBool !== false) {
-        st.fall += 1;
-        st.uncertain = 0;
-        st.safe = 0;
-      } else if (triCandidate === "uncertain") {
-        st.uncertain += 1;
-        st.fall = 0;
-        st.safe = 0;
-      } else {
-        st.safe += 1;
-        st.fall = 0;
-        st.uncertain = 0;
-      }
-      let triStable = st.last || "not_fall";
-      if (st.fall >= TRIAGE_FALL_CONFIRM_N) triStable = "fall";
-      else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
-      else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
-      st.last = triStable;
-      if (lastUiRef.current.triageState !== triStable) {
-        lastUiRef.current.triageState = triStable;
-        setTriageState(triStable);
-      }
-
-      // Schedule a skeleton clip upload (pre + post seconds around this window end)
-      try {
-        const evId = data?.event_id;
-        if (storeEventClips && evId != null) {
-          const sent = uploadedClipIdsRef.current;
-          const already = sent && sent.has(String(evId));
-          const pending = pendingClipRef.current;
-
-          if (!already && (!pending || String(pending.eventId) !== String(evId))) {
-            pendingClipRef.current = {
-              eventId: evId,
-              triggerEndTs: endTs,
-              deadlineTs: endTs + CLIP_POST_S * 1000,
-              preMs: CLIP_PRE_S * 1000,
-              postMs: CLIP_POST_S * 1000,
-              ctx: {
-                dataset_code: activeDatasetCode,
-                mode,
-                op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-                use_mc: Boolean(mcEnabled),
-                mc_M: mcCfg?.M,
-              },
-            };
-          }
-        }
-      } catch {
-        // ignore
-      }
-
-      // pFall display from the active model output.
-      let mu = null;
-      let sig = null;
-
-      const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
-      if (mOut) {
-        // Use tracker-smoothed score first so P(fall) matches current triage semantics.
-        mu = mOut?.triage?.ps != null
-          ? Number(mOut.triage.ps)
-          : mOut?.p_alert_in != null
-            ? Number(mOut.p_alert_in)
-            : mOut?.mu != null
-              ? Number(mOut.mu)
-              : mOut?.p_det != null
-                ? Number(mOut.p_det)
-                : null;
-        sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
-      }
-
-      if (lastUiRef.current.pFall !== mu) {
-        lastUiRef.current.pFall = mu;
-        setPFall(mu);
-      }
-      if (lastUiRef.current.sigma !== sig) {
-        lastUiRef.current.sigma = sig;
-        setSigma(sig);
-      }
-
-      // Timeline must match Current Prediction exactly.
-      let markerKind = "safe";
-      const triNorm = String(triStable || "").toLowerCase();
-      if (triNorm === "fall") markerKind = "fall";
-      else if (triNorm === "uncertain") markerKind = "uncertain";
-      const dedupMs = Math.round(
-        Math.max(
-          1000,
-          1000 * Number(settingsPayload?.system?.alert_cooldown_sec || FALL_HISTORY_DEDUP_MS_DEFAULT / 1000)
-        )
-      );
-      addTimelineMarker(markerKind, {
-        eventId: markerKind === "fall" ? data?.event_id ?? null : null,
-        dedupMs,
-      });
-    } catch (err) {
-      if (String(err?.name || "") === "AbortError") {
-        setPredictError("");
-        return;
-      }
-      console.error("Error calling /api/monitor/predict_window", err);
-      setPredictError(String(err?.message || err || "predict_window failed"));
-    } finally {
-      predictInFlightRef.current = false;
-      if (sourceMode === "video") {
-        syncReplayPlaybackRate(videoEl, { busy: false });
-        if (replayPendingSendRef.current) {
-          void maybeSendWindow();
-        }
-      }
-    }
   }, [
     activeDatasetCode,
-    addTimelineMarker,
     chosen,
-    deployS,
     deployW,
     mcCfg,
     mcEnabled,
     mode,
     opCode,
-    predictViaHttp,
-    predictViaWs,
-    replayRetryTimerRef,
     settingsPayload,
     streamFps,
-    syncReplayPlaybackRate,
+    targetFps,
+  ]);
+
+  const queueReplayWindows = useCallback(() => {
+    const raw = rawFramesRef.current;
+    if (!raw || raw.length < 2) return false;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const strideMs = Math.max(dtMs, Number(deployS) * dtMs);
+    const endTs = raw[raw.length - 1].t;
+    const firstEligibleEndTs = raw[0].t + needMs;
+    if (!Number.isFinite(firstEligibleEndTs) || endTs < firstEligibleEndTs) return false;
+
+    if (replayNextWindowEndRef.current == null || replayNextWindowEndRef.current < firstEligibleEndTs) {
+      replayNextWindowEndRef.current = firstEligibleEndTs;
+    }
+
+    const queue = replayWindowQueueRef.current;
+    let queuedAny = false;
+    while (Number(replayNextWindowEndRef.current) <= endTs) {
+      queue.push(Number(replayNextWindowEndRef.current));
+      replayNextWindowEndRef.current += strideMs;
+      queuedAny = true;
+    }
+    return queuedAny;
+  }, [deployS, deployW, targetFps]);
+
+  const buildReplayPayload = useCallback(() => {
+    const queue = replayWindowQueueRef.current;
+    const raw = rawFramesRef.current;
+    if (!queue.length || !raw || raw.length < 2) return null;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const windowEndTs = Number(queue[0]);
+    const startWindowTs = windowEndTs - needMs;
+    if (raw[0].t > startWindowTs) return null;
+
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startWindowTs) i0++;
+    const startIdx = Math.max(0, i0 - 1);
+    let endIdx = raw.length;
+    while (endIdx > startIdx + 1 && raw[endIdx - 1].t > windowEndTs) endIdx--;
+    const frames = raw.slice(startIdx, endIdx);
+
+    return buildPredictionPayload({
+      sourceMode: "video",
+      frames,
+      windowEndTs,
+      location: String(selectedVideoName || replayClipRef.current?.name || "replay_video"),
+    });
+  }, [buildPredictionPayload, deployW, selectedVideoName, targetFps]);
+
+  const buildLivePayload = useCallback(() => {
+    const raw = rawFramesRef.current;
+    if (!raw || raw.length < 2) return null;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const endTs = raw[raw.length - 1].t;
+    const startNeed = endTs - needMs;
+    if (raw[0].t > startNeed) return null;
+
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
+    const startIdx = Math.max(0, i0 - 1);
+    const frames = raw.slice(startIdx);
+
+    return buildPredictionPayload({
+      sourceMode: "camera",
+      frames,
+      windowEndTs: endTs,
+      location: "camera_live",
+    });
+  }, [buildPredictionPayload, deployW, targetFps]);
+
+  const runPredictionRequest = useCallback(async (payload, sourceMode) => {
+    const videoEl = videoRef.current;
+    try {
+      predictInFlightRef.current = true;
+      const t0 = performance.now();
+      const data =
+        sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
+      replayPredictLatencyMsRef.current = Math.max(0, performance.now() - t0);
+      setPredictError("");
+      applyPredictionResponse(data);
+      return true;
+    } catch (err) {
+      if (String(err?.name || "") === "AbortError") {
+        setPredictError("");
+        return false;
+      }
+      console.error("Error calling /api/monitor/predict_window", err);
+      setPredictError(String(err?.message || err || "predict_window failed"));
+      return false;
+    } finally {
+      predictInFlightRef.current = false;
+      if (sourceMode === "video") {
+        syncReplayPlaybackRate(videoEl);
+      }
+    }
+  }, [applyPredictionResponse, predictViaHttp, predictViaWs, syncReplayPlaybackRate]);
+
+  const drainReplayQueue = useCallback(async () => {
+    if ((inputSourceRef.current || "camera") !== "video") return;
+    if (predictInFlightRef.current) return;
+
+    void queueReplayWindows();
+    if (!replayWindowQueueRef.current.length) return;
+
+    while (!predictInFlightRef.current && replayWindowQueueRef.current.length) {
+      const payload = buildReplayPayload();
+      if (!payload) return;
+      const nextWindowEndTs = Number(payload.window_end_t_ms);
+      const ok = await runPredictionRequest(payload, "video");
+      const front = Number(replayWindowQueueRef.current[0]);
+      if (Number.isFinite(front) && front === nextWindowEndTs) {
+        replayWindowQueueRef.current.shift();
+      }
+      if (!ok) return;
+    }
+  }, [buildReplayPayload, queueReplayWindows, runPredictionRequest]);
+
+  const maybeSendWindow = useCallback(async () => {
+    const sourceMode = inputSourceRef.current || "camera";
+    if (sourceMode === "video") {
+      await drainReplayQueue();
+      return;
+    }
+
+    if (predictInFlightRef.current) return;
+    const now = performance.now();
+    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
+    const gapRemainMs = minGapMs - (now - lastSentRef.current);
+    if (gapRemainMs > 0) return;
+
+    const payload = buildLivePayload();
+    if (!payload) return;
+    lastSentRef.current = now;
+
+    await runPredictionRequest(payload, sourceMode);
+  }, [
+    buildLivePayload,
+    deployS,
+    drainReplayQueue,
+    runPredictionRequest,
     targetFps,
   ]);
 
@@ -1146,7 +1206,13 @@ export function usePoseMonitor({
         }
       }
 
-      const tNow = performance.now();
+      const replayVideoTsMs =
+        isReplay && videoRef.current ? Number(videoRef.current.currentTime || 0) * 1000 : null;
+      let tNow =
+        isReplay && Number.isFinite(replayVideoTsMs) ? Number(replayVideoTsMs) : performance.now();
+      if (isReplay && typeof lastPoseTsRef.current === "number" && tNow <= lastPoseTsRef.current) {
+        tNow = lastPoseTsRef.current + 1;
+      }
 
       // Estimate FPS from callback timing (smoothed)
       const last = lastPoseTsRef.current;
@@ -1172,7 +1238,8 @@ export function usePoseMonitor({
       raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
 
       // Keep ~12s max
-      const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
+      const maxRaw =
+        isReplay ? Math.max(2400, Math.ceil(targetFps * 120)) : Math.max(600, Math.ceil(targetFps * 12));
       if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
 
       // Clip upload + inference
@@ -1397,6 +1464,16 @@ export function usePoseMonitor({
       const loop = async () => {
         if (!liveFlagRef.current || runTokenRef.current !== runToken) return;
         if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
+          void buildReplayPayload();
+          void drainReplayQueue();
+          const replayBusy =
+            predictInFlightRef.current || replayWindowQueueRef.current.length > 0;
+          if (replayBusy) {
+            setStartInfo("Finalizing replay predictions...");
+            rafRef.current = requestAnimationFrame(loop);
+            return;
+          }
+          setStartInfo("");
           stopLive();
           autoStopMonitoring();
           return;
@@ -1461,7 +1538,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, prepareCameraStream, prepareReplayVideo, replayClip, resetFrontendSessionState, resetSession, stopLive]);
+  }, [autoStopMonitoring, buildReplayPayload, drainReplayQueue, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, prepareCameraStream, prepareReplayVideo, replayClip, resetFrontendSessionState, resetSession, stopLive]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
