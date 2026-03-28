@@ -106,6 +106,36 @@ def _coerce_bool(v: Any, default: bool) -> bool:
     return bool(default)
 
 
+def _resolve_mc_runtime(
+    *,
+    requested_use_mc: Any,
+    requested_mc_m: Any,
+    sys_row: Optional[Dict[str, Any]],
+    is_replay: bool,
+) -> Tuple[bool, int, bool, int]:
+    use_mc = requested_use_mc
+    mc_m = requested_mc_m
+
+    if isinstance(sys_row, dict):
+        if use_mc is None and sys_row.get("mc_enabled") is not None:
+            use_mc = _coerce_bool(sys_row.get("mc_enabled"), False)
+        if mc_m is None and sys_row.get("mc_M") is not None:
+            try:
+                mc_m = int(sys_row.get("mc_M"))
+            except (TypeError, ValueError):
+                mc_m = None
+
+    requested_use_mc_bool = _coerce_bool(use_mc, False)
+    try:
+        requested_mc_m_int = max(1, int(mc_m)) if mc_m is not None else 10
+    except (TypeError, ValueError):
+        requested_mc_m_int = 10
+
+    effective_use_mc = requested_use_mc_bool and (not is_replay)
+    effective_mc_m = requested_mc_m_int if effective_use_mc else 1
+    return requested_use_mc_bool, requested_mc_m_int, effective_use_mc, effective_mc_m
+
+
 def _recent_motion_support(
     st: Dict[str, Any],
     *,
@@ -943,8 +973,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     dataset_code = normalize_dataset_code(payload_d.get("dataset_code") or payload_d.get("dataset"))
     op_code = str(payload_d.get("op_code") or payload_d.get("op") or "").upper().strip()
 
-    use_mc = payload_d.get("use_mc")
-    mc_M = payload_d.get("mc_M")
+    requested_use_mc = payload_d.get("use_mc")
+    requested_mc_M = payload_d.get("mc_M")
 
     persist = bool(payload_d.get("persist", False))
 
@@ -1000,14 +1030,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             if isinstance(sys_row, dict):
                 if not dataset_code and sys_row.get("active_dataset_code"):
                     dataset_code = normalize_dataset_code(sys_row.get("active_dataset_code"))
-                if use_mc is None and sys_row.get("mc_enabled") is not None:
-                    use_mc = (
-                        bool(int(sys_row.get("mc_enabled")))
-                        if str(sys_row.get("mc_enabled")).isdigit()
-                        else bool(sys_row.get("mc_enabled"))
-                    )
-                if mc_M is None and sys_row.get("mc_M") is not None:
-                    mc_M = int(sys_row.get("mc_M"))
                 if sys_row.get("alert_cooldown_sec") is not None:
                     cooldown_sec = int(sys_row.get("alert_cooldown_sec"))
                 if sys_row.get("active_model_code"):
@@ -1072,12 +1094,12 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         dataset_code = "caucafall"
     if not op_code:
         op_code = "OP-2"
-    if use_mc is None:
-        use_mc = True
-    if mc_M is None:
-        mc_M = 10
-    effective_use_mc = bool(use_mc) and (not is_replay)
-    effective_mc_M = int(mc_M) if effective_use_mc else 1
+    requested_use_mc, requested_mc_M, effective_use_mc, effective_mc_M = _resolve_mc_runtime(
+        requested_use_mc=requested_use_mc,
+        requested_mc_m=requested_mc_M,
+        sys_row=sys_row if isinstance(sys_row, dict) else None,
+        is_replay=is_replay,
+    )
 
     expected_fps = {
         "le2i": 25,
@@ -1316,7 +1338,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "effective_mode": mode,
             "op_code": op_code,
             "use_mc": bool(effective_use_mc),
-            "requested_use_mc": bool(use_mc),
+            "requested_use_mc": bool(requested_use_mc),
             "mc_M": int(effective_mc_M),
             "event_id": None,
             "notification_dispatch": None,
@@ -1822,8 +1844,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "dataset": dataset_code,
             "mode": mode,
             "op_code": op_code,
-            "use_mc": bool(use_mc),
-            "mc_M": int(mc_M),
+            "use_mc": bool(requested_use_mc),
+            "mc_M": int(requested_mc_M),
             "expected_fps": expected_fps,
             "capture_fps_est": cap_fps_est,
             "models": models_out,
@@ -1970,7 +1992,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "effective_mode": mode,
         "op_code": op_code,
         "use_mc": bool(effective_use_mc),
-        "requested_use_mc": bool(use_mc),
+        "requested_use_mc": bool(requested_use_mc),
         "mc_M": int(effective_mc_M),
         "delivery_gate": delivery_gate_diag,
         "uncertain_promoted": bool(uncertain_promoted),

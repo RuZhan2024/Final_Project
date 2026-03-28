@@ -277,7 +277,7 @@ def _ensure_system_settings_schema(conn) -> None:
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
             "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'caucafall'",
             "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
-            "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
+            "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 0",
             "mc_M": "INT NOT NULL DEFAULT 10",
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
             "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
@@ -710,7 +710,7 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "active_operating_point": None,
     "active_dataset_code": "caucafall",
     "active_op_code": "OP-2",
-    "mc_enabled": True,
+    "mc_enabled": False,
     "mc_M": 10,
     "mc_M_confirm": 25,
 }

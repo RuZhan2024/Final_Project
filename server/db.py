@@ -165,7 +165,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             active_dataset_code TEXT NOT NULL DEFAULT 'caucafall',
             active_op_code TEXT NOT NULL DEFAULT 'OP-2',
-            mc_enabled INTEGER NOT NULL DEFAULT 1,
+            mc_enabled INTEGER NOT NULL DEFAULT 0,
             mc_M INTEGER NOT NULL DEFAULT 10,
             mc_M_confirm INTEGER NOT NULL DEFAULT 25,
             notify_sms INTEGER NOT NULL DEFAULT 0,
