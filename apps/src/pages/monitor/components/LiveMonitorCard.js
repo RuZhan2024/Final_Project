@@ -23,8 +23,6 @@ export function LiveMonitorCard({
   canvasRef,
   currentPrediction,
   pText,
-  safePrediction,
-  recallPrediction,
   inputSource,
   captureFpsText,
   modelFpsText,
@@ -71,14 +69,6 @@ export function LiveMonitorCard({
         <div className={styles.predictionItem}>
           <span className={styles.label}>P (fall)</span>
           <span className={styles.value}>{pText}</span>
-        </div>
-        <div className={styles.predictionItem}>
-          <span className={styles.label}>Safe Channel</span>
-          <span className={styles.value}>{safePrediction ? predictionDisplayText(safePrediction) : "—"}</span>
-        </div>
-        <div className={styles.predictionItem}>
-          <span className={styles.label}>Recall Channel (Aggressive)</span>
-          <span className={styles.value}>{recallPrediction ? predictionDisplayText(recallPrediction) : "—"}</span>
         </div>
         <div className={styles.predictionItem}>
           <span className={styles.label}>Capture FPS / Target FPS</span>

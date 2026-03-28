@@ -137,8 +137,6 @@ function Monitor({ isActive = true } = {}) {
     canvasRef,
     currentPrediction,
     pText,
-    safePrediction,
-    recallPrediction,
     sigma,
     markers,
     timelineStatusText,
@@ -227,8 +225,6 @@ function Monitor({ isActive = true } = {}) {
             canvasRef={canvasRef}
             currentPrediction={showPlaceholders ? "—" : currentPrediction}
             pText={showPlaceholders ? "—" : pText}
-            safePrediction={showPlaceholders ? "—" : safePrediction}
-            recallPrediction={showPlaceholders ? "—" : recallPrediction}
             inputSource={inputSource}
             captureFpsText={showPlaceholders ? "—" : captureFpsText}
             modelFpsText={showPlaceholders ? "—" : modelFpsText}
