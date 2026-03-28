@@ -10,6 +10,7 @@ import React, {
 
 import { getApiBase } from "../lib/config";
 import { apiRequest } from "../lib/apiClient";
+import { readBool } from "../lib/booleans";
 
 const API_BASE = getApiBase();
 const MonitoringContext = createContext(null);
@@ -21,7 +22,7 @@ function readDesired(data) {
     typeof sys.monitoring_enabled !== "undefined"
       ? sys.monitoring_enabled
       : data?.monitoring_enabled;
-  return Boolean(raw);
+  return readBool(raw, false);
 }
 
 async function safeStart(ctrl) {

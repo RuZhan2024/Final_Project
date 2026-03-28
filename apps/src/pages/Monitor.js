@@ -3,6 +3,7 @@ import React, { useMemo } from "react";
 import styles from "./Monitor.module.css";
 
 import { useMonitoring } from "../monitoring/MonitoringContext";
+import { readBool } from "../lib/booleans";
 
 import { useApiSpec } from "./monitor/hooks/useApiSpec";
 import { useOperatingPointParams } from "./monitor/hooks/useOperatingPointParams";
@@ -55,7 +56,7 @@ function Monitor({ isActive = true } = {}) {
 
   const mcEnabled = useMemo(() => {
     const v = settingsPayload?.system?.mc_enabled;
-    return v == null ? true : Boolean(v);
+    return readBool(v, true);
   }, [settingsPayload]);
 
   const fallThreshold = useMemo(() => {

@@ -3,6 +3,7 @@ import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 
 import { apiRequest } from "../../../lib/apiClient";
+import { readBool } from "../../../lib/booleans";
 import {
   CLIP_POST_S,
   CLIP_PRE_S,
@@ -41,8 +42,8 @@ const CAPTURE_RESOLUTIONS = {
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
   return {
-    storeEventClips: Boolean(sys?.store_event_clips),
-    anonymize: Boolean(sys?.anonymize_skeleton_data ?? true),
+    storeEventClips: readBool(sys?.store_event_clips, false),
+    anonymize: readBool(sys?.anonymize_skeleton_data, true),
   };
 }
 
