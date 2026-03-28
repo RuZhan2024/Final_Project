@@ -166,6 +166,7 @@ export function usePoseMonitor({
   const predictInFlightRef = useRef(false);
   const replayPendingSendRef = useRef(false);
   const replayPredictLatencyMsRef = useRef(0);
+  const replayRetryTimerRef = useRef(null);
   const payloadTRef = useRef([]);
   const payloadXYRef = useRef([]);
   const payloadConfRef = useRef([]);
@@ -354,6 +355,10 @@ export function usePoseMonitor({
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
     poseSendBusyRef.current = false;
+    if (replayRetryTimerRef.current) {
+      window.clearTimeout(replayRetryTimerRef.current);
+      replayRetryTimerRef.current = null;
+    }
 
     resetVideoSource();
     resetPredictionTransport();
@@ -722,6 +727,14 @@ export function usePoseMonitor({
   const maybeSendWindow = useCallback(async () => {
     const sourceMode = inputSourceRef.current || "camera";
     const videoEl = videoRef.current;
+    const scheduleReplayRetry = (delayMs) => {
+      if (sourceMode !== "video") return;
+      if (replayRetryTimerRef.current) return;
+      replayRetryTimerRef.current = window.setTimeout(() => {
+        replayRetryTimerRef.current = null;
+        void maybeSendWindow();
+      }, Math.max(0, Math.ceil(delayMs)));
+    };
     if (predictInFlightRef.current) {
       if (sourceMode === "video") {
         replayPendingSendRef.current = true;
@@ -731,7 +744,11 @@ export function usePoseMonitor({
     }
     const now = performance.now();
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
-    if (now - lastSentRef.current < minGapMs) return;
+    const gapRemainMs = minGapMs - (now - lastSentRef.current);
+    if (gapRemainMs > 0) {
+      scheduleReplayRetry(gapRemainMs);
+      return;
+    }
 
     const raw = rawFramesRef.current;
     if (!raw || raw.length < 2) return;
@@ -988,9 +1005,7 @@ export function usePoseMonitor({
       if (sourceMode === "video") {
         syncReplayPlaybackRate(videoEl, { busy: false });
         if (replayPendingSendRef.current) {
-          window.setTimeout(() => {
-            void maybeSendWindow();
-          }, 0);
+          scheduleReplayRetry(minGapMs);
         }
       }
     }
@@ -1006,6 +1021,7 @@ export function usePoseMonitor({
     opCode,
     predictViaHttp,
     predictViaWs,
+    replayRetryTimerRef,
     settingsPayload,
     streamFps,
     syncReplayPlaybackRate,
