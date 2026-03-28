@@ -1301,12 +1301,6 @@ export function usePoseMonitor({
         await prepareCameraStream(videoEl);
         if (runTokenRef.current !== runToken) return false;
       }
-
-      try {
-        await videoEl.play();
-      } catch (e) {
-        throw new Error(`Video play failed: ${String(e?.message || e)}`);
-      }
       ensureCanvasMatchesVideo();
       if (useVideoFile) {
         setReplayCurrentS(Number(videoEl.currentTime || 0));
@@ -1331,6 +1325,12 @@ export function usePoseMonitor({
       if (runTokenRef.current !== runToken) return false;
       if (useVideoFile) {
         setStartInfo("");
+      }
+
+      try {
+        await videoEl.play();
+      } catch (e) {
+        throw new Error(`Video play failed: ${String(e?.message || e)}`);
       }
 
       const loop = async () => {
