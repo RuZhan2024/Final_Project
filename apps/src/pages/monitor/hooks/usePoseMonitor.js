@@ -28,7 +28,7 @@ const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 const WS_CONNECT_TIMEOUT_MS = 7000;
 const WS_PREDICT_TIMEOUT_MS = 12000;
-const REPLAY_POSE_MODEL_COMPLEXITY = 2;
+const REPLAY_POSE_MODEL_COMPLEXITY = 1;
 const REPLAY_MIN_DETECTION_CONFIDENCE = 0.35;
 const REPLAY_MIN_TRACKING_CONFIDENCE = 0.35;
 const CAPTURE_RESOLUTIONS = {
@@ -1044,9 +1044,8 @@ export function usePoseMonitor({
 
   const drainReplayQueue = useCallback(async () => {
     if ((inputSourceRef.current || "camera") !== "video") return;
-    if (predictInFlightRef.current) return;
-
     void queueReplayWindows();
+    if (predictInFlightRef.current) return;
     if (!replayWindowQueueRef.current.length) return;
 
     while (!predictInFlightRef.current && replayWindowQueueRef.current.length) {
