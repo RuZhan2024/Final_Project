@@ -916,6 +916,15 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     compact_response = bool(payload_d.get("compact_response"))
 
     t0 = time.time()
+    perf_started = time.perf_counter()
+    perf_last = perf_started
+    perf: Dict[str, int] = {}
+
+    def _mark_perf(name: str) -> None:
+        nonlocal perf_last
+        now = time.perf_counter()
+        perf[name] = int((now - perf_last) * 1000)
+        perf_last = now
 
     # -------------
     # Inputs
@@ -959,6 +968,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     xy: List[Any] = []
     conf: List[Any] = []
     cap_fps_est: Optional[float] = None
+    _mark_perf("parse_inputs_ms")
 
     # -------------
     # Defaults from DB (if available)
@@ -1056,6 +1066,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             dataset_code or "unset",
             exc,
         )
+    _mark_perf("db_defaults_ms")
 
     if not dataset_code:
         dataset_code = "caucafall"
@@ -1107,6 +1118,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     if not xy:
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
+    _mark_perf("window_prepare_ms")
 
     motion_score = _window_motion_score(xy)
     lying_score = None
@@ -1137,6 +1149,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         lying_score, confirm_motion_score = compute_confirm_scores(raw_window)
     except Exception:
         lying_score, confirm_motion_score = None, None
+    _mark_perf("confirm_scores_ms")
 
     st = core._SESSION_STATE.setdefault(session_id, {})
     st.setdefault("session_start_t_s", _t_s)
@@ -1231,6 +1244,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     low_joints_block = bool(joints_med > 0 and joints_med < int(live_guard["min_joints_med"]))
     occlusion_block = bool(low_conf_block or low_joints_block)
     low_motion_high_conf_bypass = False
+    _mark_perf("specs_and_guards_ms")
 
     # Soft stale-drop guard: only drop severely stale windows when current window is low risk.
     seq_in: Optional[int] = None
@@ -1261,6 +1275,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st["last_window_seq"] = seq_in
         st["last_triage_state"] = tri_prev
         latency_ms = int((time.time() - t0) * 1000)
+        perf["total_ms"] = int((time.perf_counter() - perf_started) * 1000)
         resp = {
             "triage_state": tri_prev,
             "models": {},
@@ -1306,6 +1321,18 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "window_seq": seq_in,
             "last_window_seq": seq_prev,
         }
+        if latency_ms >= 1000:
+            logger.warning(
+                "monitor.predict_perf total_ms=%s session_id=%s input_source=%s mode=%s dataset=%s op=%s seq=%s stale_drop=1 phases=%s",
+                latency_ms,
+                session_id,
+                input_source,
+                mode,
+                dataset_code,
+                op_code,
+                seq_in,
+                perf,
+            )
         return _compact_monitor_response(resp, mode) if compact_response else resp
 
     def _guard_alert_p(p_raw: float, tau_low: float) -> float:
@@ -1336,6 +1363,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     run_gcn = mode in {"gcn", "hybrid"}
 
     if run_tcn:
+        t_inf = time.perf_counter()
         out_tcn = _predict_spec(
             spec_key=tcn_key,
             joints_xy=xy,
@@ -1391,6 +1419,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         models_out["tcn"] = out_tcn
         tri_tcn = r.triage_state
         started_tcn = bool(r.started_event)
+        perf["infer_tcn_ms"] = int((time.perf_counter() - t_inf) * 1000)
 
         # Optional dual-policy overlays (safe/recall) for deployment UI.
         for pol in ("safe", "recall"):
@@ -1418,6 +1447,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             }
 
     if run_gcn:
+        t_inf = time.perf_counter()
         out_gcn = _predict_spec(
             spec_key=gcn_key,
             joints_xy=xy,
@@ -1468,6 +1498,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         }
         started_gcn = bool(res.started_event)
         tri_gcn = res.triage_state
+        perf["infer_gcn_ms"] = int((time.perf_counter() - t_inf) * 1000)
+    _mark_perf("post_infer_policy_ms")
 
     # Primary alert signals.
     tcn_safe_alert = (
@@ -1769,6 +1801,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st[persist_dedup_key] = persist_dedup_hits
 
     if persist and persist_event_type and (not persist_in_cooldown):
+        t_persist = time.perf_counter()
         primary_out = models_out.get(primary_model_key, {}) if isinstance(models_out.get(primary_model_key), dict) else {}
         safe_guard_probability = float(primary_out.get("mu", p_display) or p_display)
         safe_guard_uncertainty = float(primary_out.get("sigma", 0.0) or 0.0)
@@ -1881,8 +1914,10 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                 dataset_code,
                 exc,
             )
+        perf["persist_ms"] = int((time.perf_counter() - t_persist) * 1000)
 
     latency_ms = int((time.time() - t0) * 1000)
+    perf["total_ms"] = int((time.perf_counter() - perf_started) * 1000)
     core.LAST_PRED_LATENCY_MS = latency_ms
     core.LAST_PRED_P_FALL = float(p_display)
     core.LAST_PRED_DECISION = str(triage_state)
@@ -1946,6 +1981,20 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "window_seq": seq_in,
         "last_window_seq": seq_prev,
     }
+    if latency_ms >= 1000:
+        logger.warning(
+            "monitor.predict_perf total_ms=%s session_id=%s input_source=%s mode=%s dataset=%s op=%s seq=%s replay=%s persist=%s phases=%s",
+            latency_ms,
+            session_id,
+            input_source,
+            mode,
+            dataset_code,
+            op_code,
+            seq_in,
+            is_replay,
+            bool(saved_event_id is not None or persist_event_type),
+            perf,
+        )
     return _compact_monitor_response(resp, mode) if compact_response else resp
 
 
