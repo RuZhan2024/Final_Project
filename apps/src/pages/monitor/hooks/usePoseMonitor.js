@@ -680,6 +680,15 @@ export function usePoseMonitor({
     }
   }, [ensurePredictWs]);
 
+  const predictViaHttp = useCallback(
+    async (payload) =>
+      await apiRequest(apiBase, "/api/monitor/predict_window", {
+        method: "POST",
+        body: payload,
+      }),
+    [apiBase]
+  );
+
   const maybeSendWindow = useCallback(async () => {
     if (predictInFlightRef.current) return;
     const now = performance.now();
@@ -785,7 +794,8 @@ export function usePoseMonitor({
 
     try {
       predictInFlightRef.current = true;
-      const data = await predictViaWs(payload);
+      const data =
+        sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
       setPredictError("");
 
       const safeObj = data?.policy_alerts?.safe;
@@ -942,6 +952,7 @@ export function usePoseMonitor({
     mcEnabled,
     mode,
     opCode,
+    predictViaHttp,
     predictViaWs,
     settingsPayload,
     streamFps,
