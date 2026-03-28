@@ -28,6 +28,9 @@ const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 const WS_CONNECT_TIMEOUT_MS = 7000;
 const WS_PREDICT_TIMEOUT_MS = 12000;
+const REPLAY_POSE_MODEL_COMPLEXITY = 2;
+const REPLAY_MIN_DETECTION_CONFIDENCE = 0.35;
+const REPLAY_MIN_TRACKING_CONFIDENCE = 0.35;
 const CAPTURE_RESOLUTIONS = {
   "480p": { w: 640, h: 480 },
   "540p": { w: 960, h: 540 },
@@ -961,6 +964,7 @@ export function usePoseMonitor({
 
   const handlePoseResults = useCallback(
     (results) => {
+      const isReplay = inputSourceRef.current === "video";
       // Cap processing rate.
       const nowMs = performance.now();
       const procCap = Math.min(MAX_PROC_FPS, Math.max(8, Number(targetFps) + 2));
@@ -969,7 +973,7 @@ export function usePoseMonitor({
 
       // Adaptive draw FPS: if capture FPS stays low, reduce draw load temporarily.
       const estFps = Number(fpsEstimateRef.current);
-      if (Number.isFinite(estFps) && estFps > 0) {
+      if (!isReplay && Number.isFinite(estFps) && estFps > 0) {
         if (estFps < LOW_FPS_ENTER) {
           if (!lowFpsSinceMsRef.current) lowFpsSinceMsRef.current = nowMs;
           if (nowMs - lowFpsSinceMsRef.current > LOW_FPS_HOLD_MS) {
@@ -1113,20 +1117,32 @@ export function usePoseMonitor({
   );
 
   const initPosePipeline = useCallback(async (videoEl, { warmup = false } = {}) => {
+    const isReplay = inputSourceRef.current === "video";
     if (!poseRef.current) {
       const pose = new mpPose.Pose({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
       });
 
       pose.setOptions({
-        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
+        modelComplexity: isReplay ? REPLAY_POSE_MODEL_COMPLEXITY : LIVE_POSE_MODEL_COMPLEXITY,
         smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
+        minDetectionConfidence: isReplay ? REPLAY_MIN_DETECTION_CONFIDENCE : 0.5,
+        minTrackingConfidence: isReplay ? REPLAY_MIN_TRACKING_CONFIDENCE : 0.5,
       });
 
       pose.onResults(handlePoseResults);
       poseRef.current = pose;
+    } else if (poseRef.current?.setOptions) {
+      try {
+        poseRef.current.setOptions({
+          modelComplexity: isReplay ? REPLAY_POSE_MODEL_COMPLEXITY : LIVE_POSE_MODEL_COMPLEXITY,
+          smoothLandmarks: true,
+          minDetectionConfidence: isReplay ? REPLAY_MIN_DETECTION_CONFIDENCE : 0.5,
+          minTrackingConfidence: isReplay ? REPLAY_MIN_TRACKING_CONFIDENCE : 0.5,
+        });
+      } catch {
+        // ignore
+      }
     }
 
     if (warmup && videoEl?.readyState >= 2 && poseRef.current) {
