@@ -164,6 +164,8 @@ export function usePoseMonitor({
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
   const predictInFlightRef = useRef(false);
+  const replayPendingSendRef = useRef(false);
+  const replayPredictLatencyMsRef = useRef(0);
   const payloadTRef = useRef([]);
   const payloadXYRef = useRef([]);
   const payloadConfRef = useRef([]);
@@ -189,6 +191,24 @@ export function usePoseMonitor({
     () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
     []
   );
+
+  const syncReplayPlaybackRate = useCallback((videoEl, { busy = false } = {}) => {
+    if (!videoEl || (inputSourceRef.current || "camera") !== "video") return;
+
+    const latencyMs = Number(replayPredictLatencyMsRef.current) || 0;
+    let nextRate = 1.0;
+    if (busy) nextRate = 0.5;
+    else if (latencyMs >= 1200) nextRate = 0.5;
+    else if (latencyMs >= 800) nextRate = 0.65;
+    else if (latencyMs >= 450) nextRate = 0.8;
+
+    if (Math.abs(Number(videoEl.playbackRate || 1) - nextRate) < 0.01) return;
+    try {
+      videoEl.playbackRate = nextRate;
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
@@ -343,6 +363,8 @@ export function usePoseMonitor({
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
     lastSentRef.current = 0;
+    replayPendingSendRef.current = false;
+    replayPredictLatencyMsRef.current = 0;
 
     // Clip upload state
     pendingClipRef.current = null;
@@ -698,7 +720,15 @@ export function usePoseMonitor({
   );
 
   const maybeSendWindow = useCallback(async () => {
-    if (predictInFlightRef.current) return;
+    const sourceMode = inputSourceRef.current || "camera";
+    const videoEl = videoRef.current;
+    if (predictInFlightRef.current) {
+      if (sourceMode === "video") {
+        replayPendingSendRef.current = true;
+        syncReplayPlaybackRate(videoEl, { busy: true });
+      }
+      return;
+    }
     const now = performance.now();
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     if (now - lastSentRef.current < minGapMs) return;
@@ -756,7 +786,6 @@ export function usePoseMonitor({
       }
     }
 
-    const sourceMode = inputSourceRef.current || "camera";
     const eventLocation =
       sourceMode === "video"
         ? String(selectedVideoName || replayClipRef.current?.name || "replay_video")
@@ -802,8 +831,14 @@ export function usePoseMonitor({
 
     try {
       predictInFlightRef.current = true;
+      replayPendingSendRef.current = false;
+      const t0 = performance.now();
+      if (sourceMode === "video") {
+        syncReplayPlaybackRate(videoEl, { busy: true });
+      }
       const data =
         sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
+      replayPredictLatencyMsRef.current = Math.max(0, performance.now() - t0);
       setPredictError("");
 
       const safeObj = data?.policy_alerts?.safe;
@@ -949,6 +984,14 @@ export function usePoseMonitor({
       setPredictError(String(err?.message || err || "predict_window failed"));
     } finally {
       predictInFlightRef.current = false;
+      if (sourceMode === "video") {
+        syncReplayPlaybackRate(videoEl, { busy: false });
+        if (replayPendingSendRef.current) {
+          window.setTimeout(() => {
+            void maybeSendWindow();
+          }, 0);
+        }
+      }
     }
   }, [
     activeDatasetCode,
@@ -964,6 +1007,7 @@ export function usePoseMonitor({
     predictViaWs,
     settingsPayload,
     streamFps,
+    syncReplayPlaybackRate,
     targetFps,
   ]);
 
