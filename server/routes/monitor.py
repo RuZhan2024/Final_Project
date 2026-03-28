@@ -1630,6 +1630,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             st.pop(gate_state_key, None)
 
     uncertain_promoted = False
+    replay_relaxed_promoted = False
     if (
         mode in {"tcn", "gcn"}
         and triage_state == "uncertain"
@@ -1662,6 +1663,21 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             safe_alert = True
             recall_alert = True
             uncertain_promoted = True
+
+    if mode in {"tcn", "gcn"} and is_replay and triage_state == "uncertain":
+        primary_out = models_out.get(primary_model_key, {}) if isinstance(models_out.get(primary_model_key), dict) else {}
+        triage_cfg = primary_out.get("triage", {}) if isinstance(primary_out.get("triage"), dict) else {}
+        p_alert_live = float(primary_out.get("p_alert_in", 0.0) or 0.0)
+        tau_high_live = float(triage_cfg.get("tau_high", primary_out.get("tau_high", 0.0)) or 0.0)
+        tau_low_live = float(triage_cfg.get("tau_low", primary_out.get("tau_low", 0.0)) or 0.0)
+        replay_promote_min = max(tau_low_live, tau_high_live - 0.05)
+        quality_ok = not (low_quality_block or structural_quality_block or occlusion_block)
+        motion_ok = (motion_score is None) or float(motion_score) >= (float(min_motion) * 0.9)
+        if p_alert_live >= replay_promote_min and quality_ok and motion_ok:
+            triage_state = "fall"
+            safe_alert = True
+            recall_alert = True
+            replay_relaxed_promoted = True
 
     # Resolve channel states consistently for all modes.
     safe_state_out = dual_policy_alerts.get("safe", {}).get("state")
@@ -1875,6 +1891,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "use_mc": bool(use_mc),
         "delivery_gate": delivery_gate_diag,
         "uncertain_promoted": bool(uncertain_promoted),
+        "replay_relaxed_promoted": bool(replay_relaxed_promoted),
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
         "persist_dedup": {
