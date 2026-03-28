@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { apiRequest } from "../../../lib/apiClient";
+import { fetchOperatingPoints } from "../../../features/monitor/api";
 
 function normaliseUiParams(settingsPayload) {
   const sys = settingsPayload?.system || {};
@@ -32,7 +32,7 @@ async function loadLegacyOperatingPoint(apiBase, modelCode, activeOperatingPoint
 
   for (const code of tryCodes) {
     try {
-      const data = await apiRequest(apiBase, `/api/operating_points?model_code=${encodeURIComponent(code)}`);
+      const data = await fetchOperatingPoints(apiBase, code);
       const ops = Array.isArray(data?.operating_points)
         ? data.operating_points
         : Array.isArray(data)

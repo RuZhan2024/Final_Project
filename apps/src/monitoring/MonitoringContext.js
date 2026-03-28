@@ -9,8 +9,8 @@ import React, {
 } from "react";
 
 import { getApiBase } from "../lib/config";
-import { apiRequest } from "../lib/apiClient";
 import { readBool } from "../lib/booleans";
+import { fetchSettings, updateSettings as persistSettings } from "../features/settings/api";
 
 const API_BASE = getApiBase();
 const MonitoringContext = createContext(null);
@@ -53,7 +53,7 @@ async function fetchSettingsWithRetry() {
 
   for (let attempt = 0; attempt <= SETTINGS_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      return await apiRequest(API_BASE, "/api/settings");
+      return await fetchSettings(API_BASE);
     } catch (err) {
       lastError = err;
       if (attempt >= SETTINGS_RETRY_DELAYS_MS.length) break;
@@ -137,10 +137,7 @@ export function MonitoringProvider({ children }) {
         const desired = nextOn && startedOk;
 
         setError(null);
-        await apiRequest(API_BASE, "/api/settings", {
-          method: "PUT",
-          body: { monitoring_enabled: desired },
-        });
+        await persistSettings(API_BASE, { monitoring_enabled: desired });
 
         setMonitoringDesired(desired);
 
@@ -166,10 +163,7 @@ export function MonitoringProvider({ children }) {
     async (patch) => {
       try {
         setError(null);
-        await apiRequest(API_BASE, "/api/settings", {
-          method: "PUT",
-          body: patch || {},
-        });
+        await persistSettings(API_BASE, patch || {});
         await refresh();
         return true;
       } catch (e) {

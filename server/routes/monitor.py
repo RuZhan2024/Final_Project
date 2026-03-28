@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
@@ -27,9 +26,13 @@ from ..deploy_runtime import (
     get_specs as _get_deploy_specs,
     predict_spec as _predict_spec,
 )
-from ..notifications_service import dispatch_fall_notifications
-from ..notifications import NotificationPreferences, SafeGuardEvent, get_notification_manager
 from ..online_alert import OnlineAlertTracker
+from ..services.monitor_runtime_service import (
+    MonitorRuntimeContext,
+    persist_monitor_event,
+    resolve_monitor_persistence_plan,
+)
+from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 from fall_detection.pose.preprocess_pose_npz import (
     linear_fill_small_gaps,
@@ -934,8 +937,7 @@ def _resample_pose_window(
 @router.post("/api/monitor/reset_session")
 @router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
-    core._SESSION_STATE.pop(session_id, None)
-    return {"ok": True, "session_id": session_id}
+    return reset_monitor_session(core._SESSION_STATE, session_id)
 
 
 @router.post("/api/monitor/predict_window")
@@ -1006,6 +1008,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     resident_id = int(payload_d.get("resident_id") or 1)
     event_location = str(payload_d.get("location") or input_source or "unknown").strip() or "unknown"
     active_model_code = mode.upper()
+    sys_row = None
+    cooldown_sec = 30
     notify_on_every_fall = True
     notify_sms = False
     notify_phone = False
@@ -1100,6 +1104,19 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         sys_row=sys_row if isinstance(sys_row, dict) else None,
         is_replay=is_replay,
     )
+    runtime = MonitorRuntimeContext(
+        dataset_code=str(dataset_code),
+        op_code=str(op_code),
+        use_mc=bool(requested_use_mc),
+        mc_M=int(requested_mc_M),
+        active_model_code=str(active_model_code),
+        notify_on_every_fall=bool(notify_on_every_fall),
+        notify_sms=bool(notify_sms),
+        notify_phone=bool(notify_phone),
+        caregiver_name=str(caregiver_name),
+        caregiver_email=str(caregiver_email),
+        caregiver_phone=str(caregiver_phone),
+    )
 
     expected_fps = {
         "le2i": 25,
@@ -1175,10 +1192,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         lying_score, confirm_motion_score = None, None
     _mark_perf("confirm_scores_ms")
 
-    st = core._SESSION_STATE.setdefault(session_id, {})
-    st.setdefault("session_start_t_s", _t_s)
-    st_trackers = st.setdefault("trackers", {})
-    st_trackers_cfg = st.setdefault("trackers_cfg", {})
+    st = get_monitor_session_state(core._SESSION_STATE, session_id, _t_s)
+    st_trackers = st["trackers"]
+    st_trackers_cfg = st["trackers_cfg"]
     started_tcn = False
     started_gcn = False
 
@@ -1808,23 +1824,27 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         cooldown_s_for_persist = float(safe_pol.get("cooldown_s", max(c_tcn, c_gcn)))
     cooldown_s_for_persist = max(1.0, cooldown_s_for_persist)
 
-    persist_event_type: Optional[str] = None
-    if is_replay:
-        if triage_state in {"fall", "uncertain"} and prev_triage_state != str(triage_state):
-            persist_event_type = str(triage_state)
-    elif started_event and triage_state == "fall":
-        persist_event_type = "fall"
-
-    persist_cd_key = f"persist_last_ts:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
-    last_persist_ts = float(st.get(persist_cd_key, 0.0) or 0.0)
-    persist_in_cooldown = bool(persist_event_type) and ((_t_s - last_persist_ts) < cooldown_s_for_persist)
-
-    persist_dedup_key = f"persist_dedup_hits:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
-    persist_dedup_hits = int(st.get(persist_dedup_key, 0) or 0)
-    persist_suppressed = bool(persist and persist_event_type and persist_in_cooldown)
-    if persist_suppressed:
-        persist_dedup_hits += 1
-        st[persist_dedup_key] = persist_dedup_hits
+    persistence = resolve_monitor_persistence_plan(
+        session_state=st,
+        resident_id=resident_id,
+        dataset_code=dataset_code,
+        mode=mode,
+        op_code=op_code,
+        current_t_s=_t_s,
+        cooldown_s=cooldown_s_for_persist,
+        is_replay=is_replay,
+        persist=persist,
+        triage_state=str(triage_state),
+        prev_triage_state=str(prev_triage_state),
+        started_event=bool(started_event),
+    )
+    persist_event_type = persistence.persist_event_type
+    persist_in_cooldown = persistence.persist_in_cooldown
+    persist_dedup_key = persistence.persist_dedup_key
+    persist_dedup_hits = persistence.persist_dedup_hits
+    persist_suppressed = persistence.persist_suppressed
+    last_persist_ts = persistence.last_persist_ts
+    cooldown_s_for_persist = persistence.cooldown_s
 
     if persist and persist_event_type and (not persist_in_cooldown):
         t_persist = time.perf_counter()
@@ -1840,97 +1860,34 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             or 0.0
         )
         safe_guard_margin = float(safe_guard_probability - safe_guard_threshold)
-        meta = {
-            "dataset": dataset_code,
-            "mode": mode,
-            "op_code": op_code,
-            "use_mc": bool(requested_use_mc),
-            "mc_M": int(requested_mc_M),
-            "expected_fps": expected_fps,
-            "capture_fps_est": cap_fps_est,
-            "models": models_out,
-            "policy_alerts": dual_policy_alerts,
-            "safe_alert": safe_alert,
-            "safe_state": safe_state_out,
-            "recall_alert": recall_alert,
-            "recall_state": recall_state_out,
-            "threshold": safe_guard_threshold,
-            "margin": safe_guard_margin,
-            "uncertainty": safe_guard_uncertainty,
-            "location": event_location,
-            "input_source": input_source,
-            "event_source": "replay" if is_replay else "realtime",
-            "persist_event_type": persist_event_type,
-        }
         try:
             with get_conn() as conn:
-                if _table_exists(conn, "events"):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                            (
-                                resident_id,
-                                str(persist_event_type),
-                                "high" if persist_event_type == "fall" else "medium",
-                                active_model_code,
-                                None,
-                                float(p_display),
-                                json.dumps(meta),
-                            ),
-                        )
-                        saved_event_id = cur.lastrowid
-                    notification_dispatch = dispatch_fall_notifications(
-                        conn,
-                        resident_id=int(resident_id),
-                        event_id=int(saved_event_id) if saved_event_id is not None else None,
-                        p_fall=float(p_display),
-                        source="monitor",
-                    ) if persist_event_type == "fall" else None
-                    conn.commit()
-                    st[persist_cd_key] = float(_t_s)
-                    try:
-                        if persist_event_type == "fall" and notify_on_every_fall and saved_event_id is not None:
-                            get_notification_manager().handle_event(
-                                SafeGuardEvent(
-                                    event_id=str(saved_event_id),
-                                    resident_id=int(resident_id),
-                                    location=event_location,
-                                    probability=float(safe_guard_probability),
-                                    uncertainty=float(safe_guard_uncertainty),
-                                    threshold=float(safe_guard_threshold),
-                                    margin=float(safe_guard_margin),
-                                    triage_state=str(triage_state),
-                                    safe_alert=bool(safe_alert),
-                                    recall_alert=bool(recall_alert),
-                                    model_code=str(active_model_code),
-                                    dataset_code=str(dataset_code),
-                                    op_code=str(op_code),
-                                    source="monitor",
-                                    meta={
-                                        "event_db_id": int(saved_event_id),
-                                        "requested_mode": requested_mode,
-                                        "effective_mode": mode,
-                                        "safe_state": safe_state_out,
-                                        "recall_state": recall_state_out,
-                                    },
-                                ),
-                                NotificationPreferences(
-                                    phone_enabled=bool(notify_phone),
-                                    sms_enabled=bool(notify_sms),
-                                    email_enabled=True,
-                                    caregiver_name=caregiver_name,
-                                    caregiver_phone=caregiver_phone,
-                                    caregiver_email=caregiver_email,
-                                ),
-                            )
-                    except Exception as exc:
-                        logger.warning(
-                            "safe_guard handle_event failed resident_id=%s event_id=%s: %s",
-                            resident_id,
-                            saved_event_id,
-                            exc,
-                        )
+                saved_event_id, notification_dispatch = persist_monitor_event(
+                    conn,
+                    session_state=st,
+                    persistence=persistence,
+                    current_t_s=_t_s,
+                    resident_id=resident_id,
+                    event_location=event_location,
+                    input_source=input_source,
+                    requested_mode=requested_mode,
+                    effective_mode=mode,
+                    runtime=runtime,
+                    table_exists=_table_exists,
+                    triage_state=str(triage_state),
+                    safe_alert=bool(safe_alert),
+                    safe_state_out=str(safe_state_out),
+                    recall_alert=bool(recall_alert),
+                    recall_state_out=str(recall_state_out),
+                    expected_fps=float(expected_fps),
+                    capture_fps_est=cap_fps_est,
+                    p_display=float(p_display),
+                    primary_probability=float(safe_guard_probability),
+                    primary_uncertainty=float(safe_guard_uncertainty),
+                    primary_threshold=float(safe_guard_threshold),
+                    models_out=models_out,
+                    dual_policy_alerts=dual_policy_alerts,
+                )
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
                 "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
