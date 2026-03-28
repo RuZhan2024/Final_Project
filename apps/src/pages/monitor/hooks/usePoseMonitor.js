@@ -3,6 +3,20 @@ import * as mpPose from "@mediapipe/pose";
 import * as drawingUtils from "@mediapipe/drawing_utils";
 
 import { apiRequest } from "../../../lib/apiClient";
+import { readBool } from "../../../lib/booleans";
+import {
+  fetchReplayClipBlob,
+  resetMonitorSession,
+  triggerTestFall,
+  triggerTestNotification,
+  uploadSkeletonClip,
+} from "../../../features/monitor/api";
+import {
+  buildPendingClip,
+  buildPredictPayload,
+  extractPredictionState,
+} from "../../../features/monitor/prediction";
+import { createMonitorSocketClient } from "../../../features/monitor/socketClient";
 import {
   CLIP_POST_S,
   CLIP_PRE_S,
@@ -15,17 +29,18 @@ import {
   LOW_FPS_EXIT,
   LOW_FPS_HOLD_MS,
   MAX_PROC_FPS,
-  MONITOR_PAYLOAD_Q_SCALE,
   NUM_JOINTS,
   REPLAY_UI_UPDATE_MS,
 } from "../constants";
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
-const TRIAGE_FALL_CONFIRM_N = 2;
-const TRIAGE_SAFE_CONFIRM_N = 2;
-const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
+const WS_CONNECT_TIMEOUT_MS = 7000;
+const WS_PREDICT_TIMEOUT_MS = 12000;
+const REPLAY_POSE_MODEL_COMPLEXITY = 1;
+const REPLAY_MIN_DETECTION_CONFIDENCE = 0.35;
+const REPLAY_MIN_TRACKING_CONFIDENCE = 0.35;
 const CAPTURE_RESOLUTIONS = {
   "480p": { w: 640, h: 480 },
   "540p": { w: 960, h: 540 },
@@ -36,8 +51,8 @@ const CAPTURE_RESOLUTIONS = {
 function getClipFlags(settingsPayload) {
   const sys = settingsPayload?.system || {};
   return {
-    storeEventClips: Boolean(sys?.store_event_clips),
-    anonymize: Boolean(sys?.anonymize_skeleton_data ?? true),
+    storeEventClips: readBool(sys?.store_event_clips, false),
+    anonymize: readBool(sys?.anonymize_skeleton_data, true),
   };
 }
 
@@ -86,7 +101,7 @@ export function usePoseMonitor({
   const isActiveRef = useRef(Boolean(isActive));
   const poseRef = useRef(null);
   const streamRef = useRef(null);
-  const videoFileRef = useRef(null);
+  const replayClipRef = useRef(null);
   const videoObjectUrlRef = useRef(null);
   const inputSourceRef = useRef("camera");
   const rafRef = useRef(null);
@@ -112,11 +127,16 @@ export function usePoseMonitor({
   const [inputSource, setInputSource] = useState("camera"); // camera | video
   const [captureResolutionPreset, setCaptureResolutionPreset] = useState("720p");
   const [selectedVideoName, setSelectedVideoName] = useState("");
-  const [replayFile, setReplayFile] = useState(null);
+  const [replayClip, setReplayClipState] = useState(null);
   const [startError, setStartError] = useState("");
+  const [startInfo, setStartInfo] = useState("");
   const [predictError, setPredictError] = useState("");
   const [replayCurrentS, setReplayCurrentS] = useState(0);
   const [replayDurationS, setReplayDurationS] = useState(0);
+  // MediaPipe result callbacks can outlive the render that started monitoring.
+  // Read the latest persisted-monitoring flag from a ref so replay windows do not
+  // keep sending stale `persist: false` after monitoring is toggled on.
+  const monitoringOnRef = useRef(Boolean(monitoringOn));
 
   // Prediction UI
   const [triageState, setTriageState] = useState("not_fall");
@@ -146,9 +166,9 @@ export function usePoseMonitor({
   const fpsEstimateRef = useRef(null);
   const lastSentRef = useRef(0);
   const predictInFlightRef = useRef(false);
-  const payloadTRef = useRef([]);
-  const payloadXYRef = useRef([]);
-  const payloadConfRef = useRef([]);
+  const replayPredictLatencyMsRef = useRef(0);
+  const replayNextWindowEndRef = useRef(null);
+  const replayWindowQueueRef = useRef([]);
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
@@ -161,9 +181,28 @@ export function usePoseMonitor({
   const timelineSeqRef = useRef(0);
   const timelineSeenEventIdsRef = useRef(new Set());
   const lastFallHistoryTsRef = useRef(0);
-  const wsRef = useRef(null);
-  const wsReadyRef = useRef(false);
-  const wsPendingRef = useRef(null);
+  const runTokenRef = useRef(0);
+  const predictClientRef = useRef(null);
+
+  const makeSessionId = useCallback(
+    () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
+    []
+  );
+
+  const syncReplayPlaybackRate = useCallback((videoEl) => {
+    if (!videoEl || (inputSourceRef.current || "camera") !== "video") return;
+
+    const latencyMs = Number(replayPredictLatencyMsRef.current) || 0;
+    let nextRate = 1.0;
+    if (latencyMs >= 2200) nextRate = 0.9;
+
+    if (Math.abs(Number(videoEl.playbackRate || 1) - nextRate) < 0.01) return;
+    try {
+      videoEl.playbackRate = nextRate;
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
   useEffect(() => {
@@ -178,6 +217,10 @@ export function usePoseMonitor({
       }
     }
   }, [isActive]);
+
+  useEffect(() => {
+    monitoringOnRef.current = Boolean(monitoringOn);
+  }, [monitoringOn]);
 
   const autoStopMonitoring = useCallback(() => {
     try {
@@ -244,20 +287,7 @@ export function usePoseMonitor({
     if (canvasEl.height !== vh) canvasEl.height = vh;
   }, []);
 
-  const stopLive = useCallback(() => {
-    liveFlagRef.current = false;
-    setLiveRunning(false);
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
-
-    try {
-      poseRef.current?.close?.();
-    } catch {
-      // ignore
-    }
-    poseRef.current = null;
-
+  const resetVideoSource = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -276,6 +306,7 @@ export function usePoseMonitor({
         videoEl.load?.();
       }
     }
+
     if (videoObjectUrlRef.current) {
       try {
         URL.revokeObjectURL(videoObjectUrlRef.current);
@@ -284,29 +315,33 @@ export function usePoseMonitor({
       }
       videoObjectUrlRef.current = null;
     }
-    if (wsPendingRef.current) {
-      try {
-        wsPendingRef.current.reject?.(new Error("ws closed"));
-      } catch {
-        // ignore
-      }
-      wsPendingRef.current = null;
-    }
-    if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch {
-        // ignore
-      }
-    }
-    wsRef.current = null;
-    wsReadyRef.current = false;
+  }, []);
+
+  const resetPredictionTransport = useCallback(() => {
+    predictClientRef.current?.close?.("WebSocket closed during mode switch");
+    predictClientRef.current = null;
+  }, []);
+
+  const stopLive = useCallback(() => {
+    runTokenRef.current += 1;
+    liveFlagRef.current = false;
+    setLiveRunning(false);
+
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    poseSendBusyRef.current = false;
+
+    resetVideoSource();
+    resetPredictionTransport();
 
     // Clear buffer
     rawFramesRef.current = [];
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
     lastSentRef.current = 0;
+    replayPredictLatencyMsRef.current = 0;
+    replayNextWindowEndRef.current = null;
+    replayWindowQueueRef.current = [];
 
     // Clip upload state
     pendingClipRef.current = null;
@@ -330,40 +365,80 @@ export function usePoseMonitor({
     setReplayDurationS(0);
     lastReplayUiMsRef.current = 0;
     setStartError("");
+    setStartInfo("");
     setPredictError("");
+  }, [resetPredictionTransport, resetVideoSource]);
+
+  const resetFrontendSessionState = useCallback(() => {
+    rawFramesRef.current = [];
+    lastPoseTsRef.current = null;
+    fpsDeltasRef.current = [];
+    lastSentRef.current = 0;
+    replayPredictLatencyMsRef.current = 0;
+    replayNextWindowEndRef.current = null;
+    replayWindowQueueRef.current = [];
+    pendingClipRef.current = null;
+    uploadedClipIdsRef.current = new Set();
+    setPFall(null);
+    setSigma(null);
+    setTriageState("not_fall");
+    setSafeAlert(null);
+    setRecallAlert(null);
+    setSafeState(null);
+    setRecallState(null);
+    setTimeline([]);
+    timelineSeqRef.current = 0;
+    timelineSeenEventIdsRef.current = new Set();
+    lastFallHistoryTsRef.current = 0;
+    windowSeqRef.current = 0;
+    triageStableRef.current = { fall: 0, uncertain: 0, safe: 0, last: "not_fall" };
+    lastUiRef.current = {
+      triageState: "not_fall",
+      safeAlert: null,
+      recallAlert: null,
+      safeState: null,
+      recallState: null,
+      pFall: null,
+      sigma: null,
+    };
   }, []);
 
-  const setVideoFile = useCallback((file) => {
+  const setReplayClip = useCallback((clip) => {
     stopLive();
     autoStopMonitoring();
-    if (file) {
-      videoFileRef.current = file;
-      setReplayFile(file);
-      setSelectedVideoName(String(file.name || "video"));
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
+    if (clip && typeof clip === "object") {
+      replayClipRef.current = clip;
+      setReplayClipState(clip);
+      setSelectedVideoName(String(clip.name || clip.filename || clip.id || "video"));
       inputSourceRef.current = "video";
       setInputSource("video");
       setStartError("");
     } else {
-      videoFileRef.current = null;
-      setReplayFile(null);
+      replayClipRef.current = null;
+      setReplayClipState(null);
       setSelectedVideoName("");
-      inputSourceRef.current = "camera";
-      setInputSource("camera");
+      inputSourceRef.current = "video";
+      setInputSource("video");
       setStartError("");
     }
-  }, [autoStopMonitoring, stopLive]);
+  }, [autoStopMonitoring, makeSessionId, resetFrontendSessionState, stopLive]);
 
   const setInputMode = useCallback((mode) => {
     const m = mode === "video" ? "video" : "camera";
+    stopLive();
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
     inputSourceRef.current = m;
     setInputSource(m);
     if (m === "camera") {
-      videoFileRef.current = null;
-      setReplayFile(null);
+      replayClipRef.current = null;
+      setReplayClipState(null);
       setSelectedVideoName("");
     }
     setStartError("");
-  }, []);
+  }, [makeSessionId, resetFrontendSessionState, stopLive]);
 
   const setCaptureResolution = useCallback((preset) => {
     if (!Object.prototype.hasOwnProperty.call(CAPTURE_RESOLUTIONS, preset)) return;
@@ -450,11 +525,7 @@ export function usePoseMonitor({
         conf,
       };
 
-      const data = await apiRequest(
-        apiBase,
-        `/api/events/${encodeURIComponent(pending.eventId)}/skeleton_clip`,
-        { method: "POST", body: clipPayload }
-      );
+      const data = await uploadSkeletonClip(apiBase, pending.eventId, clipPayload);
 
       if (data?.ok) {
         sent.add(String(pending.eventId));
@@ -466,382 +537,307 @@ export function usePoseMonitor({
     }
   }, [apiBase, settingsPayload]);
 
-  const ensurePredictWs = useCallback(async () => {
-    if (wsRef.current && wsReadyRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return wsRef.current;
-    }
-
-    if (!apiBase) {
-      throw new Error("Missing apiBase for WebSocket connection");
-    }
-
-    let base = String(apiBase || "").trim();
-    if (!base) throw new Error("Empty apiBase");
-    if (base.endsWith("/")) base = base.slice(0, -1);
-    let wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-    let wsPath = "/api/monitor/ws";
-    try {
-      const u = new URL(base);
-      wsBase = u.origin.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-      wsPath = (u.pathname || "").replace(/\/+$/, "") + "/api/monitor/ws";
-      wsPath = wsPath.replace(/\/{2,}/g, "/");
-    } catch {
-      // ignore and use fallback from raw string replacement
-    }
-    const wsUrl = `${wsBase}${wsPath}`;
-
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    wsReadyRef.current = false;
-
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      const t = window.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try {
-          ws.close();
-        } catch {
-          // ignore
-        }
-        reject(new Error("WebSocket connect timeout"));
-      }, 3000);
-
-      ws.onopen = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(t);
-        wsReadyRef.current = true;
-        resolve(ws);
-      };
-      ws.onerror = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(t);
-        reject(new Error("WebSocket connect failed"));
-      };
-      ws.onclose = () => {
-        wsReadyRef.current = false;
-        if (wsRef.current === ws) wsRef.current = null;
-        if (wsPendingRef.current) {
-          try {
-            wsPendingRef.current.reject?.(new Error("WebSocket closed"));
-          } catch {
-            // ignore
-          }
-          wsPendingRef.current = null;
-        }
-      };
-      ws.onmessage = (evt) => {
-        const pending = wsPendingRef.current;
-        if (!pending) return;
-        try {
-          const msg = JSON.parse(String(evt?.data || "{}"));
-          if (msg?.error) {
-            pending.reject(new Error(String(msg?.detail || "predict_window ws error")));
-          } else {
-            pending.resolve(msg);
-          }
-        } catch (err) {
-          pending.reject(err);
-        } finally {
-          wsPendingRef.current = null;
-        }
-      };
+  const ensurePredictClient = useCallback(() => {
+    if (predictClientRef.current) return predictClientRef.current;
+    predictClientRef.current = createMonitorSocketClient({
+      apiBase,
+      connectTimeoutMs: WS_CONNECT_TIMEOUT_MS,
+      predictTimeoutMs: WS_PREDICT_TIMEOUT_MS,
     });
+    return predictClientRef.current;
   }, [apiBase]);
 
-  const predictViaWs = useCallback(async (payload) => {
-    const ws = await ensurePredictWs();
-    return await new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        if (wsPendingRef.current) {
-          wsPendingRef.current = null;
-        }
-        reject(new Error("WebSocket predict timeout"));
-      }, 5000);
+  const predictViaWs = useCallback(
+    async (payload) => {
+      return await ensurePredictClient().predict(payload);
+    },
+    [ensurePredictClient]
+  );
 
-      wsPendingRef.current = {
-        resolve: (msg) => {
-          window.clearTimeout(timeoutId);
-          resolve(msg);
-        },
-        reject: (err) => {
-          window.clearTimeout(timeoutId);
-          reject(err);
-        },
-      };
+  const predictViaHttp = useCallback(
+    async (payload) =>
+      await apiRequest(apiBase, "/api/monitor/predict_window", {
+        method: "POST",
+        body: payload,
+      }),
+    [apiBase]
+  );
 
-      try {
-        ws.send(JSON.stringify(payload));
-      } catch (err) {
-        wsPendingRef.current = null;
-        window.clearTimeout(timeoutId);
-        reject(err);
-      }
-    });
-  }, [ensurePredictWs]);
-
-  const maybeSendWindow = useCallback(async () => {
-    if (predictInFlightRef.current) return;
-    const now = performance.now();
-    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
-    if (now - lastSentRef.current < minGapMs) return;
-
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - needMs;
-
-    // Wait until we have enough history to cover the full window duration.
-    if (raw[0].t > startNeed) return;
-
-    // Include one frame before startNeed for interpolation on the server.
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    const slice = raw.slice(startIdx);
-    const nSlice = slice.length;
-
-    lastSentRef.current = now;
-
-    const { storeEventClips } = getClipFlags(settingsPayload);
-
-    // Reuse arrays to reduce per-request allocations (guarded by in-flight mutex).
-    const tArr = payloadTRef.current;
-    const xyArr = payloadXYRef.current;
-    const confArr = payloadConfRef.current;
-    tArr.length = nSlice;
-    xyArr.length = nSlice;
-    confArr.length = nSlice;
-    for (let i = 0; i < nSlice; i++) {
-      const fr = slice[i];
-      tArr[i] = fr.t;
-      xyArr[i] = fr.xy;
-      confArr[i] = fr.conf;
+  const applyPredictionResponse = useCallback((data) => {
+    const endTs = Number(data?.window_end_t_ms || data?.window_end_ts || 0);
+    if (Number.isFinite(endTs) && endTs > 0) {
+      void maybeFinalizeClipUpload();
     }
 
-    const xyQ = new Array(nSlice * NUM_JOINTS * 2);
-    const confQ = new Array(nSlice * NUM_JOINTS);
-    let q = 0;
-    let c = 0;
-    for (let i = 0; i < nSlice; i++) {
-      const fr = slice[i];
-      const pts = fr.xy || [];
-      const cf = fr.conf || [];
-      for (let j = 0; j < NUM_JOINTS; j++) {
-        const p = pts[j] || [0, 0];
-        const v = cf[j] == null ? 1 : cf[j];
-        xyQ[q++] = Math.round(clamp01(Number(p[0]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
-        xyQ[q++] = Math.round(clamp01(Number(p[1]) || 0) * MONITOR_PAYLOAD_Q_SCALE);
-        confQ[c++] = Math.round(clamp01(Number(v) || 0) * MONITOR_PAYLOAD_Q_SCALE);
-      }
-    }
-
-    const payload = {
-      window_seq: ++windowSeqRef.current,
-      session_id: sessionIdRef.current,
-      input_source: inputSourceRef.current || "camera",
-      resident_id: 1,
+    const nextState = extractPredictionState({
+      data,
       mode,
-      dataset_code: activeDatasetCode,
-      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+      previousStable: triageStableRef.current,
+      settingsPayload,
+    });
+    triageStableRef.current = nextState.stable;
 
-      model_tcn: mode !== "gcn" ? chosen.tcn : null,
-      model_gcn: mode !== "tcn" ? chosen.gcn : null,
-      model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
-
-      // The model expects this FPS after resampling.
-      fps: targetFps,
-      target_fps: targetFps,
-      target_T: deployW,
-
-      // Useful for debugging / dashboards (does NOT affect inference)
-      capture_fps: streamFps || fpsEstimateRef.current || null,
-
-      timestamp_ms: Date.now(),
-      use_mc: Boolean(mcEnabled),
-      mc_M: mcCfg?.M,
-
-      // Persist events when monitoring is on OR when we need an event_id for clip saving.
-      persist: Boolean(monitoringOn || storeEventClips),
-
-      // Raw pose samples (variable FPS)
-      raw_t_ms: tArr,
-      raw_shape: [nSlice, NUM_JOINTS],
-      raw_xy_q: xyQ,
-      raw_conf_q: confQ,
-
-      window_end_t_ms: endTs,
-    };
+    if (lastUiRef.current.safeAlert !== nextState.safeAlert) {
+      lastUiRef.current.safeAlert = nextState.safeAlert;
+      setSafeAlert(nextState.safeAlert);
+    }
+    if (lastUiRef.current.recallAlert !== nextState.recallAlert) {
+      lastUiRef.current.recallAlert = nextState.recallAlert;
+      setRecallAlert(nextState.recallAlert);
+    }
+    if (lastUiRef.current.safeState !== nextState.safeState) {
+      lastUiRef.current.safeState = nextState.safeState;
+      setSafeState(nextState.safeState);
+    }
+    if (lastUiRef.current.recallState !== nextState.recallState) {
+      lastUiRef.current.recallState = nextState.recallState;
+      setRecallState(nextState.recallState);
+    }
+    if (lastUiRef.current.triageState !== nextState.triageState) {
+      lastUiRef.current.triageState = nextState.triageState;
+      setTriageState(nextState.triageState);
+    }
 
     try {
-      predictInFlightRef.current = true;
-      const data = await predictViaWs(payload);
-      setPredictError("");
-
-      const safeObj = data?.policy_alerts?.safe;
-      const recallObj = data?.policy_alerts?.recall;
-      const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
-      const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
-      const safeBool =
-        typeof data?.safe_alert === "boolean"
-          ? data.safe_alert
-          : typeof safeObj?.alert === "boolean"
-          ? safeObj.alert
-          : null;
-      const recallBool =
-        typeof data?.recall_alert === "boolean"
-          ? data.recall_alert
-          : typeof recallObj?.alert === "boolean"
-          ? recallObj.alert
-          : null;
-      const nextSafeState = (data?.safe_state || safeObj?.state || null) ?? null;
-      const nextRecallState = (data?.recall_state || recallObj?.state || null) ?? null;
-      if (lastUiRef.current.safeAlert !== safeBool) {
-        lastUiRef.current.safeAlert = safeBool;
-        setSafeAlert(safeBool);
-      }
-      if (lastUiRef.current.recallAlert !== recallBool) {
-        lastUiRef.current.recallAlert = recallBool;
-        setRecallAlert(recallBool);
-      }
-      if (lastUiRef.current.safeState !== nextSafeState) {
-        lastUiRef.current.safeState = nextSafeState;
-        setSafeState(nextSafeState);
-      }
-      if (lastUiRef.current.recallState !== nextRecallState) {
-        lastUiRef.current.recallState = nextRecallState;
-        setRecallState(nextRecallState);
-      }
-
-      // In high-performance mode, current prediction should follow backend safe channel directly.
-      let triCandidate = safeStateRaw || triRaw || "not_fall";
-      if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
-      const st = triageStableRef.current;
-      if (triCandidate === "fall" && safeBool !== false) {
-        st.fall += 1;
-        st.uncertain = 0;
-        st.safe = 0;
-      } else if (triCandidate === "uncertain") {
-        st.uncertain += 1;
-        st.fall = 0;
-        st.safe = 0;
-      } else {
-        st.safe += 1;
-        st.fall = 0;
-        st.uncertain = 0;
-      }
-      let triStable = st.last || "not_fall";
-      if (st.fall >= TRIAGE_FALL_CONFIRM_N) triStable = "fall";
-      else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
-      else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
-      st.last = triStable;
-      if (lastUiRef.current.triageState !== triStable) {
-        lastUiRef.current.triageState = triStable;
-        setTriageState(triStable);
-      }
-
-      // Schedule a skeleton clip upload (pre + post seconds around this window end)
-      try {
-        const evId = data?.event_id;
-        if (storeEventClips && evId != null) {
-          const sent = uploadedClipIdsRef.current;
-          const already = sent && sent.has(String(evId));
-          const pending = pendingClipRef.current;
-
-          if (!already && (!pending || String(pending.eventId) !== String(evId))) {
-            pendingClipRef.current = {
-              eventId: evId,
-              triggerEndTs: endTs,
-              deadlineTs: endTs + CLIP_POST_S * 1000,
-              preMs: CLIP_PRE_S * 1000,
-              postMs: CLIP_POST_S * 1000,
-              ctx: {
-                dataset_code: activeDatasetCode,
-                mode,
-                op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-                use_mc: Boolean(mcEnabled),
-                mc_M: mcCfg?.M,
-              },
-            };
-          }
+      const { storeEventClips } = getClipFlags(settingsPayload);
+      const evId = data?.event_id;
+      if (storeEventClips && evId != null && Number.isFinite(endTs) && endTs > 0) {
+        const sent = uploadedClipIdsRef.current;
+        const already = sent && sent.has(String(evId));
+        const pending = pendingClipRef.current;
+        if (!already && (!pending || String(pending.eventId) !== String(evId))) {
+          pendingClipRef.current = buildPendingClip({
+            eventId: evId,
+            endTs,
+            activeDatasetCode,
+            mode,
+            opCode,
+            settingsPayload,
+            mcEnabled,
+            mcCfg,
+            clipPreS: CLIP_PRE_S,
+            clipPostS: CLIP_POST_S,
+          });
         }
-      } catch {
-        // ignore
       }
-
-      // pFall display from the active model output.
-      let mu = null;
-      let sig = null;
-
-      const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
-      if (mOut) {
-        // Use tracker-smoothed score first so P(fall) matches current triage semantics.
-        mu = mOut?.triage?.ps != null
-          ? Number(mOut.triage.ps)
-          : mOut?.p_alert_in != null
-            ? Number(mOut.p_alert_in)
-            : mOut?.mu != null
-              ? Number(mOut.mu)
-              : mOut?.p_det != null
-                ? Number(mOut.p_det)
-                : null;
-        sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
-      }
-
-      if (lastUiRef.current.pFall !== mu) {
-        lastUiRef.current.pFall = mu;
-        setPFall(mu);
-      }
-      if (lastUiRef.current.sigma !== sig) {
-        lastUiRef.current.sigma = sig;
-        setSigma(sig);
-      }
-
-      // Timeline must match Current Prediction exactly.
-      let markerKind = "safe";
-      const triNorm = String(triStable || "").toLowerCase();
-      if (triNorm === "fall") markerKind = "fall";
-      else if (triNorm === "uncertain") markerKind = "uncertain";
-      const dedupMs = Math.round(
-        Math.max(
-          1000,
-          1000 * Number(settingsPayload?.system?.alert_cooldown_sec || FALL_HISTORY_DEDUP_MS_DEFAULT / 1000)
-        )
-      );
-      addTimelineMarker(markerKind, {
-        eventId: markerKind === "fall" ? data?.event_id ?? null : null,
-        dedupMs,
-      });
-    } catch (err) {
-      console.error("Error calling /api/monitor/predict_window", err);
-      setPredictError(String(err?.message || err || "predict_window failed"));
-    } finally {
-      predictInFlightRef.current = false;
+    } catch {
+      // ignore
     }
+
+    if (lastUiRef.current.pFall !== nextState.pFall) {
+      lastUiRef.current.pFall = nextState.pFall;
+      setPFall(nextState.pFall);
+    }
+    if (lastUiRef.current.sigma !== nextState.sigma) {
+      lastUiRef.current.sigma = nextState.sigma;
+      setSigma(nextState.sigma);
+    }
+
+    addTimelineMarker(nextState.markerKind, {
+      eventId: nextState.markerKind === "fall" ? nextState.eventId : null,
+      dedupMs: nextState.dedupMs,
+    });
   }, [
     activeDatasetCode,
     addTimelineMarker,
+    mcCfg,
+    mcEnabled,
+    mode,
+    opCode,
+    settingsPayload,
+    maybeFinalizeClipUpload,
+  ]);
+
+  const buildPredictionPayload = useCallback(({ sourceMode, frames, windowEndTs, location }) => {
+    const nFrames = Array.isArray(frames) ? frames.length : 0;
+    if (nFrames < 2) return null;
+
+    const { storeEventClips } = getClipFlags(settingsPayload);
+    const payload = buildPredictPayload({
+      slice: frames,
+      sessionId: sessionIdRef.current,
+      windowSeq: ++windowSeqRef.current,
+      inputSource: sourceMode,
+      location,
+      mode,
+      datasetCode: activeDatasetCode,
+      opCode: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+      chosen,
+      targetFps,
+      deployW,
+      streamFps: streamFps || fpsEstimateRef.current || null,
+      mcEnabled,
+      mcCfg,
+      persist: monitoringOnRef.current || storeEventClips,
+      endTs: windowEndTs,
+    });
+
+    return {
+      ...payload,
+      compact_response: sourceMode === "video",
+    };
+  }, [
+    activeDatasetCode,
     chosen,
-    deployS,
     deployW,
     mcCfg,
     mcEnabled,
     mode,
-    monitoringOn,
     opCode,
-    predictViaWs,
     settingsPayload,
     streamFps,
     targetFps,
   ]);
 
+  const queueReplayWindows = useCallback(() => {
+    const raw = rawFramesRef.current;
+    if (!raw || raw.length < 2) return false;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const strideMs = Math.max(dtMs, Number(deployS) * dtMs);
+    const endTs = raw[raw.length - 1].t;
+    const firstEligibleEndTs = raw[0].t + needMs;
+    if (!Number.isFinite(firstEligibleEndTs) || endTs < firstEligibleEndTs) return false;
+
+    if (replayNextWindowEndRef.current == null || replayNextWindowEndRef.current < firstEligibleEndTs) {
+      replayNextWindowEndRef.current = firstEligibleEndTs;
+    }
+
+    const queue = replayWindowQueueRef.current;
+    let queuedAny = false;
+    while (Number(replayNextWindowEndRef.current) <= endTs) {
+      queue.push(Number(replayNextWindowEndRef.current));
+      replayNextWindowEndRef.current += strideMs;
+      queuedAny = true;
+    }
+    return queuedAny;
+  }, [deployS, deployW, targetFps]);
+
+  const buildReplayPayload = useCallback(() => {
+    const queue = replayWindowQueueRef.current;
+    const raw = rawFramesRef.current;
+    if (!queue.length || !raw || raw.length < 2) return null;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const windowEndTs = Number(queue[0]);
+    const startWindowTs = windowEndTs - needMs;
+    if (raw[0].t > startWindowTs) return null;
+
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startWindowTs) i0++;
+    const startIdx = Math.max(0, i0 - 1);
+    let endIdx = raw.length;
+    while (endIdx > startIdx + 1 && raw[endIdx - 1].t > windowEndTs) endIdx--;
+    const frames = raw.slice(startIdx, endIdx);
+
+    return buildPredictionPayload({
+      sourceMode: "video",
+      frames,
+      windowEndTs,
+      location: String(selectedVideoName || replayClipRef.current?.name || "replay_video"),
+    });
+  }, [buildPredictionPayload, deployW, selectedVideoName, targetFps]);
+
+  const buildLivePayload = useCallback(() => {
+    const raw = rawFramesRef.current;
+    if (!raw || raw.length < 2) return null;
+
+    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
+    const needMs = (deployW - 1) * dtMs;
+    const endTs = raw[raw.length - 1].t;
+    const startNeed = endTs - needMs;
+    if (raw[0].t > startNeed) return null;
+
+    let i0 = 0;
+    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
+    const startIdx = Math.max(0, i0 - 1);
+    const frames = raw.slice(startIdx);
+
+    return buildPredictionPayload({
+      sourceMode: "camera",
+      frames,
+      windowEndTs: endTs,
+      location: "camera_live",
+    });
+  }, [buildPredictionPayload, deployW, targetFps]);
+
+  const runPredictionRequest = useCallback(async (payload, sourceMode) => {
+    const videoEl = videoRef.current;
+    try {
+      predictInFlightRef.current = true;
+      const t0 = performance.now();
+      const data =
+        sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
+      replayPredictLatencyMsRef.current = Math.max(0, performance.now() - t0);
+      setPredictError("");
+      applyPredictionResponse(data);
+      return true;
+    } catch (err) {
+      if (String(err?.name || "") === "AbortError") {
+        setPredictError("");
+        return false;
+      }
+      console.error("Error calling /api/monitor/predict_window", err);
+      setPredictError(String(err?.message || err || "predict_window failed"));
+      return false;
+    } finally {
+      predictInFlightRef.current = false;
+      if (sourceMode === "video") {
+        syncReplayPlaybackRate(videoEl);
+      }
+    }
+  }, [applyPredictionResponse, predictViaHttp, predictViaWs, syncReplayPlaybackRate]);
+
+  const drainReplayQueue = useCallback(async () => {
+    if ((inputSourceRef.current || "camera") !== "video") return;
+    void queueReplayWindows();
+    if (predictInFlightRef.current) return;
+    if (!replayWindowQueueRef.current.length) return;
+
+    while (!predictInFlightRef.current && replayWindowQueueRef.current.length) {
+      const payload = buildReplayPayload();
+      if (!payload) return;
+      const nextWindowEndTs = Number(payload.window_end_t_ms);
+      const ok = await runPredictionRequest(payload, "video");
+      const front = Number(replayWindowQueueRef.current[0]);
+      if (Number.isFinite(front) && front === nextWindowEndTs) {
+        replayWindowQueueRef.current.shift();
+      }
+      if (!ok) return;
+    }
+  }, [buildReplayPayload, queueReplayWindows, runPredictionRequest]);
+
+  const maybeSendWindow = useCallback(async () => {
+    const sourceMode = inputSourceRef.current || "camera";
+    if (sourceMode === "video") {
+      await drainReplayQueue();
+      return;
+    }
+
+    if (predictInFlightRef.current) return;
+    const now = performance.now();
+    const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
+    const gapRemainMs = minGapMs - (now - lastSentRef.current);
+    if (gapRemainMs > 0) return;
+
+    const payload = buildLivePayload();
+    if (!payload) return;
+    lastSentRef.current = now;
+
+    await runPredictionRequest(payload, sourceMode);
+  }, [
+    buildLivePayload,
+    deployS,
+    drainReplayQueue,
+    runPredictionRequest,
+    targetFps,
+  ]);
+
   const handlePoseResults = useCallback(
     (results) => {
+      const isReplay = inputSourceRef.current === "video";
       // Cap processing rate.
       const nowMs = performance.now();
       const procCap = Math.min(MAX_PROC_FPS, Math.max(8, Number(targetFps) + 2));
@@ -850,7 +846,7 @@ export function usePoseMonitor({
 
       // Adaptive draw FPS: if capture FPS stays low, reduce draw load temporarily.
       const estFps = Number(fpsEstimateRef.current);
-      if (Number.isFinite(estFps) && estFps > 0) {
+      if (!isReplay && Number.isFinite(estFps) && estFps > 0) {
         if (estFps < LOW_FPS_ENTER) {
           if (!lowFpsSinceMsRef.current) lowFpsSinceMsRef.current = nowMs;
           if (nowMs - lowFpsSinceMsRef.current > LOW_FPS_HOLD_MS) {
@@ -893,26 +889,28 @@ export function usePoseMonitor({
       const doDraw = isActiveRef.current;
       const landmarks = results.poseLandmarks;
 
+      const hasLandmarks = Boolean(landmarks && landmarks.length);
+
       // No pose detected.
-      if (!landmarks || !landmarks.length) {
+      if (!hasLandmarks) {
         if (doDraw && ctx) {
           const drawNowMs = performance.now();
           if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
-            return;
+            // Keep processing so replay/live still advance the raw window buffer.
+          } else {
+            lastDrawMsRef.current = drawNowMs;
+            ensureCanvasMatchesVideo();
+            ctx.fillStyle = "#020617";
+            ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+            ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
+            ctx.fillStyle = "#94a3b8";
+            ctx.fillText("No pose detected…", 16, 24);
           }
-          lastDrawMsRef.current = drawNowMs;
-          ensureCanvasMatchesVideo();
-          ctx.fillStyle = "#020617";
-          ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.fillStyle = "#94a3b8";
-          ctx.fillText("No pose detected…", 16, 24);
         }
-        return;
       }
 
       // Draw only when this page is active.
-      if (doDraw && ctx) {
+      if (hasLandmarks && doDraw && ctx) {
         const drawNowMs = performance.now();
         if (drawNowMs - lastDrawMsRef.current < 1000 / Math.max(1, adaptiveDrawFpsRef.current)) {
           // Skip frequent repaint to reduce main-thread pressure.
@@ -942,17 +940,26 @@ export function usePoseMonitor({
       const confFrame = new Array(NUM_JOINTS);
 
       for (let i = 0; i < NUM_JOINTS; i++) {
-        const lm = landmarks[i];
+        const lm = hasLandmarks ? landmarks[i] : null;
         if (!lm) {
           xyFrame[i] = [0, 0];
           confFrame[i] = 0;
         } else {
-          xyFrame[i] = [clamp01(lm.x), clamp01(lm.y)];
+          xyFrame[i] = [
+            Number.isFinite(Number(lm.x)) ? Number(lm.x) : 0,
+            Number.isFinite(Number(lm.y)) ? Number(lm.y) : 0,
+          ];
           confFrame[i] = typeof lm.visibility === "number" ? clamp01(lm.visibility) : 1.0;
         }
       }
 
-      const tNow = performance.now();
+      const replayVideoTsMs =
+        isReplay && videoRef.current ? Number(videoRef.current.currentTime || 0) * 1000 : null;
+      let tNow =
+        isReplay && Number.isFinite(replayVideoTsMs) ? Number(replayVideoTsMs) : performance.now();
+      if (isReplay && typeof lastPoseTsRef.current === "number" && tNow <= lastPoseTsRef.current) {
+        tNow = lastPoseTsRef.current + 1;
+      }
 
       // Estimate FPS from callback timing (smoothed)
       const last = lastPoseTsRef.current;
@@ -978,7 +985,8 @@ export function usePoseMonitor({
       raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
 
       // Keep ~12s max
-      const maxRaw = Math.max(600, Math.ceil(targetFps * 12));
+      const maxRaw =
+        isReplay ? Math.max(2400, Math.ceil(targetFps * 120)) : Math.max(600, Math.ceil(targetFps * 12));
       if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
 
       // Clip upload + inference
@@ -988,113 +996,169 @@ export function usePoseMonitor({
     [ensureCanvasMatchesVideo, maybeFinalizeClipUpload, maybeSendWindow, targetFps]
   );
 
+  const initPosePipeline = useCallback(async (videoEl, { warmup = false } = {}) => {
+    const isReplay = inputSourceRef.current === "video";
+    if (!poseRef.current) {
+      const pose = new mpPose.Pose({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+
+      pose.setOptions({
+        modelComplexity: isReplay ? REPLAY_POSE_MODEL_COMPLEXITY : LIVE_POSE_MODEL_COMPLEXITY,
+        smoothLandmarks: true,
+        minDetectionConfidence: isReplay ? REPLAY_MIN_DETECTION_CONFIDENCE : 0.5,
+        minTrackingConfidence: isReplay ? REPLAY_MIN_TRACKING_CONFIDENCE : 0.5,
+      });
+
+      pose.onResults(handlePoseResults);
+      poseRef.current = pose;
+    } else if (poseRef.current?.setOptions) {
+      try {
+        poseRef.current.setOptions({
+          modelComplexity: isReplay ? REPLAY_POSE_MODEL_COMPLEXITY : LIVE_POSE_MODEL_COMPLEXITY,
+          smoothLandmarks: true,
+          minDetectionConfidence: isReplay ? REPLAY_MIN_DETECTION_CONFIDENCE : 0.5,
+          minTrackingConfidence: isReplay ? REPLAY_MIN_TRACKING_CONFIDENCE : 0.5,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    if (warmup && videoEl?.readyState >= 2 && poseRef.current) {
+      await poseRef.current.send({ image: videoEl });
+    }
+  }, [handlePoseResults]);
+
+  const awaitVideoReady = useCallback(async (videoEl, clipLabel) => {
+    await new Promise((resolve, reject) => {
+      if (videoEl.readyState >= 2) {
+        resolve();
+        return;
+      }
+
+      let done = false;
+      const timer = window.setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error("Video metadata load timeout"));
+      }, 10000);
+
+      const cleanup = () => {
+        videoEl.removeEventListener("loadedmetadata", onReady);
+        videoEl.removeEventListener("loadeddata", onReady);
+        videoEl.removeEventListener("canplay", onReady);
+        videoEl.removeEventListener("error", onErr);
+        window.clearTimeout(timer);
+      };
+
+      const onReady = () => {
+        if (done || videoEl.readyState < 2) return;
+        done = true;
+        cleanup();
+        resolve();
+      };
+
+      const onErr = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error(getVideoLoadErrorMessage(videoEl, clipLabel)));
+      };
+
+      videoEl.addEventListener("loadedmetadata", onReady, { once: true });
+      videoEl.addEventListener("loadeddata", onReady, { once: true });
+      videoEl.addEventListener("canplay", onReady, { once: true });
+      videoEl.addEventListener("error", onErr, { once: true });
+
+      try {
+        videoEl.load?.();
+      } catch {
+        // ignore
+      }
+    });
+  }, []);
+
+  const prepareReplayVideo = useCallback(async (videoEl, clip, clipUrl) => {
+    const clipFile = clip?.file instanceof File ? clip.file : null;
+
+    resetVideoSource();
+    if (clipFile) {
+      const objectUrl = URL.createObjectURL(clipFile);
+      videoObjectUrlRef.current = objectUrl;
+      videoEl.src = objectUrl;
+    } else {
+      setStartInfo("Loading replay clip...");
+      const blob = await fetchReplayClipBlob(clipUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      videoObjectUrlRef.current = objectUrl;
+      videoEl.src = objectUrl;
+    }
+
+    videoEl.currentTime = 0;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.preload = "auto";
+
+    await awaitVideoReady(videoEl, clipFile || clip);
+  }, [awaitVideoReady, resetVideoSource]);
+
+  const prepareCameraStream = useCallback(async (videoEl) => {
+    const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: cap.w, max: cap.w },
+        height: { ideal: cap.h, max: cap.h },
+        frameRate: { ideal: targetFps, max: targetFps },
+      },
+      audio: false,
+    });
+    streamRef.current = stream;
+    videoEl.srcObject = stream;
+    await awaitVideoReady(videoEl, null);
+  }, [awaitVideoReady, captureResolutionPreset, targetFps]);
+
+  const resetSession = useCallback(async () => {
+    try {
+      await resetMonitorSession(apiBase, sessionIdRef.current);
+    } catch {
+      // ignore
+    }
+  }, [apiBase]);
+
   const startLive = useCallback(async () => {
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
+    const runToken = runTokenRef.current + 1;
+    runTokenRef.current = runToken;
+
     try {
+      sessionIdRef.current = makeSessionId();
+      resetFrontendSessionState();
+      await resetSession();
       setStartError("");
+      setStartInfo("");
       liveFlagRef.current = true;
       setLiveRunning(true);
 
       const source = inputSourceRef.current || "camera";
-      const file = videoFileRef.current || replayFile;
       const useVideoFile = source === "video";
-      if (useVideoFile && !file) {
-        throw new Error("Replay mode selected but no video file is loaded.");
+      const clip = replayClipRef.current || replayClip;
+      const clipFile = clip?.file instanceof File ? clip.file : null;
+      const clipUrl = typeof clip?.url === "string" && clip.url ? clip.url : "";
+      if (useVideoFile && !clipFile && !clipUrl) {
+        throw new Error("Replay mode selected but no replay clip is loaded.");
       }
+
       if (useVideoFile) {
-        if (videoObjectUrlRef.current) {
-          try {
-            URL.revokeObjectURL(videoObjectUrlRef.current);
-          } catch {
-            // ignore
-          }
-          videoObjectUrlRef.current = null;
-        }
-        try {
-          videoEl.pause();
-        } catch {
-          // ignore
-        }
-        videoEl.srcObject = null;
-        videoEl.removeAttribute("src");
-        try {
-          videoEl.load?.();
-        } catch {
-          // ignore
-        }
-        const u = URL.createObjectURL(file);
-        videoObjectUrlRef.current = u;
-        videoEl.src = u;
-        videoEl.currentTime = 0;
-        videoEl.muted = true;
-        videoEl.playsInline = true;
-        videoEl.preload = "auto";
+        await prepareReplayVideo(videoEl, clip, clipUrl);
+        if (runTokenRef.current !== runToken) return false;
+        setStartInfo("Preparing replay detector...");
       } else {
-        const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: cap.w, max: cap.w },
-            height: { ideal: cap.h, max: cap.h },
-            frameRate: { ideal: targetFps, max: targetFps },
-          },
-          audio: false,
-        });
-        streamRef.current = stream;
-        videoEl.srcObject = stream;
-      }
-
-      await new Promise((resolve, reject) => {
-        if (videoEl.readyState >= 1) {
-          resolve();
-          return;
-        }
-        let done = false;
-        const timer = window.setTimeout(() => {
-          if (done) return;
-          done = true;
-          cleanup();
-          reject(new Error("Video metadata load timeout"));
-        }, 10000);
-        const cleanup = () => {
-          videoEl.removeEventListener("loadedmetadata", onLoaded);
-          videoEl.removeEventListener("canplay", onCanPlay);
-          videoEl.removeEventListener("error", onErr);
-          window.clearTimeout(timer);
-        };
-        const onLoaded = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve();
-        };
-        const onCanPlay = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve();
-        };
-        const onErr = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          reject(new Error(getVideoLoadErrorMessage(videoEl, file)));
-        };
-        videoEl.addEventListener("loadedmetadata", onLoaded, { once: true });
-        videoEl.addEventListener("canplay", onCanPlay, { once: true });
-        videoEl.addEventListener("error", onErr, { once: true });
-        try {
-          videoEl.load?.();
-        } catch {
-          // ignore
-        }
-      });
-
-      try {
-        await videoEl.play();
-      } catch (e) {
-        throw new Error(`Video play failed: ${String(e?.message || e)}`);
+        await prepareCameraStream(videoEl);
+        if (runTokenRef.current !== runToken) return false;
       }
       ensureCanvasMatchesVideo();
       if (useVideoFile) {
@@ -1116,23 +1180,31 @@ export function usePoseMonitor({
         }
       }
 
-      const pose = new mpPose.Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-      });
+      await initPosePipeline(videoEl, { warmup: true });
+      if (runTokenRef.current !== runToken) return false;
+      if (useVideoFile) {
+        setStartInfo("");
+      }
 
-      pose.setOptions({
-        modelComplexity: LIVE_POSE_MODEL_COMPLEXITY,
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-
-      pose.onResults(handlePoseResults);
-      poseRef.current = pose;
+      try {
+        await videoEl.play();
+      } catch (e) {
+        throw new Error(`Video play failed: ${String(e?.message || e)}`);
+      }
 
       const loop = async () => {
-        if (!liveFlagRef.current) return;
+        if (!liveFlagRef.current || runTokenRef.current !== runToken) return;
         if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
+          void buildReplayPayload();
+          void drainReplayQueue();
+          const replayBusy =
+            predictInFlightRef.current || replayWindowQueueRef.current.length > 0;
+          if (replayBusy) {
+            setStartInfo("Finalizing replay predictions...");
+            rafRef.current = requestAnimationFrame(loop);
+            return;
+          }
+          setStartInfo("");
           stopLive();
           autoStopMonitoring();
           return;
@@ -1162,15 +1234,26 @@ export function usePoseMonitor({
         if (now - lastInferTsRef.current >= minIntervalMs) {
           lastInferTsRef.current = now;
 
-          if (videoEl.readyState >= 2 && poseRef.current && !poseSendBusyRef.current) {
+          if (
+            videoEl.readyState >= 2 &&
+            videoEl.videoWidth > 0 &&
+            videoEl.videoHeight > 0 &&
+            poseRef.current &&
+            !poseSendBusyRef.current
+          ) {
             poseSendBusyRef.current = true;
             poseRef.current
               .send({ image: videoEl })
               .catch((err) => {
-                console.error("pose.send error", err);
+                const msg = String(err?.message || err || "");
+                if (!/no video|ROI width and height must be > 0|Aborted\(native code called abort\)/i.test(msg)) {
+                  console.error("pose.send error", err);
+                }
               })
               .finally(() => {
-                poseSendBusyRef.current = false;
+                if (runTokenRef.current === runToken) {
+                  poseSendBusyRef.current = false;
+                }
               });
           }
         }
@@ -1186,7 +1269,7 @@ export function usePoseMonitor({
       stopLive();
       return false;
     }
-  }, [autoStopMonitoring, captureResolutionPreset, ensureCanvasMatchesVideo, handlePoseResults, replayFile, stopLive, targetFps]);
+  }, [autoStopMonitoring, buildReplayPayload, drainReplayQueue, ensureCanvasMatchesVideo, initPosePipeline, makeSessionId, prepareCameraStream, prepareReplayVideo, replayClip, resetFrontendSessionState, resetSession, stopLive]);
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
@@ -1208,32 +1291,16 @@ export function usePoseMonitor({
 
   // Cleanup
   useEffect(() => {
-    return () => stopLive();
-  }, [stopLive]);
-
-  const resetSession = useCallback(async () => {
-    try {
+    return () => {
+      stopLive();
       try {
-        await apiRequest(
-          apiBase,
-          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-          { method: "POST" }
-        );
-      } catch (err) {
-        if (Number(err?.status) === 404) {
-          await apiRequest(
-            apiBase,
-            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-            { method: "POST" }
-          );
-        } else {
-          throw err;
-        }
+        poseRef.current?.close?.();
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
-    }
-  }, [apiBase]);
+      poseRef.current = null;
+    };
+  }, [stopLive]);
 
   const seekReplay = useCallback((ratio) => {
     const videoEl = videoRef.current;
@@ -1241,18 +1308,21 @@ export function usePoseMonitor({
     const du = Number(videoEl.duration || 0);
     if (!Number.isFinite(du) || du <= 0) return;
     const r = Math.max(0, Math.min(1, Number(ratio) || 0));
+    sessionIdRef.current = makeSessionId();
+    resetFrontendSessionState();
+    void resetSession();
     videoEl.currentTime = r * du;
     setReplayCurrentS(Number(videoEl.currentTime || 0));
     setReplayDurationS(du);
-  }, []);
+  }, [makeSessionId, resetFrontendSessionState, resetSession]);
 
   const testFall = useCallback(async () => {
     // 1) Try backend helper endpoint (if present)
     try {
-      const data = await apiRequest(apiBase, "/api/events/test_fall", {
-        method: "POST",
-        body: { resident_id: 1, model_code: prettyModelTag(settingsPayload?.system?.active_model_code) },
-      });
+      const data = await triggerTestFall(
+        apiBase,
+        prettyModelTag(settingsPayload?.system?.active_model_code)
+      );
       if (data || data?.ok) {
         addTimelineMarker("fall", { force: true });
         return;
@@ -1263,10 +1333,7 @@ export function usePoseMonitor({
 
     // 2) Fallback: record a test notification
     try {
-      await apiRequest(apiBase, "/api/notifications/test", {
-        method: "POST",
-        body: { resident_id: 1, channel: "email", message: "[UI] Test Fall button pressed" },
-      });
+      await triggerTestNotification(apiBase, "[UI] Test Fall button pressed");
     } catch {
       // ignore
     }
@@ -1369,9 +1436,11 @@ export function usePoseMonitor({
     captureResolutionPreset,
     setCaptureResolution,
     selectedVideoName,
-    setVideoFile,
+    replayClip,
+    setReplayClip,
     setInputMode,
     startError,
+    startInfo,
     predictError,
     replayCurrentS,
     replayDurationS,

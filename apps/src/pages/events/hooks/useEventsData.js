@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiRequest } from "../../../lib/apiClient";
+import {
+  fetchEvents,
+  fetchEventsSummary,
+  updateEventStatus,
+} from "../../../features/events/api";
 
 function isTodayLocal(isoLike) {
   const d = new Date(isoLike);
@@ -31,17 +35,13 @@ export function useEventsData(apiBase, residentId = 1) {
 
       // Summary (best-effort)
       try {
-        const s = await apiRequest(apiBase, `/api/events/summary?resident_id=${residentId}`, {
-          signal: ac.signal,
-        });
+        const s = await fetchEventsSummary(apiBase, { residentId, signal: ac.signal });
         if (s?.today) setTodaySummary(s.today);
       } catch {
         // ignore
       }
 
-      const data = await apiRequest(apiBase, `/api/events?resident_id=${residentId}&limit=500`, {
-        signal: ac.signal,
-      });
+      const data = await fetchEvents(apiBase, { residentId, limit: 500, signal: ac.signal });
       setEvents(Array.isArray(data?.events) ? data.events : []);
       if (!silent) setLoading(false);
     } catch (e) {
@@ -58,10 +58,7 @@ export function useEventsData(apiBase, residentId = 1) {
 
   const updateStatus = useCallback(
     async (eventId, status) => {
-      await apiRequest(apiBase, `/api/events/${eventId}/status`, {
-        method: "PUT",
-        body: { status },
-      });
+      await updateEventStatus(apiBase, eventId, status);
       let prevStatus = null;
       let eventTime = null;
       setEvents((prev) =>

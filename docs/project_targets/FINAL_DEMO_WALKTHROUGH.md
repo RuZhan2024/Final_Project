@@ -7,9 +7,11 @@ Use this exact sequence during final demo/exam.
 1. Start backend and frontend.
 2. Confirm API reachable:
    - `curl -s http://127.0.0.1:8000/api/health`
-3. Apply locked profile:
+3. Confirm replay clips reachable:
+   - `curl -s http://127.0.0.1:8000/api/replay/clips`
+4. Apply locked profile:
    - `TCN + caucafall + OP-2`
-4. Run:
+5. Run:
    - `bash tools/run_deployment_lock_validation.sh`
 
 ## 1) Settings page checks
@@ -23,8 +25,10 @@ Use this exact sequence during final demo/exam.
 ## 2) Monitor replay checks
 
 1. Non-fall clip replay:
+   - Select from replay dropdown.
    - Expected: no sustained fall event spam.
 2. Fall clip replay:
+   - Select from replay dropdown.
    - Expected: one clear fall event in timeline.
 3. Optional: second fall clip to show repeatability.
 

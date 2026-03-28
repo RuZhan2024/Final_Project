@@ -75,7 +75,6 @@ class SettingsUpdatePayload(BaseModel):
 
     # v2-style extras
     risk_profile: Optional[str] = None
-    notify_email: Optional[str] = None
     notify_sms: Optional[bool] = None
     notify_phone: Optional[bool] = None
 
@@ -126,9 +125,11 @@ class MonitorPredictPayload(BaseModel):
     model_id: Optional[str] = None
 
     resident_id: Optional[int] = None
+    location: Optional[str] = None
     use_mc: Optional[bool] = None
     mc_M: Optional[int] = None
     persist: Optional[bool] = None
+    compact_response: Optional[bool] = None
 
     target_T: Optional[int] = None
     target_fps: Optional[float] = None
@@ -201,12 +202,19 @@ def _list_tables(conn) -> Set[str]:
         return _TABLE_CACHE
     try:
         with conn.cursor() as cur:
-            cur.execute("SHOW TABLES")
-            rows = cur.fetchall() or []
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                rows = cur.fetchall() or []
+            else:
+                cur.execute("SHOW TABLES")
+                rows = cur.fetchall() or []
         tables: Set[str] = set()
         for r in rows:
             if isinstance(r, dict):
-                v = next(iter(r.values()), None)
+                v = r.get("name")
+                if v is None:
+                    v = next(iter(r.values()), None)
                 if v:
                     tables.add(str(v))
             else:
@@ -226,12 +234,21 @@ def _cols(conn, table: str) -> Set[str]:
         return _COL_CACHE[table]
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SHOW COLUMNS FROM `{table}`")
-            rows = cur.fetchall() or []
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute(f"PRAGMA table_info(`{table}`)")
+                rows = cur.fetchall() or []
+            else:
+                cur.execute(f"SHOW COLUMNS FROM `{table}`")
+                rows = cur.fetchall() or []
     except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         _COL_CACHE[table] = set()
         return set()
-    cols = {r.get("Field") for r in rows if isinstance(r, dict) and r.get("Field")}
+    cols = {
+        r.get("Field") or r.get("name")
+        for r in rows
+        if isinstance(r, dict) and (r.get("Field") or r.get("name"))
+    }
     _COL_CACHE[table] = set(cols)
     return _COL_CACHE[table]
 
@@ -260,7 +277,7 @@ def _ensure_system_settings_schema(conn) -> None:
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
             "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'caucafall'",
             "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
-            "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 1",
+            "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 0",
             "mc_M": "INT NOT NULL DEFAULT 10",
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
             "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
@@ -382,28 +399,36 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
             pass
         return float(default)
 
+    def _op_or_acfg(p: Optional[Dict[str, Any]], k: str, default: float) -> float:
+        try:
+            if p and isinstance(p.get("op"), dict) and p["op"].get(k) is not None:
+                return float(p["op"][k])
+        except (TypeError, ValueError, KeyError):
+            pass
+        return _acfg(p, k, default)
+
     if mc == "TCN":
         tau_low = _tau(tcn, "tau_low", 0.0)
         tau_high = _tau(tcn, "tau_high", 0.85)
-        cooldown_s = _acfg(tcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(tcn, "ema_alpha", 0.0)
-        k = int(_acfg(tcn, "k", 2))
-        n = int(_acfg(tcn, "n", 3))
+        cooldown_s = _op_or_acfg(tcn, "cooldown_s", 3.0)
+        ema_alpha = _op_or_acfg(tcn, "ema_alpha", 0.0)
+        k = int(_op_or_acfg(tcn, "k", 2))
+        n = int(_op_or_acfg(tcn, "n", 3))
     elif mc == "GCN":
         tau_low = _tau(gcn, "tau_low", 0.0)
         tau_high = _tau(gcn, "tau_high", 0.85)
-        cooldown_s = _acfg(gcn, "cooldown_s", 3.0)
-        ema_alpha = _acfg(gcn, "ema_alpha", 0.0)
-        k = int(_acfg(gcn, "k", 2))
-        n = int(_acfg(gcn, "n", 3))
+        cooldown_s = _op_or_acfg(gcn, "cooldown_s", 3.0)
+        ema_alpha = _op_or_acfg(gcn, "ema_alpha", 0.0)
+        k = int(_op_or_acfg(gcn, "k", 2))
+        n = int(_op_or_acfg(gcn, "n", 3))
     else:
         # HYBRID UI defaults follow TCN-safe channel for primary auto-alert behavior.
         tau_low = _tau(tcn, "tau_low", _tau(gcn, "tau_low", 0.0))
         tau_high = _tau(tcn, "tau_high", _tau(gcn, "tau_high", 0.85))
-        cooldown_s = _acfg(tcn, "cooldown_s", _acfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = _acfg(tcn, "ema_alpha", _acfg(gcn, "ema_alpha", 0.0))
-        k = int(_acfg(tcn, "k", _acfg(gcn, "k", 2)))
-        n = int(_acfg(tcn, "n", _acfg(gcn, "n", 3)))
+        cooldown_s = _op_or_acfg(tcn, "cooldown_s", _op_or_acfg(gcn, "cooldown_s", 3.0))
+        ema_alpha = _op_or_acfg(tcn, "ema_alpha", _op_or_acfg(gcn, "ema_alpha", 0.0))
+        k = int(_op_or_acfg(tcn, "k", _op_or_acfg(gcn, "k", 2)))
+        n = int(_op_or_acfg(tcn, "n", _op_or_acfg(gcn, "n", 3)))
 
     return {
         "ui": {
@@ -629,20 +654,36 @@ def _ensure_caregivers_table(conn) -> None:
         return
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS caregivers (
-                  id INT AUTO_INCREMENT PRIMARY KEY,
-                  resident_id INT NOT NULL,
-                  name VARCHAR(120) NULL,
-                  email VARCHAR(200) NULL,
-                  phone VARCHAR(80) NULL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                  INDEX idx_resident (resident_id)
+            backend = str(getattr(conn, "db_backend", "mysql")).lower()
+            if backend == "sqlite":
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS caregivers (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      resident_id INTEGER NOT NULL,
+                      name TEXT NULL,
+                      email TEXT NULL,
+                      phone TEXT NULL,
+                      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
-                """
-            )
+            else:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS caregivers (
+                      id INT AUTO_INCREMENT PRIMARY KEY,
+                      resident_id INT NOT NULL,
+                      name VARCHAR(120) NULL,
+                      email VARCHAR(200) NULL,
+                      phone VARCHAR(80) NULL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      INDEX idx_resident (resident_id)
+                    )
+                    """
+                )
         conn.commit()
         global _TABLE_CACHE
         _TABLE_CACHE = None
@@ -669,7 +710,7 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "active_operating_point": None,
     "active_dataset_code": "caucafall",
     "active_op_code": "OP-2",
-    "mc_enabled": True,
+    "mc_enabled": False,
     "mc_M": 10,
     "mc_M_confirm": 25,
 }

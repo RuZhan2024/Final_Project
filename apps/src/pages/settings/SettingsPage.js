@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import styles from "../Settings.module.css";
 
 import { useMonitoring } from "../../monitoring/MonitoringContext";
+import { readBool } from "../../lib/booleans";
 import { modelCodeToLabel, modelLabelToCode } from "../../lib/modelCodes";
 import { presetFromOpCode, opCodeForPreset, PRESET_LABELS } from "../../lib/operatingPoints";
 import { sliderBackground } from "../../lib/ui";
@@ -46,15 +47,19 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary?.id]);
 
-  const monitoringEnabled = Boolean(sys.monitoring_enabled ?? false);
-  const notifyOnEveryFall = Boolean(sys.notify_on_every_fall ?? true);
-  const notifySms = Boolean(sys.notify_sms ?? false);
-  const notifyPhone = Boolean(sys.notify_phone ?? false);
+  const monitoringEnabled = readBool(sys.monitoring_enabled, false);
+  const notifyOnEveryFall = readBool(sys.notify_on_every_fall, true);
+  const notifySms = readBool(sys.notify_sms, false);
+  const notifyPhone = readBool(sys.notify_phone, false);
+  const caregiverNameReady = Boolean(String(cgName || "").trim());
+  const caregiverEmailReady = Boolean(String(cgEmail || "").trim());
+  const caregiverPhoneReady = Boolean(String(cgPhone || "").trim());
 
   const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
-  const mcEnabled = Boolean(sys.mc_enabled ?? true);
-  const storeAnonymizedData = Boolean(
-    sys.store_anonymized_data ?? ((sys.store_event_clips ?? false) && (sys.anonymize_skeleton_data ?? true))
+  const mcEnabled = readBool(sys.mc_enabled, true);
+  const storeAnonymizedData = readBool(
+    sys.store_anonymized_data,
+    readBool(sys.store_event_clips, false) && readBool(sys.anonymize_skeleton_data, true)
   );
 
   const activeModelLabel = modelCodeToLabel(sys.active_model_code || "TCN");
@@ -197,7 +202,7 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div style={{ display: "flex", gap: 8 }}>
+              <div className={styles.buttonRow}>
                 <button
                   className={styles.actionBtn}
                   onClick={() => setEditingCaregiver(true)}
@@ -299,9 +304,24 @@ export default function SettingsPage() {
               </label>
             </div>
 
+            <div className={styles.inlineInfo}>
+              <div className={styles.inlineInfoTitle}>Notification Policy</div>
+              <div>Email report: always sent with detailed fall analysis to the caregiver email on file.</div>
+              <div>SMS: optional brief alert.</div>
+              <div>Phone call: optional short voice alert.</div>
+              <div className={styles.subtleMeta}>
+                Caregiver status:
+                {` Name ${caregiverNameReady ? "ready" : "missing"}, Email ${caregiverEmailReady ? "ready" : "missing"}, Phone ${caregiverPhoneReady ? "ready" : "missing"}.`}
+              </div>
+              {!caregiverEmailReady && (
+                <div className={styles.inlineInfoWarning}>
+                  Detailed email reports cannot be delivered until a caregiver email is saved.
+                </div>
+              )}
+            </div>
+
             <button
               className={styles.actionBtn}
-              style={{ marginTop: 24, fontSize: "0.8rem" }}
               onClick={reloadSettingsWithToast}
               disabled={!loaded}
             >
@@ -471,7 +491,7 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div style={{ fontSize: "0.8rem", color: "#9CA3AF", marginTop: 8 }}>
+              <div className={styles.subtleMeta}>
                 Active Op Code: <strong>{activeOpCode}</strong>
               </div>
             </div>

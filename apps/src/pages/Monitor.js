@@ -3,10 +3,12 @@ import React, { useMemo } from "react";
 import styles from "./Monitor.module.css";
 
 import { useMonitoring } from "../monitoring/MonitoringContext";
+import { readBool } from "../lib/booleans";
 
 import { useApiSpec } from "./monitor/hooks/useApiSpec";
 import { useOperatingPointParams } from "./monitor/hooks/useOperatingPointParams";
 import { usePoseMonitor } from "./monitor/hooks/usePoseMonitor";
+import { useReplayClips } from "./monitor/hooks/useReplayClips";
 
 import { ControlsCard } from "./monitor/components/ControlsCard";
 import { LiveMonitorCard } from "./monitor/components/LiveMonitorCard";
@@ -54,7 +56,7 @@ function Monitor({ isActive = true } = {}) {
 
   const mcEnabled = useMemo(() => {
     const v = settingsPayload?.system?.mc_enabled;
-    return v == null ? true : Boolean(v);
+    return readBool(v, true);
   }, [settingsPayload]);
 
   const fallThreshold = useMemo(() => {
@@ -67,6 +69,14 @@ function Monitor({ isActive = true } = {}) {
 
   // ---- Backend spec + model picking ----
   const { models, error: modelsErr } = useApiSpec(apiBase, isActive);
+  const {
+    clips: replayClips,
+    loading: replayClipsLoading,
+    error: replayClipsError,
+    configuredDir: replayClipsDir,
+    available: replayClipsAvailable,
+    refresh: refreshReplayClips,
+  } = useReplayClips(apiBase, isActive);
 
   const chosen = useMemo(() => {
     if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
@@ -119,7 +129,6 @@ function Monitor({ isActive = true } = {}) {
   }, [tauHigh, fallThreshold, chosenSpec]);
 
   // Monitor page no longer polls /api/summary (dashboard owns summary polling).
-  const apiSummary = null;
   const summaryErr = "";
 
   // ---- Live pipeline (camera + pose + inference) ----
@@ -128,8 +137,6 @@ function Monitor({ isActive = true } = {}) {
     canvasRef,
     currentPrediction,
     pText,
-    safePrediction,
-    recallPrediction,
     sigma,
     markers,
     timelineStatusText,
@@ -141,9 +148,11 @@ function Monitor({ isActive = true } = {}) {
     captureResolutionPreset,
     setCaptureResolution,
     selectedVideoName,
-    setVideoFile,
+    replayClip,
+    setReplayClip,
     setInputMode,
     startError,
+    startInfo,
     predictError,
     replayCurrentS,
     replayDurationS,
@@ -168,12 +177,44 @@ function Monitor({ isActive = true } = {}) {
   });
 
   const hasReplayFile = useMemo(() => Boolean(selectedVideoName), [selectedVideoName]);
+  const toastMessages = useMemo(
+    () =>
+      [
+        modelsErr ? { key: `models-${modelsErr}`, tone: "warning", text: `Backend error: ${modelsErr}` } : null,
+        monitoringErr ? { key: `settings-${monitoringErr}`, tone: "warning", text: `Settings error: ${monitoringErr}` } : null,
+        replayClipsError && inputSource === "video"
+          ? { key: `replay-${replayClipsError}`, tone: "warning", text: `Replay clips error: ${replayClipsError}` }
+          : null,
+        summaryErr ? { key: `summary-${summaryErr}`, tone: "warning", text: `Summary error: ${summaryErr}` } : null,
+        startError ? { key: `start-${startError}`, tone: "error", text: `Start error: ${startError}` } : null,
+        startInfo && !startError ? { key: `info-${startInfo}`, tone: "info", text: startInfo } : null,
+        predictError ? { key: `predict-${predictError}`, tone: "error", text: `Predict error: ${predictError}` } : null,
+      ].filter(Boolean),
+    [inputSource, modelsErr, monitoringErr, predictError, replayClipsError, startError, startInfo, summaryErr]
+  );
 
   // If settings are still loading, keep UI stable but show placeholders.
   const showPlaceholders = !settingsLoaded;
 
   return (
     <div className={styles.pageContainer}>
+      <div className={styles.toastContainer}>
+        {toastMessages.map((toast) => (
+          <div
+            key={toast.key}
+            className={`${styles.toastItem} ${
+              toast.tone === "error"
+                ? styles.toastError
+                : toast.tone === "info"
+                  ? styles.toastInfo
+                  : styles.toastWarning
+            }`}
+          >
+            {toast.text}
+          </div>
+        ))}
+      </div>
+
       <h2 className={styles.pageTitle}>Live Monitor</h2>
 
       <div className={styles.content}>
@@ -184,8 +225,6 @@ function Monitor({ isActive = true } = {}) {
             canvasRef={canvasRef}
             currentPrediction={showPlaceholders ? "—" : currentPrediction}
             pText={showPlaceholders ? "—" : pText}
-            safePrediction={showPlaceholders ? "—" : safePrediction}
-            recallPrediction={showPlaceholders ? "—" : recallPrediction}
             inputSource={inputSource}
             captureFpsText={showPlaceholders ? "—" : captureFpsText}
             modelFpsText={showPlaceholders ? "—" : modelFpsText}
@@ -202,6 +241,12 @@ function Monitor({ isActive = true } = {}) {
             inputSource={inputSource}
             selectedVideoName={selectedVideoName}
             hasReplayFile={hasReplayFile}
+            replayClips={replayClips}
+            replayClipsLoading={replayClipsLoading}
+            replayClipsError={replayClipsError}
+            replayClipsDir={replayClipsDir}
+            replayClipsAvailable={replayClipsAvailable}
+            selectedReplayClipId={replayClip?.id || ""}
             onSwitchRealtime={() => {
               if (monitoringOn) setMonitoringOn(false);
               setInputMode("camera");
@@ -215,17 +260,15 @@ function Monitor({ isActive = true } = {}) {
               if (monitoringOn) setMonitoringOn(false);
               setCaptureResolution(preset);
             }}
-            onPickVideo={setVideoFile}
-            onClearReplay={() => setVideoFile(null)}
+            onSelectReplayClip={(clipId) => {
+              const nextClip = replayClips.find((clip) => clip.id === clipId) || null;
+              setReplayClip(nextClip);
+            }}
+            onRefreshReplayClips={refreshReplayClips}
+            onClearReplay={() => setReplayClip(null)}
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}
             onSeekReplay={seekReplay}
-            startError={startError}
-            predictError={predictError}
-            modelsErr={modelsErr}
-            monitoringErr={monitoringErr}
-            summaryErr={summaryErr}
-            apiSummary={apiSummary}
           />
 
           <TimelineCard markers={markers} statusText={timelineStatusText} />

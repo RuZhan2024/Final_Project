@@ -28,12 +28,124 @@ from ..core import (
     _one_resident_id,
     _read_clip_privacy_flags,
     _resident_exists,
+    _table_exists,
 )
 from ..db import get_conn_optional
+from ..notifications import get_notification_manager
+from ..notifications.models import NotificationPreferences, SafeGuardEvent
 from ..notifications_service import dispatch_fall_notifications
+from ..services.events_service import (
+    EventsDeps,
+    build_events_list_response,
+    build_events_summary_response,
+    persist_event_status,
+)
 
 
 router = APIRouter()
+
+
+def _events_deps() -> EventsDeps:
+    return EventsDeps(
+        resident_exists=_resident_exists,
+        one_resident_id=_one_resident_id,
+        detect_variants=_detect_variants,
+        event_time_col=_event_time_col,
+        event_prob_col=_event_prob_col,
+        has_col=_has_col,
+        table_exists=_table_exists,
+        jsonable=_jsonable,
+    )
+
+
+def _dispatch_safe_guard_from_event(
+    conn: Any,
+    *,
+    resident_id: int,
+    event_id: int,
+    model_code: str,
+    dataset_code: str = "caucafall",
+    op_code: str = "OP-2",
+    p_fall: float = 0.99,
+    location: str = "events_test_fall",
+) -> None:
+    notify_on_every_fall = True
+    notify_sms = False
+    notify_phone = False
+    caregiver_name = ""
+    caregiver_email = ""
+    caregiver_phone = ""
+
+    if _table_exists(conn, "system_settings"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                (int(resident_id),),
+            )
+            s = cur.fetchone() or {}
+        if isinstance(s, dict):
+            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
+            notify_sms = bool(s.get("notify_sms", False))
+            notify_phone = bool(s.get("notify_phone", False))
+            if s.get("active_dataset_code"):
+                dataset_code = str(s.get("active_dataset_code") or dataset_code)
+            if s.get("active_op_code"):
+                op_code = str(s.get("active_op_code") or op_code).upper()
+            if s.get("active_model_code"):
+                model_code = str(s.get("active_model_code") or model_code)
+    elif _table_exists(conn, "settings"):
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (int(resident_id),))
+            s = cur.fetchone() or {}
+        if isinstance(s, dict):
+            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
+            notify_sms = bool(s.get("notify_sms", False))
+            notify_phone = bool(s.get("notify_phone", False))
+            if s.get("active_model_code"):
+                model_code = str(s.get("active_model_code") or model_code)
+
+    if _table_exists(conn, "caregivers"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                (int(resident_id),),
+            )
+            cg = cur.fetchone() or {}
+        if isinstance(cg, dict):
+            caregiver_name = str(cg.get("name") or "").strip()
+            caregiver_email = str(cg.get("email") or "").strip()
+            caregiver_phone = str(cg.get("phone") or "").strip()
+
+    if not notify_on_every_fall:
+        return
+
+    get_notification_manager().handle_event(
+        SafeGuardEvent(
+            event_id=str(event_id),
+            resident_id=int(resident_id),
+            location=location,
+            probability=float(p_fall),
+            uncertainty=0.0,
+            threshold=0.5,
+            margin=max(0.0, float(p_fall) - 0.5),
+            triage_state="fall",
+            safe_alert=True,
+            recall_alert=True,
+            model_code=str(model_code),
+            dataset_code=str(dataset_code),
+            op_code=str(op_code),
+            source="events.test_fall",
+            meta={"event_db_id": int(event_id)},
+        ),
+        NotificationPreferences(
+            phone_enabled=bool(notify_phone),
+            sms_enabled=bool(notify_sms),
+            email_enabled=True,
+            caregiver_name=caregiver_name,
+            caregiver_phone=caregiver_phone,
+            caregiver_email=caregiver_email,
+        ),
+    )
 
 
 @router.get("/api/events")
@@ -49,63 +161,6 @@ def list_events(
     model: Optional[str] = None,       # GCN/TCN, or None/"All"
     limit: Optional[int] = None,       # legacy: /api/events?limit=500
 ) -> Dict[str, Any]:
-    """List events with server-side pagination (+ optional filters).
-
-    Backward compatible:
-      - If the caller uses `limit` (old client), we treat it as `page_size` for page 1.
-    """
-    # Basic guardrails
-    try:
-        page = int(page)
-    except (TypeError, ValueError):
-        page = 1
-    page = max(1, page)
-
-    # page_size: prefer explicit page_size; but accept legacy `limit` for page 1
-    try:
-        page_size = int(page_size)
-    except (TypeError, ValueError):
-        page_size = 50
-
-    if limit is not None and page == 1 and page_size == 50:
-        # Old clients pass limit=500; keep behaviour similar but cap at 200.
-        try:
-            page_size = int(limit)
-        except (TypeError, ValueError):
-            pass
-
-    page_size = min(200, max(1, page_size))
-    offset = (page - 1) * page_size
-
-    # Normalize filter params ("All" from UI => None)
-    def _norm(s: Optional[str]) -> Optional[str]:
-        if s is None:
-            return None
-        v = str(s).strip()
-        if not v or v.lower() == "all":
-            return None
-        return v
-
-    start_date = _norm(start_date)
-    end_date = _norm(end_date)
-    event_type = _norm(event_type)
-    status = _norm(status)
-    model = _norm(model)
-
-    # Convert date-only strings to datetime bounds (inclusive end_date by using < next_day)
-    start_dt = None
-    end_excl_dt = None
-    try:
-        if start_date:
-            start_dt = datetime.fromisoformat(start_date)
-    except (TypeError, ValueError):
-        start_dt = None
-    try:
-        if end_date:
-            end_excl_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-    except (TypeError, ValueError):
-        end_excl_dt = None
-
     with get_conn_optional() as conn:
         if conn is None:
             rid = int(resident_id or 1)
@@ -117,187 +172,19 @@ def list_events(
                 "page_size": page_size,
                 "db_available": False,
             }
-
-        rid = resident_id if resident_id and _resident_exists(conn, resident_id) else _one_resident_id(conn)
-        variants = _detect_variants(conn)
-        time_col = _event_time_col(conn)
-        prob_col = _event_prob_col(conn)
-
-        with conn.cursor() as cur:
-            # Build WHERE clause (shared)
-            where = ["e.resident_id=%s"]
-            params: List[Any] = [rid]
-
-            if start_dt is not None:
-                where.append(f"e.`{time_col}` >= %s")
-                params.append(start_dt)
-            if end_excl_dt is not None:
-                where.append(f"e.`{time_col}` < %s")
-                params.append(end_excl_dt)
-            if event_type is not None:
-                where.append("LOWER(e.`type`)=%s")
-                params.append(event_type.lower())
-
-            if variants["events"] == "v2":
-                # v2 has explicit status field
-                if status is not None:
-                    where.append("LOWER(e.`status`)=%s")
-                    params.append(status.lower())
-
-                # v2 model filter uses models table
-                join_models = "LEFT JOIN models m ON m.id = e.model_id"
-                if model is not None:
-                    where.append("(UPPER(m.code)=%s OR UPPER(m.family)=%s)")
-                    u = model.upper()
-                    params.extend([u, u])
-
-                where_sql = " AND ".join(where)
-
-                # Total count (for pagination UI)
-                cur.execute(
-                    f"""SELECT COUNT(*) AS n
-                          FROM events e
-                          {join_models}
-                          WHERE {where_sql}""",
-                    tuple(params),
-                )
-                total = int((cur.fetchone() or {}).get("n") or 0)
-
-                select_prob = f"e.`{prob_col}` AS score," if prob_col else "NULL AS score,"
-
-                cur.execute(
-                    f"""SELECT e.id,
-                                 e.`{time_col}` AS ts,
-                                 e.`type` AS type,
-                                 e.`status` AS status,
-                                 {select_prob}
-                                 e.operating_point_id,
-                                 m.code AS model_code,
-                                 m.family AS model_family,
-                                 e.notes,
-                                 e.fa24h_snapshot,
-                                 e.payload_json
-                          FROM events e
-                          {join_models}
-                          WHERE {where_sql}
-                          ORDER BY e.`{time_col}` DESC
-                          LIMIT %s OFFSET %s""",
-                    tuple(params + [page_size, offset]),
-                )
-                rows = cur.fetchall() or []
-
-                out: List[Dict[str, Any]] = []
-                for r in rows:
-                    meta: Dict[str, Any] = {}
-                    if r.get("notes") is not None:
-                        meta["notes"] = r.get("notes")
-                    if r.get("fa24h_snapshot") is not None:
-                        meta["fa24h_snapshot"] = r.get("fa24h_snapshot")
-                    if r.get("payload_json") is not None:
-                        meta["payload_json"] = r.get("payload_json")
-
-                    ts = r.get("ts")
-                    out.append(
-                        {
-                            "id": r.get("id"),
-                            # Keep both keys for front-end compatibility
-                            "event_time": ts,
-                            "ts": ts,
-                            "type": r.get("type"),
-                            "status": r.get("status"),
-                            "score": r.get("score"),
-                            "p_fall": r.get("score"),
-                            "model_code": r.get("model_code") or r.get("model_family"),
-                            "operating_point_id": r.get("operating_point_id"),
-                            "meta": meta,
-                        }
-                    )
-
-                return _jsonable(
-                    {
-                        "resident_id": rid,
-                        "events": out,
-                        "total": total,
-                        "page": page,
-                        "page_size": page_size,
-                    }
-                )
-
-            # ---- v1 events schema fallback ----
-            # v1 may not support status; we only filter by model_code if available.
-            if model is not None:
-                where.append("UPPER(e.model_code)=%s")
-                params.append(model.upper())
-
-            where_sql = " AND ".join(where)
-
-            cur.execute(
-                f"""SELECT COUNT(*) AS n
-                      FROM events e
-                      WHERE {where_sql}""",
-                tuple(params),
-            )
-            total = int((cur.fetchone() or {}).get("n") or 0)
-
-            prob_select = f"e.`{prob_col}` AS score," if prob_col else "NULL AS score,"
-
-            cur.execute(
-                f"""SELECT e.id,
-                             e.`{time_col}` AS ts,
-                             e.`type` AS type,
-                             e.severity,
-                             e.model_code,
-                             {prob_select}
-                             e.meta
-                      FROM events e
-                      WHERE {where_sql}
-                      ORDER BY e.`{time_col}` DESC
-                      LIMIT %s OFFSET %s""",
-                tuple(params + [page_size, offset]),
-            )
-
-            rows = cur.fetchall() or []
-
-            out: List[Dict[str, Any]] = []
-            for r in rows:
-                meta = r.get("meta")
-                if isinstance(meta, str):
-                    try:
-                        meta = json.loads(meta)
-                    except (TypeError, json.JSONDecodeError):
-                        meta = {"raw": meta}
-
-                status_value = None
-                if isinstance(meta, dict):
-                    status_raw = meta.get("status")
-                    if status_raw is not None:
-                        status_value = str(status_raw).strip().lower() or None
-
-                ts = r.get("ts")
-                out.append(
-                    {
-                        "id": r.get("id"),
-                        "event_time": ts,
-                        "ts": ts,
-                        "type": r.get("type"),
-                        "severity": r.get("severity"),
-                        "model_code": r.get("model_code"),
-                        "status": status_value or "pending_review",
-                        "score": r.get("score"),
-                        "p_fall": r.get("score"),
-                        "meta": meta,
-                    }
-                )
-
-            return _jsonable(
-                {
-                    "resident_id": rid,
-                    "events": out,
-                    "total": total,
-                    "page": page,
-                    "page_size": page_size,
-                }
-            )
+        return build_events_list_response(
+            conn,
+            resident_id=resident_id,
+            page=page,
+            page_size=page_size,
+            start_date=start_date,
+            end_date=end_date,
+            event_type=event_type,
+            status=status,
+            model=model,
+            limit=limit,
+            deps=_events_deps(),
+        )
 
 
 @router.get("/api/events/summary")
@@ -316,69 +203,10 @@ def events_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                 "today": {"falls": 0, "pending": 0, "false_alarms": 0},
                 "db_available": False,
             }
-        rid = resident_id if resident_id and _resident_exists(conn, resident_id) else _one_resident_id(conn)
-        time_col = _event_time_col(conn)
-        has_status = _has_col(conn, "events", "status")
-
-        since = datetime.utcnow() - timedelta(hours=24)
-        pending_24h = 0
-        false_alarms_24h = 0
-        with conn.cursor() as cur:
-            try:
-                cur.execute("SELECT COUNT(*) AS n FROM events WHERE resident_id=%s", (rid,))
-                total_events = int((cur.fetchone() or {}).get("n") or 0)
-
-                cur.execute("SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND `type`='fall'", (rid,))
-                total_falls = int((cur.fetchone() or {}).get("n") or 0)
-
-                cur.execute(
-                    f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND `{time_col}` >= %s",
-                    (rid, since),
-                )
-                events_24h = int((cur.fetchone() or {}).get("n") or 0)
-
-                cur.execute(
-                    f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND `type`='fall' AND `{time_col}` >= %s",
-                    (rid, since),
-                )
-                falls_24h = int((cur.fetchone() or {}).get("n") or 0)
-
-                cur.execute(
-                    f"SELECT * FROM events WHERE resident_id=%s ORDER BY `{time_col}` DESC LIMIT 1",
-                    (rid,),
-                )
-                latest = cur.fetchone()
-
-                if has_status:
-                    cur.execute(
-                        f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND LOWER(`status`) IN ('unreviewed','pending_review') AND `{time_col}` >= %s",
-                        (rid, since),
-                    )
-                    pending_24h = int((cur.fetchone() or {}).get("n") or 0)
-
-                    cur.execute(
-                        f"SELECT COUNT(*) AS n FROM events WHERE resident_id=%s AND LOWER(`status`) IN ('false_alarm','false_positive') AND `{time_col}` >= %s",
-                        (rid, since),
-                    )
-                    false_alarms_24h = int((cur.fetchone() or {}).get("n") or 0)
-            except (MySQLError, RuntimeError, TypeError, ValueError) as e:
-                raise HTTPException(status_code=500, detail=f"Failed to compute events summary: {e}")
-
-    return _jsonable(
-        {
-            "resident_id": rid,
-            "total_events": total_events,
-            "total_falls": total_falls,
-            "events_last_24h": events_24h,
-            "falls_last_24h": falls_24h,
-            "latest_event": latest,
-            "today": {
-                "falls": falls_24h,
-                "pending": pending_24h,
-                "false_alarms": false_alarms_24h,
-            },
-        }
-    )
+        try:
+            return build_events_summary_response(conn, resident_id, _events_deps())
+        except (MySQLError, RuntimeError, TypeError, ValueError) as e:
+            raise HTTPException(status_code=500, detail=f"Failed to compute events summary: {e}")
 
 
 @router.put("/api/events/{event_id}/status")
@@ -398,40 +226,10 @@ def update_event_status(event_id: int, payload: Dict[str, Any] = Body(...)) -> D
                 "event_id": int(event_id),
                 "status": status,
             }
-
-        variants = _detect_variants(conn)
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM events WHERE id=%s LIMIT 1", (int(event_id),))
-            row = cur.fetchone()
-            if not row:
-                return {
-                    "ok": True,
-                    "persisted": False,
-                    "reason": "event_not_found",
-                    "event_id": int(event_id),
-                    "status": status,
-                }
-
-            if variants.get("events") == "v2" and _has_col(conn, "events", "status"):
-                cur.execute("UPDATE events SET status=%s WHERE id=%s", (status, int(event_id)))
-            elif _has_col(conn, "events", "meta"):
-                cur.execute("SELECT meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
-                meta_row = cur.fetchone() or {}
-                meta = meta_row.get("meta")
-                if isinstance(meta, str):
-                    try:
-                        meta = json.loads(meta)
-                    except (TypeError, json.JSONDecodeError):
-                        meta = {}
-                if not isinstance(meta, dict):
-                    meta = {}
-                meta["status"] = status
-                cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
-            else:
-                raise HTTPException(status_code=409, detail="Event status update unsupported for current schema")
-        conn.commit()
-
-    return {"ok": True, "persisted": True, "event_id": int(event_id), "status": status}
+        try:
+            return persist_event_status(conn, event_id, status, _events_deps())
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/api/events/test_fall")
@@ -501,6 +299,15 @@ def test_fall() -> Dict[str, Any]:
                     p_fall=0.99,
                     source="events.test_fall",
                 )
+                try:
+                    _dispatch_safe_guard_from_event(
+                        conn,
+                        resident_id=int(rid),
+                        event_id=int(new_id),
+                        model_code="TCN",
+                    )
+                except Exception:
+                    pass
                 cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
                 row = cur.fetchone()
                 conn.commit()
@@ -520,6 +327,15 @@ def test_fall() -> Dict[str, Any]:
                 p_fall=0.99,
                 source="events.test_fall",
             )
+            try:
+                _dispatch_safe_guard_from_event(
+                    conn,
+                    resident_id=int(rid),
+                    event_id=int(new_id),
+                    model_code="TCN",
+                )
+            except Exception:
+                pass
             cur.execute("SELECT * FROM events WHERE id=%s", (new_id,))
             row = cur.fetchone()
             conn.commit()

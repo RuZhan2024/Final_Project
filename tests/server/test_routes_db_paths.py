@@ -79,6 +79,8 @@ def test_settings_get_uses_settings_table(monkeypatch):
                 "anonymize_skeleton_data": 1,
                 "require_confirmation": 0,
                 "notify_on_every_fall": 1,
+                "notify_sms": 1,
+                "notify_phone": 0,
                 "fps": 30,
                 "window_size": 48,
                 "stride": 12,

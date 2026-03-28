@@ -8,6 +8,7 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
 }
 
 .pageTitle {
@@ -34,6 +35,15 @@
   background: #fef2f2;
   color: #991b1b;
   border-color: #fecaca;
+}
+
+.statusNotice {
+  color: #B45309;
+}
+
+.mutedNotice {
+  color: #6B7280;
+  font-size: 0.9rem;
 }
 
 /* --- Card Styles --- */
@@ -101,7 +111,8 @@
 
 /* --- Summary Specifics --- */
 .summaryGrid {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -134,7 +145,7 @@
 /* --- System Status (Bottom Row) --- */
 .systemGrid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -219,11 +230,78 @@
 }
 
 /* --- Responsive Layout --- */
+@media (max-width: 1280px) {
+  .systemGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
+  .container {
+    padding: 24px 20px;
+    gap: 20px;
+  }
+
   .topRow {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 20px 16px 24px;
+    gap: 16px;
+  }
+
+  .pageTitle {
+    font-size: 1.35rem;
+  }
+
+  .toast {
+    font-size: 0.85rem;
+  }
+
+  .card,
+  .fullWidthCard {
+    padding: 18px 16px;
+  }
+
+  .cardTitle {
+    margin-bottom: 18px;
+  }
+
+  .residentContent {
+    align-items: stretch;
+    gap: 18px;
+  }
+
+  .statusText {
+    font-size: 1.2rem;
+    padding: 10px 18px;
+    text-align: center;
+  }
+
+  .actionButton {
+    min-height: 44px;
+    padding-inline: 20px;
+  }
+
+  .summaryGrid,
   .systemGrid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
+  }
+
+  .summaryBox,
+  .systemBox {
+    padding: 18px 16px;
+    min-height: 0;
+  }
+
+  .bigNumber {
+    font-size: 1.9rem;
+  }
+
+  .valueText {
+    font-size: 1.1rem;
   }
 }

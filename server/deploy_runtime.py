@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import yaml
 
 SUPPORTED_DATASETS = {"caucafall", "le2i"}
@@ -346,6 +347,65 @@ def _pick_device(torch: Any) -> Any:
 
 
 _MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
+_ML_RUNTIME: Optional[Dict[str, Any]] = None
+
+
+def _default_torch_threads() -> int:
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(4, int(cpu_count)))
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_ml_runtime() -> Dict[str, Any]:
+    global _ML_RUNTIME
+    if _ML_RUNTIME is not None:
+        return _ML_RUNTIME
+
+    torch = _torch()
+    try:
+        torch.set_num_threads(_env_int("SERVER_TORCH_NUM_THREADS", _default_torch_threads()))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        torch.set_num_interop_threads(_env_int("SERVER_TORCH_NUM_INTEROP_THREADS", 1))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+
+    try:
+        from fall_detection.core.ckpt import load_ckpt
+        from fall_detection.core.models import build_model
+        from fall_detection.core.features import (
+            FeatCfg,
+            build_canonical_input,
+            build_tcn_input,
+            split_gcn_two_stream,
+        )
+        from fall_detection.core.uncertainty import mc_predict_mu_sigma
+    except (ImportError, ModuleNotFoundError) as e:
+        raise RuntimeError(
+            "Missing ML runtime package 'fall_detection'. "
+            "Make sure the package is installed (e.g. pip install -e .), "
+            "or install the ML package into this environment."
+        ) from e
+
+    _ML_RUNTIME = {
+        "torch": torch,
+        "load_ckpt": load_ckpt,
+        "build_model": build_model,
+        "FeatCfg": FeatCfg,
+        "build_canonical_input": build_canonical_input,
+        "build_tcn_input": build_tcn_input,
+        "split_gcn_two_stream": split_gcn_two_stream,
+        "mc_predict_mu_sigma": mc_predict_mu_sigma,
+    }
+    return _ML_RUNTIME
 
 
 def _infer_model_num_joints(model: Any) -> Optional[int]:
@@ -413,19 +473,12 @@ def _load_model_and_cfg(spec: DeploySpec) -> Dict[str, Any]:
     if spec.key in _MODEL_CACHE:
         return _MODEL_CACHE[spec.key]
 
-    torch = _torch()
+    runtime = _get_ml_runtime()
+    torch = runtime["torch"]
     device = _pick_device(torch)
-
-    try:
-        from fall_detection.core.ckpt import load_ckpt
-        from fall_detection.core.models import build_model
-        from fall_detection.core.features import FeatCfg
-    except (ImportError, ModuleNotFoundError) as e:
-        raise RuntimeError(
-            "Missing ML runtime package 'fall_detection'. "
-            "Make sure the package is installed (e.g. pip install -e .), "
-            "or install the ML package into this environment."
-        ) from e
+    load_ckpt = runtime["load_ckpt"]
+    build_model = runtime["build_model"]
+    FeatCfg = runtime["FeatCfg"]
 
     bundle = load_ckpt(spec.ckpt, map_location=str(device))
 
@@ -470,6 +523,108 @@ def _match_in_ch_tcn(torch: Any, model: Any, x: Any) -> Any:
     return torch.cat([x, pad], dim=-1)
 
 
+def _get_optimized_infer_model(
+    *,
+    spec: DeploySpec,
+    cached: Dict[str, Any],
+    prepared: Dict[str, Any],
+) -> Any:
+    model = cached["model"]
+    if spec.arch != "tcn":
+        return model
+
+    device = cached["device"]
+    if str(device) != "cpu":
+        return model
+
+    x_t = prepared.get("x_t")
+    if x_t is None:
+        return model
+
+    optimized_cache = cached.setdefault("optimized_models", {})
+    shape_key = tuple(int(v) for v in x_t.shape)
+    infer_model = optimized_cache.get(shape_key)
+    if infer_model is not None:
+        return infer_model
+
+    runtime = _get_ml_runtime()
+    torch = runtime["torch"]
+    try:
+        with torch.inference_mode():
+            traced = torch.jit.trace(model, x_t, check_trace=False, strict=False)
+            infer_model = torch.jit.optimize_for_inference(traced)
+    except Exception:
+        infer_model = model
+    optimized_cache[shape_key] = infer_model
+    return infer_model
+
+
+def _prepare_features(
+    *,
+    spec: DeploySpec,
+    model: Any,
+    device: Any,
+    feat_cfg: Any,
+    model_cfg: Dict[str, Any],
+    joints_xy: Any,
+    conf: Any,
+    fps: float,
+) -> Dict[str, Any]:
+    runtime = _get_ml_runtime()
+    build_canonical_input = runtime["build_canonical_input"]
+    build_tcn_input = runtime["build_tcn_input"]
+    split_gcn_two_stream = runtime["split_gcn_two_stream"]
+    torch = runtime["torch"]
+
+    expected_v = None
+    try:
+        expected_v = (
+            int(model_cfg.get("num_joints"))
+            if isinstance(model_cfg, dict) and model_cfg.get("num_joints") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        expected_v = None
+    if expected_v is None:
+        expected_v = _infer_model_num_joints(model)
+
+    joints_xy_aligned, conf_aligned = _align_joint_count(joints_xy, conf, expected_v=expected_v)
+    Xg, _mask = build_canonical_input(
+        joints_xy=joints_xy_aligned,
+        motion_xy=None,
+        conf=conf_aligned,
+        mask=None,
+        fps=float(fps),
+        feat_cfg=feat_cfg,
+    )
+
+    if spec.arch == "tcn":
+        Xt = build_tcn_input(Xg, feat_cfg)
+        x_t = torch.from_numpy(np.asarray(Xt, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
+        x_t = _match_in_ch_tcn(torch, model, x_t)
+        return {"kind": "tcn", "x_t": x_t}
+
+    xb = torch.from_numpy(np.asarray(Xg, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
+    is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
+    if is_two_stream:
+        xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
+        xj_t = torch.from_numpy(np.asarray(xj_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
+        xm_t = torch.from_numpy(np.asarray(xm_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
+        return {"kind": "gcn_two_stream", "xj_t": xj_t, "xm_t": xm_t}
+    return {"kind": "gcn_single_stream", "xb": xb}
+
+
+def _forward_prob(model: Any, prepared: Dict[str, Any]) -> Any:
+    kind = prepared["kind"]
+    if kind == "tcn":
+        logits = model(prepared["x_t"])
+    elif kind == "gcn_two_stream":
+        logits = model(prepared["xj_t"], prepared["xm_t"])
+    else:
+        logits = model(prepared["xb"])
+    return logits.sigmoid().view(-1)
+
+
 def predict_spec(
     *,
     spec_key: str,
@@ -490,80 +645,36 @@ def predict_spec(
         raise KeyError(f"Unknown spec_key: {spec_key}")
     spec = specs[spec_key]
 
-    torch = _torch()
+    runtime = _get_ml_runtime()
+    torch = runtime["torch"]
     cached = _load_model_and_cfg(spec)
     model = cached["model"]
     device = cached["device"]
     feat_cfg = cached["feat_cfg"]
-    data_cfg = cached["data_cfg"] or {}
     model_cfg = cached.get("model_cfg") or {}
+    mc_predict_mu_sigma = runtime["mc_predict_mu_sigma"]
 
-    # NOTE: `joints_xy` is expected to already be a fixed-length window (server/app.py
-    # resamples/pads to target_T). Our feature builders operate on that window.
-    import numpy as np
-
-    from fall_detection.core.features import build_tcn_input, build_canonical_input, split_gcn_two_stream
-
-    expected_v = None
-    try:
-        expected_v = int(model_cfg.get("num_joints")) if isinstance(model_cfg, dict) and model_cfg.get("num_joints") is not None else None
-    except (TypeError, ValueError):
-        expected_v = None
-    if expected_v is None:
-        expected_v = _infer_model_num_joints(model)
-
-    j, c = _align_joint_count(joints_xy, conf, expected_v=expected_v)
-
-    # Prepare inputs.
-    Xg, _mask = build_canonical_input(
-        joints_xy=j,
-        motion_xy=None,
-        conf=c,
-        mask=None,
-        fps=float(fps),
+    prepared = _prepare_features(
+        spec=spec,
+        model=model,
+        device=device,
         feat_cfg=feat_cfg,
+        model_cfg=model_cfg,
+        joints_xy=joints_xy,
+        conf=conf,
+        fps=float(fps),
     )
+    infer_model = _get_optimized_infer_model(spec=spec, cached=cached, prepared=prepared)
 
-    if spec.arch == "tcn":
-        
-        Xt = build_tcn_input(Xg, feat_cfg)
-        x_t = torch.from_numpy(Xt).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,C]
-        x_t = _match_in_ch_tcn(torch, model, x_t)
+    def forward_fn():
+        with torch.inference_mode():
+            return _forward_prob(infer_model, prepared)
 
-        def forward_fn():
-            with torch.no_grad():
-                logits = model(x_t)
-                return torch.sigmoid(logits).view(-1)
-    else:
-        xb = torch.from_numpy(Xg).to(device=device, dtype=torch.float32).unsqueeze(0)  # [1,T,V,F]
-
-        # Two-stream models must use canonical channel-layout split for train/runtime parity.
-        is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
-        if is_two_stream:
-            xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
-            xj_t = torch.from_numpy(xj_np).to(device=device, dtype=torch.float32).unsqueeze(0)
-            xm_t = torch.from_numpy(xm_np).to(device=device, dtype=torch.float32).unsqueeze(0)
-
-            def forward_fn():
-                with torch.no_grad():
-                    logits = model(xj_t, xm_t)
-                    return torch.sigmoid(logits).view(-1)
-
-        else:
-
-            def forward_fn():
-                with torch.no_grad():
-                    logits = model(xb)
-                    return torch.sigmoid(logits).view(-1)
-
-    # Deterministic probability.
     p_det = float(forward_fn().detach().cpu().view(-1)[0].item())
 
     mu, sigma = float(p_det), 0.0
     if use_mc:
         try:
-            from fall_detection.core.uncertainty import mc_predict_mu_sigma
-
             mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
             mu = float(mu_t.detach().cpu().view(-1)[0].item())
             sigma = float(sig_t.detach().cpu().view(-1)[0].item())

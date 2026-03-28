@@ -23,6 +23,7 @@ Usage example:
 import os as _os
 _os.environ.setdefault("GLOG_minloglevel", "2")     # 0=DEBUG,1=INFO,2=WARNING,3=ERROR
 _os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+_os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
 
 import argparse
 import glob

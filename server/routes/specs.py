@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 import yaml
 
 try:
@@ -18,6 +21,58 @@ from ..deploy_runtime import get_specs as _get_deploy_specs
 
 
 router = APIRouter()
+_REPLAY_CLIP_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
+
+
+def _replay_clips_root() -> Path:
+    raw = os.getenv("REPLAY_CLIPS_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path(__file__).resolve().parents[2] / "data" / "replay_clips").resolve()
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _list_replay_clips() -> list[Dict[str, Any]]:
+    root = _replay_clips_root()
+    if not root.exists() or not root.is_dir():
+        return []
+
+    clips: list[Dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _REPLAY_CLIP_EXTS:
+            continue
+        rel = path.relative_to(root).as_posix()
+        rel_l = rel.lower()
+        parts_l = [p.lower() for p in path.relative_to(root).parts]
+        if any("fall" in p for p in parts_l):
+            category = "fall"
+        elif any("adl" in p for p in parts_l):
+            category = "adl"
+        elif any(tok in rel_l for tok in ("nonfall", "non-fall", "non_fall", "normal", "safe")):
+            category = "adl"
+        elif "fall" in rel_l:
+            category = "fall"
+        else:
+            category = "other"
+        clips.append(
+            {
+                "id": rel,
+                "name": path.name,
+                "filename": path.name,
+                "path": rel,
+                "category": category,
+                "size_bytes": path.stat().st_size,
+                "url": f"/api/replay/clips/{quote(rel)}",
+            }
+        )
+    return clips
 
 
 def _load_deploy_modes_yaml() -> Dict[str, Any]:
@@ -126,6 +181,29 @@ def deploy_specs() -> Dict[str, Any]:
 def api_spec() -> Dict[str, Any]:
     """Alias for /api/deploy/specs (legacy UI compatibility)."""
     return deploy_specs()
+
+
+@router.get("/api/replay/clips")
+@router.get("/api/v1/replay/clips")
+def replay_clips() -> Dict[str, Any]:
+    root = _replay_clips_root()
+    return {
+        "clips": _list_replay_clips(),
+        "configured_dir": str(root),
+        "available": bool(root.exists() and root.is_dir()),
+    }
+
+
+@router.get("/api/replay/clips/{clip_path:path}")
+@router.get("/api/v1/replay/clips/{clip_path:path}")
+def replay_clip_file(clip_path: str):
+    root = _replay_clips_root()
+    path = (root / clip_path).resolve()
+    if not _is_within_root(path, root):
+        raise HTTPException(status_code=404, detail="clip_not_found")
+    if not path.exists() or not path.is_file() or path.suffix.lower() not in _REPLAY_CLIP_EXTS:
+        raise HTTPException(status_code=404, detail="clip_not_found")
+    return FileResponse(path)
 
 
 @router.get("/api/deploy/modes")

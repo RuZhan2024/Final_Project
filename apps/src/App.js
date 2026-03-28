@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {Routes, Route, Navigate, NavLink, useLocation} from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Monitor from "./pages/Monitor";
@@ -12,11 +12,81 @@ import styles from "./App.module.css";
 function App() {
   const location = useLocation();
   const showMonitor = location.pathname === "/monitor";
+  const [navOpen, setNavOpen] = useState(false);
+
+  useEffect(() => {
+    setNavOpen(false);
+  }, [location.pathname]);
+
+  const renderNavLinks = () => (
+    <>
+      <NavLink
+        to="/dashboard"
+        className={({ isActive }) =>
+          isActive ? styles.activeLink : undefined
+        }
+      >
+        Dashboard
+      </NavLink>
+
+      <NavLink
+        to="/monitor"
+        className={({ isActive }) =>
+          isActive ? styles.activeLink : undefined
+        }
+      >
+        Live Monitor
+      </NavLink>
+
+      <NavLink
+        to="/events"
+        className={({ isActive }) =>
+          isActive ? styles.activeLink : undefined
+        }
+      >
+        Event History
+      </NavLink>
+
+      <NavLink
+        to="/settings"
+        className={({ isActive }) =>
+          isActive ? styles.activeLink : undefined
+        }
+      >
+        Settings
+      </NavLink>
+    </>
+  );
 
   return (
     <MonitoringProvider>
       <div className={styles.container}>
-        <aside className={styles.sideNav}>
+        <header className={styles.mobileTopBar}>
+          <button
+            type="button"
+            className={styles.menuButton}
+            onClick={() => setNavOpen(true)}
+            aria-label="Open navigation"
+            aria-expanded={navOpen}
+          >
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <img
+            src="/logo_dark.png"
+            alt="Guardian Angel Logo"
+            className={styles.mobileLogo}
+          />
+        </header>
+
+        <div
+          className={`${styles.mobileBackdrop} ${navOpen ? styles.mobileBackdropVisible : ""}`}
+          onClick={() => setNavOpen(false)}
+          aria-hidden={navOpen ? "false" : "true"}
+        />
+
+        <aside className={`${styles.sideNav} ${navOpen ? styles.sideNavOpen : ""}`}>
           <div className={styles.logoContainer}>
             <img
               src="/logo_dark.png"
@@ -25,41 +95,15 @@ function App() {
             />
           </div>
           <nav className={styles.sideNavList}>
-            <NavLink
-              to="/dashboard"
-              className={({ isActive }) =>
-                isActive ? styles.activeLink : undefined
-              }
+            <button
+              type="button"
+              className={styles.closeNavButton}
+              onClick={() => setNavOpen(false)}
+              aria-label="Close navigation"
             >
-              Dashboard
-            </NavLink>
-
-            <NavLink
-              to="/monitor"
-              className={({ isActive }) =>
-                isActive ? styles.activeLink : undefined
-              }
-            >
-              Live Monitor
-            </NavLink>
-
-            <NavLink
-              to="/events"
-              className={({ isActive }) =>
-                isActive ? styles.activeLink : undefined
-              }
-            >
-              Event History
-            </NavLink>
-
-            <NavLink
-              to="/settings"
-              className={({ isActive }) =>
-                isActive ? styles.activeLink : undefined
-              }
-            >
-              Settings
-            </NavLink>
+              Close
+            </button>
+            {renderNavLinks()}
           </nav>
         </aside>
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { apiRequest } from "../../../lib/apiClient";
+import { fetchDashboardSummary } from "../../../features/dashboard/api";
 
 export function useDashboardSummary(apiBase, { intervalMs = 3000 } = {}) {
   const [data, setData] = useState(null);
@@ -19,7 +19,7 @@ export function useDashboardSummary(apiBase, { intervalMs = 3000 } = {}) {
         abortRef.current?.abort?.();
         const ac = new AbortController();
         abortRef.current = ac;
-        const payload = await apiRequest(apiBase, "/api/dashboard/summary", { signal: ac.signal });
+        const payload = await fetchDashboardSummary(apiBase, { signal: ac.signal });
         if (!mounted) return;
         setData(payload);
         setLoading(false);

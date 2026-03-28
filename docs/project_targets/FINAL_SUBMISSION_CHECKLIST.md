@@ -23,6 +23,11 @@ Reference standards:
 - [ ] Final demo walkthrough exists and is current:
   - `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md`
 - [ ] One clean-machine dry run has been completed (or explicitly documented as pending).
+  - record in:
+    - `docs/project_targets/CLEAN_DRY_RUN_MINIMUM_PATH.md`
+    - `artifacts/reports/clean_dry_run_report.md`
+  - current recorded status:
+    - dry run recorded as `PASS`
 
 ## C) Working Artefact Evidence (Mandatory)
 
@@ -71,3 +76,4 @@ Reference standards:
 - [ ] `bash tools/run_deployment_lock_validation.sh`
 - [ ] `python tools/check_release_bundle.py`
 - [ ] Re-open generated reports and confirm PASS status remains valid.
+- [ ] Re-open `artifacts/reports/clean_dry_run_report.md` and confirm the recorded outcome is still accurate.

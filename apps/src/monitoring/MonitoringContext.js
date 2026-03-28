@@ -9,10 +9,12 @@ import React, {
 } from "react";
 
 import { getApiBase } from "../lib/config";
-import { apiRequest } from "../lib/apiClient";
+import { readBool } from "../lib/booleans";
+import { fetchSettings, updateSettings as persistSettings } from "../features/settings/api";
 
 const API_BASE = getApiBase();
 const MonitoringContext = createContext(null);
+const SETTINGS_RETRY_DELAYS_MS = [700, 1500];
 
 function readDesired(data) {
   const sys = data?.system || data || {};
@@ -20,7 +22,7 @@ function readDesired(data) {
     typeof sys.monitoring_enabled !== "undefined"
       ? sys.monitoring_enabled
       : data?.monitoring_enabled;
-  return Boolean(raw);
+  return readBool(raw, false);
 }
 
 async function safeStart(ctrl) {
@@ -40,6 +42,26 @@ function safeStop(ctrl) {
   } catch {
     // ignore
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function fetchSettingsWithRetry() {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= SETTINGS_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await fetchSettings(API_BASE);
+    } catch (err) {
+      lastError = err;
+      if (attempt >= SETTINGS_RETRY_DELAYS_MS.length) break;
+      await sleep(SETTINGS_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError || new Error("Failed to fetch settings");
 }
 
 export function MonitoringProvider({ children }) {
@@ -68,7 +90,7 @@ export function MonitoringProvider({ children }) {
     try {
       setError(null);
 
-      const data = await apiRequest(API_BASE, "/api/settings");
+      const data = await fetchSettingsWithRetry();
       setSettingsPayload(data);
 
       const desired = readDesired(data);
@@ -115,10 +137,7 @@ export function MonitoringProvider({ children }) {
         const desired = nextOn && startedOk;
 
         setError(null);
-        await apiRequest(API_BASE, "/api/settings", {
-          method: "PUT",
-          body: { monitoring_enabled: desired },
-        });
+        await persistSettings(API_BASE, { monitoring_enabled: desired });
 
         setMonitoringDesired(desired);
 
@@ -144,10 +163,7 @@ export function MonitoringProvider({ children }) {
     async (patch) => {
       try {
         setError(null);
-        await apiRequest(API_BASE, "/api/settings", {
-          method: "PUT",
-          body: patch || {},
-        });
+        await persistSettings(API_BASE, patch || {});
         await refresh();
         return true;
       } catch (e) {

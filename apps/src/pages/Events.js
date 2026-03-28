@@ -99,7 +99,7 @@ export default function Events() {
       <h2 className={styles.pageTitle}>Event History</h2>
 
       {error && (
-        <div style={{ marginTop: -8, color: "#B45309" }}>
+        <div className={styles.statusNotice}>
           Backend error: {error}
         </div>
       )}
@@ -170,14 +170,15 @@ export default function Events() {
             <option>GCN</option>
           </select>
 
-          <button
-            className={styles.viewBtn}
-            onClick={reload}
-            style={{ marginLeft: "auto" }}
-            title="Refresh events"
-          >
-            Refresh
-          </button>
+          <div className={styles.filterActions}>
+            <button
+              className={styles.viewBtn}
+              onClick={reload}
+              title="Refresh events"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </div>
 

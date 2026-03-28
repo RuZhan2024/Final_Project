@@ -59,7 +59,7 @@ export function ModelInfoCard({
         </div>
       </div>
 
-      <p className={styles.subText} style={{ marginTop: 12 }}>
+      <p className={`${styles.subText} ${styles.infoSummary}`}>
         Mode: {mode} • Capture FPS: {captureFpsText} • Model FPS: {modelFpsText} • MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
         {sigma != null ? ` • σ=${Number(sigma).toFixed(3)}` : ""}
       </p>

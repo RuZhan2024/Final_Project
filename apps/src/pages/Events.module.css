@@ -8,6 +8,7 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
 }
 
 .pageTitle {
@@ -20,7 +21,7 @@
 /* --- Section 1: Stats Grid --- */
 .statsGrid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -77,12 +78,22 @@
 .filterInputs {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
+.filterActions {
+  display: flex;
+  align-items: stretch;
+  margin-left: auto;
+}
 
+.statusNotice {
+  color: #B45309;
+}
 
 .inputField, .selectField {
-  flex: 1;
+  flex: 1 1 180px;
+  min-width: 0;
   padding: 10px 14px;
   border: 1px solid #D1D5DB;
   border-radius: 6px;
@@ -105,8 +116,8 @@
 /* Wrapper to handle the library's internal div */
 /* Wrapper to handle the library's internal div */
 .dateWrapper {
-  flex: 1; /* Grows evenly like other inputs */
-  /* Removed margin-right so it respects the parent 'gap: 16px' */
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 /* Target the actual input created by the library */
@@ -156,9 +167,14 @@
   overflow: hidden;
 }
 
+.tableCard {
+  overflow-x: auto;
+}
+
 .eventsTable {
   width: 100%;
   border-collapse: collapse;
+  min-width: 760px;
 }
 
 .eventsTable th {
@@ -243,6 +259,7 @@
 
 .modalCard {
   width: min(520px, 100%);
+  max-height: min(80vh, 720px);
   background: #FFFFFF;
   border-radius: 16px;
   border: 1px solid #E5E7EB;
@@ -251,6 +268,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow: auto;
 }
 
 .modalHeader {
@@ -314,6 +332,7 @@
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .secondaryBtn,
@@ -341,4 +360,91 @@
 .primaryBtn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+@media (max-width: 1180px) {
+  .statsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .container {
+    padding: 24px 20px;
+    gap: 20px;
+  }
+
+  .filterCard,
+  .statCard {
+    padding: 18px 16px;
+  }
+
+  .filterInputs {
+    gap: 12px;
+  }
+
+  .filterActions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .viewBtn {
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .modalOverlay {
+    padding: 16px;
+  }
+
+  .modalCard {
+    padding: 18px 16px;
+    gap: 16px;
+  }
+
+  .modalHeader {
+    flex-direction: column;
+  }
+
+  .modalCloseBtn,
+  .secondaryBtn,
+  .primaryBtn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .modalActions {
+    flex-direction: column-reverse;
+  }
+}
+
+@media (max-width: 560px) {
+  .container {
+    padding: 20px 16px 24px;
+    gap: 16px;
+  }
+
+  .pageTitle {
+    font-size: 1.35rem;
+  }
+
+  .statsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .statCard {
+    min-height: 0;
+  }
+
+  .filterActions .viewBtn {
+    width: 100%;
+  }
+
+  .statNumber {
+    font-size: 1.75rem;
+  }
+
+  .tableCard {
+    border-radius: 10px;
+  }
 }
