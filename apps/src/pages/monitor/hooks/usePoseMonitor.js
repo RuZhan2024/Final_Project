@@ -819,6 +819,7 @@ export function usePoseMonitor({
 
       // Persist events when monitoring is on OR when we need an event_id for clip saving.
       persist: Boolean(monitoringOnRef.current || storeEventClips),
+      compact_response: sourceMode === "video",
 
       // Raw pose samples (variable FPS)
       raw_t_ms: tArr,

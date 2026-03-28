@@ -129,6 +129,7 @@ class MonitorPredictPayload(BaseModel):
     use_mc: Optional[bool] = None
     mc_M: Optional[int] = None
     persist: Optional[bool] = None
+    compact_response: Optional[bool] = None
 
     target_T: Optional[int] = None
     target_fps: Optional[float] = None

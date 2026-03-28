@@ -488,6 +488,62 @@ def _raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, An
     return stats
 
 
+def _compact_model_out(model_out: Any) -> Dict[str, Any]:
+    src = model_out if isinstance(model_out, dict) else {}
+    tri = src.get("triage") if isinstance(src.get("triage"), dict) else {}
+    out: Dict[str, Any] = {}
+    for key in ("mu", "sigma", "p_alert_in", "p_det"):
+        if src.get(key) is not None:
+            out[key] = src.get(key)
+    tri_out: Dict[str, Any] = {}
+    for key in ("state", "ps", "tau_low", "tau_high"):
+        if tri.get(key) is not None:
+            tri_out[key] = tri.get(key)
+    if tri_out:
+        out["triage"] = tri_out
+    return out
+
+
+def _compact_policy_alerts(policy_alerts: Any) -> Dict[str, Any]:
+    src = policy_alerts if isinstance(policy_alerts, dict) else {}
+    out: Dict[str, Any] = {}
+    for name in ("safe", "recall"):
+        pol = src.get(name)
+        if not isinstance(pol, dict):
+            continue
+        out[name] = {
+            "state": pol.get("state"),
+            "alert": pol.get("alert"),
+        }
+    return out
+
+
+def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    models = resp.get("models") if isinstance(resp.get("models"), dict) else {}
+    mode_l = str(mode or "").lower()
+    compact_models: Dict[str, Any] = {}
+    if mode_l == "hybrid":
+        if "tcn" in models:
+            compact_models["tcn"] = _compact_model_out(models.get("tcn"))
+        if "gcn" in models:
+            compact_models["gcn"] = _compact_model_out(models.get("gcn"))
+    elif mode_l in {"tcn", "gcn"} and mode_l in models:
+        compact_models[mode_l] = _compact_model_out(models.get(mode_l))
+
+    return {
+        "triage_state": resp.get("triage_state"),
+        "safe_alert": resp.get("safe_alert"),
+        "safe_state": resp.get("safe_state"),
+        "recall_alert": resp.get("recall_alert"),
+        "recall_state": resp.get("recall_state"),
+        "event_id": resp.get("event_id"),
+        "stale_drop": resp.get("stale_drop"),
+        "stale_reason": resp.get("stale_reason"),
+        "models": compact_models,
+        "policy_alerts": _compact_policy_alerts(resp.get("policy_alerts")),
+    }
+
+
 def _direct_window_stats(xy: Any, conf: Any, *, effective_fps: float) -> Dict[str, Any]:
     """Fallback stats for already-resampled direct windows.
 
@@ -857,6 +913,7 @@ def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
 def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one window from the live monitor UI."""
     payload_d = payload.model_dump()
+    compact_response = bool(payload_d.get("compact_response"))
 
     t0 = time.time()
 
@@ -1204,7 +1261,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st["last_window_seq"] = seq_in
         st["last_triage_state"] = tri_prev
         latency_ms = int((time.time() - t0) * 1000)
-        return {
+        resp = {
             "triage_state": tri_prev,
             "models": {},
             "policy_alerts": {},
@@ -1249,6 +1306,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             "window_seq": seq_in,
             "last_window_seq": seq_prev,
         }
+        return _compact_monitor_response(resp, mode) if compact_response else resp
 
     def _guard_alert_p(p_raw: float, tau_low: float) -> float:
         """Clamp tracker input when live sampling/motion quality is insufficient."""
@@ -1833,7 +1891,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     st["last_window_seq"] = seq_in
     st["last_triage_state"] = str(triage_state)
 
-    return {
+    resp = {
         "triage_state": triage_state,
         "models": models_out,
         "policy_alerts": dual_policy_alerts,
@@ -1888,6 +1946,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         "window_seq": seq_in,
         "last_window_seq": seq_prev,
     }
+    return _compact_monitor_response(resp, mode) if compact_response else resp
 
 
 @router.websocket("/api/monitor/ws")
