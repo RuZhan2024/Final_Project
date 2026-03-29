@@ -1,114 +1,92 @@
 #!/usr/bin/env python3
-"""Plot multi-seed stability metrics from evaluation JSON files.
-
-Expected input naming (recommended):
-  outputs/metrics/<exp>_seed<seed>.json
-or any path list passed via --files.
-"""
+"""Generate a report-ready offline comparison figure from stability summaries."""
 
 from __future__ import annotations
 
 import argparse
-import json
-import re
+import csv
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_GLOB = "outputs/metrics/*seed*.json"
+PRIMARY_DATASETS = ("caucafall", "le2i")
+MODEL_ORDER = ("tcn", "gcn")
+MODEL_COLORS = {"tcn": "#1f77b4", "gcn": "#ff7f0e"}
+DATASET_TITLES = {"caucafall": "CAUCAFall (Primary)", "le2i": "LE2i (Comparative)"}
+METRICS = (
+    ("f1", "F1"),
+    ("recall", "Recall"),
+)
 
 
-def _load(path: Path) -> Dict[str, Any]:
-    d = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(d, dict):
-        raise ValueError(f"{path}: expected JSON object")
-    return d
+def _load_summary(path: Path) -> List[Dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        return list(csv.DictReader(fh))
 
 
-def _first_num(*vals: Any) -> Optional[float]:
-    for v in vals:
-        if isinstance(v, (int, float)):
-            return float(v)
-    return None
+def _find_row(rows: List[Dict[str, str]], dataset: str, arch: str) -> Dict[str, str]:
+    for row in rows:
+        if row.get("dataset") == dataset and row.get("arch") == arch:
+            return row
+    raise KeyError(f"missing row for dataset={dataset} arch={arch}")
 
 
-def _extract_metrics(d: Dict[str, Any]) -> Dict[str, float]:
-    ops = d.get("ops") if isinstance(d.get("ops"), dict) else {}
-    sel = d.get("selected") if isinstance(d.get("selected"), dict) else {}
-    key = str(sel.get("name", "op2")).strip().lower()
-    op = ops.get(key) if isinstance(ops.get(key), dict) else (ops.get("op2") if isinstance(ops.get("op2"), dict) else {})
-    totals = d.get("totals") if isinstance(d.get("totals"), dict) else {}
-    return {
-        "f1": _first_num(op.get("f1"), totals.get("f1")) or float("nan"),
-        "recall": _first_num(op.get("recall"), totals.get("recall"), totals.get("avg_recall")) or float("nan"),
-        "fa24h": _first_num(op.get("fa24h"), totals.get("fa24h")) or float("nan"),
-    }
+def _f(row: Dict[str, str], key: str) -> float:
+    return float(row[key])
 
 
-def _group_label(path: Path) -> str:
-    stem = path.stem.lower()
-    # Strip trailing seed suffixes to get candidate group label.
-    stem = re.sub(r"([_-]seed\d+)$", "", stem)
-    stem = re.sub(r"([_-]s\d+)$", "", stem)
-    return stem
+def plot(rows: List[Dict[str, str]], out_fig: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.4), constrained_layout=True, sharey=True)
+    width = 0.34
+    x = np.arange(len(METRICS), dtype=float)
 
+    for ax, dataset in zip(axes, PRIMARY_DATASETS):
+        for idx, arch in enumerate(MODEL_ORDER):
+            row = _find_row(rows, dataset=dataset, arch=arch)
+            means = np.asarray([_f(row, f"{metric}_mean") for metric, _ in METRICS], dtype=float)
+            errs = np.asarray([_f(row, f"{metric}_ci95") for metric, _ in METRICS], dtype=float)
+            offset = (-0.5 + idx) * width
+            ax.bar(
+                x + offset,
+                means,
+                width=width,
+                color=MODEL_COLORS[arch],
+                label=arch.upper(),
+                yerr=errs,
+                capsize=5,
+                alpha=0.92,
+                edgecolor="black",
+                linewidth=0.5,
+            )
 
-def _boxplot(grouped: Dict[str, List[Dict[str, float]]], out_fig: Path) -> None:
-    groups = sorted(grouped.keys())
-    if not groups:
-        raise SystemExit("[ERR] no grouped stability data found")
+        ax.set_title(DATASET_TITLES[dataset])
+        ax.set_xticks(x)
+        ax.set_xticklabels([label for _, label in METRICS])
+        ax.set_ylim(0.0, 1.02)
+        ax.grid(True, axis="y", alpha=0.25, linewidth=0.8)
+        ax.set_axisbelow(True)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
-    keys = ["f1", "recall", "fa24h"]
-    titles = ["F1", "Recall", "FA24h"]
-
-    for ax, key, title in zip(axes, keys, titles):
-        data = []
-        labels = []
-        for g in groups:
-            vals = np.asarray([row[key] for row in grouped[g]], dtype=float)
-            vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
-                continue
-            data.append(vals)
-            labels.append(g)
-        if not data:
-            ax.set_title(f"{title} (no data)")
-            continue
-        ax.boxplot(data, labels=labels, showmeans=True)
-        ax.set_title(f"{title} distribution")
-        ax.tick_params(axis="x", rotation=25)
-        ax.grid(True, axis="y", alpha=0.3)
-        if key in ("f1", "recall"):
-            ax.set_ylim(0.0, 1.05)
+    axes[0].set_ylabel("Mean score")
+    axes[0].legend(loc="upper left", frameon=True)
+    fig.suptitle("Frozen five-seed offline comparison (mean ± 95% CI)", fontsize=15)
 
     out_fig.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_fig, dpi=160)
+    fig.savefig(out_fig, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Plot multi-seed stability metrics")
-    ap.add_argument("--files", nargs="*", default=[])
-    ap.add_argument("--glob", default=DEFAULT_GLOB)
-    ap.add_argument("--out_fig", default="artifacts/figures/stability/fc_stability_boxplot.png")
+    ap = argparse.ArgumentParser(description="Plot report-ready stability comparison")
+    ap.add_argument("--summary_csv", default="artifacts/reports/stability_summary.csv")
+    ap.add_argument("--out_fig", default="artifacts/figures/report/offline_stability_comparison.png")
     args = ap.parse_args()
 
-    files = [Path(p) for p in args.files] if args.files else sorted(Path(".").glob(args.glob))
-    if not files:
-        raise SystemExit(f"[ERR] no files found. Provide --files or check --glob ({args.glob})")
-
-    grouped: Dict[str, List[Dict[str, float]]] = {}
-    for p in files:
-        d = _load(p)
-        grouped.setdefault(_group_label(p), []).append(_extract_metrics(d))
-
-    _boxplot(grouped, Path(args.out_fig))
+    rows = _load_summary(Path(args.summary_csv))
+    plot(rows, Path(args.out_fig))
     print(f"[ok] saved: {args.out_fig}")
-    print(f"[info] groups={len(grouped)} files={len(files)}")
 
 
 if __name__ == "__main__":
