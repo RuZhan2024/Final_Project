@@ -1,7 +1,7 @@
 windows_dir: artifacts/fall_test_eval_20260315/windows/unsplit
-ops_yaml: configs/ops/tcn_caucafall_r2_train_hneg.yaml
+ops_yaml: configs/ops/tcn_caucafall.yaml
 op_code: OP2
-out_prefix: artifacts/fall_test_eval_20260315/delivery_tcn_r2_train_hneg_op2
+out_prefix: artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2
 
 fall_contains:
   - /corridor/
@@ -10,15 +10,3 @@ fall_contains:
 nonfall_contains:
   - /corridor_adl/
   - /kitchen_adl/
-
-alert_override:
-  ema_alpha: 0.0
-  tau_high: 0.6
-  tau_low: 0.42
-  k: 2
-  n: 2
-
-delivery_gate:
-  max_lying: 0.75
-  min_mean_motion_high: 0.10
-  max_event_start_s: 40.0
