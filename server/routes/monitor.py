@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
@@ -27,9 +26,18 @@ from ..deploy_runtime import (
     get_specs as _get_deploy_specs,
     predict_spec as _predict_spec,
 )
-from ..notifications_service import dispatch_fall_notifications
-from ..notifications import NotificationPreferences, SafeGuardEvent, get_notification_manager
 from ..online_alert import OnlineAlertTracker
+from ..services.monitor_context_service import load_monitor_request_context
+from ..services.monitor_response_service import (
+    build_monitor_prediction_response,
+    build_stale_monitor_response,
+    log_monitor_perf_if_slow,
+)
+from ..services.monitor_runtime_service import (
+    persist_monitor_event,
+    resolve_monitor_persistence_plan,
+)
+from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 from fall_detection.pose.preprocess_pose_npz import (
     linear_fill_small_gaps,
@@ -90,50 +98,6 @@ def _norm_op_code(op_code: str) -> str:
     if c in {"OP3", "OP-3", "3"}:
         return "OP-3"
     return "OP-2"
-
-
-def _coerce_bool(v: Any, default: bool) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(v)
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in {"1", "true", "yes", "on"}:
-            return True
-        if s in {"0", "false", "no", "off"}:
-            return False
-    return bool(default)
-
-
-def _resolve_mc_runtime(
-    *,
-    requested_use_mc: Any,
-    requested_mc_m: Any,
-    sys_row: Optional[Dict[str, Any]],
-    is_replay: bool,
-) -> Tuple[bool, int, bool, int]:
-    use_mc = requested_use_mc
-    mc_m = requested_mc_m
-
-    if isinstance(sys_row, dict):
-        if use_mc is None and sys_row.get("mc_enabled") is not None:
-            use_mc = _coerce_bool(sys_row.get("mc_enabled"), False)
-        if mc_m is None and sys_row.get("mc_M") is not None:
-            try:
-                mc_m = int(sys_row.get("mc_M"))
-            except (TypeError, ValueError):
-                mc_m = None
-
-    requested_use_mc_bool = _coerce_bool(use_mc, False)
-    try:
-        requested_mc_m_int = max(1, int(mc_m)) if mc_m is not None else 10
-    except (TypeError, ValueError):
-        requested_mc_m_int = 10
-
-    effective_use_mc = requested_use_mc_bool and (not is_replay)
-    effective_mc_m = requested_mc_m_int if effective_use_mc else 1
-    return requested_use_mc_bool, requested_mc_m_int, effective_use_mc, effective_mc_m
 
 
 def _recent_motion_support(
@@ -934,8 +898,7 @@ def _resample_pose_window(
 @router.post("/api/monitor/reset_session")
 @router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
-    core._SESSION_STATE.pop(session_id, None)
-    return {"ok": True, "session_id": session_id}
+    return reset_monitor_session(core._SESSION_STATE, session_id)
 
 
 @router.post("/api/monitor/predict_window")
@@ -1004,81 +967,25 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     # Defaults from DB (if available)
     # -------------
     resident_id = int(payload_d.get("resident_id") or 1)
-    event_location = str(payload_d.get("location") or input_source or "unknown").strip() or "unknown"
     active_model_code = mode.upper()
-    notify_on_every_fall = True
-    notify_sms = False
-    notify_phone = False
-    caregiver_name = ""
-    caregiver_email = ""
-    caregiver_phone = ""
-
     try:
         with get_conn() as conn:
-            _ensure_system_settings_schema(conn)
-            variants = _detect_variants(conn)
-
-            sys_row = None
-            with conn.cursor() as cur:
-                if variants.get("settings") == "v2" and _table_exists(conn, "system_settings"):
-                    cur.execute("SELECT * FROM system_settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-                    sys_row = cur.fetchone()
-                elif _table_exists(conn, "settings"):
-                    cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-                    sys_row = cur.fetchone()
-
-            if isinstance(sys_row, dict):
-                if not dataset_code and sys_row.get("active_dataset_code"):
-                    dataset_code = normalize_dataset_code(sys_row.get("active_dataset_code"))
-                if sys_row.get("alert_cooldown_sec") is not None:
-                    cooldown_sec = int(sys_row.get("alert_cooldown_sec"))
-                if sys_row.get("active_model_code"):
-                    active_model_code = str(sys_row.get("active_model_code") or active_model_code)
-                if sys_row.get("notify_on_every_fall") is not None:
-                    notify_on_every_fall = (
-                        bool(int(sys_row.get("notify_on_every_fall")))
-                        if str(sys_row.get("notify_on_every_fall")).isdigit()
-                        else bool(sys_row.get("notify_on_every_fall"))
-                    )
-                if sys_row.get("notify_sms") is not None:
-                    notify_sms = (
-                        bool(int(sys_row.get("notify_sms")))
-                        if str(sys_row.get("notify_sms")).isdigit()
-                        else bool(sys_row.get("notify_sms"))
-                    )
-                if sys_row.get("notify_phone") is not None:
-                    notify_phone = (
-                        bool(int(sys_row.get("notify_phone")))
-                        if str(sys_row.get("notify_phone")).isdigit()
-                        else bool(sys_row.get("notify_phone"))
-                    )
-
-                if (not op_code) and sys_row.get("active_op_code"):
-                    op_code = str(sys_row.get("active_op_code") or "").upper().strip()
-
-                op_id = None
-                for k in ("active_operating_point", "active_operating_point_id"):
-                    if sys_row.get(k) is not None:
-                        op_id = sys_row.get(k)
-                        break
-                if (not op_code) and op_id and _table_exists(conn, "operating_points"):
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT code FROM operating_points WHERE id=%s LIMIT 1", (int(op_id),))
-                        r = cur.fetchone() or {}
-                        if isinstance(r, dict) and r.get("code"):
-                            op_code = str(r.get("code") or "").upper()
-
-                if _table_exists(conn, "caregivers"):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
-                            (resident_id,),
-                        )
-                        cg_row = cur.fetchone() or {}
-                    if isinstance(cg_row, dict):
-                        caregiver_name = str(cg_row.get("name") or "").strip()
-                        caregiver_email = str(cg_row.get("email") or "").strip()
-                        caregiver_phone = str(cg_row.get("phone") or "").strip()
+            request_context = load_monitor_request_context(
+                conn=conn,
+                resident_id=resident_id,
+                input_source=input_source,
+                mode=mode,
+                dataset_code=dataset_code,
+                op_code=op_code,
+                event_location=payload_d.get("location"),
+                active_model_code=active_model_code,
+                requested_use_mc=requested_use_mc,
+                requested_mc_M=requested_mc_M,
+                is_replay=is_replay,
+                ensure_system_settings_schema=_ensure_system_settings_schema,
+                detect_variants=_detect_variants,
+                table_exists=_table_exists,
+            )
     except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
         logger.warning(
             "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
@@ -1089,17 +996,34 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             exc,
         )
     _mark_perf("db_defaults_ms")
+    if "request_context" not in locals():
+        request_context = load_monitor_request_context(
+            conn=None,
+            resident_id=resident_id,
+            input_source=input_source,
+            mode=mode,
+            dataset_code=dataset_code,
+            op_code=op_code,
+            event_location=payload_d.get("location"),
+            active_model_code=active_model_code,
+            requested_use_mc=requested_use_mc,
+            requested_mc_M=requested_mc_M,
+            is_replay=is_replay,
+            ensure_system_settings_schema=lambda _conn: None,
+            detect_variants=lambda _conn: {},
+            table_exists=lambda _conn, _table: False,
+        )
 
-    if not dataset_code:
-        dataset_code = "caucafall"
-    if not op_code:
-        op_code = "OP-2"
-    requested_use_mc, requested_mc_M, effective_use_mc, effective_mc_M = _resolve_mc_runtime(
-        requested_use_mc=requested_use_mc,
-        requested_mc_m=requested_mc_M,
-        sys_row=sys_row if isinstance(sys_row, dict) else None,
-        is_replay=is_replay,
-    )
+    event_location = request_context.event_location
+    dataset_code = request_context.dataset_code
+    op_code = request_context.op_code
+    active_model_code = request_context.active_model_code
+    cooldown_sec = request_context.cooldown_sec
+    requested_use_mc = request_context.requested_use_mc
+    requested_mc_M = request_context.requested_mc_M
+    effective_use_mc = request_context.effective_use_mc
+    effective_mc_M = request_context.effective_mc_M
+    runtime = request_context.runtime
 
     expected_fps = {
         "le2i": 25,
@@ -1175,10 +1099,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         lying_score, confirm_motion_score = None, None
     _mark_perf("confirm_scores_ms")
 
-    st = core._SESSION_STATE.setdefault(session_id, {})
-    st.setdefault("session_start_t_s", _t_s)
-    st_trackers = st.setdefault("trackers", {})
-    st_trackers_cfg = st.setdefault("trackers_cfg", {})
+    st = get_monitor_session_state(core._SESSION_STATE, session_id, _t_s)
+    st_trackers = st["trackers"]
+    st_trackers_cfg = st["trackers_cfg"]
     started_tcn = False
     started_gcn = False
 
@@ -1300,65 +1223,51 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         st["last_triage_state"] = tri_prev
         latency_ms = int((time.time() - t0) * 1000)
         perf["total_ms"] = int((time.perf_counter() - perf_started) * 1000)
-        resp = {
-            "triage_state": tri_prev,
-            "models": {},
-            "policy_alerts": {},
-            "safe_alert": False,
-            "safe_state": "not_fall",
-            "recall_alert": False,
-            "recall_state": "not_fall",
-            "latency_ms": latency_ms,
-            "capture_fps_est": cap_fps_est,
-            "target_fps": expected_fps,
-            "effective_fps": float(effective_fps),
-            "target_T": target_T,
-            "motion_score": motion_score,
-            "low_motion_block": low_motion_block,
-            "recent_motion_support": recent_motion_support,
-            "low_motion_high_conf_bypass": low_motion_high_conf_bypass,
-            "min_motion_for_fall": float(min_motion),
-            "low_quality_block": low_quality_block,
-            "structural_quality_block": structural_quality_block,
-            "occlusion_block": occlusion_block,
-            "low_conf_block": low_conf_block,
-            "low_joints_block": low_joints_block,
-            "min_conf_mean": float(live_guard["min_conf_mean"]),
-            "min_joints_med": int(live_guard["min_joints_med"]),
-            "live_guard": live_guard,
-            "sampling_mode": sampling_mode,
-            "low_fps_mode": low_fps_mode,
-            "low_fps_confirm_count": 0,
-            "low_fps_confirm_need": int(live_guard["low_fps_fall_persist_n"]),
-            "low_fps_gate_reason": "stale_drop",
-            "quality": qdiag,
-            "raw_stats": raw_stats,
-            "dataset_code": dataset_code,
-            "requested_mode": requested_mode,
-            "effective_mode": mode,
-            "op_code": op_code,
-            "use_mc": bool(effective_use_mc),
-            "requested_use_mc": bool(requested_use_mc),
-            "mc_M": int(effective_mc_M),
-            "event_id": None,
-            "notification_dispatch": None,
-            "stale_drop": True,
-            "stale_reason": stale_reason,
-            "window_seq": seq_in,
-            "last_window_seq": seq_prev,
-        }
-        if latency_ms >= 1000:
-            logger.warning(
-                "monitor.predict_perf total_ms=%s session_id=%s input_source=%s mode=%s dataset=%s op=%s seq=%s stale_drop=1 phases=%s",
-                latency_ms,
-                session_id,
-                input_source,
-                mode,
-                dataset_code,
-                op_code,
-                seq_in,
-                perf,
-            )
+        resp = build_stale_monitor_response(
+            triage_state=tri_prev,
+            latency_ms=latency_ms,
+            cap_fps_est=cap_fps_est,
+            expected_fps=expected_fps,
+            effective_fps=float(effective_fps),
+            target_T=target_T,
+            motion_score=motion_score,
+            recent_motion_support=recent_motion_support,
+            low_motion_high_conf_bypass=low_motion_high_conf_bypass,
+            min_motion=float(min_motion),
+            low_motion_block=low_motion_block,
+            low_quality_block=low_quality_block,
+            structural_quality_block=structural_quality_block,
+            occlusion_block=occlusion_block,
+            low_conf_block=low_conf_block,
+            low_joints_block=low_joints_block,
+            live_guard=live_guard,
+            qdiag={**qdiag, "sampling_mode": sampling_mode, "low_fps_mode": low_fps_mode},
+            raw_stats=raw_stats,
+            dataset_code=dataset_code,
+            requested_mode=requested_mode,
+            mode=mode,
+            op_code=op_code,
+            effective_use_mc=bool(effective_use_mc),
+            requested_use_mc=bool(requested_use_mc),
+            effective_mc_M=int(effective_mc_M),
+            stale_reason=stale_reason,
+            seq_in=seq_in,
+            seq_prev=seq_prev,
+        )
+        log_monitor_perf_if_slow(
+            logger,
+            latency_ms=latency_ms,
+            session_id=session_id,
+            input_source=input_source,
+            mode=mode,
+            dataset_code=dataset_code,
+            op_code=op_code,
+            seq_in=seq_in,
+            is_replay=is_replay,
+            persisted=False,
+            perf=perf,
+            stale_drop=True,
+        )
         return _compact_monitor_response(resp, mode) if compact_response else resp
 
     def _guard_alert_p(p_raw: float, tau_low: float) -> float:
@@ -1808,23 +1717,27 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         cooldown_s_for_persist = float(safe_pol.get("cooldown_s", max(c_tcn, c_gcn)))
     cooldown_s_for_persist = max(1.0, cooldown_s_for_persist)
 
-    persist_event_type: Optional[str] = None
-    if is_replay:
-        if triage_state in {"fall", "uncertain"} and prev_triage_state != str(triage_state):
-            persist_event_type = str(triage_state)
-    elif started_event and triage_state == "fall":
-        persist_event_type = "fall"
-
-    persist_cd_key = f"persist_last_ts:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
-    last_persist_ts = float(st.get(persist_cd_key, 0.0) or 0.0)
-    persist_in_cooldown = bool(persist_event_type) and ((_t_s - last_persist_ts) < cooldown_s_for_persist)
-
-    persist_dedup_key = f"persist_dedup_hits:{resident_id}:{dataset_code}:{mode}:{op_code}:{persist_event_type or 'none'}"
-    persist_dedup_hits = int(st.get(persist_dedup_key, 0) or 0)
-    persist_suppressed = bool(persist and persist_event_type and persist_in_cooldown)
-    if persist_suppressed:
-        persist_dedup_hits += 1
-        st[persist_dedup_key] = persist_dedup_hits
+    persistence = resolve_monitor_persistence_plan(
+        session_state=st,
+        resident_id=resident_id,
+        dataset_code=dataset_code,
+        mode=mode,
+        op_code=op_code,
+        current_t_s=_t_s,
+        cooldown_s=cooldown_s_for_persist,
+        is_replay=is_replay,
+        persist=persist,
+        triage_state=str(triage_state),
+        prev_triage_state=str(prev_triage_state),
+        started_event=bool(started_event),
+    )
+    persist_event_type = persistence.persist_event_type
+    persist_in_cooldown = persistence.persist_in_cooldown
+    persist_dedup_key = persistence.persist_dedup_key
+    persist_dedup_hits = persistence.persist_dedup_hits
+    persist_suppressed = persistence.persist_suppressed
+    last_persist_ts = persistence.last_persist_ts
+    cooldown_s_for_persist = persistence.cooldown_s
 
     if persist and persist_event_type and (not persist_in_cooldown):
         t_persist = time.perf_counter()
@@ -1840,97 +1753,34 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             or 0.0
         )
         safe_guard_margin = float(safe_guard_probability - safe_guard_threshold)
-        meta = {
-            "dataset": dataset_code,
-            "mode": mode,
-            "op_code": op_code,
-            "use_mc": bool(requested_use_mc),
-            "mc_M": int(requested_mc_M),
-            "expected_fps": expected_fps,
-            "capture_fps_est": cap_fps_est,
-            "models": models_out,
-            "policy_alerts": dual_policy_alerts,
-            "safe_alert": safe_alert,
-            "safe_state": safe_state_out,
-            "recall_alert": recall_alert,
-            "recall_state": recall_state_out,
-            "threshold": safe_guard_threshold,
-            "margin": safe_guard_margin,
-            "uncertainty": safe_guard_uncertainty,
-            "location": event_location,
-            "input_source": input_source,
-            "event_source": "replay" if is_replay else "realtime",
-            "persist_event_type": persist_event_type,
-        }
         try:
             with get_conn() as conn:
-                if _table_exists(conn, "events"):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                            (
-                                resident_id,
-                                str(persist_event_type),
-                                "high" if persist_event_type == "fall" else "medium",
-                                active_model_code,
-                                None,
-                                float(p_display),
-                                json.dumps(meta),
-                            ),
-                        )
-                        saved_event_id = cur.lastrowid
-                    notification_dispatch = dispatch_fall_notifications(
-                        conn,
-                        resident_id=int(resident_id),
-                        event_id=int(saved_event_id) if saved_event_id is not None else None,
-                        p_fall=float(p_display),
-                        source="monitor",
-                    ) if persist_event_type == "fall" else None
-                    conn.commit()
-                    st[persist_cd_key] = float(_t_s)
-                    try:
-                        if persist_event_type == "fall" and notify_on_every_fall and saved_event_id is not None:
-                            get_notification_manager().handle_event(
-                                SafeGuardEvent(
-                                    event_id=str(saved_event_id),
-                                    resident_id=int(resident_id),
-                                    location=event_location,
-                                    probability=float(safe_guard_probability),
-                                    uncertainty=float(safe_guard_uncertainty),
-                                    threshold=float(safe_guard_threshold),
-                                    margin=float(safe_guard_margin),
-                                    triage_state=str(triage_state),
-                                    safe_alert=bool(safe_alert),
-                                    recall_alert=bool(recall_alert),
-                                    model_code=str(active_model_code),
-                                    dataset_code=str(dataset_code),
-                                    op_code=str(op_code),
-                                    source="monitor",
-                                    meta={
-                                        "event_db_id": int(saved_event_id),
-                                        "requested_mode": requested_mode,
-                                        "effective_mode": mode,
-                                        "safe_state": safe_state_out,
-                                        "recall_state": recall_state_out,
-                                    },
-                                ),
-                                NotificationPreferences(
-                                    phone_enabled=bool(notify_phone),
-                                    sms_enabled=bool(notify_sms),
-                                    email_enabled=True,
-                                    caregiver_name=caregiver_name,
-                                    caregiver_phone=caregiver_phone,
-                                    caregiver_email=caregiver_email,
-                                ),
-                            )
-                    except Exception as exc:
-                        logger.warning(
-                            "safe_guard handle_event failed resident_id=%s event_id=%s: %s",
-                            resident_id,
-                            saved_event_id,
-                            exc,
-                        )
+                saved_event_id, notification_dispatch = persist_monitor_event(
+                    conn,
+                    session_state=st,
+                    persistence=persistence,
+                    current_t_s=_t_s,
+                    resident_id=resident_id,
+                    event_location=event_location,
+                    input_source=input_source,
+                    requested_mode=requested_mode,
+                    effective_mode=mode,
+                    runtime=runtime,
+                    table_exists=_table_exists,
+                    triage_state=str(triage_state),
+                    safe_alert=bool(safe_alert),
+                    safe_state_out=str(safe_state_out),
+                    recall_alert=bool(recall_alert),
+                    recall_state_out=str(recall_state_out),
+                    expected_fps=float(expected_fps),
+                    capture_fps_est=cap_fps_est,
+                    p_display=float(p_display),
+                    primary_probability=float(safe_guard_probability),
+                    primary_uncertainty=float(safe_guard_uncertainty),
+                    primary_threshold=float(safe_guard_threshold),
+                    models_out=models_out,
+                    dual_policy_alerts=dual_policy_alerts,
+                )
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
                 "monitor.predict_window: failed to persist event (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
@@ -1952,77 +1802,73 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     st["last_window_seq"] = seq_in
     st["last_triage_state"] = str(triage_state)
 
-    resp = {
-        "triage_state": triage_state,
-        "models": models_out,
-        "policy_alerts": dual_policy_alerts,
-        "safe_alert": safe_alert,
-        "safe_state": safe_state_out,
-        "recall_alert": recall_alert,
-        "recall_state": recall_state_out,
-        "latency_ms": latency_ms,
-        "capture_fps_est": cap_fps_est,
-        "target_fps": expected_fps,
-        "effective_fps": float(effective_fps),
-        "target_T": target_T,
-        "motion_score": motion_score,
-        "lying_score": lying_score,
-        "confirm_motion_score": confirm_motion_score,
-        "low_motion_block": low_motion_block,
-        "recent_motion_support": recent_motion_support,
-        "low_motion_high_conf_bypass": low_motion_high_conf_bypass,
-        "min_motion_for_fall": float(min_motion),
-        "low_quality_block": low_quality_block,
-        "structural_quality_block": structural_quality_block,
-        "occlusion_block": occlusion_block,
-        "low_conf_block": low_conf_block,
-        "low_joints_block": low_joints_block,
-        "min_conf_mean": float(live_guard["min_conf_mean"]),
-        "min_joints_med": int(live_guard["min_joints_med"]),
-        "live_guard": live_guard,
-        "sampling_mode": sampling_mode,
-        "low_fps_mode": low_fps_mode,
-        "low_fps_confirm_count": int(low_fps_confirm_count),
-        "low_fps_confirm_need": int(low_fps_need),
-        "low_fps_gate_reason": low_fps_gate_reason,
-        "quality": qdiag,
-        "raw_stats": raw_stats,
-        "dataset_code": dataset_code,
-        "requested_mode": requested_mode,
-        "effective_mode": mode,
-        "op_code": op_code,
-        "use_mc": bool(effective_use_mc),
-        "requested_use_mc": bool(requested_use_mc),
-        "mc_M": int(effective_mc_M),
-        "delivery_gate": delivery_gate_diag,
-        "uncertain_promoted": bool(uncertain_promoted),
-        "event_id": saved_event_id,
-        "notification_dispatch": notification_dispatch,
-        "persist_dedup": {
-            "suppressed": persist_suppressed,
-            "cooldown_s": float(cooldown_s_for_persist),
-            "remaining_s": float(max(0.0, cooldown_s_for_persist - max(0.0, _t_s - last_persist_ts))),
-            "hits_session": int(st.get(persist_dedup_key, persist_dedup_hits) or 0),
-        },
-        "stale_drop": False,
-        "stale_reason": None,
-        "window_seq": seq_in,
-        "last_window_seq": seq_prev,
-    }
-    if latency_ms >= 1000:
-        logger.warning(
-            "monitor.predict_perf total_ms=%s session_id=%s input_source=%s mode=%s dataset=%s op=%s seq=%s replay=%s persist=%s phases=%s",
-            latency_ms,
-            session_id,
-            input_source,
-            mode,
-            dataset_code,
-            op_code,
-            seq_in,
-            is_replay,
-            bool(saved_event_id is not None or persist_event_type),
-            perf,
-        )
+    resp = build_monitor_prediction_response(
+        triage_state=triage_state,
+        models_out=models_out,
+        dual_policy_alerts=dual_policy_alerts,
+        safe_alert=bool(safe_alert),
+        safe_state_out=str(safe_state_out),
+        recall_alert=bool(recall_alert),
+        recall_state_out=str(recall_state_out),
+        latency_ms=latency_ms,
+        cap_fps_est=cap_fps_est,
+        expected_fps=expected_fps,
+        effective_fps=float(effective_fps),
+        target_T=target_T,
+        motion_score=motion_score,
+        lying_score=lying_score,
+        confirm_motion_score=confirm_motion_score,
+        low_motion_block=low_motion_block,
+        recent_motion_support=recent_motion_support,
+        low_motion_high_conf_bypass=low_motion_high_conf_bypass,
+        min_motion=float(min_motion),
+        low_quality_block=low_quality_block,
+        structural_quality_block=structural_quality_block,
+        occlusion_block=occlusion_block,
+        low_conf_block=low_conf_block,
+        low_joints_block=low_joints_block,
+        live_guard=live_guard,
+        sampling_mode=sampling_mode,
+        low_fps_mode=low_fps_mode,
+        low_fps_confirm_count=int(low_fps_confirm_count),
+        low_fps_need=int(low_fps_need),
+        low_fps_gate_reason=low_fps_gate_reason,
+        qdiag=qdiag,
+        raw_stats=raw_stats,
+        dataset_code=dataset_code,
+        requested_mode=requested_mode,
+        mode=mode,
+        op_code=op_code,
+        effective_use_mc=bool(effective_use_mc),
+        requested_use_mc=bool(requested_use_mc),
+        effective_mc_M=int(effective_mc_M),
+        delivery_gate_diag=delivery_gate_diag,
+        uncertain_promoted=bool(uncertain_promoted),
+        saved_event_id=saved_event_id,
+        notification_dispatch=notification_dispatch,
+        persist_suppressed=persist_suppressed,
+        cooldown_s_for_persist=float(cooldown_s_for_persist),
+        persist_dedup_hits=int(persist_dedup_hits),
+        current_t_s=_t_s,
+        last_persist_ts=last_persist_ts,
+        persist_dedup_key=persist_dedup_key,
+        session_state=st,
+        seq_in=seq_in,
+        seq_prev=seq_prev,
+    )
+    log_monitor_perf_if_slow(
+        logger,
+        latency_ms=latency_ms,
+        session_id=session_id,
+        input_source=input_source,
+        mode=mode,
+        dataset_code=dataset_code,
+        op_code=op_code,
+        seq_in=seq_in,
+        is_replay=is_replay,
+        persisted=bool(saved_event_id is not None or persist_event_type),
+        perf=perf,
+    )
     return _compact_monitor_response(resp, mode) if compact_response else resp
 
 

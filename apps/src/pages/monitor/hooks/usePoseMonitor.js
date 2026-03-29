@@ -5,6 +5,30 @@ import * as drawingUtils from "@mediapipe/drawing_utils";
 import { apiRequest } from "../../../lib/apiClient";
 import { readBool } from "../../../lib/booleans";
 import {
+  fetchReplayClipBlob,
+  resetMonitorSession,
+  triggerTestFall,
+  triggerTestNotification,
+  uploadSkeletonClip,
+} from "../../../features/monitor/api";
+import {
+  prepareCameraStream as prepareCameraStreamSource,
+  prepareReplayVideo as prepareReplayVideoSource,
+  resetVideoSource as resetVideoSourceResources,
+  syncReplayPlaybackRate as applyReplayPlaybackRate,
+} from "../../../features/monitor/media";
+import {
+  buildPendingClip,
+  buildPredictPayload,
+  extractPredictionState,
+} from "../../../features/monitor/prediction";
+import { createMonitorSocketClient } from "../../../features/monitor/socketClient";
+import {
+  queueReplayWindowEnds,
+  sliceLiveWindowFrames,
+  sliceReplayWindowFrames,
+} from "../../../features/monitor/windowing";
+import {
   CLIP_POST_S,
   CLIP_PRE_S,
   DEGRADED_POSE_MODEL_COMPLEXITY,
@@ -16,16 +40,12 @@ import {
   LOW_FPS_EXIT,
   LOW_FPS_HOLD_MS,
   MAX_PROC_FPS,
-  MONITOR_PAYLOAD_Q_SCALE,
   NUM_JOINTS,
   REPLAY_UI_UPDATE_MS,
 } from "../constants";
 import { clamp01, labelForTriage, prettyModelTag } from "../utils";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
-const TRIAGE_FALL_CONFIRM_N = 2;
-const TRIAGE_SAFE_CONFIRM_N = 2;
-const TRIAGE_UNCERTAIN_CONFIRM_N = 3;
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 const WS_CONNECT_TIMEOUT_MS = 7000;
 const WS_PREDICT_TIMEOUT_MS = 12000;
@@ -45,28 +65,6 @@ function getClipFlags(settingsPayload) {
     storeEventClips: readBool(sys?.store_event_clips, false),
     anonymize: readBool(sys?.anonymize_skeleton_data, true),
   };
-}
-
-function getVideoLoadErrorMessage(videoEl, file) {
-  const code = Number(videoEl?.error?.code || 0);
-  const byCode = {
-    1: "Video loading aborted.",
-    2: "Network/media fetch error while loading video.",
-    3: "Video decode error (codec may be unsupported).",
-    4: "Video format not supported by this browser.",
-  };
-  const base = byCode[code] || "Unknown video load error.";
-  const t = String(file?.type || "").trim();
-  const hint = t ? ` File type: ${t}.` : "";
-  return `${base}${hint} Try an H.264 MP4 (AAC) or WebM file.`;
-}
-
-async function fetchReplayClipBlob(clipUrl) {
-  const resp = await fetch(String(clipUrl || ""), { method: "GET" });
-  if (!resp.ok) {
-    throw new Error(`Replay clip fetch failed: HTTP ${resp.status}`);
-  }
-  return await resp.blob();
 }
 
 /**
@@ -168,9 +166,6 @@ export function usePoseMonitor({
   const replayPredictLatencyMsRef = useRef(0);
   const replayNextWindowEndRef = useRef(null);
   const replayWindowQueueRef = useRef([]);
-  const payloadTRef = useRef([]);
-  const payloadXYRef = useRef([]);
-  const payloadConfRef = useRef([]);
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
@@ -183,11 +178,8 @@ export function usePoseMonitor({
   const timelineSeqRef = useRef(0);
   const timelineSeenEventIdsRef = useRef(new Set());
   const lastFallHistoryTsRef = useRef(0);
-  const wsRef = useRef(null);
-  const wsReadyRef = useRef(false);
-  const wsPendingRef = useRef(null);
-  const wsClosingRef = useRef(false);
   const runTokenRef = useRef(0);
+  const predictClientRef = useRef(null);
 
   const makeSessionId = useCallback(
     () => `monitor-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
@@ -195,18 +187,11 @@ export function usePoseMonitor({
   );
 
   const syncReplayPlaybackRate = useCallback((videoEl) => {
-    if (!videoEl || (inputSourceRef.current || "camera") !== "video") return;
-
-    const latencyMs = Number(replayPredictLatencyMsRef.current) || 0;
-    let nextRate = 1.0;
-    if (latencyMs >= 2200) nextRate = 0.9;
-
-    if (Math.abs(Number(videoEl.playbackRate || 1) - nextRate) < 0.01) return;
-    try {
-      videoEl.playbackRate = nextRate;
-    } catch {
-      // ignore
-    }
+    applyReplayPlaybackRate(
+      videoEl,
+      Number(replayPredictLatencyMsRef.current) || 0,
+      inputSourceRef.current || "camera"
+    );
   }, []);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
@@ -293,56 +278,16 @@ export function usePoseMonitor({
   }, []);
 
   const resetVideoSource = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    const videoEl = videoRef.current;
-    if (videoEl) {
-      try {
-        videoEl.pause();
-      } catch {
-        // ignore
-      }
-      videoEl.srcObject = null;
-      if (videoObjectUrlRef.current) {
-        videoEl.removeAttribute("src");
-        videoEl.load?.();
-      }
-    }
-
-    if (videoObjectUrlRef.current) {
-      try {
-        URL.revokeObjectURL(videoObjectUrlRef.current);
-      } catch {
-        // ignore
-      }
-      videoObjectUrlRef.current = null;
-    }
+    resetVideoSourceResources({
+      streamRef,
+      videoRef,
+      videoObjectUrlRef,
+    });
   }, []);
 
   const resetPredictionTransport = useCallback(() => {
-    if (wsPendingRef.current) {
-      try {
-        const err = new Error("WebSocket closed during mode switch");
-        err.name = "AbortError";
-        wsPendingRef.current.reject?.(err);
-      } catch {
-        // ignore
-      }
-      wsPendingRef.current = null;
-    }
-    if (wsRef.current) {
-      wsClosingRef.current = true;
-      try {
-        wsRef.current.close();
-      } catch {
-        // ignore
-      }
-    }
-    wsRef.current = null;
-    wsReadyRef.current = false;
+    predictClientRef.current?.close?.("WebSocket closed during mode switch");
+    predictClientRef.current = null;
   }, []);
 
   const stopLive = useCallback(() => {
@@ -548,11 +493,7 @@ export function usePoseMonitor({
         conf,
       };
 
-      const data = await apiRequest(
-        apiBase,
-        `/api/events/${encodeURIComponent(pending.eventId)}/skeleton_clip`,
-        { method: "POST", body: clipPayload }
-      );
+      const data = await uploadSkeletonClip(apiBase, pending.eventId, clipPayload);
 
       if (data?.ok) {
         sent.add(String(pending.eventId));
@@ -564,154 +505,22 @@ export function usePoseMonitor({
     }
   }, [apiBase, settingsPayload]);
 
-  const ensurePredictWs = useCallback(async () => {
-    if (wsRef.current && wsReadyRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return wsRef.current;
-    }
-
-    if (!apiBase) {
-      throw new Error("Missing apiBase for WebSocket connection");
-    }
-
-    let base = String(apiBase || "").trim();
-    if (!base) throw new Error("Empty apiBase");
-    if (base.endsWith("/")) base = base.slice(0, -1);
-    let wsBase = base.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-    let wsPath = "/api/monitor/ws";
-    try {
-      const u = new URL(base);
-      wsBase = u.origin.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-      wsPath = (u.pathname || "").replace(/\/+$/, "") + "/api/monitor/ws";
-      wsPath = wsPath.replace(/\/{2,}/g, "/");
-    } catch {
-      // ignore and use fallback from raw string replacement
-    }
-    const wsUrl = `${wsBase}${wsPath}`;
-
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    wsReadyRef.current = false;
-
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      const t = window.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try {
-          ws.close();
-        } catch {
-          // ignore
-        }
-        reject(new Error("WebSocket connect timeout"));
-      }, WS_CONNECT_TIMEOUT_MS);
-
-      ws.onopen = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(t);
-        wsReadyRef.current = true;
-        resolve(ws);
-      };
-      ws.onerror = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(t);
-        reject(new Error("WebSocket connect failed"));
-      };
-      ws.onclose = () => {
-        wsReadyRef.current = false;
-        if (wsRef.current === ws) wsRef.current = null;
-        if (wsPendingRef.current) {
-          try {
-            const err = new Error(
-              wsClosingRef.current ? "WebSocket closed during mode switch" : "WebSocket closed"
-            );
-            err.name = wsClosingRef.current ? "AbortError" : "Error";
-            wsPendingRef.current.reject?.(err);
-          } catch {
-            // ignore
-          }
-          wsPendingRef.current = null;
-        }
-        wsClosingRef.current = false;
-      };
-      ws.onmessage = (evt) => {
-        const pending = wsPendingRef.current;
-        if (!pending) return;
-        try {
-          const msg = JSON.parse(String(evt?.data || "{}"));
-          if (msg?.error) {
-            pending.reject(new Error(String(msg?.detail || "predict_window ws error")));
-          } else {
-            pending.resolve(msg);
-          }
-        } catch (err) {
-          pending.reject(err);
-        } finally {
-          wsPendingRef.current = null;
-        }
-      };
+  const ensurePredictClient = useCallback(() => {
+    if (predictClientRef.current) return predictClientRef.current;
+    predictClientRef.current = createMonitorSocketClient({
+      apiBase,
+      connectTimeoutMs: WS_CONNECT_TIMEOUT_MS,
+      predictTimeoutMs: WS_PREDICT_TIMEOUT_MS,
     });
+    return predictClientRef.current;
   }, [apiBase]);
 
-  const predictViaWs = useCallback(async (payload) => {
-    const sendOnce = async () => {
-      const ws = await ensurePredictWs();
-      return await new Promise((resolve, reject) => {
-        const timeoutId = window.setTimeout(() => {
-          if (wsPendingRef.current) {
-            wsPendingRef.current = null;
-          }
-          try {
-            ws.close();
-          } catch {
-            // ignore
-          }
-          reject(new Error("WebSocket predict timeout"));
-        }, WS_PREDICT_TIMEOUT_MS);
-
-        wsPendingRef.current = {
-          resolve: (msg) => {
-            window.clearTimeout(timeoutId);
-            resolve(msg);
-          },
-          reject: (err) => {
-            window.clearTimeout(timeoutId);
-            reject(err);
-          },
-        };
-
-        try {
-          ws.send(JSON.stringify(payload));
-        } catch (err) {
-          wsPendingRef.current = null;
-          window.clearTimeout(timeoutId);
-          reject(err);
-        }
-      });
-    };
-
-    try {
-      return await sendOnce();
-    } catch (err) {
-      const msg = String(err?.message || err || "");
-      if (!/WebSocket predict timeout|WebSocket closed|WebSocket connect failed/i.test(msg)) {
-        throw err;
-      }
-
-      wsClosingRef.current = true;
-      try {
-        wsRef.current?.close();
-      } catch {
-        // ignore
-      }
-      wsRef.current = null;
-      wsReadyRef.current = false;
-      wsClosingRef.current = false;
-
-      return await sendOnce();
-    }
-  }, [ensurePredictWs]);
+  const predictViaWs = useCallback(
+    async (payload) => {
+      return await ensurePredictClient().predict(payload);
+    },
+    [ensurePredictClient]
+  );
 
   const predictViaHttp = useCallback(
     async (payload) =>
@@ -728,65 +537,33 @@ export function usePoseMonitor({
       void maybeFinalizeClipUpload();
     }
 
-    const safeObj = data?.policy_alerts?.safe;
-    const recallObj = data?.policy_alerts?.recall;
-    const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
-    const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
-    const safeBool =
-      typeof data?.safe_alert === "boolean"
-        ? data.safe_alert
-        : typeof safeObj?.alert === "boolean"
-        ? safeObj.alert
-        : null;
-    const recallBool =
-      typeof data?.recall_alert === "boolean"
-        ? data.recall_alert
-        : typeof recallObj?.alert === "boolean"
-        ? recallObj.alert
-        : null;
-    const nextSafeState = (data?.safe_state || safeObj?.state || null) ?? null;
-    const nextRecallState = (data?.recall_state || recallObj?.state || null) ?? null;
-    if (lastUiRef.current.safeAlert !== safeBool) {
-      lastUiRef.current.safeAlert = safeBool;
-      setSafeAlert(safeBool);
-    }
-    if (lastUiRef.current.recallAlert !== recallBool) {
-      lastUiRef.current.recallAlert = recallBool;
-      setRecallAlert(recallBool);
-    }
-    if (lastUiRef.current.safeState !== nextSafeState) {
-      lastUiRef.current.safeState = nextSafeState;
-      setSafeState(nextSafeState);
-    }
-    if (lastUiRef.current.recallState !== nextRecallState) {
-      lastUiRef.current.recallState = nextRecallState;
-      setRecallState(nextRecallState);
-    }
+    const nextState = extractPredictionState({
+      data,
+      mode,
+      previousStable: triageStableRef.current,
+      settingsPayload,
+    });
+    triageStableRef.current = nextState.stable;
 
-    let triCandidate = safeStateRaw || triRaw || "not_fall";
-    if (triCandidate !== "fall" && triCandidate !== "uncertain") triCandidate = "not_fall";
-    const st = triageStableRef.current;
-    if (triCandidate === "fall" && safeBool !== false) {
-      st.fall += 1;
-      st.uncertain = 0;
-      st.safe = 0;
-    } else if (triCandidate === "uncertain") {
-      st.uncertain += 1;
-      st.fall = 0;
-      st.safe = 0;
-    } else {
-      st.safe += 1;
-      st.fall = 0;
-      st.uncertain = 0;
+    if (lastUiRef.current.safeAlert !== nextState.safeAlert) {
+      lastUiRef.current.safeAlert = nextState.safeAlert;
+      setSafeAlert(nextState.safeAlert);
     }
-    let triStable = st.last || "not_fall";
-    if (st.fall >= TRIAGE_FALL_CONFIRM_N) triStable = "fall";
-    else if (st.safe >= TRIAGE_SAFE_CONFIRM_N) triStable = "not_fall";
-    else if (st.uncertain >= TRIAGE_UNCERTAIN_CONFIRM_N && st.fall === 0) triStable = "uncertain";
-    st.last = triStable;
-    if (lastUiRef.current.triageState !== triStable) {
-      lastUiRef.current.triageState = triStable;
-      setTriageState(triStable);
+    if (lastUiRef.current.recallAlert !== nextState.recallAlert) {
+      lastUiRef.current.recallAlert = nextState.recallAlert;
+      setRecallAlert(nextState.recallAlert);
+    }
+    if (lastUiRef.current.safeState !== nextState.safeState) {
+      lastUiRef.current.safeState = nextState.safeState;
+      setSafeState(nextState.safeState);
+    }
+    if (lastUiRef.current.recallState !== nextState.recallState) {
+      lastUiRef.current.recallState = nextState.recallState;
+      setRecallState(nextState.recallState);
+    }
+    if (lastUiRef.current.triageState !== nextState.triageState) {
+      lastUiRef.current.triageState = nextState.triageState;
+      setTriageState(nextState.triageState);
     }
 
     try {
@@ -796,65 +573,37 @@ export function usePoseMonitor({
         const sent = uploadedClipIdsRef.current;
         const already = sent && sent.has(String(evId));
         const pending = pendingClipRef.current;
-
         if (!already && (!pending || String(pending.eventId) !== String(evId))) {
-          pendingClipRef.current = {
+          pendingClipRef.current = buildPendingClip({
             eventId: evId,
-            triggerEndTs: endTs,
-            deadlineTs: endTs + CLIP_POST_S * 1000,
-            preMs: CLIP_PRE_S * 1000,
-            postMs: CLIP_POST_S * 1000,
-            ctx: {
-              dataset_code: activeDatasetCode,
-              mode,
-              op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-              use_mc: Boolean(mcEnabled),
-              mc_M: mcCfg?.M,
-            },
-          };
+            endTs,
+            activeDatasetCode,
+            mode,
+            opCode,
+            settingsPayload,
+            mcEnabled,
+            mcCfg,
+            clipPreS: CLIP_PRE_S,
+            clipPostS: CLIP_POST_S,
+          });
         }
       }
     } catch {
       // ignore
     }
 
-    let mu = null;
-    let sig = null;
-    const mOut = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
-    if (mOut) {
-      mu = mOut?.triage?.ps != null
-        ? Number(mOut.triage.ps)
-        : mOut?.p_alert_in != null
-          ? Number(mOut.p_alert_in)
-          : mOut?.mu != null
-            ? Number(mOut.mu)
-            : mOut?.p_det != null
-              ? Number(mOut.p_det)
-              : null;
-      sig = mOut?.sigma != null ? Number(mOut.sigma) : null;
+    if (lastUiRef.current.pFall !== nextState.pFall) {
+      lastUiRef.current.pFall = nextState.pFall;
+      setPFall(nextState.pFall);
     }
-    if (lastUiRef.current.pFall !== mu) {
-      lastUiRef.current.pFall = mu;
-      setPFall(mu);
-    }
-    if (lastUiRef.current.sigma !== sig) {
-      lastUiRef.current.sigma = sig;
-      setSigma(sig);
+    if (lastUiRef.current.sigma !== nextState.sigma) {
+      lastUiRef.current.sigma = nextState.sigma;
+      setSigma(nextState.sigma);
     }
 
-    let markerKind = "safe";
-    const triNorm = String(triStable || "").toLowerCase();
-    if (triNorm === "fall") markerKind = "fall";
-    else if (triNorm === "uncertain") markerKind = "uncertain";
-    const dedupMs = Math.round(
-      Math.max(
-        1000,
-        1000 * Number(settingsPayload?.system?.alert_cooldown_sec || FALL_HISTORY_DEDUP_MS_DEFAULT / 1000)
-      )
-    );
-    addTimelineMarker(markerKind, {
-      eventId: markerKind === "fall" ? data?.event_id ?? null : null,
-      dedupMs,
+    addTimelineMarker(nextState.markerKind, {
+      eventId: nextState.markerKind === "fall" ? nextState.eventId : null,
+      dedupMs: nextState.dedupMs,
     });
   }, [
     activeDatasetCode,
@@ -872,62 +621,28 @@ export function usePoseMonitor({
     if (nFrames < 2) return null;
 
     const { storeEventClips } = getClipFlags(settingsPayload);
-    const tArr = payloadTRef.current;
-    const xyArr = payloadXYRef.current;
-    const confArr = payloadConfRef.current;
-    tArr.length = nFrames;
-    xyArr.length = nFrames;
-    confArr.length = nFrames;
-    for (let i = 0; i < nFrames; i++) {
-      const fr = frames[i];
-      tArr[i] = fr.t;
-      xyArr[i] = fr.xy;
-      confArr[i] = fr.conf;
-    }
-
-    const xyQ = new Array(nFrames * NUM_JOINTS * 2);
-    const confQ = new Array(nFrames * NUM_JOINTS);
-    let q = 0;
-    let c = 0;
-    for (let i = 0; i < nFrames; i++) {
-      const fr = frames[i];
-      const pts = fr.xy || [];
-      const cf = fr.conf || [];
-      for (let j = 0; j < NUM_JOINTS; j++) {
-        const p = pts[j] || [0, 0];
-        const v = cf[j] == null ? 1 : cf[j];
-        xyQ[q++] = Math.round((Number.isFinite(Number(p[0])) ? Number(p[0]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
-        xyQ[q++] = Math.round((Number.isFinite(Number(p[1])) ? Number(p[1]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
-        confQ[c++] = Math.round(clamp01(Number(v) || 0) * MONITOR_PAYLOAD_Q_SCALE);
-      }
-    }
-
-    return {
-      window_seq: ++windowSeqRef.current,
-      session_id: sessionIdRef.current,
-      input_source: sourceMode,
-      resident_id: 1,
+    const payload = buildPredictPayload({
+      slice: frames,
+      sessionId: sessionIdRef.current,
+      windowSeq: ++windowSeqRef.current,
+      inputSource: sourceMode,
       location,
       mode,
-      dataset_code: activeDatasetCode,
-      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
-      model_tcn: mode !== "gcn" ? chosen.tcn : null,
-      model_gcn: mode !== "tcn" ? chosen.gcn : null,
-      model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
-      fps: targetFps,
-      target_fps: targetFps,
-      target_T: deployW,
-      capture_fps: streamFps || fpsEstimateRef.current || null,
-      timestamp_ms: Date.now(),
-      use_mc: Boolean(mcEnabled),
-      mc_M: mcCfg?.M,
-      persist: Boolean(monitoringOnRef.current || storeEventClips),
+      datasetCode: activeDatasetCode,
+      opCode: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+      chosen,
+      targetFps,
+      deployW,
+      streamFps: streamFps || fpsEstimateRef.current || null,
+      mcEnabled,
+      mcCfg,
+      persist: monitoringOnRef.current || storeEventClips,
+      endTs: windowEndTs,
+    });
+
+    return {
+      ...payload,
       compact_response: sourceMode === "video",
-      raw_t_ms: tArr,
-      raw_shape: [nFrames, NUM_JOINTS],
-      raw_xy_q: xyQ,
-      raw_conf_q: confQ,
-      window_end_t_ms: windowEndTs,
     };
   }, [
     activeDatasetCode,
@@ -943,28 +658,14 @@ export function usePoseMonitor({
   ]);
 
   const queueReplayWindows = useCallback(() => {
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return false;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const strideMs = Math.max(dtMs, Number(deployS) * dtMs);
-    const endTs = raw[raw.length - 1].t;
-    const firstEligibleEndTs = raw[0].t + needMs;
-    if (!Number.isFinite(firstEligibleEndTs) || endTs < firstEligibleEndTs) return false;
-
-    if (replayNextWindowEndRef.current == null || replayNextWindowEndRef.current < firstEligibleEndTs) {
-      replayNextWindowEndRef.current = firstEligibleEndTs;
-    }
-
-    const queue = replayWindowQueueRef.current;
-    let queuedAny = false;
-    while (Number(replayNextWindowEndRef.current) <= endTs) {
-      queue.push(Number(replayNextWindowEndRef.current));
-      replayNextWindowEndRef.current += strideMs;
-      queuedAny = true;
-    }
-    return queuedAny;
+    return queueReplayWindowEnds({
+      rawFrames: rawFramesRef.current,
+      targetFps,
+      deployW,
+      deployS,
+      nextWindowEndRef: replayNextWindowEndRef,
+      queueRef: replayWindowQueueRef,
+    });
   }, [deployS, deployW, targetFps]);
 
   const buildReplayPayload = useCallback(() => {
@@ -972,18 +673,14 @@ export function usePoseMonitor({
     const raw = rawFramesRef.current;
     if (!queue.length || !raw || raw.length < 2) return null;
 
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
     const windowEndTs = Number(queue[0]);
-    const startWindowTs = windowEndTs - needMs;
-    if (raw[0].t > startWindowTs) return null;
-
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startWindowTs) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    let endIdx = raw.length;
-    while (endIdx > startIdx + 1 && raw[endIdx - 1].t > windowEndTs) endIdx--;
-    const frames = raw.slice(startIdx, endIdx);
+    const frames = sliceReplayWindowFrames({
+      rawFrames: raw,
+      targetFps,
+      deployW,
+      windowEndTs,
+    });
+    if (!frames) return null;
 
     return buildPredictionPayload({
       sourceMode: "video",
@@ -994,24 +691,17 @@ export function usePoseMonitor({
   }, [buildPredictionPayload, deployW, selectedVideoName, targetFps]);
 
   const buildLivePayload = useCallback(() => {
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return null;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - needMs;
-    if (raw[0].t > startNeed) return null;
-
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    const frames = raw.slice(startIdx);
+    const liveSlice = sliceLiveWindowFrames({
+      rawFrames: rawFramesRef.current,
+      targetFps,
+      deployW,
+    });
+    if (!liveSlice) return null;
 
     return buildPredictionPayload({
       sourceMode: "camera",
-      frames,
-      windowEndTs: endTs,
+      frames: liveSlice.frames,
+      windowEndTs: liveSlice.endTs,
       location: "camera_live",
     });
   }, [buildPredictionPayload, deployW, targetFps]);
@@ -1283,114 +973,32 @@ export function usePoseMonitor({
     }
   }, [handlePoseResults]);
 
-  const awaitVideoReady = useCallback(async (videoEl, clipLabel) => {
-    await new Promise((resolve, reject) => {
-      if (videoEl.readyState >= 2) {
-        resolve();
-        return;
-      }
-
-      let done = false;
-      const timer = window.setTimeout(() => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(new Error("Video metadata load timeout"));
-      }, 10000);
-
-      const cleanup = () => {
-        videoEl.removeEventListener("loadedmetadata", onReady);
-        videoEl.removeEventListener("loadeddata", onReady);
-        videoEl.removeEventListener("canplay", onReady);
-        videoEl.removeEventListener("error", onErr);
-        window.clearTimeout(timer);
-      };
-
-      const onReady = () => {
-        if (done || videoEl.readyState < 2) return;
-        done = true;
-        cleanup();
-        resolve();
-      };
-
-      const onErr = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(new Error(getVideoLoadErrorMessage(videoEl, clipLabel)));
-      };
-
-      videoEl.addEventListener("loadedmetadata", onReady, { once: true });
-      videoEl.addEventListener("loadeddata", onReady, { once: true });
-      videoEl.addEventListener("canplay", onReady, { once: true });
-      videoEl.addEventListener("error", onErr, { once: true });
-
-      try {
-        videoEl.load?.();
-      } catch {
-        // ignore
-      }
-    });
-  }, []);
-
   const prepareReplayVideo = useCallback(async (videoEl, clip, clipUrl) => {
-    const clipFile = clip?.file instanceof File ? clip.file : null;
-
-    resetVideoSource();
-    if (clipFile) {
-      const objectUrl = URL.createObjectURL(clipFile);
-      videoObjectUrlRef.current = objectUrl;
-      videoEl.src = objectUrl;
-    } else {
-      setStartInfo("Loading replay clip...");
-      const blob = await fetchReplayClipBlob(clipUrl);
-      const objectUrl = URL.createObjectURL(blob);
-      videoObjectUrlRef.current = objectUrl;
-      videoEl.src = objectUrl;
-    }
-
-    videoEl.currentTime = 0;
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-    videoEl.preload = "auto";
-
-    await awaitVideoReady(videoEl, clipFile || clip);
-  }, [awaitVideoReady, resetVideoSource]);
+    await prepareReplayVideoSource({
+      videoEl,
+      clip,
+      clipUrl,
+      videoObjectUrlRef,
+      setStartInfo,
+      fetchReplayClipBlob,
+      resetVideoSource,
+    });
+  }, [resetVideoSource]);
 
   const prepareCameraStream = useCallback(async (videoEl) => {
-    const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: cap.w, max: cap.w },
-        height: { ideal: cap.h, max: cap.h },
-        frameRate: { ideal: targetFps, max: targetFps },
-      },
-      audio: false,
+    const captureResolution =
+      CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
+    await prepareCameraStreamSource({
+      videoEl,
+      captureResolution,
+      targetFps,
+      streamRef,
     });
-    streamRef.current = stream;
-    videoEl.srcObject = stream;
-    await awaitVideoReady(videoEl, null);
-  }, [awaitVideoReady, captureResolutionPreset, targetFps]);
+  }, [captureResolutionPreset, targetFps]);
 
   const resetSession = useCallback(async () => {
     try {
-      try {
-        await apiRequest(
-          apiBase,
-          `/api/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-          { method: "POST" }
-        );
-      } catch (err) {
-        if (Number(err?.status) === 404) {
-          await apiRequest(
-            apiBase,
-            `/api/v1/monitor/reset_session?session_id=${encodeURIComponent(sessionIdRef.current)}`,
-            { method: "POST" }
-          );
-        } else {
-          throw err;
-        }
-      }
+      await resetMonitorSession(apiBase, sessionIdRef.current);
     } catch {
       // ignore
     }
@@ -1588,10 +1196,10 @@ export function usePoseMonitor({
   const testFall = useCallback(async () => {
     // 1) Try backend helper endpoint (if present)
     try {
-      const data = await apiRequest(apiBase, "/api/events/test_fall", {
-        method: "POST",
-        body: { resident_id: 1, model_code: prettyModelTag(settingsPayload?.system?.active_model_code) },
-      });
+      const data = await triggerTestFall(
+        apiBase,
+        prettyModelTag(settingsPayload?.system?.active_model_code)
+      );
       if (data || data?.ok) {
         addTimelineMarker("fall", { force: true });
         return;
@@ -1602,10 +1210,7 @@ export function usePoseMonitor({
 
     // 2) Fallback: record a test notification
     try {
-      await apiRequest(apiBase, "/api/notifications/test", {
-        method: "POST",
-        body: { resident_id: 1, channel: "email", message: "[UI] Test Fall button pressed" },
-      });
+      await triggerTestNotification(apiBase, "[UI] Test Fall button pressed");
     } catch {
       // ignore
     }

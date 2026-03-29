@@ -1,35 +1,17 @@
-# Four-Video Delivery Profile
+# Four-Folder Custom Replay Check
 
-This profile is the current deliverable configuration for the four labeled test folders:
+This runbook now evaluates the four labeled custom folders against the same canonical online monitor profile used by the main `CAUCAFall TCN OP-2` path. It is no longer treated as a delivery-only profile with separate overrides.
 
 - `fall_test/corridor`
 - `fall_test/corridor_adl`
 - `fall_test/kitchen`
 - `fall_test/kitchen_adl`
 
-## Base Model
+## Canonical Runtime Profile
 
-- Ops YAML: `configs/ops/tcn_caucafall_r2_train_hneg.yaml`
+- Ops YAML: `configs/ops/tcn_caucafall.yaml`
 - OP: `OP2`
-- Checkpoint: `outputs/caucafall_tcn_W48S12_r2_train_hneg/best.pt`
-
-## Delivery Overrides
-
-- `ema_alpha=0.0`
-- `tau_high=0.6`
-- `tau_low=0.42`
-- `k=2`
-- `n=2`
-
-## Delivery Gate
-
-Reject a predicted fall event if any of these hold:
-
-- `max_lying > 0.75`
-- `mean_motion_high < 0.10`
-- `first_event_start_s > 40.0`
-
-This gate is intentionally tuned for the four target folders above. It should be treated as a delivery profile for this package, not as a general-purpose deployment profile.
+- Checkpoint: `deploy_assets/checkpoints/caucafall_tcn_best.pt`
 
 ## Reproduce
 
@@ -46,20 +28,26 @@ python3 scripts/eval_delivery_videos.py \
   --config_yaml configs/delivery/tcn_caucafall_r2_train_hneg_four_video.yaml
 ```
 
-## Expected Output
+## Current Unified-Profile Output
 
-Expected metrics on the four labeled folders:
+Current metrics on the four labeled folders under the canonical online profile:
 
-- `TP=12`
-- `TN=12`
-- `FP=0`
-- `FN=0`
+- `TP=3`
+- `TN=10`
+- `FP=2`
+- `FN=9`
 
 Artifacts:
 
-- `artifacts/fall_test_eval_20260315/delivery_tcn_r2_train_hneg_op2.csv`
-- `artifacts/fall_test_eval_20260315/delivery_tcn_r2_train_hneg_op2.json`
-- `artifacts/fall_test_eval_20260315/delivery_tcn_r2_train_hneg_op2_metrics.json`
+- `artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2.csv`
+- `artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2.json`
+- `artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2_metrics.json`
+
+Interpretation:
+
+- this check is now aligned with the same policy path used by the monitor
+- it should be treated as a bounded custom replay check
+- it is no longer valid to describe this set as `24/24` under a special delivery-only profile
 
 ## Additional Validation
 
