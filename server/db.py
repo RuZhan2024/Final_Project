@@ -163,8 +163,8 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             store_event_clips INTEGER NOT NULL DEFAULT 0,
             anonymize_skeleton_data INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            active_dataset_code TEXT NOT NULL DEFAULT 'caucafall',
-            active_op_code TEXT NOT NULL DEFAULT 'OP-2',
+            active_dataset_code TEXT NOT NULL DEFAULT 'le2i',
+            active_op_code TEXT NOT NULL DEFAULT 'OP-1',
             mc_enabled INTEGER NOT NULL DEFAULT 0,
             mc_M INTEGER NOT NULL DEFAULT 10,
             mc_M_confirm INTEGER NOT NULL DEFAULT 25,
@@ -176,7 +176,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             monitoring_enabled INTEGER NOT NULL DEFAULT 0,
             active_model_code TEXT NOT NULL DEFAULT 'TCN',
             active_operating_point INTEGER,
-            active_op_code TEXT NOT NULL DEFAULT 'OP-2',
+            active_op_code TEXT NOT NULL DEFAULT 'OP-1',
             fall_threshold REAL DEFAULT 0.7100,
             alert_cooldown_sec INTEGER NOT NULL DEFAULT 3,
             store_event_clips INTEGER NOT NULL DEFAULT 0,
@@ -267,7 +267,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT COUNT(*) FROM settings").fetchone()
     if row and int(row[0] or 0) == 0:
         conn.execute(
-            "INSERT INTO settings (resident_id, active_model_code, active_operating_point, active_op_code, alert_cooldown_sec, notify_on_every_fall) VALUES (1, 'TCN', 2, 'OP-2', 3, 1)"
+            "INSERT INTO settings (resident_id, active_model_code, active_operating_point, active_op_code, alert_cooldown_sec, notify_on_every_fall) VALUES (1, 'TCN', 1, 'OP-1', 3, 1)"
         )
 
     conn.commit()

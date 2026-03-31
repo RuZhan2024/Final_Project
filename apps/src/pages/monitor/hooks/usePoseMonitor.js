@@ -629,7 +629,7 @@ export function usePoseMonitor({
       location,
       mode,
       datasetCode: activeDatasetCode,
-      opCode: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+      opCode: opCode || settingsPayload?.system?.active_op_code || "OP-1",
       chosen,
       targetFps,
       deployW,

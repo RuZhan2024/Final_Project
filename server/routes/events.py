@@ -40,6 +40,7 @@ from ..services.events_service import (
     build_events_summary_response,
     persist_event_status,
 )
+from ..services.value_coercion import coerce_bool
 
 
 router = APIRouter()
@@ -84,9 +85,9 @@ def _dispatch_safe_guard_from_event(
             )
             s = cur.fetchone() or {}
         if isinstance(s, dict):
-            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
-            notify_sms = bool(s.get("notify_sms", False))
-            notify_phone = bool(s.get("notify_phone", False))
+            notify_on_every_fall = coerce_bool(s.get("notify_on_every_fall", True), True)
+            notify_sms = coerce_bool(s.get("notify_sms", False), False)
+            notify_phone = coerce_bool(s.get("notify_phone", False), False)
             if s.get("active_dataset_code"):
                 dataset_code = str(s.get("active_dataset_code") or dataset_code)
             if s.get("active_op_code"):
@@ -98,9 +99,9 @@ def _dispatch_safe_guard_from_event(
             cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (int(resident_id),))
             s = cur.fetchone() or {}
         if isinstance(s, dict):
-            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
-            notify_sms = bool(s.get("notify_sms", False))
-            notify_phone = bool(s.get("notify_phone", False))
+            notify_on_every_fall = coerce_bool(s.get("notify_on_every_fall", True), True)
+            notify_sms = coerce_bool(s.get("notify_sms", False), False)
+            notify_phone = coerce_bool(s.get("notify_phone", False), False)
             if s.get("active_model_code"):
                 model_code = str(s.get("active_model_code") or model_code)
 

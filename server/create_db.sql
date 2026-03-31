@@ -62,6 +62,8 @@ CREATE TABLE system_settings (
   fall_threshold DECIMAL(6,4) NULL DEFAULT 0.7100,
   store_event_clips TINYINT(1) NOT NULL DEFAULT 0,
   anonymize_skeleton_data TINYINT(1) NOT NULL DEFAULT 1,
+  active_dataset_code VARCHAR(16) NOT NULL DEFAULT 'le2i',
+  active_op_code VARCHAR(8) NOT NULL DEFAULT 'OP-1',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_settings_resident FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
   CONSTRAINT fk_settings_op FOREIGN KEY (active_operating_point) REFERENCES operating_points(id) ON DELETE SET NULL
@@ -113,12 +115,12 @@ INSERT INTO operating_points (model_id, code, name, thr_detect, thr_low_conf, th
   (1, 'OP-2', 'Balanced',         0.71, 0.5538, 0.71, NULL, NULL),
   (1, 'OP-3', 'Low Sensitivity',  0.95, 0.7410, 0.95, NULL, NULL);
 
--- Default settings row (Balanced, TCN)
+-- Default settings row (High Sensitivity, TCN)
 INSERT INTO system_settings (resident_id, active_model_code, active_operating_point, alert_cooldown_sec, notify_on_every_fall)
 VALUES (
   1,
   'TCN',
-  (SELECT id FROM operating_points WHERE model_id=1 AND code='OP-2' LIMIT 1),
+  (SELECT id FROM operating_points WHERE model_id=1 AND code='OP-1' LIMIT 1),
   3,
   1
 );

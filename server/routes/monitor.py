@@ -27,7 +27,7 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..online_alert import OnlineAlertTracker
-from ..services.monitor_context_service import _coerce_bool, load_monitor_request_context
+from ..services.monitor_context_service import load_monitor_request_context
 from ..services.monitor_response_service import (
     build_monitor_prediction_response,
     build_stale_monitor_response,
@@ -38,6 +38,7 @@ from ..services.monitor_runtime_service import (
     resolve_monitor_persistence_plan,
 )
 from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
+from ..services.value_coercion import coerce_bool
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 from fall_detection.pose.preprocess_pose_npz import (
     linear_fill_small_gaps,
@@ -191,7 +192,7 @@ def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_c
         "enable_occlusion_gate": True,
         "enable_structural_gate": True,
         "enable_low_fps_persist_gate": True,
-        "allow_low_motion_high_conf_bypass": _coerce_bool(ds_defaults.get("allow_low_motion_high_conf_bypass"), False),
+        "allow_low_motion_high_conf_bypass": coerce_bool(ds_defaults.get("allow_low_motion_high_conf_bypass"), False),
         "low_motion_high_conf_k": int(ds_defaults.get("low_motion_high_conf_k", 0) or 0),
         "low_motion_high_conf_max_lying": ds_defaults.get("low_motion_high_conf_max_lying"),
     }
@@ -209,14 +210,14 @@ def _op_live_guard(specs: Dict[str, Any], spec_key: str, op_code: str, dataset_c
             out["min_coverage_ratio"] = float(lg.get("min_coverage_ratio", out["min_coverage_ratio"]))
             out["min_conf_mean"] = float(lg.get("min_conf_mean", out["min_conf_mean"]))
             out["min_joints_med"] = int(lg.get("min_joints_med", out["min_joints_med"]))
-            out["enable_stale_drop"] = _coerce_bool(lg.get("enable_stale_drop"), out["enable_stale_drop"])
-            out["enable_low_motion_gate"] = _coerce_bool(lg.get("enable_low_motion_gate"), out["enable_low_motion_gate"])
-            out["enable_occlusion_gate"] = _coerce_bool(lg.get("enable_occlusion_gate"), out["enable_occlusion_gate"])
-            out["enable_structural_gate"] = _coerce_bool(lg.get("enable_structural_gate"), out["enable_structural_gate"])
-            out["enable_low_fps_persist_gate"] = _coerce_bool(
+            out["enable_stale_drop"] = coerce_bool(lg.get("enable_stale_drop"), out["enable_stale_drop"])
+            out["enable_low_motion_gate"] = coerce_bool(lg.get("enable_low_motion_gate"), out["enable_low_motion_gate"])
+            out["enable_occlusion_gate"] = coerce_bool(lg.get("enable_occlusion_gate"), out["enable_occlusion_gate"])
+            out["enable_structural_gate"] = coerce_bool(lg.get("enable_structural_gate"), out["enable_structural_gate"])
+            out["enable_low_fps_persist_gate"] = coerce_bool(
                 lg.get("enable_low_fps_persist_gate"), out["enable_low_fps_persist_gate"]
             )
-            out["allow_low_motion_high_conf_bypass"] = _coerce_bool(
+            out["allow_low_motion_high_conf_bypass"] = coerce_bool(
                 lg.get("allow_low_motion_high_conf_bypass"), out["allow_low_motion_high_conf_bypass"]
             )
             out["low_motion_high_conf_k"] = int(lg.get("low_motion_high_conf_k", out["low_motion_high_conf_k"]))
@@ -251,7 +252,7 @@ def _op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str) -> Dic
         op = (ops or {}).get(_norm_op_code(op_code)) or {}
         gate = op.get("delivery_gate") if isinstance(op, dict) else {}
         if isinstance(gate, dict):
-            out["enabled"] = _coerce_bool(gate.get("enabled"), False)
+            out["enabled"] = coerce_bool(gate.get("enabled"), False)
             if gate.get("max_lying") is not None:
                 out["max_lying"] = float(gate.get("max_lying"))
             if gate.get("max_start_lying") is not None:
@@ -279,8 +280,8 @@ def _op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str) ->
         op = (ops or {}).get(_norm_op_code(op_code)) or {}
         cfg = op.get("uncertain_promote") if isinstance(op, dict) else {}
         if isinstance(cfg, dict):
-            out["enabled"] = _coerce_bool(cfg.get("enabled"), False)
-            out["video_only"] = _coerce_bool(cfg.get("video_only"), True)
+            out["enabled"] = coerce_bool(cfg.get("enabled"), False)
+            out["video_only"] = coerce_bool(cfg.get("video_only"), True)
             if cfg.get("min_p_alert") is not None:
                 out["min_p_alert"] = float(cfg.get("min_p_alert"))
             if cfg.get("min_motion") is not None:
@@ -906,7 +907,7 @@ def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
 def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one window from the live monitor UI."""
     payload_d = payload.model_dump()
-    compact_response = bool(payload_d.get("compact_response"))
+    compact_response = coerce_bool(payload_d.get("compact_response"), False)
 
     t0 = time.time()
     perf_started = time.perf_counter()
@@ -939,7 +940,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     requested_use_mc = payload_d.get("use_mc")
     requested_mc_M = payload_d.get("mc_M")
 
-    persist = bool(payload_d.get("persist", False))
+    persist = coerce_bool(payload_d.get("persist", False), False)
 
     target_T = int(payload_d.get("target_T") or 48)
     raw_xy = payload_d.get("raw_xy")
