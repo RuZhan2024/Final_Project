@@ -27,7 +27,7 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..online_alert import OnlineAlertTracker
-from ..services.monitor_context_service import load_monitor_request_context
+from ..services.monitor_context_service import _coerce_bool, load_monitor_request_context
 from ..services.monitor_response_service import (
     build_monitor_prediction_response,
     build_stale_monitor_response,
