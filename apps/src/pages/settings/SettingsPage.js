@@ -55,7 +55,7 @@ export default function SettingsPage() {
   const caregiverEmailReady = Boolean(String(cgEmail || "").trim());
   const caregiverPhoneReady = Boolean(String(cgPhone || "").trim());
 
-  const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
+  const activeDatasetCode = String(sys.active_dataset_code || "le2i").toLowerCase();
   const mcEnabled = readBool(sys.mc_enabled, true);
   const storeAnonymizedData = readBool(
     sys.store_anonymized_data,
@@ -63,7 +63,7 @@ export default function SettingsPage() {
   );
 
   const activeModelLabel = modelCodeToLabel(sys.active_model_code || "TCN");
-  const activeOpCode = String(sys.active_op_code || "OP-2").toUpperCase();
+  const activeOpCode = String(sys.active_op_code || "OP-1").toUpperCase();
   const activePreset = presetFromOpCode(activeOpCode);
 
   // These are real params derived from configs/ops/*.yaml (server sets them in GET /api/settings)

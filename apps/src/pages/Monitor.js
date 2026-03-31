@@ -51,7 +51,7 @@ function Monitor({ isActive = true } = {}) {
 
   const activeDatasetCode = useMemo(() => {
     const code = settingsPayload?.system?.active_dataset_code;
-    return code ? String(code) : "caucafall";
+    return code ? String(code) : "le2i";
   }, [settingsPayload]);
 
   const mcEnabled = useMemo(() => {

@@ -5,20 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..core import normalize_dataset_code
 from .monitor_runtime_service import MonitorRuntimeContext
-
-
-def _coerce_bool(v: Any, default: bool) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(v)
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in {"1", "true", "yes", "on"}:
-            return True
-        if s in {"0", "false", "no", "off"}:
-            return False
-    return bool(default)
+from .value_coercion import coerce_bool
 
 
 def resolve_mc_runtime(
@@ -33,14 +20,14 @@ def resolve_mc_runtime(
 
     if isinstance(sys_row, dict):
         if use_mc is None and sys_row.get("mc_enabled") is not None:
-            use_mc = _coerce_bool(sys_row.get("mc_enabled"), False)
+            use_mc = coerce_bool(sys_row.get("mc_enabled"), False)
         if mc_m is None and sys_row.get("mc_M") is not None:
             try:
                 mc_m = int(sys_row.get("mc_M"))
             except (TypeError, ValueError):
                 mc_m = None
 
-    requested_use_mc_bool = _coerce_bool(use_mc, False)
+    requested_use_mc_bool = coerce_bool(use_mc, False)
     try:
         requested_mc_m_int = max(1, int(mc_m)) if mc_m is not None else 10
     except (TypeError, ValueError):
@@ -115,11 +102,11 @@ def load_monitor_request_context(
             if sys_row.get("active_model_code"):
                 resolved_active_model = str(sys_row.get("active_model_code") or resolved_active_model)
             if sys_row.get("notify_on_every_fall") is not None:
-                notify_on_every_fall = _coerce_bool(sys_row.get("notify_on_every_fall"), True)
+                notify_on_every_fall = coerce_bool(sys_row.get("notify_on_every_fall"), True)
             if sys_row.get("notify_sms") is not None:
-                notify_sms = _coerce_bool(sys_row.get("notify_sms"), False)
+                notify_sms = coerce_bool(sys_row.get("notify_sms"), False)
             if sys_row.get("notify_phone") is not None:
-                notify_phone = _coerce_bool(sys_row.get("notify_phone"), False)
+                notify_phone = coerce_bool(sys_row.get("notify_phone"), False)
 
             if (not resolved_op_code) and sys_row.get("active_op_code"):
                 resolved_op_code = str(sys_row.get("active_op_code") or "").upper().strip()
@@ -149,9 +136,9 @@ def load_monitor_request_context(
                 caregiver_phone = str(caregiver_row.get("phone") or "").strip()
 
     if not resolved_dataset_code:
-        resolved_dataset_code = "caucafall"
+        resolved_dataset_code = "le2i"
     if not resolved_op_code:
-        resolved_op_code = "OP-2"
+        resolved_op_code = "OP-1"
 
     requested_use_mc_bool, requested_mc_m_int, effective_use_mc, effective_mc_m = resolve_mc_runtime(
         requested_use_mc=requested_use_mc,

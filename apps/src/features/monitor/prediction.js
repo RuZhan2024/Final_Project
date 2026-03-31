@@ -197,7 +197,7 @@ export function buildPendingClip({
     ctx: {
       dataset_code: activeDatasetCode,
       mode,
-      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",
+      op_code: opCode || settingsPayload?.system?.active_op_code || "OP-1",
       use_mc: Boolean(mcEnabled),
       mc_M: mcCfg?.M,
     },
