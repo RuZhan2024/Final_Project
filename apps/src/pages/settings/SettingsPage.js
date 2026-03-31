@@ -63,7 +63,7 @@ export default function SettingsPage() {
   );
 
   const activeModelLabel = modelCodeToLabel(sys.active_model_code || "TCN");
-  const activeOpCode = String(sys.active_op_code || "OP-1").toUpperCase();
+  const activeOpCode = String(sys.active_op_code || "OP-2").toUpperCase();
   const activePreset = presetFromOpCode(activeOpCode);
 
   // These are real params derived from configs/ops/*.yaml (server sets them in GET /api/settings)

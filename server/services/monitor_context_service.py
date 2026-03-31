@@ -138,7 +138,7 @@ def load_monitor_request_context(
     if not resolved_dataset_code:
         resolved_dataset_code = "le2i"
     if not resolved_op_code:
-        resolved_op_code = "OP-1"
+        resolved_op_code = "OP-2"
 
     requested_use_mc_bool, requested_mc_m_int, effective_use_mc, effective_mc_m = resolve_mc_runtime(
         requested_use_mc=requested_use_mc,

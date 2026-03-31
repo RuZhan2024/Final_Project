@@ -20,8 +20,8 @@ ops:
     tau_high: 0.48
     tau_low: 0.3744
     ema_alpha: 0.0
-    k: 1
-    n: 2
+    k: 2
+    n: 3
     live_guard:
       allow_low_motion_high_conf_bypass: true
       low_motion_high_conf_k: 2
