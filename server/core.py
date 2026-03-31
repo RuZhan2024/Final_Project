@@ -276,7 +276,7 @@ def _ensure_system_settings_schema(conn) -> None:
             "store_event_clips": "TINYINT(1) NOT NULL DEFAULT 0",
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
             "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'le2i'",
-            "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-1'",
+            "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 0",
             "mc_M": "INT NOT NULL DEFAULT 10",
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
@@ -371,13 +371,32 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
             return obj.get(name, default)
         return default
 
+    def _lookup_op_entry(ops: Dict[str, Any], normalized_code: str) -> Dict[str, Any]:
+        candidates = [
+            normalized_code,
+            normalized_code.replace("-", ""),
+            normalized_code.lower(),
+            normalized_code.replace("-", "").lower(),
+        ]
+        for candidate in candidates:
+            entry = ops.get(candidate)
+            if isinstance(entry, dict):
+                return dict(entry)
+
+        fallback_candidates = ["OP-2", "OP2", "op-2", "op2"]
+        for candidate in fallback_candidates:
+            entry = ops.get(candidate)
+            if isinstance(entry, dict):
+                return dict(entry)
+        return {}
+
     def pack(spec_key: str) -> Optional[Dict[str, Any]]:
         s = specs.get(spec_key)
         if s is None:
             return None
         alert_cfg = dict(_get_attr_or_key(s, "alert_cfg", {}) or {})
         ops = dict(_get_attr_or_key(s, "ops", {}) or {})
-        op = dict(ops.get(oc) or ops.get("OP-2") or {})
+        op = _lookup_op_entry(ops, oc)
         return {"spec_key": spec_key, "alert_cfg": alert_cfg, "op": op}
 
     tcn = pack(f"{ds}_tcn")
@@ -709,7 +728,7 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "active_model_code": "TCN",
     "active_operating_point": None,
     "active_dataset_code": "le2i",
-    "active_op_code": "OP-1",
+    "active_op_code": "OP-2",
     "mc_enabled": False,
     "mc_M": 10,
     "mc_M_confirm": 25,

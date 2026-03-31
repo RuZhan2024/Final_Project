@@ -49,7 +49,7 @@ def merge_monitor_runtime_defaults(
     defaults: MonitorRuntimeDefaults,
 ) -> MonitorRuntimeContext:
     merged_dataset = str(dataset_code or defaults.dataset_code or "le2i")
-    merged_op_code = str(op_code or defaults.op_code or "OP-1").upper().strip() or "OP-1"
+    merged_op_code = str(op_code or defaults.op_code or "OP-2").upper().strip() or "OP-2"
 
     merged_use_mc = _coerce_optional_bool(use_mc)
     if merged_use_mc is None:

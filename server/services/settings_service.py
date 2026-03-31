@@ -10,17 +10,17 @@ def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> 
     try:
         system.setdefault("active_dataset_code", "le2i")
         system.setdefault("active_model_code", "TCN")
-        system.setdefault("active_op_code", "OP-1")
+        system.setdefault("active_op_code", "OP-2")
         dp = derive_ops_params_from_yaml(
             dataset_code=normalize_dataset_code(str(system.get("active_dataset_code") or "le2i")),
             model_code=str(system.get("active_model_code") or "TCN"),
-            op_code=str(system.get("active_op_code") or "OP-1"),
+            op_code=str(system.get("active_op_code") or "OP-2"),
         )
         system["deploy_params"] = dp
         ui = dp.get("ui") or {}
         system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.71)))
         system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
-        system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-1")))
+        system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-2")))
         system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
     except (RuntimeError, OSError, TypeError, ValueError, KeyError):
         return
