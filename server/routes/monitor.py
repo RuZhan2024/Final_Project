@@ -23,6 +23,7 @@ from ..core import MonitorPredictPayload, _detect_variants, _ensure_system_setti
 from ..core import normalize_dataset_code
 from ..db import get_conn
 from ..deploy_runtime import (
+    get_pose_preprocess_cfg as _get_pose_preprocess_cfg,
     get_specs as _get_deploy_specs,
     predict_spec as _predict_spec,
 )
@@ -33,6 +34,7 @@ from ..services.monitor_response_service import (
     build_stale_monitor_response,
     log_monitor_perf_if_slow,
 )
+from ..services.monitor_uncertainty_service import apply_uncertainty_fall_gate
 from ..services.monitor_runtime_service import (
     persist_monitor_event,
     resolve_monitor_persistence_plan,
@@ -40,6 +42,7 @@ from ..services.monitor_runtime_service import (
 from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
 from ..services.value_coercion import coerce_bool
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
+from fall_detection.pose.preprocess_config import normalize_pose_preprocess_cfg
 from fall_detection.pose.preprocess_pose_npz import (
     linear_fill_small_gaps,
     normalize_body_centric,
@@ -79,15 +82,6 @@ _DEFAULT_LIVE_GUARD_BY_DATASET = {
 }
 _MONITOR_Q_SCALE = 1000.0
 _LOW_MOTION_MEMORY_WINDOWS = 5
-_ONLINE_RAW_PREPROC = {
-    "conf_thr": 0.2,
-    "smooth_k": 5,
-    "max_gap": 4,
-    "fill_conf": "thr",
-    "normalize": "torso",
-    "pelvis_fill": "nearest",
-    "rotate": "none",
-}
 
 
 def _norm_op_code(op_code: str) -> str:
@@ -712,7 +706,100 @@ def _effective_target_fps(*, expected_fps: float, raw_fps_est: Optional[float]) 
     return float(max(lo, min(raw, hi)))
 
 
-def _preprocess_online_raw_window(xy: Any, conf: Any) -> Tuple[List[Any], List[Any]]:
+def _resolve_runtime_fps(
+    *,
+    dataset_code: str,
+    payload_d: Dict[str, Any],
+    raw_fps_est: Optional[float],
+    is_replay: bool,
+) -> Tuple[float, float]:
+    """Resolve nominal and effective FPS for the current request."""
+    expected_fps = {
+        "le2i": 25,
+        "caucafall": 23,
+    }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 23))
+    if is_replay and raw_fps_est is not None and math.isfinite(float(raw_fps_est)) and float(raw_fps_est) > 0:
+        measured_fps = float(raw_fps_est)
+        return measured_fps, measured_fps
+    effective_fps = (
+        float(expected_fps)
+        if is_replay
+        else _effective_target_fps(
+            expected_fps=float(expected_fps),
+            raw_fps_est=raw_fps_est,
+        )
+    )
+    return float(expected_fps), float(effective_fps)
+
+
+def _resolve_monitor_specs(
+    *,
+    specs: Dict[str, Any],
+    dataset_code: str,
+    mode: str,
+    payload_d: Dict[str, Any],
+) -> Dict[str, str]:
+    """Resolve deploy spec keys for the request and validate mode availability."""
+
+    def resolve_spec_key(arch: str, preferred: str) -> str:
+        if preferred in specs:
+            return preferred
+        ds_prefix = f"{dataset_code}_"
+        suffix = f"_{arch}"
+        candidates = [key for key in specs.keys() if key.startswith(ds_prefix) and key.endswith(suffix)]
+        if not candidates:
+            return preferred
+        candidates.sort(key=lambda key: (len(key), key))
+        return candidates[0]
+
+    def spec_key_for(arch: str) -> str:
+        return f"{dataset_code}_{arch}".lower()
+
+    tcn_key = resolve_spec_key("tcn", str(payload_d.get("model_tcn") or spec_key_for("tcn")).lower())
+    gcn_key = resolve_spec_key("gcn", str(payload_d.get("model_gcn") or spec_key_for("gcn")).lower())
+    has_tcn = tcn_key in specs
+    has_gcn = gcn_key in specs
+
+    resolved_mode = mode
+    if resolved_mode == "tcn":
+        if not has_tcn:
+            raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
+    elif resolved_mode == "gcn":
+        if not has_gcn:
+            raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
+    else:
+        if not has_tcn and not has_gcn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No deploy specs found for dataset '{dataset_code}'.",
+            )
+        if has_tcn and not has_gcn:
+            resolved_mode = "tcn"
+        elif has_gcn and not has_tcn:
+            resolved_mode = "gcn"
+        elif not has_tcn or not has_gcn:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
+            )
+
+    primary_spec_key = tcn_key if resolved_mode == "tcn" else gcn_key if resolved_mode == "gcn" else tcn_key
+    return {
+        "mode": resolved_mode,
+        "tcn_key": tcn_key,
+        "gcn_key": gcn_key,
+        "guard_spec_key": tcn_key if resolved_mode in {"tcn", "hybrid"} else gcn_key,
+        "primary_spec_key": primary_spec_key,
+        "primary_model_key": "tcn" if resolved_mode in {"tcn", "hybrid"} else "gcn",
+    }
+
+
+def _preprocess_online_raw_window(
+    xy: Any,
+    conf: Any,
+    *,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Any], List[Any]]:
     """Match online raw inference to the same pose-preprocessed domain used offline."""
     if not isinstance(xy, list) or len(xy) <= 0:
         return [], []
@@ -725,33 +812,32 @@ def _preprocess_online_raw_window(xy: Any, conf: Any) -> Tuple[List[Any], List[A
     if xy_np.ndim != 3 or xy_np.shape[-1] != 2 or conf_np.ndim != 2:
         return xy, conf if isinstance(conf, list) else []
 
-    cfg = _ONLINE_RAW_PREPROC
+    cfg_norm = normalize_pose_preprocess_cfg(cfg)
     xy_np, conf_np = standardize_missing(xy_np, conf_np)
     xy_np, conf_np, _ = linear_fill_small_gaps(
         xy_np,
         conf_np,
-        conf_thr=float(cfg["conf_thr"]),
-        max_gap=int(cfg["max_gap"]),
-        fill_conf=str(cfg["fill_conf"]),
+        conf_thr=float(cfg_norm["conf_thr"]),
+        max_gap=int(cfg_norm["max_gap"]),
+        fill_conf=str(cfg_norm["fill_conf"]),
     )
     xy_np = smooth_weighted_moving_average(
         xy_np,
         conf_np,
-        conf_thr=float(cfg["conf_thr"]),
-        k=int(cfg["smooth_k"]),
+        conf_thr=float(cfg_norm["conf_thr"]),
+        k=int(cfg_norm["smooth_k"]),
     )
     xy_np, _ = normalize_body_centric(
         xy_np,
         conf_np,
-        conf_thr=float(cfg["conf_thr"]),
-        mode=str(cfg["normalize"]),
-        pelvis_fill=str(cfg["pelvis_fill"]),
-        rotate=str(cfg["rotate"]),
+        conf_thr=float(cfg_norm["conf_thr"]),
+        mode=str(cfg_norm["normalize"]),
+        pelvis_fill=str(cfg_norm["pelvis_fill"]),
+        rotate=str(cfg_norm["rotate"]),
     )
     xy_np = np.nan_to_num(xy_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
     conf_np = np.nan_to_num(conf_np, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
     return xy_np.tolist(), conf_np.tolist()
-
 
 
 def _resample_pose_window(
@@ -1026,18 +1112,36 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     effective_mc_M = request_context.effective_mc_M
     runtime = request_context.runtime
 
-    expected_fps = {
-        "le2i": 25,
-        "caucafall": 23,
-    }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 23))
-    effective_fps = (
-        float(expected_fps)
-        if is_replay
-        else _effective_target_fps(
-            expected_fps=float(expected_fps),
-            raw_fps_est=raw_stats.get("raw_fps_est"),
-        )
+    raw_fps_est = raw_stats.get("raw_fps_est")
+    expected_fps, effective_fps = _resolve_runtime_fps(
+        dataset_code=dataset_code,
+        payload_d=payload_d,
+        raw_fps_est=raw_fps_est,
+        is_replay=is_replay,
     )
+    _t_s = time.time()
+    st = get_monitor_session_state(core._SESSION_STATE, session_id, _t_s)
+
+    specs = _get_deploy_specs()
+    spec_selection = _resolve_monitor_specs(
+        specs=specs,
+        dataset_code=dataset_code,
+        mode=mode,
+        payload_d=payload_d,
+    )
+    mode = spec_selection["mode"]
+    tcn_key = spec_selection["tcn_key"]
+    gcn_key = spec_selection["gcn_key"]
+    guard_spec_key = spec_selection["guard_spec_key"]
+    primary_spec_key = spec_selection["primary_spec_key"]
+    primary_model_key = spec_selection["primary_model_key"]
+
+    raw_preproc_cfg = None
+    if raw_xy is not None and raw_t_ms is not None:
+        try:
+            raw_preproc_cfg = _get_pose_preprocess_cfg(primary_spec_key)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            raw_preproc_cfg = None
 
     if raw_xy is not None and raw_t_ms is not None:
         xy, conf, _, _, cap_fps_est = _resample_pose_window(
@@ -1049,7 +1153,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
         )
         if xy:
-            xy, conf = _preprocess_online_raw_window(xy, conf)
+            xy, conf = _preprocess_online_raw_window(xy, conf, cfg=raw_preproc_cfg)
 
     if not xy:
         xy = payload_d.get("xy") or []
@@ -1100,57 +1204,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         lying_score, confirm_motion_score = None, None
     _mark_perf("confirm_scores_ms")
 
-    st = get_monitor_session_state(core._SESSION_STATE, session_id, _t_s)
     st_trackers = st["trackers"]
     st_trackers_cfg = st["trackers_cfg"]
     started_tcn = False
     started_gcn = False
 
-    specs = _get_deploy_specs()
-
-    def resolve_spec_key(arch: str, preferred: str) -> str:
-        if preferred in specs:
-            return preferred
-        ds_prefix = f"{dataset_code}_"
-        suffix = f"_{arch}"
-        candidates = [k for k in specs.keys() if k.startswith(ds_prefix) and k.endswith(suffix)]
-        if not candidates:
-            return preferred
-        candidates.sort(key=lambda x: (len(x), x))
-        return candidates[0]
-
-    def spec_key_for(arch: str) -> str:
-        return f"{dataset_code}_{arch}".lower()
-
-    tcn_key = resolve_spec_key("tcn", str(payload_d.get("model_tcn") or spec_key_for("tcn")).lower())
-    gcn_key = resolve_spec_key("gcn", str(payload_d.get("model_gcn") or spec_key_for("gcn")).lower())
-    has_tcn = tcn_key in specs
-    has_gcn = gcn_key in specs
-    if mode == "tcn":
-        if not has_tcn:
-            raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
-    elif mode == "gcn":
-        if not has_gcn:
-            raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
-    else:
-        if not has_tcn and not has_gcn:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No deploy specs found for dataset '{dataset_code}'.",
-            )
-        if has_tcn and not has_gcn:
-            mode = "tcn"
-        elif has_gcn and not has_tcn:
-            mode = "gcn"
-        elif not has_tcn or not has_gcn:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
-            )
-
-    guard_spec_key = tcn_key if mode in {"tcn", "hybrid"} else gcn_key
-    primary_spec_key = tcn_key if mode == "tcn" else gcn_key if mode == "gcn" else tcn_key
-    primary_model_key = "tcn" if mode == "tcn" else "gcn" if mode == "gcn" else "tcn"
     live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
     delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code)
     uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code)
@@ -1315,6 +1373,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         tau_low_tcn = float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0)))
         tau_high_tcn = float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0)))
         p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
+        sigma_tcn = float(out_tcn.get("sigma", 0.0) or 0.0)
+        uncertainty_gate_tcn = out_tcn.get("uncertainty_gate") if isinstance(out_tcn.get("uncertainty_gate"), dict) else {}
         bypass_tcn = _low_motion_high_conf_bypass(
             st,
             dataset_code=dataset_code,
@@ -1328,6 +1388,15 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         )
         low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_tcn)
         p_alert_tcn = _guard_alert_p(p_raw_tcn, tau_low_tcn)
+        p_alert_tcn, uncertainty_eval_tcn = apply_uncertainty_fall_gate(
+            probability=float(p_alert_tcn),
+            sigma=float(sigma_tcn),
+            tau_low=float(tau_low_tcn),
+            tau_high=float(tau_high_tcn),
+            mc_applied=bool(out_tcn.get("mc_applied", False)),
+            uncertainty_cfg=uncertainty_gate_tcn,
+        )
+        out_tcn["uncertainty_gate_eval"] = uncertainty_eval_tcn
         out_tcn["p_alert_in"] = float(p_alert_tcn)
         out_tcn["lying_score"] = None if lying_score is None else float(lying_score)
         out_tcn["confirm_motion_score"] = None if confirm_motion_score is None else float(confirm_motion_score)
@@ -1400,6 +1469,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         tau_low_gcn = float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0)))
         tau_high_gcn = float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0)))
         p_raw_gcn = float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0)
+        sigma_gcn = float(out_gcn.get("sigma", 0.0) or 0.0)
+        uncertainty_gate_gcn = out_gcn.get("uncertainty_gate") if isinstance(out_gcn.get("uncertainty_gate"), dict) else {}
         bypass_gcn = _low_motion_high_conf_bypass(
             st,
             dataset_code=dataset_code,
@@ -1413,6 +1484,15 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         )
         low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_gcn)
         p_alert_gcn = _guard_alert_p(p_raw_gcn, tau_low_gcn)
+        p_alert_gcn, uncertainty_eval_gcn = apply_uncertainty_fall_gate(
+            probability=float(p_alert_gcn),
+            sigma=float(sigma_gcn),
+            tau_low=float(tau_low_gcn),
+            tau_high=float(tau_high_gcn),
+            mc_applied=bool(out_gcn.get("mc_applied", False)),
+            uncertainty_cfg=uncertainty_gate_gcn,
+        )
+        out_gcn["uncertainty_gate_eval"] = uncertainty_eval_gcn
         out_gcn["p_alert_in"] = float(p_alert_gcn)
         trk = st_trackers.get(gcn_key)
         if trk is None or st_trackers_cfg.get(gcn_key) != cfg_gcn:
@@ -1493,6 +1573,21 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             },
         )
 
+    primary_uncertainty_eval = (
+        models_out.get(primary_model_key, {}).get("uncertainty_gate_eval", {})
+        if isinstance(models_out.get(primary_model_key), dict)
+        else {}
+    )
+    if (
+        isinstance(primary_uncertainty_eval, dict)
+        and bool(primary_uncertainty_eval.get("blocked_fall", False))
+        and triage_state == "fall"
+    ):
+        triage_state = "uncertain"
+        safe_alert = False
+        if recall_alert is not None:
+            recall_alert = False
+
     prev_triage_state = str(st.get("last_triage_state") or "not_fall")
     saved_event_id = None
     notification_dispatch: Optional[Dict[str, Any]] = None
@@ -1512,6 +1607,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         curr_safe = bool(safe_alert)
         started_event = bool(curr_safe and (not prev_safe))
         st[edge_key] = curr_safe
+
+    if (
+        isinstance(primary_uncertainty_eval, dict)
+        and bool(primary_uncertainty_eval.get("blocked_fall", False))
+        and triage_state == "uncertain"
+    ):
+        started_event = False
 
     # In low-fps mode, allow falls but require stricter persistence + motion + structure quality.
     low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"

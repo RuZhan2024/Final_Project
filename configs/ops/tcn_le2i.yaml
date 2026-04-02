@@ -1,7 +1,10 @@
+# STATUS_TAG: current_deploy_config_2026-04-02
+# PURPOSE: active LE2I TCN deploy config after replay-FPS runtime fix and TCN OP alignment.
+# NOTE: compare against artifacts/reports/online_replay_le2i_finalfix_20260402.json, not older replay baselines.
 ops:
   OP1:
-    tau_high: 0.32
-    tau_low: 0.2496
+    tau_high: 0.6200000000000002
+    tau_low: 0.4836000000000002
     ema_alpha: 0.0
     k: 1
     n: 2
@@ -17,11 +20,11 @@ ops:
     online_fp: 0
     online_fn: 0
   OP2:
-    tau_high: 0.48
-    tau_low: 0.3744
+    tau_high: 0.6200000000000002
+    tau_low: 0.4836000000000002
     ema_alpha: 0.0
-    k: 2
-    n: 3
+    k: 1
+    n: 2
     live_guard:
       allow_low_motion_high_conf_bypass: true
       low_motion_high_conf_k: 2
@@ -34,8 +37,8 @@ ops:
     online_fp: 0
     online_fn: 0
   OP3:
-    tau_high: 0.62
-    tau_low: 0.4836
+    tau_high: 0.6200000000000002
+    tau_low: 0.4836000000000002
     ema_alpha: 0.0
     k: 1
     n: 2

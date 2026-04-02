@@ -53,6 +53,7 @@ from fall_detection.core.ema import EMA
 from fall_detection.core.losses import FocalLossWithLogits
 from fall_detection.core.metrics import ap_auc, best_threshold_by_f1
 from fall_detection.core.models import GCNConfig, build_model, pick_device
+from fall_detection.pose.preprocess_config import normalize_pose_preprocess_cfg
 
 
 # -------------------------
@@ -557,6 +558,13 @@ def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
         conf_gate=float(getattr(cfg, "conf_gate", 0.20)),
         use_precomputed_mask=bool(int(getattr(cfg, "use_precomputed_mask", 1))),
     )
+
+
+def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    return {
+        "fps_default": float(fps_default),
+        "pose_preprocess": normalize_pose_preprocess_cfg(None),
+    }
 
 
 def main() -> None:
@@ -1078,7 +1086,7 @@ def main() -> None:
                     state_dict=model.state_dict(),
                     model_cfg=dict(model_cfg_save),
                     feat_cfg=feat_cfg.to_dict(),
-                    data_cfg={"fps_default": float(cfg.fps_default)},
+                    data_cfg=build_data_cfg_dict(cfg.fps_default),
                     best={"val_best": row, "best_thr": float(thr)},
                     meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V)},
                     train_cfg=asdict(cfg),
@@ -1094,7 +1102,7 @@ def main() -> None:
             state_dict=model.state_dict(),
             model_cfg=dict(model_cfg_save),
             feat_cfg=feat_cfg.to_dict(),
-            data_cfg={"fps_default": float(cfg.fps_default)},
+            data_cfg=build_data_cfg_dict(cfg.fps_default),
             best={"val_best": row, "best_thr": float(thr)},
             meta={"monitor": cfg.monitor, "seed": int(cfg.seed), "V": int(V), "is_last": True},
             train_cfg=asdict(cfg),
