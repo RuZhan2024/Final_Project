@@ -1,3 +1,6 @@
+# STATUS_TAG: current_deploy_config_2026-04-02
+# PURPOSE: active LE2I GCN deploy config after replay-FPS runtime fix.
+# NOTE: kept on original deployed OP thresholds because aligned online-fit thresholds regressed the 24-clip replay check.
 ops:
   OP1:
     tau_high: 0.32

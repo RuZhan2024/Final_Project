@@ -1,3 +1,6 @@
+# STATUS_TAG: current_deploy_config_2026-04-02
+# PURPOSE: active CAUCAFall TCN deploy config after replay-FPS runtime fix verification.
+# NOTE: validated against artifacts/reports/online_replay_caucafall_after_replayfpsfix_20260402.json.
 ops:
   OP1:
     tau_high: 0.20

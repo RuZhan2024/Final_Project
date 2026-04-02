@@ -53,6 +53,7 @@ from fall_detection.core.losses import FocalLossWithLogits
 from fall_detection.core.metrics import ap_auc, best_threshold_by_f1
 from fall_detection.core.models import TCNConfig, build_model, pick_device
 from fall_detection.core.ema import EMA
+from fall_detection.pose.preprocess_config import normalize_pose_preprocess_cfg
 
 
 # -------------------------
@@ -136,6 +137,13 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
     This delegates to core.features.build_tcn_input so the layout is single-source-of-truth.
     """
     return build_tcn_input(X, feat_cfg)
+
+
+def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    return {
+        "fps_default": float(fps_default),
+        "pose_preprocess": normalize_pose_preprocess_cfg(None),
+    }
 
 
 
@@ -974,7 +982,7 @@ def main() -> None:
                     state_dict=model.state_dict(),
                     model_cfg=model_cfg_save,
                     feat_cfg=feat_cfg.to_dict(),
-                    data_cfg={"fps_default": cfg.fps_default},
+                    data_cfg=build_data_cfg_dict(cfg.fps_default),
                     best={"val_best": row, "best_thr": float(thr)},
                     meta={"monitor": cfg.monitor},
                     **({"ema_state": ema.state_dict()} if ema is not None else {}),
