@@ -30,6 +30,10 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import yaml
 
+from fall_detection.pose.preprocess_config import get_pose_preprocess_cfg_from_data_cfg
+
+from .services.monitor_uncertainty_service import resolve_uncertainty_cfg, should_run_mc
+
 SUPPORTED_DATASETS = {"caucafall", "le2i"}
 
 
@@ -269,6 +273,7 @@ def discover_specs() -> Dict[str, DeploySpec]:
 
 
 _SPECS: Optional[Dict[str, DeploySpec]] = None
+_POSE_PREPROCESS_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def get_specs() -> Dict[str, DeploySpec]:
@@ -276,6 +281,32 @@ def get_specs() -> Dict[str, DeploySpec]:
     if _SPECS is None:
         _SPECS = discover_specs()
     return _SPECS
+
+
+def get_pose_preprocess_cfg(spec_key: str) -> Dict[str, Any]:
+    """Resolve pose-preprocess cfg for a deploy spec with checkpoint precedence."""
+    if spec_key in _POSE_PREPROCESS_CACHE:
+        return dict(_POSE_PREPROCESS_CACHE[spec_key])
+
+    specs = get_specs()
+    spec = specs.get(spec_key)
+    if spec is None:
+        raise KeyError(f"Unknown spec_key: {spec_key}")
+
+    spec_data_cfg = spec.data_cfg if isinstance(spec.data_cfg, dict) else {}
+    cfg = get_pose_preprocess_cfg_from_data_cfg(spec_data_cfg)
+
+    runtime = _get_ml_runtime()
+    load_ckpt = runtime["load_ckpt"]
+    try:
+        bundle = load_ckpt(spec.ckpt, map_location="cpu")
+    except Exception:
+        bundle = {}
+
+    bundle_data_cfg = bundle.get("data_cfg") if isinstance(bundle, dict) else {}
+    cfg = get_pose_preprocess_cfg_from_data_cfg(bundle_data_cfg, fallback=cfg)
+    _POSE_PREPROCESS_CACHE[spec_key] = dict(cfg)
+    return dict(cfg)
 
 
 def get_alert_cfg(spec_key: str, op_code: str = "OP-2") -> Dict[str, Any]:
@@ -672,16 +703,28 @@ def predict_spec(
 
     p_det = float(forward_fn().detach().cpu().view(-1)[0].item())
 
+    tau_low, tau_high = get_op_taus(spec_key, op_code)
+    alert_cfg = get_alert_cfg(spec_key, op_code)
+    op_entry = (spec.ops or {}).get(_norm_op_code(op_code)) or {}
+    uncertainty_cfg = resolve_uncertainty_cfg(alert_cfg, op_entry if isinstance(op_entry, dict) else None)
+
     mu, sigma = float(p_det), 0.0
-    if use_mc:
+    mc_applied, mc_reason = should_run_mc(
+        use_mc=bool(use_mc),
+        p_det=float(p_det),
+        tau_low=float(tau_low),
+        tau_high=float(tau_high),
+        uncertainty_cfg=uncertainty_cfg,
+    )
+    if mc_applied:
         try:
             mu_t, sig_t = mc_predict_mu_sigma(model, forward_fn=forward_fn, M=int(mc_M))
             mu = float(mu_t.detach().cpu().view(-1)[0].item())
             sigma = float(sig_t.detach().cpu().view(-1)[0].item())
         except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError, TypeError, ValueError):
             mu, sigma = float(p_det), 0.0
-
-    tau_low, tau_high = get_op_taus(spec_key, op_code)
+            mc_applied = False
+            mc_reason = "mc_failed"
 
     return {
         "spec_key": spec_key,
@@ -690,10 +733,17 @@ def predict_spec(
         "p_det": float(p_det),
         "mu": float(mu),
         "sigma": float(sigma),
+        "mc_applied": bool(mc_applied),
+        "mc_reason": str(mc_reason),
+        "uncertainty_gate": {
+            "enabled": bool(uncertainty_cfg.get("enabled", True)),
+            "boundary_margin": float(uncertainty_cfg.get("boundary_margin", 0.08)),
+            "sigma_fall_max": float(uncertainty_cfg.get("sigma_fall_max", 0.08)),
+        },
         "tau_low": float(tau_low),
         "tau_high": float(tau_high),
         "ops": spec.ops,
-        "alert_cfg": get_alert_cfg(spec_key, op_code),
+        "alert_cfg": alert_cfg,
     }
 
 
