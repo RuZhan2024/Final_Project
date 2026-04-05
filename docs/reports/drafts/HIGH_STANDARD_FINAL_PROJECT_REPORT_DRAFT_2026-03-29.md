@@ -2,7 +2,7 @@
 
 Draft date: 2026-03-29  
 Status: complete first full draft for supervisor-review iteration  
-Evidence control: this draft is constrained by [PHD_FINAL_REPORT_TASKS_2026-03-29.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/PHD_FINAL_REPORT_TASKS_2026-03-29.md) and [PHD_FINAL_REPORT_EVIDENCE_INVENTORY_2026-03-29.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/PHD_FINAL_REPORT_EVIDENCE_INVENTORY_2026-03-29.md).
+Evidence control: this draft is constrained by [HIGH_STANDARD_FINAL_REPORT_TASKS_2026-03-29.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/HIGH_STANDARD_FINAL_REPORT_TASKS_2026-03-29.md) and [HIGH_STANDARD_FINAL_REPORT_EVIDENCE_INVENTORY_2026-03-29.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/HIGH_STANDARD_FINAL_REPORT_EVIDENCE_INVENTORY_2026-03-29.md).
 
 ## Abstract
 

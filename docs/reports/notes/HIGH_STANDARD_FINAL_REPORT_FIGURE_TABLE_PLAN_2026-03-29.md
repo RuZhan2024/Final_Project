@@ -1,4 +1,4 @@
-# PhD Final Report Figure and Table Plan
+# High-Standard Final Report Figure and Table Plan
 
 Date: 2026-03-29  
 Purpose: audit the current figure/table assets for the final report, identify which ones are directly usable, which ones must be redesigned, and define the final report-ready figure/table set.
@@ -240,7 +240,7 @@ Likely columns:
 #### Table 4. Deployment and Runtime Summary
 
 Purpose:
-- consolidate replay lock, delivery pack, limited field validation, and runtime caveats
+- consolidate replay lock, bounded custom replay evidence, limited field validation, and runtime caveats
 
 Why:
 - runtime evidence is important, but much of it is better summarised in a structured table than in a crowded chart

@@ -1,4 +1,4 @@
-# PhD-Standard Final Project Report Tasks
+# High-Standard Final Project Report Tasks
 
 Date: 2026-03-29  
 Project: Pose-Based Fall Detection System  

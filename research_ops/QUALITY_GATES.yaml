@@ -35,6 +35,7 @@ gates:
     applies_to_stage: 20
     must_pass:
       - "all major paper claims are registered in CLAIMS.yaml"
+      - "all evidence IDs referenced by CLAIMS.yaml exist in EVIDENCE_INDEX.yaml"
       - "no critical fabrication exists"
       - "paper, results, logs, and tables are consistent"
       - "baselines and ablations are complete"
@@ -42,11 +43,13 @@ gates:
       - "main body page count is compliant"
       - "Figure 1 is defined and supports a core contribution"
       - "limitations are honest"
+      - "project paths referenced by PROJECT_CONFIG.yaml are still valid or explicitly marked empty"
     fail_if:
       - "the paper reports experiments that were not run"
       - "the paper reports statistical tests not present in code or logs"
       - "the paper reports metrics that do not exist"
       - "unsupported major claims remain in the paper"
+      - "the control layer contains stale audit instructions that contradict the current draft state"
     on_fail:
       - "return to PAPER_REVISION, RESULT_ANALYSIS, or ITERATIVE_REFINE"
 

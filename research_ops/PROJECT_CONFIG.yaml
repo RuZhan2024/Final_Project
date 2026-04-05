@@ -15,7 +15,7 @@ title: "Pose-Based Fall Detection with Temporal and Graph Neural Models: Deploym
 
 abstract:
   preserve_existing: true
-  source_path: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/PHD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+  source_path: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
   policy: "reuse_when_consistent_else_minimally_revise"
 
 project_paths:
@@ -31,7 +31,10 @@ project_paths:
   progress_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/research_ops/PROGRESS.md"
   claims_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/research_ops/CLAIMS.yaml"
   template_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports"
-  bib_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/references.bib"
+  bib_file: ""
+  build_script: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/build_report.sh"
+  draft_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+  build_output_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/report_build"
 
 docs_to_read_first:
   - "docs/project_targets/THESIS_EVIDENCE_MAP.md"
@@ -42,6 +45,12 @@ repo_refs:
   source_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2"
   docs_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs"
   examples_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2"
+
+paper_state:
+  canonical_source: "docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+  export_format: "markdown_to_pandoc_docx_pdf"
+  bibliography_managed: false
+  notes: "The current report build is valid for iteration and review, but not yet a full bibliography/template-managed thesis toolchain."
 
 core_contributions:
   - name: "End-to-end deployment-oriented fall-detection system"
@@ -99,6 +108,20 @@ experiment_policy:
     normal: 3
     budget_tight: 1
   note: "Do not chase run count mechanically; ensure every major claim has enough experimental support."
+
+claim_policy:
+  major_claims:
+    - "C1"
+    - "C2"
+    - "C3"
+    - "C4"
+    - "C5"
+  paper_safe_order:
+    - "system validity"
+    - "controlled offline comparison"
+    - "cross-dataset limitation evidence"
+    - "bounded runtime/deployment evidence"
+    - "alert-policy calibration"
 
 compute_budget:
   time_budget_hours: 40

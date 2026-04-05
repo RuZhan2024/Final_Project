@@ -1,4 +1,4 @@
-# PhD Final Report Evidence Inventory
+# High-Standard Final Report Evidence Inventory
 
 Date: 2026-03-29  
 Purpose: identify the repo artifacts that are suitable for direct use in the final report, separate them from supporting-only material, and record current evidence gaps before drafting the report body.
@@ -58,17 +58,20 @@ Use:
 - [deployment_lock_validation.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/deployment_lock_validation.md)
 - [REPLAY_LIVE_ACCEPTANCE_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md)
 - [FOUR_VIDEO_DELIVERY_PROFILE.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md)
-- [delivery_tcn_r2_train_hneg_op2_metrics.json](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/fall_test_eval_20260315/delivery_tcn_r2_train_hneg_op2_metrics.json)
+- [mc_replay_matrix_20260401.csv](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/mc_replay_matrix_20260401.csv)
+- [mc_replay_matrix_20260401.json](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/mc_replay_matrix_20260401.json)
 - [REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md)
 
 Use:
 - RQ3 deployment/replay narrative
 - bounded deployment usefulness
 - explanation of replay-vs-runtime differences
+- bounded uncertainty-gate evaluation
 
 Constraint:
 - these files support deployment evidence only
 - they must not be presented as unseen-test model evidence
+- the MC replay matrix is supporting evidence for runtime interpretation, not for accuracy-improvement claims
 
 ### 2.5 Field and Limited Realtime Evidence
 
@@ -197,6 +200,10 @@ These are the main gaps that still need cautious wording in the report.
 4. Replay-specific deployment tuning exists in project history.
    - if mentioned, it must be framed as deployment/demo calibration only
 
+5. The refactored live uncertainty gate does not currently show bounded replay gains.
+   - this should be reported as a negative or neutral finding, not omitted
+   - it supports cautious runtime interpretation rather than an enhancement claim
+
 ## 6. Safe Use Summary
 
 Most defensible primary narrative:
@@ -207,4 +214,5 @@ Most defensible primary narrative:
 - operating-point calibration is central to the alerting design
 - cross-dataset transfer is asymmetric and bounded
 - deployment evidence supports practical usefulness in replay/demo settings
+- the current uncertainty-aware live gate is methodologically relevant but does not improve the bounded custom replay matrix
 - field/realtime validation remains limited and should be framed conservatively
