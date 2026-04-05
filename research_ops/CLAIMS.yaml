@@ -85,13 +85,14 @@ claims:
   - id: "C5"
     text: "Validation-side operating-point calibration is a substantive part of the system because deployable alert behaviour depends on fitted policy profiles rather than raw single-window probabilities alone."
     type: "main_contribution"
-    status: "partially_supported"
+    status: "supported"
     support:
       evidence_ids:
         - "E9"
       result_files:
         - "configs/ops/tcn_caucafall.yaml"
         - "configs/ops/gcn_caucafall.yaml"
+        - "docs/reports/drafts/PHD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
       figure_refs:
         - "artifacts/figures/report/alert_policy_flow.svg"
       table_refs: []
@@ -101,7 +102,7 @@ claims:
       citation_refs:
         - "docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md"
         - "docs/project_targets/OBJECTIVES_EVIDENCE_OUTCOMES.md"
-    notes: "The design and implementation support this claim, but the repo still lacks one compact final result table that quantifies OP-level alert trade-offs cleanly."
+    notes: "Supported as a bounded system-design and quantitative trade-off claim through the current CAUCAFall TCN operating-point table in the draft."
 
 status_values:
   - supported

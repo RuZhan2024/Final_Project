@@ -18,8 +18,8 @@ Purpose:
 - Immediate risk level: moderate
 
 Main issue:
-- the deployment/runtime section still cites an older replay matrix and older MC-dropout interpretation
-- the calibration contribution was present in the draft but missing from the original claim ledger; this is now fixed as `C5` with evidence `E9`
+- the deployment/runtime section had cited an older replay matrix and older MC-dropout interpretation
+- the calibration contribution had been present in the draft but missing from the original claim ledger; this is now fixed as `C5` with evidence `E9`
 
 ## Aligned Areas
 
@@ -47,7 +47,7 @@ Main issue:
      - 13. Conclusion
    - The draft correctly avoids universal robustness wording.
 
-4. `C5` calibration/operating-point design claim is now aligned at the ledger level.
+4. `C5` calibration/operating-point design claim is now aligned at the ledger level and supported by a compact quantitative table in the draft.
    - Draft sections:
      - 7. Calibration and Alert Policy
      - 9.4 Calibration and Alert-Policy Results
@@ -75,8 +75,8 @@ Main issue:
      - "Replay-oriented evidence supports bounded practical system use under controlled runtime conditions, with the strongest bounded replay performance observed for `caucafall_tcn OP-2`."
 
 3. Keep calibration wording bounded to the current evidence level.
-   - The draft is mostly safe already.
-   - However, `C5` is only `partially_supported`, so avoid turning the calibration section into a hard quantitative effectiveness claim unless an explicit OP-tradeoff result table is added.
+   - The draft is now stronger because it includes a compact current-profile OP trade-off table.
+   - Even so, keep the claim bounded to the current fitted profiles rather than implying universal OP behaviour.
 
 ## Suggested Edits by Location
 
@@ -111,4 +111,4 @@ Update:
 ## Recommended Next Action
 
 1. Refresh Section 9.5, Section 10.3, and the relevant sentence in Section 13.
-2. Optionally add one compact OP-tradeoff table if you want `C5` to move from `partially_supported` to `supported`.
+2. Completed on 2026-04-05: add one compact OP-tradeoff table so `C5` can move from `partially_supported` to `supported`.

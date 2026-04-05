@@ -336,11 +336,21 @@ Asset:
 
 Figure 2 emphasises that the deployed alert is not the direct output of a single thresholded probability. It is the output of a fitted and temporally structured decision layer. This figure is therefore methodological rather than decorative: it explains why the project treats operating-point fitting and temporal policy as part of the main contribution.
 
+**Table 5. Current fitted operating-point trade-offs for the active CAUCAFall TCN profile**
+
+| Operating point | Intent | Recall | F1 | FA24h | Mean delay (s) | Practical interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| OP1 | Faster, lower-persistence alerting | 0.60 | 0.75 | 0.00 | 0.63 | Earlier alerts, but some falls are missed under the current fitted profile |
+| OP2 | Balanced deployable profile | 1.00 | 1.00 | 0.00 | 3.34 | Highest recall under the current fit, but with a substantially longer mean alert delay |
+| OP3 | Stricter thresholding under the same fitted family | 0.60 | 0.75 | 0.00 | 0.63 | Similar bounded outcome to OP1 in the current fit; shows that fitted OPs can collapse or partially overlap rather than always producing three sharply separated behaviours |
+
+This table uses the current active [tcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.yaml) profile, which records fitted thresholds together with event-level recall, `F1`, `FA24h`, and mean delay. The key point is not that one operating point is universally best, but that the deployable alert layer changes practical behaviour in measurable ways. Under the current fit, `OP2` preserves the strongest recall, while `OP1` and `OP3` trade that recall for faster alert timing. This is sufficient to justify treating operating-point selection as a substantive part of the system design rather than as a cosmetic threshold choice.
+
 ### 9.5 Deployment and Runtime Results
 
 Deployment evidence is strongest in the locked replay and delivery-style path. The deployment-lock validation report in [deployment_lock_validation.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/deployment_lock_validation.md) captures an earlier locked replay workflow, while the current online review preset has been standardised to `LE2I + TCN + OP-2` with a shared `k=2, n=3` temporal policy. The replay acceptance and deployment notes therefore remain useful as workflow evidence, but they should not be read as exact reproductions of the current review preset.
 
-**Table 5. Deployment and runtime evidence summary**
+**Table 6. Deployment and runtime evidence summary**
 
 | Evidence slice | Source artifact | Main result | Reporting role |
 | --- | --- | --- | --- |

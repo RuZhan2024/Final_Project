@@ -157,7 +157,7 @@ evidence:
   - id: "E9"
     title: "Validation-side calibration and operating-point fitting are implemented as part of the alerting pipeline"
     status: "live"
-    scope: "Method and system-design evidence; quantitative result write-up remains partial"
+    scope: "Method, system-design, and bounded quantitative trade-off evidence"
     supports_claims:
       - "C5"
     artifacts:
@@ -166,15 +166,16 @@ evidence:
       - "configs/ops/tcn_caucafall.yaml"
       - "configs/ops/gcn_caucafall.yaml"
       - "artifacts/figures/report/alert_policy_flow.svg"
+      - "docs/reports/drafts/PHD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
     code_refs:
       - "src/fall_detection/core/calibration.py"
       - "src/fall_detection/evaluation/fit_ops.py"
     reproduce:
       command: "sed -n '1,240p' src/fall_detection/core/calibration.py && sed -n '1,260p' src/fall_detection/evaluation/fit_ops.py"
       type: "shell"
-    shows: "Temperature scaling and validation-side operating-point fitting are real implemented components, and deployable alert behaviour is defined through fitted policy profiles."
+    shows: "Temperature scaling and validation-side operating-point fitting are real implemented components, and the draft now includes a compact current-profile table showing OP-level differences in recall, F1, FA24h, and mean delay."
     limits:
-      - "Current report evidence supports the design claim more strongly than a fully quantified final OP-tradeoff result claim."
+      - "The quantitative table is bounded to the current active CAUCAFall TCN profile; it should not be over-read as a universal OP behaviour claim across all datasets and models."
 
 status_values:
   - live
