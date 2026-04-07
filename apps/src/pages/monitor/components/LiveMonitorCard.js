@@ -24,14 +24,40 @@ export function LiveMonitorCard({
   currentPrediction,
   pText,
   inputSource,
+  showLivePreview,
+  onToggleLivePreview,
   captureFpsText,
   modelFpsText,
 }) {
+  const videoLayerClass =
+    inputSource === "video"
+      ? styles.videoLayerReplay
+      : showLivePreview
+        ? styles.videoLayerLiveVisible
+        : styles.videoLayerHidden;
+
   return (
     <div className={styles.card}>
       <div className={styles.cardHeader}>
-        <h3>Live Monitoring</h3>
-        <p>Real-time Skeleton tracking and fall detection</p>
+        <div className={styles.cardHeaderText}>
+          <h3>Live Monitoring</h3>
+          <p>Real-time Skeleton tracking and fall detection</p>
+        </div>
+        {inputSource === "camera" ? (
+          <label className={styles.previewToggleRow}>
+            <span>Show live video</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showLivePreview}
+              aria-label="Toggle live video preview"
+              onClick={onToggleLivePreview}
+              className={`${styles.previewToggle} ${showLivePreview ? styles.previewToggleOn : ""}`}
+            >
+              <span className={styles.previewToggleThumb}></span>
+            </button>
+          </label>
+        ) : null}
       </div>
 
       <div className={styles.videoPlaceholder}>
@@ -39,9 +65,7 @@ export function LiveMonitorCard({
           ref={videoRef}
           muted
           playsInline
-          className={`${styles.videoLayer} ${
-            inputSource === "video" ? styles.videoLayerReplay : styles.videoLayerHidden
-          }`}
+          className={`${styles.videoLayer} ${videoLayerClass}`}
         />
         <canvas
           ref={canvasRef}
