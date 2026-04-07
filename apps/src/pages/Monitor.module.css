@@ -61,6 +61,26 @@
   margin: 0 0 16px 0;
 }
 
+.cardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.cardHeaderText {
+  min-width: 0;
+}
+
+.cardHeaderText h3 {
+  margin: 0 0 8px 0;
+}
+
+.cardHeaderText p {
+  margin: 0;
+}
+
 .statusStack {
   min-height: 88px;
   display: flex;
@@ -147,8 +167,55 @@
   opacity: 0.35;
 }
 
+.videoLayerLiveVisible {
+  opacity: 1;
+}
+
 .videoLayerHidden {
   opacity: 0;
+}
+
+.previewToggleRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: #3C4043;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.previewToggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background-color: #C4C7C5;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.previewToggleOn {
+  background-color: #AECBFA;
+}
+
+.previewToggleThumb {
+  position: absolute;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: #FFFFFF;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.previewToggleOn .previewToggleThumb {
+  transform: translateX(18px);
+  background-color: #1A73E8;
 }
 
 .infoSummary {

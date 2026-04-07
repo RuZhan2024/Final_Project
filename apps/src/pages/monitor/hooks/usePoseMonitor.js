@@ -81,6 +81,7 @@ export function usePoseMonitor({
   apiBase,
   isActive,
   monitoringOn,
+  showLivePreview,
   registerController,
   settingsPayload,
   deployW,
@@ -104,6 +105,7 @@ export function usePoseMonitor({
   const replayClipRef = useRef(null);
   const videoObjectUrlRef = useRef(null);
   const inputSourceRef = useRef("camera");
+  const showLivePreviewRef = useRef(Boolean(showLivePreview));
   const rafRef = useRef(null);
   const liveFlagRef = useRef(false);
 
@@ -221,6 +223,10 @@ export function usePoseMonitor({
   useEffect(() => {
     monitoringOnRef.current = Boolean(monitoringOn);
   }, [monitoringOn]);
+
+  useEffect(() => {
+    showLivePreviewRef.current = Boolean(showLivePreview);
+  }, [showLivePreview]);
 
   const autoStopMonitoring = useCallback(() => {
     try {
@@ -888,6 +894,8 @@ export function usePoseMonitor({
 
       const doDraw = isActiveRef.current;
       const landmarks = results.poseLandmarks;
+      const showTransparentPreview =
+        (inputSourceRef.current || "camera") === "camera" && showLivePreviewRef.current;
 
       const hasLandmarks = Boolean(landmarks && landmarks.length);
 
@@ -900,11 +908,16 @@ export function usePoseMonitor({
           } else {
             lastDrawMsRef.current = drawNowMs;
             ensureCanvasMatchesVideo();
-            ctx.fillStyle = "#020617";
-            ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+            ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+            if (!showTransparentPreview) {
+              ctx.fillStyle = "#020617";
+              ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+            }
+            ctx.fillStyle = showTransparentPreview ? "rgba(2, 6, 23, 0.68)" : "#020617";
+            ctx.fillRect(12, 8, 156, 28);
             ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto";
             ctx.fillStyle = "#94a3b8";
-            ctx.fillText("No pose detected…", 16, 24);
+            ctx.fillText("No pose detected…", 20, 27);
           }
         }
       }
@@ -920,8 +933,11 @@ export function usePoseMonitor({
         const w = canvasEl.width;
         const h = canvasEl.height;
 
-        ctx.fillStyle = "#020617";
-        ctx.fillRect(0, 0, w, h);
+        ctx.clearRect(0, 0, w, h);
+        if (!showTransparentPreview) {
+          ctx.fillStyle = "#020617";
+          ctx.fillRect(0, 0, w, h);
+        }
 
         drawConnectors(ctx, landmarks, mpPose.POSE_CONNECTIONS, {
           color: "#22c55e",
@@ -930,6 +946,9 @@ export function usePoseMonitor({
         drawLandmarks(ctx, landmarks, { color: "#fbbf24", lineWidth: 1 });
 
         ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto";
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillStyle = showTransparentPreview ? "rgba(2, 6, 23, 0.68)" : "#020617";
+        ctx.fillRect(12, h - 34, 120, 22);
         ctx.fillStyle = "#94a3b8";
         ctx.fillText(new Date().toLocaleTimeString(), 16, h - 16);
         }

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 
 import styles from "./Monitor.module.css";
 
@@ -130,6 +130,7 @@ function Monitor({ isActive = true } = {}) {
 
   // Monitor page no longer polls /api/summary (dashboard owns summary polling).
   const summaryErr = "";
+  const [showLivePreview, setShowLivePreview] = useState(false);
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {
@@ -161,6 +162,7 @@ function Monitor({ isActive = true } = {}) {
     apiBase,
     isActive,
     monitoringOn,
+    showLivePreview,
     registerController,
     settingsPayload,
     deployW,
@@ -226,6 +228,8 @@ function Monitor({ isActive = true } = {}) {
             currentPrediction={showPlaceholders ? "—" : currentPrediction}
             pText={showPlaceholders ? "—" : pText}
             inputSource={inputSource}
+            showLivePreview={showLivePreview}
+            onToggleLivePreview={() => setShowLivePreview((v) => !v)}
             captureFpsText={showPlaceholders ? "—" : captureFpsText}
             modelFpsText={showPlaceholders ? "—" : modelFpsText}
           />
