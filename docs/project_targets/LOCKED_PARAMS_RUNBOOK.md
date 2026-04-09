@@ -78,8 +78,8 @@ Current locked LE2i paper-profile metrics snapshot:
 ### 3.1 Locked evaluation reproduction
 - TCN ckpt: `outputs/muvim_tcn_W48S12_quick/best.pt`
 - GCN ckpt: `outputs/muvim_gcn_W48S12_quick/best.pt`
-- TCN ops: `configs/ops/tcn_muvim_quick.yaml`
-- GCN ops: `configs/ops/gcn_muvim_quick.yaml`
+- TCN ops: `configs/ops/archive/muvim/tcn_muvim_quick.yaml`
+- GCN ops: `configs/ops/archive/muvim/gcn_muvim_quick.yaml`
 - TCN metrics (locked output): `outputs/metrics/tcn_muvim_locked.json`
 - GCN metrics (locked output): `outputs/metrics/gcn_muvim_locked.json`
 

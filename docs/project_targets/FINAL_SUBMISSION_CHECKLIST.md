@@ -65,7 +65,7 @@ Reference standards:
   - [ ] deployment track not regressed (especially FA24h / stability)
 - [ ] Accepted parameter set is promoted to reproducible command targets (Makefile or equivalent).
 - [ ] Promotion is recorded in:
-  - [ ] `docs/project_targets/PARAM_PROMOTION_WORKFLOW.md`
+  - [ ] `docs/project_targets/supporting/PARAM_PROMOTION_WORKFLOW.md`
   - [ ] `docs/project_targets/FINAL_CANDIDATES.md`
   - [ ] `docs/project_targets/THESIS_EVIDENCE_MAP.md`
 - [ ] Root `README.md` reflects the promoted one-command reproduction path.

@@ -162,7 +162,8 @@ Generalization limits and causes are evidence-based.
 ### How to get target
 - `docs/project_targets/CROSS_DATASET_REPORT.md` includes invariants + taxonomy.
 - Execute:
-  - `python scripts/plot_cross_dataset_transfer.py --manifest artifacts/reports/cross_dataset_manifest.json --out_fig artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png`
+  - `python3 scripts/build_cross_dataset_summary.py --manifest artifacts/reports/cross_dataset_manifest.json --out_csv artifacts/reports/cross_dataset_summary.csv`
+  - `python3 scripts/plot_cross_dataset_transfer.py --summary_csv artifacts/reports/cross_dataset_summary.csv --out_fig artifacts/figures/report/cross_dataset_transfer_summary.png`
 
 ## Task 4.5 — MUVIM Labels.csv Full Rerun (Pending)
 ### Issue
@@ -214,7 +215,7 @@ Full factorial is expensive and low-yield.
 ### Resolve method
 Use prioritized one-factor ablations + two interaction checks.
 ### How to do
-1. Build `docs/project_targets/ABLATION_MATRIX.md` with `priority` column.
+1. Build `docs/project_targets/supporting/ABLATION_MATRIX.md` with `priority` column.
 2. Run one-factor-at-a-time for `motion/conf/bone/confirm`.
 3. Run only two interactions (example: `confirm×motion`, `bone×gcn`).
 ### Target
@@ -260,7 +261,7 @@ Enforce strict protocol checklist.
 ### Target
 Policy selection is leakage-free and auditable.
 ### How to get target
-- `docs/project_targets/OPS_POLICY_REPORT.md` includes completed checklist.
+- `docs/project_targets/supporting/OPS_POLICY_REPORT.md` includes completed checklist.
 
 ## Task 8 — Runtime Failure-Mode Robustness
 ### Issue
@@ -278,7 +279,7 @@ Make failure testing executable.
 ### Target
 Robustness claims are test-backed, not narrative-only.
 ### How to get target
-- `docs/project_targets/ROBUSTNESS_REPORT.md` + fault summary JSON artifacts.
+- `docs/project_targets/supporting/ROBUSTNESS_REPORT.md` + fault summary JSON artifacts.
 
 ## Task 9 — Latency and Resource Profiling
 ### Issue
@@ -295,7 +296,7 @@ Define target device profile first, then measure full stack.
 ### Target
 Real-time feasibility is quantitatively defensible on target hardware.
 ### How to get target
-- `docs/project_targets/LATENCY_REPORT.md` + `artifacts/reports/infer_profile_*.json`.
+- `docs/project_targets/supporting/LATENCY_REPORT.md` + `artifacts/reports/infer_profile_*.json`.
 - Execute:
   - `python scripts/profile_infer.py --win_dir <val_or_test_windows> --ckpt <best.pt> --io_only 0 --profile cpu_local --out_json artifacts/reports/infer_profile_cpu_local_<exp>.json`
   - `python scripts/plot_latency_profiles.py --reports artifacts/reports/infer_profile_*.json --out_fig artifacts/figures/latency/latency_profile_summary.png`

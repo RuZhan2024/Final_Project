@@ -42,7 +42,7 @@ Notes:
 ### Files
 - `docs/project_targets/CLAIM_TABLE.md`
 - `docs/project_targets/FINAL_CANDIDATES.md`
-- `docs/project_targets/OPS_POLICY_REPORT.md`
+- `docs/project_targets/supporting/OPS_POLICY_REPORT.md`
 - `docs/project_targets/PROJECT_FINAL_YEAR_EXECUTION_PLAN.md`
 
 ### Commands

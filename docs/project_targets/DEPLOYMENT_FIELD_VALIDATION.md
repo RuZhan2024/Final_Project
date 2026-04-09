@@ -53,6 +53,24 @@ Provide practical evidence that the deployed system is robust outside benchmark 
 - Short qualitative error taxonomy with top recurring failure modes.
 - Reproduce command(s) used for evaluation.
 
+## Closure Levels
+
+### Minimum paper-safe path
+- does not require DB event history
+- requires:
+  - `deployment_field_manifest.csv`
+  - `deployment_field_labels.csv`
+  - `deployment_field_observations.csv`
+  - `deployment_field_eval.json`
+  - `deployment_field_failures.json`
+  - `deployment_field_validation_summary.md`
+
+### Enhanced DB-backed path
+- optional strengthening evidence only
+- adds:
+  - `deployment_dual_policy_events.json`
+- use only if DB access is available and recent runtime events exist
+
 ## Acceptance Criteria
 - 20-40 clips processed.
 - Reports generated with required metric fields.
@@ -64,8 +82,14 @@ Provide practical evidence that the deployed system is robust outside benchmark 
 
 ## Manual TODO (User)
 - [ ] Record 20-40 real field clips and place under `data/field/raw/`.
+- [ ] Copy templates to working report files:
+  - `artifacts/reports/deployment_field_manifest.csv`
+  - `artifacts/reports/deployment_field_labels.csv`
+  - `artifacts/reports/deployment_field_observations.csv`
 - [ ] Fill `artifacts/reports/deployment_field_observations.csv` (from template).
-- [ ] Run:
+- [ ] Run the minimum paper-safe summarizer:
+  - `python tools/summarize_field_validation.py --obs_csv artifacts/reports/deployment_field_observations.csv --hours 1.0 --out_eval_json artifacts/reports/deployment_field_eval.json --out_failures_json artifacts/reports/deployment_field_failures.json --out_markdown artifacts/reports/deployment_field_validation_summary.md`
+- [ ] (Optional) If DB-backed runtime evidence is available, also run:
   - `python tools/summarize_dual_policy_events.py --resident_id 1 --hours 24 --out_json artifacts/reports/deployment_dual_policy_events.json`
   - `python tools/summarize_field_validation.py --obs_csv artifacts/reports/deployment_field_observations.csv --hours 1.0 --dual_policy_json artifacts/reports/deployment_dual_policy_events.json --out_eval_json artifacts/reports/deployment_field_eval.json --out_failures_json artifacts/reports/deployment_field_failures.json --out_markdown artifacts/reports/deployment_field_validation_summary.md`
 - [ ] (Optional) Start API once for live robustness extension:
@@ -73,6 +97,7 @@ Provide practical evidence that the deployed system is robust outside benchmark 
 
 ## Execution Pack
 - Detailed runbook: `docs/project_targets/FIELD_VALIDATION_RUNBOOK.md`
+- Minimum closure guide: `docs/project_targets/FIELD_VALIDATION_MINIMUM_PACK.md`
 - Templates:
   - `artifacts/templates/deployment_field_manifest_template.csv`
   - `artifacts/templates/deployment_field_labels_template.csv`
