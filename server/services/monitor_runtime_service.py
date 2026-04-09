@@ -37,6 +37,7 @@ class MonitorRuntimeContext:
     caregiver_name: str
     caregiver_email: str
     caregiver_phone: str
+    caregiver_telegram_chat_id: str
 
 
 def merge_monitor_runtime_defaults(
@@ -75,6 +76,7 @@ def merge_monitor_runtime_defaults(
         caregiver_name=defaults.caregiver_name,
         caregiver_email=defaults.caregiver_email,
         caregiver_phone=defaults.caregiver_phone,
+        caregiver_telegram_chat_id=defaults.caregiver_telegram_chat_id,
     )
 
 
@@ -242,12 +244,9 @@ def persist_monitor_event(
                     },
                 ),
                 NotificationPreferences(
-                    phone_enabled=bool(runtime.notify_phone),
-                    sms_enabled=bool(runtime.notify_sms),
-                    email_enabled=True,
+                    telegram_enabled=bool(runtime.notify_on_every_fall),
                     caregiver_name=runtime.caregiver_name,
-                    caregiver_phone=runtime.caregiver_phone,
-                    caregiver_email=runtime.caregiver_email,
+                    caregiver_telegram_chat_id=runtime.caregiver_telegram_chat_id,
                 ),
             )
     except Exception:

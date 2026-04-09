@@ -35,25 +35,20 @@ export default function SettingsPage() {
   const { caregivers, loading: caregiversLoading, error: caregiversError, upsert } = useCaregivers(apiBase);
   const primary = caregivers?.[0] || null;
   const [cgName, setCgName] = useState("");
-  const [cgEmail, setCgEmail] = useState("");
-  const [cgPhone, setCgPhone] = useState("");
+  const [cgTelegramChatId, setCgTelegramChatId] = useState("");
   const [editingCaregiver, setEditingCaregiver] = useState(false);
 
   useEffect(() => {
     if (!primary) return;
     setCgName(primary.name || "");
-    setCgEmail(primary.email || "");
-    setCgPhone(primary.phone || "");
+    setCgTelegramChatId(primary.telegram_chat_id || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary?.id]);
 
   const monitoringEnabled = readBool(sys.monitoring_enabled, false);
   const notifyOnEveryFall = readBool(sys.notify_on_every_fall, true);
-  const notifySms = readBool(sys.notify_sms, false);
-  const notifyPhone = readBool(sys.notify_phone, false);
   const caregiverNameReady = Boolean(String(cgName || "").trim());
-  const caregiverEmailReady = Boolean(String(cgEmail || "").trim());
-  const caregiverPhoneReady = Boolean(String(cgPhone || "").trim());
+  const caregiverTelegramReady = Boolean(String(cgTelegramChatId || "").trim());
 
   const activeDatasetCode = String(sys.active_dataset_code || "le2i").toLowerCase();
   const mcEnabled = readBool(sys.mc_enabled, true);
@@ -116,9 +111,9 @@ export default function SettingsPage() {
   async function saveCaregiver() {
     setLocalErr("");
     try {
-      await upsert({ id: primary?.id, name: cgName, email: cgEmail, phone: cgPhone });
+      await upsert({ id: primary?.id, name: cgName, telegram_chat_id: cgTelegramChatId });
       setEditingCaregiver(false);
-      showToast("Caregiver information saved. New alerts will use this contact profile.");
+      showToast("Caregiver information saved. Telegram alerts will use this contact profile.");
     } catch (e) {
       setLocalErr(`Caregiver information could not be saved. ${String(e?.message || e)}`);
     }
@@ -179,25 +174,13 @@ export default function SettingsPage() {
               </div>
 
               <div className={styles.inputWrapper}>
-                <label>Email</label>
+                <label>Telegram Chat ID</label>
                 <input
-                  type="email"
+                  type="text"
                   className={styles.textInput}
-                  value={cgEmail}
-                  onChange={(e) => setCgEmail(e.target.value)}
-                  placeholder="alice@example.com"
-                  disabled={caregiversLoading || !editingCaregiver}
-                />
-              </div>
-
-              <div className={styles.inputWrapper}>
-                <label>Phone</label>
-                <input
-                  type="tel"
-                  className={styles.textInput}
-                  value={cgPhone}
-                  onChange={(e) => setCgPhone(e.target.value)}
-                  placeholder="+44 ..."
+                  value={cgTelegramChatId}
+                  onChange={(e) => setCgTelegramChatId(e.target.value)}
+                  placeholder="e.g. 123456789"
                   disabled={caregiversLoading || !editingCaregiver}
                 />
               </div>
@@ -252,8 +235,8 @@ export default function SettingsPage() {
                         : { notify_on_every_fall: false, notify_sms: false, notify_phone: false },
                       "Notification switch",
                       on
-                        ? "Notifications enabled. Choose SMS and/or Phone Call channels below."
-                        : "Notifications disabled. SMS and Phone Call channels were turned off automatically."
+                        ? "Notifications enabled. Telegram alerts will be sent when falls are detected."
+                        : "Notifications disabled. Telegram alerts are now paused."
                     );
                   }}
                   disabled={!loaded}
@@ -262,60 +245,17 @@ export default function SettingsPage() {
               </label>
             </div>
 
-            <div className={styles.toggleRow}>
-              <span>Notify by SMS</span>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={notifySms}
-                  onChange={(e) =>
-                    savePatch(
-                      { notify_sms: e.target.checked },
-                      "SMS notification channel",
-                      e.target.checked
-                        ? "SMS notifications enabled. Fall alerts will be queued for SMS delivery."
-                        : "SMS notifications disabled. Falls will no longer queue SMS alerts."
-                    )
-                  }
-                  disabled={!loaded || !notifyOnEveryFall}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
-
-            <div className={styles.toggleRow}>
-              <span>Notify by Phone Call</span>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={notifyPhone}
-                  onChange={(e) =>
-                    savePatch(
-                      { notify_phone: e.target.checked },
-                      "Phone call notification channel",
-                      e.target.checked
-                        ? "Phone call notifications enabled. Fall alerts will be queued for call delivery."
-                        : "Phone call notifications disabled. Falls will no longer queue call alerts."
-                    )
-                  }
-                  disabled={!loaded || !notifyOnEveryFall}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
-
             <div className={styles.inlineInfo}>
               <div className={styles.inlineInfoTitle}>Notification Policy</div>
-              <div>Email report: always sent with detailed fall analysis to the caregiver email on file.</div>
-              <div>SMS: optional brief alert.</div>
-              <div>Phone call: optional short voice alert.</div>
+              <div>Telegram is the active notification channel for the current build.</div>
+              <div>Each alert includes a concise AI-generated caregiver summary when available.</div>
               <div className={styles.subtleMeta}>
                 Caregiver status:
-                {` Name ${caregiverNameReady ? "ready" : "missing"}, Email ${caregiverEmailReady ? "ready" : "missing"}, Phone ${caregiverPhoneReady ? "ready" : "missing"}.`}
+                {` Name ${caregiverNameReady ? "ready" : "missing"}, Telegram Chat ID ${caregiverTelegramReady ? "ready" : "missing"}.`}
               </div>
-              {!caregiverEmailReady && (
+              {!caregiverTelegramReady && (
                 <div className={styles.inlineInfoWarning}>
-                  Detailed email reports cannot be delivered until a caregiver email is saved.
+                  Telegram alerts cannot be delivered until a caregiver Telegram chat ID is saved.
                 </div>
               )}
             </div>
@@ -367,9 +307,9 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* MC Dropout */}
+            {/* Uncertainty-aware live gate */}
             <div className={styles.toggleRow}>
-              <span>MC Dropout (Uncertainty)</span>
+              <span>Live Uncertainty Gate</span>
               <label className={styles.switch}>
                 <input
                   type="checkbox"
@@ -377,10 +317,10 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     savePatch(
                       { mc_enabled: e.target.checked },
-                      "MC Dropout uncertainty mode",
+                      "Live uncertainty gate",
                       e.target.checked
-                        ? "MC Dropout enabled. Predictions now include uncertainty-aware behavior."
-                        : "MC Dropout disabled. Predictions now run in deterministic single-pass mode."
+                        ? "Live uncertainty gate enabled. Boundary windows can use MC dropout and high-uncertainty falls will be downgraded to uncertain."
+                        : "Live uncertainty gate disabled. Live monitoring now uses deterministic single-pass scoring only."
                     )
                   }
                   disabled={!loaded}

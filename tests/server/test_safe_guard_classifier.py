@@ -19,6 +19,9 @@ def _cfg() -> NotificationConfig:
         low_uncertainty_threshold=0.05,
         high_uncertainty_threshold=0.15,
         alert_cooldown_seconds=30,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        telegram_api_base="https://api.telegram.org",
         twilio_account_sid="",
         twilio_auth_token="",
         twilio_from_phone="",
@@ -61,30 +64,25 @@ def _event(**overrides) -> SafeGuardEvent:
 def test_classifier_tier1_high_confidence():
     decision = EventClassifier(_cfg()).classify(
         _event(),
-        NotificationPreferences(phone_enabled=True, sms_enabled=True, email_enabled=True),
+        NotificationPreferences(telegram_enabled=True),
     )
     assert decision.tier == SafeGuardTier.TIER1
-    assert decision.actions["phone"] is True
-    assert decision.actions["sms"] is True
-    assert decision.actions["email"] is True
+    assert decision.actions["telegram"] is True
 
 
 def test_classifier_tier2_borderline():
     decision = EventClassifier(_cfg()).classify(
         _event(probability=0.82, margin=0.02, uncertainty=0.18),
-        NotificationPreferences(phone_enabled=True, sms_enabled=True, email_enabled=True),
+        NotificationPreferences(telegram_enabled=True),
     )
     assert decision.tier == SafeGuardTier.TIER2
-    assert decision.actions["phone"] is False
-    assert decision.actions["sms"] is True
+    assert decision.actions["telegram"] is True
 
 
 def test_classifier_tier3_non_alert():
     decision = EventClassifier(_cfg()).classify(
         _event(triage_state="not_fall", safe_alert=False, recall_alert=False),
-        NotificationPreferences(phone_enabled=True, sms_enabled=True, email_enabled=True),
+        NotificationPreferences(telegram_enabled=True),
     )
     assert decision.tier == SafeGuardTier.TIER3
-    assert decision.actions["phone"] is False
-    assert decision.actions["sms"] is False
-    assert decision.actions["email"] is False
+    assert decision.actions["telegram"] is False

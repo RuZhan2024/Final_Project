@@ -81,6 +81,7 @@ def load_monitor_request_context(
     caregiver_name = ""
     caregiver_email = ""
     caregiver_phone = ""
+    caregiver_telegram_chat_id = ""
 
     if conn is not None:
         ensure_system_settings_schema(conn)
@@ -126,7 +127,7 @@ def load_monitor_request_context(
         if table_exists(conn, "caregivers"):
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                    "SELECT * FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                     (resident_id,),
                 )
                 caregiver_row = cur.fetchone() or {}
@@ -134,6 +135,7 @@ def load_monitor_request_context(
                 caregiver_name = str(caregiver_row.get("name") or "").strip()
                 caregiver_email = str(caregiver_row.get("email") or "").strip()
                 caregiver_phone = str(caregiver_row.get("phone") or "").strip()
+                caregiver_telegram_chat_id = str(caregiver_row.get("telegram_chat_id") or "").strip()
 
     if not resolved_dataset_code:
         resolved_dataset_code = "le2i"
@@ -159,6 +161,7 @@ def load_monitor_request_context(
         caregiver_name=str(caregiver_name),
         caregiver_email=str(caregiver_email),
         caregiver_phone=str(caregiver_phone),
+        caregiver_telegram_chat_id=str(caregiver_telegram_chat_id),
     )
 
     return MonitorRequestContext(

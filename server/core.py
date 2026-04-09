@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .deploy_runtime import get_specs as _get_deploy_specs
+from .services.monitor_uncertainty_service import resolve_uncertainty_cfg
 
 try:
     from pymysql.err import MySQLError  # type: ignore
@@ -69,9 +70,9 @@ class SettingsUpdatePayload(BaseModel):
     active_dataset_code: Optional[str] = Field(default=None, description="le2i | caucafall")
     active_op_code: Optional[str] = Field(default=None, description="OP-1 | OP-2 | OP-3")
 
-    mc_enabled: Optional[bool] = Field(default=None, description="Enable MC Dropout at inference")
-    mc_M: Optional[int] = Field(default=None, description="MC samples for live inference")
-    mc_M_confirm: Optional[int] = Field(default=None, description="MC samples for confirm step")
+    mc_enabled: Optional[bool] = Field(default=None, description="Enable the live uncertainty gate")
+    mc_M: Optional[int] = Field(default=None, description="MC samples for boundary-window live inference")
+    mc_M_confirm: Optional[int] = Field(default=None, description="Reserved MC sample count for confirm-stage logic")
 
     # v2-style extras
     risk_profile: Optional[str] = None
@@ -159,6 +160,7 @@ class CaregiverUpsertPayload(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
 
 
 # -----------------------------
@@ -433,6 +435,10 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         ema_alpha = _op_or_acfg(tcn, "ema_alpha", 0.0)
         k = int(_op_or_acfg(tcn, "k", 2))
         n = int(_op_or_acfg(tcn, "n", 3))
+        uncertainty_cfg = resolve_uncertainty_cfg(
+            dict(tcn.get("alert_cfg") or {}) if tcn else {},
+            dict(tcn.get("op") or {}) if tcn else {},
+        )
     elif mc == "GCN":
         tau_low = _tau(gcn, "tau_low", 0.0)
         tau_high = _tau(gcn, "tau_high", 0.85)
@@ -440,6 +446,10 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         ema_alpha = _op_or_acfg(gcn, "ema_alpha", 0.0)
         k = int(_op_or_acfg(gcn, "k", 2))
         n = int(_op_or_acfg(gcn, "n", 3))
+        uncertainty_cfg = resolve_uncertainty_cfg(
+            dict(gcn.get("alert_cfg") or {}) if gcn else {},
+            dict(gcn.get("op") or {}) if gcn else {},
+        )
     else:
         # HYBRID UI defaults follow TCN-safe channel for primary auto-alert behavior.
         tau_low = _tau(tcn, "tau_low", _tau(gcn, "tau_low", 0.0))
@@ -448,6 +458,10 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
         ema_alpha = _op_or_acfg(tcn, "ema_alpha", _op_or_acfg(gcn, "ema_alpha", 0.0))
         k = int(_op_or_acfg(tcn, "k", _op_or_acfg(gcn, "k", 2)))
         n = int(_op_or_acfg(tcn, "n", _op_or_acfg(gcn, "n", 3)))
+        uncertainty_cfg = resolve_uncertainty_cfg(
+            dict(tcn.get("alert_cfg") or gcn.get("alert_cfg") or {}) if (tcn or gcn) else {},
+            dict(tcn.get("op") or gcn.get("op") or {}) if (tcn or gcn) else {},
+        )
 
     return {
         "ui": {
@@ -458,6 +472,8 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
             "ema_alpha": float(ema_alpha),
             "k": int(k),
             "n": int(n),
+            "mc_boundary_margin": float(uncertainty_cfg.get("boundary_margin", 0.08)),
+            "mc_sigma_fall_max": float(uncertainty_cfg.get("sigma_fall_max", 0.08)),
         },
         "tcn": tcn if mc in {"TCN", "HYBRID"} else None,
         "gcn": gcn if mc in {"GCN", "HYBRID"} else None,
@@ -669,43 +685,50 @@ def _anonymize_xy_inplace(xy: np.ndarray) -> np.ndarray:
 
 def _ensure_caregivers_table(conn) -> None:
     """Best-effort create caregivers table for dev environments."""
-    if _table_exists(conn, "caregivers"):
-        return
     try:
         with conn.cursor() as cur:
             backend = str(getattr(conn, "db_backend", "mysql")).lower()
-            if backend == "sqlite":
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS caregivers (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      resident_id INTEGER NOT NULL,
-                      name TEXT NULL,
-                      email TEXT NULL,
-                      phone TEXT NULL,
-                      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            if not _table_exists(conn, "caregivers"):
+                if backend == "sqlite":
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS caregivers (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          resident_id INTEGER NOT NULL,
+                          name TEXT NULL,
+                          email TEXT NULL,
+                          phone TEXT NULL,
+                          telegram_chat_id TEXT NULL,
+                          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
                     )
-                    """
-                )
-            else:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS caregivers (
-                      id INT AUTO_INCREMENT PRIMARY KEY,
-                      resident_id INT NOT NULL,
-                      name VARCHAR(120) NULL,
-                      email VARCHAR(200) NULL,
-                      phone VARCHAR(80) NULL,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                      INDEX idx_resident (resident_id)
+                else:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS caregivers (
+                          id INT AUTO_INCREMENT PRIMARY KEY,
+                          resident_id INT NOT NULL,
+                          name VARCHAR(120) NULL,
+                          email VARCHAR(200) NULL,
+                          phone VARCHAR(80) NULL,
+                          telegram_chat_id VARCHAR(120) NULL,
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                          INDEX idx_resident (resident_id)
+                        )
+                        """
                     )
-                    """
-                )
+            elif not _col_exists(conn, "caregivers", "telegram_chat_id"):
+                if backend == "sqlite":
+                    cur.execute("ALTER TABLE caregivers ADD COLUMN telegram_chat_id TEXT NULL")
+                else:
+                    cur.execute("ALTER TABLE caregivers ADD COLUMN `telegram_chat_id` VARCHAR(120) NULL")
         conn.commit()
         global _TABLE_CACHE
         _TABLE_CACHE = None
+        _COL_CACHE.pop("caregivers", None)
     except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
         pass
 
@@ -868,6 +891,7 @@ def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
             "name": None,
             "email": None,
             "phone": None,
+            "telegram_chat_id": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -879,5 +903,7 @@ def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
         row["email"] = payload.email
     if payload.phone is not None:
         row["phone"] = payload.phone
+    if payload.telegram_chat_id is not None:
+        row["telegram_chat_id"] = payload.telegram_chat_id
     row["updated_at"] = now
     return dict(row)

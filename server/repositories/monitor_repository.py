@@ -19,6 +19,7 @@ class MonitorRuntimeDefaults:
     caregiver_name: str = ""
     caregiver_email: str = ""
     caregiver_phone: str = ""
+    caregiver_telegram_chat_id: str = ""
 
 
 def load_monitor_runtime_defaults(
@@ -44,10 +45,11 @@ def load_monitor_runtime_defaults(
     caregiver_name = ""
     caregiver_email = ""
     caregiver_phone = ""
+    caregiver_telegram_chat_id = ""
     if table_exists(conn, "caregivers"):
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                "SELECT * FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                 (resident_id,),
             )
             caregiver_row = cur.fetchone() or {}
@@ -55,12 +57,14 @@ def load_monitor_runtime_defaults(
             caregiver_name = str(caregiver_row.get("name") or "").strip()
             caregiver_email = str(caregiver_row.get("email") or "").strip()
             caregiver_phone = str(caregiver_row.get("phone") or "").strip()
+            caregiver_telegram_chat_id = str(caregiver_row.get("telegram_chat_id") or "").strip()
 
     if not isinstance(sys_row, dict):
         return MonitorRuntimeDefaults(
             caregiver_name=caregiver_name,
             caregiver_email=caregiver_email,
             caregiver_phone=caregiver_phone,
+            caregiver_telegram_chat_id=caregiver_telegram_chat_id,
         )
 
     return MonitorRuntimeDefaults(
@@ -75,6 +79,7 @@ def load_monitor_runtime_defaults(
         caregiver_name=caregiver_name,
         caregiver_email=caregiver_email,
         caregiver_phone=caregiver_phone,
+        caregiver_telegram_chat_id=caregiver_telegram_chat_id,
     )
 
 

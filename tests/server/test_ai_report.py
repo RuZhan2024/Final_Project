@@ -24,6 +24,9 @@ def _cfg(**overrides) -> NotificationConfig:
         low_uncertainty_threshold=0.05,
         high_uncertainty_threshold=0.15,
         alert_cooldown_seconds=30,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        telegram_api_base="https://api.telegram.org",
         twilio_account_sid="",
         twilio_auth_token="",
         twilio_from_phone="",
@@ -67,7 +70,7 @@ def test_ai_report_falls_back_without_openai_key():
     decision = TierDecision(
         tier=SafeGuardTier.TIER1,
         reason="strong_margin_low_uncertainty",
-        actions={"email": True, "sms": True, "phone": True},
+        actions={"telegram": True},
         recommendation="Check the resident immediately.",
     )
     out = generate_event_ai_report(_event(), decision, _cfg(openai_api_key=""))
@@ -101,7 +104,7 @@ def test_ai_report_uses_openai_provider(monkeypatch):
     decision = TierDecision(
         tier=SafeGuardTier.TIER1,
         reason="strong_margin_low_uncertainty",
-        actions={"email": True, "sms": False, "phone": False},
+        actions={"telegram": True},
         recommendation="Check the resident immediately.",
     )
 
@@ -141,7 +144,7 @@ def test_ai_report_uses_gemini_provider(monkeypatch):
     decision = TierDecision(
         tier=SafeGuardTier.TIER1,
         reason="strong_margin_low_uncertainty",
-        actions={"email": True, "sms": False, "phone": False},
+        actions={"telegram": True},
         recommendation="Check the resident immediately.",
     )
 

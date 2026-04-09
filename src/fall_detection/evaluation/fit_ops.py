@@ -536,7 +536,7 @@ def _preflight_input_contract(
                 f"Input feature mismatch for fit_ops: ckpt expects in_ch={exp_in}, "
                 f"but windows from '{source_dir}' produce in_ch={got_in}. "
                 "This usually means a stale checkpoint built from a different window contract "
-                "(for example 33-joint vs 17-joint adapter mode). Rebuild training + eval windows "
+                "(for example mismatched joint layouts or feature dimensions). Rebuild training + eval windows "
                 "and retrain before fit_ops (e.g., make -B ADAPTER_USE=1 train-tcn-<dataset>)."
             )
         return

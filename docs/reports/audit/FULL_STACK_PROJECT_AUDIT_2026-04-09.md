@@ -215,6 +215,7 @@ What I verified:
 - Running with the recommended `PYTHONPATH="$(pwd)/src:$(pwd)"` gets further, but monitor-facing test collection aborts when local `torch` initializes.
 - A canonical wrapper now exists at [run_canonical_tests.sh](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/run_canonical_tests.sh) with split modes:
   - `torch-free`
+  - `contract`
   - `monitor`
   - `all`
 
@@ -341,30 +342,33 @@ Status: `partially_closed`
 Priority: `P3`  
 Final release blocker: `no`
 
-### 9. Medium: Report build is usable but still only a basic converter pipeline
+### 9. Low: Report build and freeze tooling are now materially stronger, but the repository still lacks a fully clean frozen snapshot
 
 Relevant files:
 
 - [scripts/build_report.sh](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/build_report.sh)
+- [scripts/freeze_manifest.sh](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/freeze_manifest.sh)
+- [docs/reports/audit/FREEZE_STATUS_2026-04-09.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/audit/FREEZE_STATUS_2026-04-09.md)
 
 What I found:
 
-- It works.
-- But it hardcodes title, date, author, and output naming.
-- It does not validate tool availability or input existence.
+- `build_report.sh` now validates required tools and input existence.
+- It supports `--pdf-only` and `--docx-only`.
+- It derives output names more cleanly and allows metadata overrides.
+- `freeze_manifest.sh` now provides a machine-checkable freeze-core boundary and reports current dirty status.
 
 Impact:
 
-- Fine for iterative work.
-- Not ideal as a final reproducible report-build contract.
+- Tooling is no longer the main weakness.
+- The remaining issue is that the repository content itself is still not fully frozen.
 
 Required action:
 
-- Parameterize metadata and filename derivation.
-- Add basic environment checks.
+- Use `freeze_manifest.sh` as the final pre-freeze gate.
+- Clear or intentionally explain the remaining freeze-core dirty paths.
 
-Status: `open`  
-Priority: `P2`  
+Status: `partially_closed`  
+Priority: `P3`  
 Final release blocker: `no`
 
 ### 10. Low: Frontend monitor architecture remains good, and the most obvious debug API residue has now been removed
@@ -869,7 +873,7 @@ These are the most important commands that should remain valid and documented du
 ```
 
 Note:
-- `./scripts/run_canonical_tests.sh monitor` remains environment-sensitive because monitor-facing collection may still abort during local `torch` import
+- `./scripts/run_canonical_tests.sh contract` and `./scripts/run_canonical_tests.sh monitor` remain environment-sensitive because they import the server app and can still hit local `torch` initialization issues
 
 ### Report build
 

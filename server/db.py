@@ -126,6 +126,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             name TEXT,
             email TEXT,
             phone TEXT,
+            telegram_chat_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
@@ -233,7 +234,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT COUNT(*) FROM caregivers").fetchone()
     if row and int(row[0] or 0) == 0:
         conn.execute(
-            "INSERT INTO caregivers (resident_id, name, email, phone) VALUES (1, 'Demo Caregiver', 'caregiver@example.com', '0000000000')"
+            "INSERT INTO caregivers (resident_id, name, email, phone, telegram_chat_id) VALUES (1, 'Demo Caregiver', 'caregiver@example.com', '0000000000', '')"
         )
 
     row = conn.execute("SELECT COUNT(*) FROM models").fetchone()

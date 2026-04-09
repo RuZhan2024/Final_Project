@@ -10,12 +10,11 @@ from typing import Optional
 from .classifier import EventClassifier
 from .ai_report import generate_event_ai_report
 from .config import NotificationConfig, load_notification_config
-from .email_client import EmailClient
 from .models import NotificationPreferences, SafeGuardEvent, TierDecision
 from .queue_worker import DispatchJob, NotificationQueueWorker
 from .sqlite_store import SQLiteNotificationStore
-from .templates import build_email_message, build_phone_message, build_sms_message
-from .twilio_client import TwilioClient
+from .telegram_client import TelegramClient
+from .templates import build_telegram_message
 
 
 logger = logging.getLogger(__name__)
@@ -30,8 +29,7 @@ class NotificationManager:
         self._cfg = config or load_notification_config()
         self._classifier = EventClassifier(self._cfg)
         self._store = SQLiteNotificationStore(self._cfg.sqlite_path)
-        self._twilio = TwilioClient(self._cfg)
-        self._email = EmailClient(self._cfg)
+        self._telegram = TelegramClient(self._cfg)
         self._worker = NotificationQueueWorker(
             maxsize=self._cfg.queue_size,
             poll_interval_s=self._cfg.worker_poll_interval_s,
@@ -73,36 +71,14 @@ class NotificationManager:
 
     def _dispatch(self, event: SafeGuardEvent, decision: TierDecision, prefs: NotificationPreferences) -> None:
         results = []
-        caregiver_email = str(prefs.caregiver_email or self._cfg.caregiver_email or "").strip()
-        caregiver_phone = str(prefs.caregiver_phone or self._cfg.caregiver_phone or "").strip()
-        if decision.actions.get("email", False):
+        caregiver_chat_id = str(prefs.caregiver_telegram_chat_id or self._cfg.telegram_chat_id or "").strip()
+        if decision.actions.get("telegram", False):
             analysis_report = generate_event_ai_report(event, decision, self._cfg)
-            email_msg = build_email_message(
-                event,
-                decision,
-                caregiver_email=caregiver_email,
-                email_from=self._cfg.email_from,
-                app_base_url=self._cfg.app_base_url,
-                analysis_report=analysis_report,
-            )
-            results.append(self._with_retry(lambda: self._email.send(email_msg)))
-
-        if decision.actions.get("sms", False):
             results.append(
                 self._with_retry(
-                    lambda: self._twilio.sms(
-                        to_phone=caregiver_phone,
-                        message=build_sms_message(event, decision),
-                    )
-                )
-            )
-
-        if decision.actions.get("phone", False):
-            results.append(
-                self._with_retry(
-                    lambda: self._twilio.call(
-                        to_phone=caregiver_phone,
-                        message=build_phone_message(event),
+                    lambda: self._telegram.send_message(
+                        chat_id=caregiver_chat_id,
+                        text=build_telegram_message(event, decision, analysis_report),
                     )
                 )
             )

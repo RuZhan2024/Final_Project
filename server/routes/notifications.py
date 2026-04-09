@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Query
 
+from ..core import _col_exists, _ensure_caregivers_table
 from ..db import get_conn_optional
+from ..notifications import get_notification_manager
+from ..notifications.models import NotificationPreferences, SafeGuardEvent
 
 router = APIRouter()
 
@@ -34,23 +38,76 @@ def list_notifications(
 @router.post("/api/notifications/test")
 @router.post("/api/v1/notifications/test")
 def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
-    """Minimal endpoint used by the monitor UI fallback test action."""
+    """Trigger a real Safe Guard test notification when possible."""
     p = payload if isinstance(payload, dict) else {}
     resident_id = int(p.get("resident_id") or 1)
-    channel = str(p.get("channel") or "test")
-    message = str(p.get("message") or "Manual test notification")
+    channel = str(p.get("channel") or "telegram")
+    message = str(p.get("message") or "Manual Telegram test notification")
+    manager = get_notification_manager()
+    caregiver_name = ""
+    caregiver_chat_id = ""
+    row_id = None
 
     with get_conn_optional() as conn:
-        if conn is None:
-            return {"ok": True, "accepted": True, "persisted": False, "reason": "db_unavailable", "payload": p}
-        try:
+        if conn is not None:
             with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO notifications_log (resident_id, channel, status, message) VALUES (%s,%s,%s,%s)",
-                    (resident_id, channel, "queued", message),
-                )
-                row_id = cur.lastrowid
-            conn.commit()
-            return {"ok": True, "accepted": True, "persisted": True, "id": row_id, "payload": p}
-        except Exception as e:
-            return {"ok": True, "accepted": True, "persisted": False, "error": str(e), "payload": p}
+                try:
+                    _ensure_caregivers_table(conn)
+                    select_cols = "name"
+                    if _col_exists(conn, "caregivers", "telegram_chat_id"):
+                        select_cols += ", telegram_chat_id"
+                    cur.execute(
+                        f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                        (resident_id,),
+                    )
+                    cg = cur.fetchone() or {}
+                    caregiver_name = str(cg.get("name") or "").strip()
+                    caregiver_chat_id = str(cg.get("telegram_chat_id") or "").strip()
+                except Exception:
+                    caregiver_name = ""
+                    caregiver_chat_id = ""
+
+                try:
+                    cur.execute(
+                        "INSERT INTO notifications_log (resident_id, channel, status, message) VALUES (%s,%s,%s,%s)",
+                        (resident_id, channel, "queued", message),
+                    )
+                    row_id = cur.lastrowid
+                    conn.commit()
+                except Exception:
+                    row_id = None
+
+    manager.handle_event(
+        SafeGuardEvent(
+            event_id=f"manual-test-{int(datetime.now(timezone.utc).timestamp())}",
+            resident_id=resident_id,
+            location="manual_test_notification",
+            probability=0.99,
+            uncertainty=0.01,
+            threshold=0.71,
+            margin=0.28,
+            triage_state="fall",
+            safe_alert=True,
+            recall_alert=True,
+            model_code="TCN",
+            dataset_code="caucafall",
+            op_code="OP-2",
+            timestamp=datetime.now(timezone.utc),
+            source="notifications.test",
+            notes=message,
+        ),
+        NotificationPreferences(
+            telegram_enabled=True,
+            caregiver_name=caregiver_name,
+            caregiver_telegram_chat_id=caregiver_chat_id,
+        ),
+    )
+    return {
+        "ok": True,
+        "accepted": True,
+        "persisted": bool(row_id),
+        "id": row_id,
+        "safe_guard_enabled": bool(manager.enabled),
+        "channel": channel,
+        "payload": p,
+    }

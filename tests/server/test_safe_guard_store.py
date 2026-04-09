@@ -31,12 +31,12 @@ def test_sqlite_store_event_roundtrip_and_feedback(tmp_path):
     decision = TierDecision(
         tier=SafeGuardTier.TIER2,
         reason="borderline_margin_or_policy_promoted",
-        actions={"email": True, "sms": True, "phone": False},
+        actions={"telegram": True},
         recommendation="Review the live stream or recent clip.",
     )
-    store.upsert_event(event, decision, NotificationPreferences(phone_enabled=False, sms_enabled=True, email_enabled=True))
+    store.upsert_event(event, decision, NotificationPreferences(telegram_enabled=True))
     assert store.should_enqueue("evt-123", cooldown_seconds=30, resident_id=1) is True
-    store.record_delivery("evt-123", DeliveryResult(channel="email", attempted=True, status="sent", detail=""))
+    store.record_delivery("evt-123", DeliveryResult(channel="telegram", attempted=True, status="sent", detail=""))
     assert store.should_enqueue("evt-123", cooldown_seconds=30, resident_id=1) is False
     store.mark_feedback("evt-123", resident_id=1, reply_code="2", mapped_status="confirmed_fall")
     assert store.get_most_recent_unresolved_event_id(1) == "evt-123"

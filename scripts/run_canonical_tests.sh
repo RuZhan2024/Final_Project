@@ -18,13 +18,16 @@ case "$mode" in
   torch-free)
     pytest -q \
       tests/test_import_smoke.py \
-      tests/test_server_integration_contract.py \
       tests/test_audit_api_contract.py \
       tests/test_audit_api_v1_parity.py \
       tests/server/test_notification_manager.py \
       tests/server/test_safe_guard_classifier.py \
       tests/server/test_safe_guard_store.py \
       tests/server/test_ai_report.py
+    ;;
+  contract)
+    pytest -q \
+      tests/test_server_integration_contract.py
     ;;
   monitor)
     pytest -q \
@@ -33,10 +36,11 @@ case "$mode" in
     ;;
   all)
     "$0" torch-free
+    "$0" contract
     "$0" monitor
     ;;
   *)
-    echo "usage: $0 [torch-free|monitor|all]" >&2
+    echo "usage: $0 [torch-free|contract|monitor|all]" >&2
     exit 2
     ;;
 esac
