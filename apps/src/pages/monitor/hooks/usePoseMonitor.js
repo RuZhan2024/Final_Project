@@ -8,7 +8,6 @@ import {
   fetchReplayClipBlob,
   resetMonitorSession,
   triggerTestFall,
-  triggerTestNotification,
   uploadSkeletonClip,
 } from "../../../features/monitor/api";
 import {
@@ -1213,7 +1212,6 @@ export function usePoseMonitor({
   }, [makeSessionId, resetFrontendSessionState, resetSession]);
 
   const testFall = useCallback(async () => {
-    // 1) Try backend helper endpoint (if present)
     try {
       const data = await triggerTestFall(
         apiBase,
@@ -1226,15 +1224,6 @@ export function usePoseMonitor({
     } catch {
       // ignore
     }
-
-    // 2) Fallback: record a test notification
-    try {
-      await triggerTestNotification(apiBase, "[UI] Test Fall button pressed");
-    } catch {
-      // ignore
-    }
-
-    // 3) UI-only marker
     addTimelineMarker("fall", { force: true });
   }, [addTimelineMarker, apiBase, settingsPayload]);
 

@@ -80,19 +80,20 @@ evidence:
       - "Does not support a universal robustness claim."
 
   - id: "E5"
-    title: "Current online review runtime profile is LE2i TCN OP-2 with shared temporal policy"
+    title: "Current live monitor demo profile is CAUCAFall TCN OP-2"
     status: "live"
     scope: "Current review/deploy configuration"
     supports_claims: []
     artifacts:
-      - "configs/ops/tcn_le2i.yaml"
+      - "configs/ops/tcn_caucafall.yaml"
       - "README.md"
+      - "docs/project_targets/THESIS_EVIDENCE_MAP.md"
     code_refs:
-      - "configs/ops/tcn_le2i.yaml"
+      - "configs/ops/tcn_caucafall.yaml"
     reproduce:
-      command: "sed -n '1,220p' configs/ops/tcn_le2i.yaml"
+      command: "sed -n '1,220p' configs/ops/tcn_caucafall.yaml"
       type: "shell"
-    shows: "Active deployable operating-point parameters for the current review build."
+    shows: "Active deployable operating-point parameters for the current live demo and review build."
     limits:
       - "This is configuration evidence, not a benchmark result."
 
@@ -162,7 +163,7 @@ evidence:
       - "C5"
     artifacts:
       - "docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md"
-      - "docs/project_targets/OBJECTIVES_EVIDENCE_OUTCOMES.md"
+      - "docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md"
       - "configs/ops/tcn_caucafall.yaml"
       - "configs/ops/gcn_caucafall.yaml"
       - "artifacts/figures/report/alert_policy_flow.svg"

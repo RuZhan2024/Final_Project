@@ -80,6 +80,18 @@ The server is **stateless per request**, but keeps a **session state** keyed by
 The repository now includes a threshold-aware "Safe Guard" notification layer
 under `server/notifications/`.
 
+Current implemented delivery path:
+
+- Telegram caregiver alert
+- optional AI-generated text summary inside the Telegram message
+- local SQLite audit trail for notification attempts and feedback
+
+Reserved / future-work channels:
+
+- SMS
+- phone-call escalation
+- email escalation
+
 Design goals:
 
 - classify persisted alert events into Tier 1 / Tier 2 / Tier 3
@@ -108,13 +120,8 @@ HIGH_CONF_MARGIN=0.08
 LOW_UNCERTAINTY_THRESHOLD=0.05
 HIGH_UNCERTAINTY_THRESHOLD=0.15
 ALERT_COOLDOWN_SECONDS=60
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_FROM_PHONE=
-CAREGIVER_PHONE=
-RESEND_API_KEY=
-EMAIL_FROM=
-CAREGIVER_EMAIL=
+TELEGRAM_BOT_TOKEN=
+CAREGIVER_TELEGRAM_CHAT_ID=
 AI_REPORTS_ENABLED=1
 AI_PROVIDER=gemini
 GEMINI_API_KEY=
@@ -124,23 +131,23 @@ APP_BASE_URL=http://127.0.0.1:3000
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000
 ```
 
-If Twilio / Resend credentials are not configured, Safe Guard still runs in
+If Telegram credentials are not configured, Safe Guard still runs in
 audit mode and records skipped delivery attempts in SQLite.
 
 For Render-style cloud deployment, prefer:
 
 - `DB_BACKEND=sqlite`
 - `SQLITE_PATH` on a persistent disk mount
-- caregiver contact details stored in the app database
-- Resend and AI provider keys stored as Render environment variables
+- caregiver Telegram Chat ID stored in the app database
+- Telegram bot token and AI provider keys stored as Render environment variables
 - Render persistent disks require a paid web-service plan
 
-Email behavior:
+Telegram behavior:
 
-- a detailed caregiver email is attempted for each fall-like event
-- the email includes an AI-generated event analysis section when the selected AI provider key is configured
-- if AI generation fails or is disabled, the email falls back to a deterministic summary
-- SMS and phone-call escalation remain optional and are controlled by settings
+- a caregiver Telegram alert is attempted for each fall-like event
+- the message includes an AI-generated event analysis section when the selected AI provider key is configured
+- if AI generation fails or is disabled, the message falls back to a deterministic summary
+- SMS, phone, and email escalation remain future-work channels rather than the current implemented path
 
 ### Runtime integration
 
@@ -193,25 +200,10 @@ and writes results to:
 server/safe_guard_demo.sqlite3
 ```
 
-### Twilio feedback webhook
+### Legacy webhook surface
 
-Safe Guard exposes:
-
-```text
-POST /twilio/webhook
-```
-
-Supported reply codes:
-
-- `1` -> mark event as false alarm / false positive
-- `2` -> mark event as confirmed fall
-- `3` -> mark event as resolved / assistance provided
-
-Correlation behavior:
-
-- prefer explicit `event_id`
-- otherwise try to parse `Ref:<event_id>` from SMS body
-- otherwise fall back to the most recent unresolved local Safe Guard audit event
+`POST /twilio/webhook` still exists as legacy scaffolding, but it is not part
+of the current defended Telegram-first delivery path.
 
 ## Safe Guard acceptance checklist
 
@@ -266,11 +258,9 @@ Verify key fields exist and are populated:
 - `margin`
 - `uncertainty`
 - `alert_tier`
-- `phone_status`
-- `sms_status`
-- `email_status`
+- `telegram_status`
 
-If Twilio / Resend are not configured, delivery status should show skipped or failed audit entries without crashing the server.
+If Telegram is not configured, delivery status should show skipped or failed audit entries without crashing the server.
 
 ### 4. Runtime monitor integration
 
@@ -305,7 +295,7 @@ Trigger repeated alerts for the same incident.
 
 Expected:
 
-- duplicate phone / SMS / email sends are suppressed
+- duplicate Telegram sends are suppressed
 - the same `event_id` should not be re-delivered on the same channel
 - cooldown behavior should suppress repeated alert delivery inside the configured window
 
@@ -319,48 +309,27 @@ Validate three cases:
 
 Expected:
 
-- Tier 1 -> email always, phone if enabled, SMS if enabled
-- Tier 2 -> email always, no phone, SMS if enabled
+- Tier 1 -> Telegram alert
+- Tier 2 -> Telegram alert if currently configured by policy
 - Tier 3 -> no caregiver notification, audit only
 
 ### 8. Real channel integration
 
 After configuring:
 
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_FROM_PHONE`
-- `CAREGIVER_PHONE`
-- `RESEND_API_KEY`
-- `EMAIL_FROM`
-- `CAREGIVER_EMAIL`
+- `TELEGRAM_BOT_TOKEN`
+- caregiver `telegram_chat_id`
 
 Verify:
 
-- phone call content is short and non-technical
-- SMS is brief and includes event context
-- email includes the full event detail payload
-- failure in one channel does not block the others
+- Telegram message is short, readable, and includes event context
+- AI summary appears when configured
+- failure in the Telegram channel does not block inference or event persistence
 
-### 9. Webhook feedback
+### 9. Legacy webhook feedback
 
-Test:
-
-```text
-POST /twilio/webhook
-```
-
-Reply mapping:
-
-- `1` -> false alarm
-- `2` -> confirmed fall
-- `3` -> resolved / assistance provided
-
-Expected:
-
-- canonical MySQL event status updates
-- SQLite feedback row is recorded
-- resolved events are marked no longer unresolved in SQLite
+The Twilio webhook remains present only as legacy surface and should not be
+treated as part of the current release path.
 
 ### 10. Regression check
 
