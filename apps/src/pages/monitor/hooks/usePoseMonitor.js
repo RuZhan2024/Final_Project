@@ -90,6 +90,7 @@ export function usePoseMonitor({
   mcCfg,
   activeDatasetCode,
   chosenSpec,
+  replayPersistEvents = false,
   onAutoStop,
 }) {
   // Refs for camera + mediapipe
@@ -641,7 +642,7 @@ export function usePoseMonitor({
       streamFps: streamFps || fpsEstimateRef.current || null,
       mcEnabled,
       mcCfg,
-      persist: monitoringOnRef.current || storeEventClips,
+      persist: (sourceMode === "video" ? replayPersistEvents : monitoringOnRef.current) || storeEventClips,
       endTs: windowEndTs,
     });
 
@@ -660,6 +661,7 @@ export function usePoseMonitor({
     settingsPayload,
     streamFps,
     targetFps,
+    replayPersistEvents,
   ]);
 
   const queueReplayWindows = useCallback(() => {
@@ -1217,15 +1219,18 @@ export function usePoseMonitor({
         apiBase,
         prettyModelTag(settingsPayload?.system?.active_model_code)
       );
-      if (data || data?.ok) {
+      if (data?.ok) {
         addTimelineMarker("fall", { force: true });
-        return;
+        setPredictError("");
+        return true;
       }
-    } catch {
-      // ignore
+      setPredictError("Test fall request was accepted locally but backend did not confirm success.");
+      return false;
+    } catch (err) {
+      setPredictError(String(err?.message || err || "Test fall request failed"));
+      return false;
     }
-    addTimelineMarker("fall", { force: true });
-  }, [addTimelineMarker, apiBase, settingsPayload]);
+  }, [addTimelineMarker, apiBase, settingsPayload, setPredictError]);
 
   const currentPrediction = useMemo(() => labelForTriage(triageState), [triageState]);
   const safePrediction = useMemo(() => {

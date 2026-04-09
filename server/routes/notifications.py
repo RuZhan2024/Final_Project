@@ -19,20 +19,23 @@ def list_notifications(
     resident_id: int = Query(1, description="Resident ID"),
     limit: int = Query(50, ge=1, le=500),
 ) -> Dict[str, Any]:
-    with get_conn_optional() as conn:
-        if conn is None:
-            return {"resident_id": resident_id, "rows": [], "db_available": False}
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, resident_id, ts, channel, status, message, event_id "
-                    "FROM notifications_log WHERE resident_id=%s ORDER BY id DESC LIMIT %s",
-                    (int(resident_id), int(limit)),
-                )
-                rows = cur.fetchall() or []
-            return {"resident_id": int(resident_id), "rows": rows, "db_available": True}
-        except Exception as e:
-            return {"resident_id": int(resident_id), "rows": [], "db_available": False, "error": str(e)}
+    manager = get_notification_manager()
+    try:
+        rows = manager.store.list_recent_events(int(resident_id), int(limit))
+        return {
+            "resident_id": int(resident_id),
+            "rows": rows,
+            "db_available": True,
+            "source": "safe_guard_sqlite",
+        }
+    except Exception as e:
+        return {
+            "resident_id": int(resident_id),
+            "rows": [],
+            "db_available": False,
+            "source": "safe_guard_sqlite",
+            "error": str(e),
+        }
 
 
 @router.post("/api/notifications/test")
@@ -46,7 +49,6 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
     manager = get_notification_manager()
     caregiver_name = ""
     caregiver_chat_id = ""
-    row_id = None
 
     with get_conn_optional() as conn:
         if conn is not None:
@@ -66,18 +68,7 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
                 except Exception:
                     caregiver_name = ""
                     caregiver_chat_id = ""
-
-                try:
-                    cur.execute(
-                        "INSERT INTO notifications_log (resident_id, channel, status, message) VALUES (%s,%s,%s,%s)",
-                        (resident_id, channel, "queued", message),
-                    )
-                    row_id = cur.lastrowid
-                    conn.commit()
-                except Exception:
-                    row_id = None
-
-    manager.handle_event(
+    dispatch = manager.handle_event(
         SafeGuardEvent(
             event_id=f"manual-test-{int(datetime.now(timezone.utc).timestamp())}",
             resident_id=resident_id,
@@ -104,10 +95,19 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
     )
     return {
         "ok": True,
-        "accepted": True,
-        "persisted": bool(row_id),
-        "id": row_id,
+        "accepted": bool(dispatch.enqueued),
+        "persisted": False,
+        "id": None,
         "safe_guard_enabled": bool(manager.enabled),
         "channel": channel,
+        "notification_dispatch": {
+            "enabled": bool(dispatch.enabled),
+            "tier": dispatch.tier,
+            "reason": dispatch.reason,
+            "actions": dispatch.actions,
+            "enqueued": bool(dispatch.enqueued),
+            "state": dispatch.state,
+            "audit_backend": dispatch.audit_backend,
+        },
         "payload": p,
     }

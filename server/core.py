@@ -277,7 +277,7 @@ def _ensure_system_settings_schema(conn) -> None:
             "fall_threshold": "DECIMAL(6,4) NULL",
             "store_event_clips": "TINYINT(1) NOT NULL DEFAULT 0",
             "anonymize_skeleton_data": "TINYINT(1) NOT NULL DEFAULT 1",
-            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'le2i'",
+            "active_dataset_code": "VARCHAR(16) NOT NULL DEFAULT 'caucafall'",
             "active_op_code": "VARCHAR(8) NOT NULL DEFAULT 'OP-2'",
             "mc_enabled": "TINYINT(1) NOT NULL DEFAULT 0",
             "mc_M": "INT NOT NULL DEFAULT 10",
@@ -750,7 +750,7 @@ _DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
     "store_anonymized_data": False,
     "active_model_code": "TCN",
     "active_operating_point": None,
-    "active_dataset_code": "le2i",
+    "active_dataset_code": "caucafall",
     "active_op_code": "OP-2",
     "mc_enabled": False,
     "mc_M": 10,
@@ -845,7 +845,7 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         system["active_dataset_code"] = normalize_dataset_code(payload.active_dataset_code, default="caucafall")
 
     if payload.active_op_code is not None:
-        system["active_op_code"] = str(payload.active_op_code).upper()
+        system["active_op_code"] = _norm_op_code(payload.active_op_code)
 
     if payload.mc_M is not None:
         try:

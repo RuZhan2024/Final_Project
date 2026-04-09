@@ -26,13 +26,13 @@ function normaliseUiParams(settingsPayload) {
   };
 }
 
-async function loadLegacyOperatingPoint(apiBase, modelCode, activeOperatingPointId) {
+async function loadLegacyOperatingPoint(apiBase, modelCode, datasetCode, activeOperatingPointId) {
   const codeRaw = String(modelCode || "TCN").toUpperCase();
   const tryCodes = codeRaw === "GCN" ? ["GCN"] : ["TCN"];
 
   for (const code of tryCodes) {
     try {
-      const data = await fetchOperatingPoints(apiBase, code);
+      const data = await fetchOperatingPoints(apiBase, code, datasetCode);
       const ops = Array.isArray(data?.operating_points)
         ? data.operating_points
         : Array.isArray(data)
@@ -96,9 +96,10 @@ export function useOperatingPointParams({ apiBase, settingsPayload, modelCode })
 
     const sys = settingsPayload?.system || {};
     const opId = sys?.active_operating_point;
+    const datasetCode = String(sys?.active_dataset_code || "caucafall").toLowerCase();
 
     (async () => {
-      const r = await loadLegacyOperatingPoint(apiBase, modelCode, opId);
+      const r = await loadLegacyOperatingPoint(apiBase, modelCode, datasetCode, opId);
       if (!cancelled) {
         setLegacy(r || { tau_low: null, tau_high: null, op_code: null });
       }

@@ -10,7 +10,7 @@ from typing import Optional
 from .classifier import EventClassifier
 from .ai_report import generate_event_ai_report
 from .config import NotificationConfig, load_notification_config
-from .models import NotificationPreferences, SafeGuardEvent, TierDecision
+from .models import DispatchAcceptance, NotificationPreferences, SafeGuardEvent, TierDecision
 from .queue_worker import DispatchJob, NotificationQueueWorker
 from .sqlite_store import SQLiteNotificationStore
 from .telegram_client import TelegramClient
@@ -44,21 +44,42 @@ class NotificationManager:
     def enabled(self) -> bool:
         return bool(self._cfg.safe_guard_enabled)
 
-    def handle_event(self, event: SafeGuardEvent, prefs: NotificationPreferences) -> None:
+    def handle_event(self, event: SafeGuardEvent, prefs: NotificationPreferences) -> DispatchAcceptance:
         """Classify and enqueue notification work without blocking inference."""
         if not self.enabled:
-            return
+            return DispatchAcceptance(
+                enabled=False,
+                tier="disabled",
+                reason="safe_guard_disabled",
+                actions={},
+                enqueued=False,
+                state="disabled",
+            )
 
         decision = self._classifier.classify(event, prefs)
         self._store.upsert_event(event, decision, prefs)
 
         if decision.tier.value == "tier3_silent":
             logger.info("safe_guard silent event event_id=%s", event.event_id)
-            return
+            return DispatchAcceptance(
+                enabled=True,
+                tier=decision.tier.value,
+                reason=decision.reason,
+                actions=dict(decision.actions),
+                enqueued=False,
+                state="silent",
+            )
 
         if not self._store.should_enqueue(event.event_id, self._cfg.alert_cooldown_seconds, event.resident_id):
             logger.info("safe_guard dedup suppressed event_id=%s", event.event_id)
-            return
+            return DispatchAcceptance(
+                enabled=True,
+                tier=decision.tier.value,
+                reason=decision.reason,
+                actions=dict(decision.actions),
+                enqueued=False,
+                state="dedup_suppressed",
+            )
 
         accepted = self._worker.submit(
             DispatchJob(
@@ -68,6 +89,14 @@ class NotificationManager:
         )
         if not accepted:
             logger.warning("safe_guard enqueue failed event_id=%s", event.event_id)
+        return DispatchAcceptance(
+            enabled=True,
+            tier=decision.tier.value,
+            reason=decision.reason,
+            actions=dict(decision.actions),
+            enqueued=bool(accepted),
+            state="enqueued" if accepted else "queue_full",
+        )
 
     def _dispatch(self, event: SafeGuardEvent, decision: TierDecision, prefs: NotificationPreferences) -> None:
         results = []

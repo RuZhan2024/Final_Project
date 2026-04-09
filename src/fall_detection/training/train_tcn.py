@@ -25,7 +25,7 @@ def _bootstrap_project_root():
     import sys
     from pathlib import Path
     here = Path(__file__).resolve()
-    root = here.parents[1]  # repo root
+    root = here.parents[2]  # source root containing the fall_detection package
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
@@ -53,7 +53,6 @@ from fall_detection.core.losses import FocalLossWithLogits
 from fall_detection.core.metrics import ap_auc, best_threshold_by_f1
 from fall_detection.core.models import TCNConfig, build_model, pick_device
 from fall_detection.core.ema import EMA
-from fall_detection.pose.preprocess_config import normalize_pose_preprocess_cfg
 
 
 # -------------------------
@@ -142,7 +141,6 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
 def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
     return {
         "fps_default": float(fps_default),
-        "pose_preprocess": normalize_pose_preprocess_cfg(None),
     }
 
 

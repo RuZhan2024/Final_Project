@@ -118,6 +118,7 @@ export function MonitoringProvider({ children }) {
       if (togglingRef.current) return monitoringOnRef.current;
 
       togglingRef.current = true;
+      const previousRuntimeOn = monitoringOnRef.current;
       try {
         const nextOn = Boolean(next);
 
@@ -146,6 +147,14 @@ export function MonitoringProvider({ children }) {
 
         return desired;
       } catch (e) {
+        const ctrl = controllerRef.current;
+        if (previousRuntimeOn) {
+          const restarted = await safeStart(ctrl);
+          setRuntimeOn(Boolean(restarted));
+        } else {
+          safeStop(ctrl);
+          setRuntimeOn(false);
+        }
         setError(String(e?.message || e));
         return false;
       } finally {

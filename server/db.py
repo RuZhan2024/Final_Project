@@ -164,7 +164,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             store_event_clips INTEGER NOT NULL DEFAULT 0,
             anonymize_skeleton_data INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            active_dataset_code TEXT NOT NULL DEFAULT 'le2i',
+            active_dataset_code TEXT NOT NULL DEFAULT 'caucafall',
             active_op_code TEXT NOT NULL DEFAULT 'OP-2',
             mc_enabled INTEGER NOT NULL DEFAULT 0,
             mc_M INTEGER NOT NULL DEFAULT 10,

@@ -51,12 +51,12 @@ function Monitor({ isActive = true } = {}) {
 
   const activeDatasetCode = useMemo(() => {
     const code = settingsPayload?.system?.active_dataset_code;
-    return code ? String(code) : "le2i";
+    return code ? String(code) : "caucafall";
   }, [settingsPayload]);
 
   const mcEnabled = useMemo(() => {
     const v = settingsPayload?.system?.mc_enabled;
-    return readBool(v, true);
+    return readBool(v, false);
   }, [settingsPayload]);
 
   const fallThreshold = useMemo(() => {
@@ -131,6 +131,7 @@ function Monitor({ isActive = true } = {}) {
   // Monitor page no longer polls /api/summary (dashboard owns summary polling).
   const summaryErr = "";
   const [showLivePreview, setShowLivePreview] = useState(false);
+  const [replayPersistEvents, setReplayPersistEvents] = useState(false);
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {
@@ -175,6 +176,7 @@ function Monitor({ isActive = true } = {}) {
     mcCfg,
     activeDatasetCode: resolvedDatasetCode,
     chosenSpec,
+    replayPersistEvents,
     onAutoStop: () => setMonitoringOn(false),
   });
 
@@ -273,6 +275,8 @@ function Monitor({ isActive = true } = {}) {
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}
             onSeekReplay={seekReplay}
+            replayPersistEvents={replayPersistEvents}
+            onToggleReplayPersist={setReplayPersistEvents}
           />
 
           <TimelineCard markers={markers} statusText={timelineStatusText} />

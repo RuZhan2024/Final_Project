@@ -57,8 +57,11 @@ export async function fetchReplayClips(apiBase) {
   };
 }
 
-export async function fetchOperatingPoints(apiBase, modelCode) {
-  return await apiRequest(apiBase, `/api/operating_points?model_code=${encodeURIComponent(modelCode)}`);
+export async function fetchOperatingPoints(apiBase, modelCode, datasetCode = "caucafall") {
+  return await apiRequest(
+    apiBase,
+    `/api/operating_points?model_code=${encodeURIComponent(modelCode)}&dataset_code=${encodeURIComponent(datasetCode)}`
+  );
 }
 
 export async function fetchReplayClipBlob(clipUrl, options = {}) {

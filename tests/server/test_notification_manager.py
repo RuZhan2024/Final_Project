@@ -91,3 +91,25 @@ def test_notification_manager_dispatch_prefers_caregiver_chat_id(monkeypatch):
     assert sent["chat_id"] == "987654321"
     assert "Safe Guard alert" in (sent["text"] or "")
     assert "Ref: evt-123" in (sent["text"] or "")
+
+
+def test_notification_manager_handle_event_returns_dispatch_acceptance(monkeypatch):
+    manager = NotificationManager(config=_cfg())
+    monkeypatch.setattr(manager._worker, "submit", lambda job: True)
+    monkeypatch.setattr(manager._store, "should_enqueue", lambda *args, **kwargs: True)
+
+    dispatch = manager.handle_event(
+        _event(),
+        NotificationPreferences(
+            telegram_enabled=True,
+            caregiver_name="Alice",
+            caregiver_telegram_chat_id="987654321",
+        ),
+    )
+
+    assert dispatch.enabled is True
+    assert dispatch.tier.startswith("tier")
+    assert dispatch.actions.get("telegram") is True
+    assert dispatch.enqueued is True
+    assert dispatch.state == "enqueued"
+    assert dispatch.audit_backend == "sqlite"
