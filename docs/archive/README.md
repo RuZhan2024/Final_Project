@@ -6,6 +6,10 @@ This directory stores historical documentation that is no longer the primary sou
 
 - `audit_completed/`
   - legacy audit and planning documents retained for traceability.
+- `reports/`
+  - archived report plans and retired notes that are no longer part of the active report surface.
+- `training/`
+  - older training-focused notes and upgrade task documents kept for reference only.
 
 ## Usage Rule
 

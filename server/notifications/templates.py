@@ -23,6 +23,6 @@ def build_telegram_message(event: SafeGuardEvent, decision: TierDecision, analys
             f"Recommendation: {decision.recommendation}",
             f"Ref: {event.event_id}",
             "",
-            analysis_report.strip() if analysis_report.strip() else "AI analysis unavailable.",
+            analysis_report.strip() if analysis_report.strip() else "Generated summary unavailable.",
         ]
     ).strip()

@@ -1,6 +1,6 @@
 # Reports Index
 
-This folder contains project reports, checklists, runbooks, plans, and notes.
+This folder contains active project reports, checklists, runbooks, and current notes.
 
 ## Audit
 - [GLOBAL_AUDIT_REPORT.md](./audit/GLOBAL_AUDIT_REPORT.md)
@@ -23,10 +23,9 @@ This folder contains project reports, checklists, runbooks, plans, and notes.
 - [DEMO_RUNBOOK.md](./runbooks/DEMO_RUNBOOK.md)
 - [RELEASE_RUNBOOK.md](./runbooks/RELEASE_RUNBOOK.md)
 
-## Plans
-- [PATCH_PLAN.md](./plans/PATCH_PLAN.md)
-- [THIS_WEEK_TASKLIST.md](./plans/THIS_WEEK_TASKLIST.md)
-
 ## Notes
 - [Compute_Threshold.md](./notes/Compute_Threshold.md)
-- [report_note.md](./notes/report_note.md)
+
+Archived report plans and retired notes now live under:
+- `docs/archive/reports/plans/`
+- `docs/archive/reports/notes/`

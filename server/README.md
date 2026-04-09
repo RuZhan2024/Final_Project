@@ -83,7 +83,7 @@ under `server/notifications/`.
 Current implemented delivery path:
 
 - Telegram caregiver alert
-- optional AI-generated text summary inside the Telegram message
+- optional generated text summary inside the Telegram message
 - local SQLite audit trail for notification attempts and feedback
 
 Reserved / future-work channels:
@@ -139,14 +139,14 @@ For Render-style cloud deployment, prefer:
 - `DB_BACKEND=sqlite`
 - `SQLITE_PATH` on a persistent disk mount
 - caregiver Telegram Chat ID stored in the app database
-- Telegram bot token and AI provider keys stored as Render environment variables
+- Telegram bot token and summary-provider keys stored as Render environment variables
 - Render persistent disks require a paid web-service plan
 
 Telegram behavior:
 
 - a caregiver Telegram alert is attempted for each fall-like event
-- the message includes an AI-generated event analysis section when the selected AI provider key is configured
-- if AI generation fails or is disabled, the message falls back to a deterministic summary
+- the message includes a generated event analysis section when the selected summary provider key is configured
+- if summary generation fails or is disabled, the message falls back to a deterministic summary
 - SMS, phone, and email escalation remain future-work channels rather than the current implemented path
 
 ### Runtime integration
@@ -323,7 +323,7 @@ After configuring:
 Verify:
 
 - Telegram message is short, readable, and includes event context
-- AI summary appears when configured
+- generated summary appears when configured
 - failure in the Telegram channel does not block inference or event persistence
 
 ### 9. Legacy webhook feedback

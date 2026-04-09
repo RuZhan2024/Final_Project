@@ -247,7 +247,7 @@ What I verified:
 
 - The implementation has clearly moved to Telegram as the real notification channel.
 - Settings UI now centers Telegram Chat ID rather than the older multi-channel behavior.
-- `server/README.md` and the root `README.md` have now been updated to describe Telegram + AI summary as the current path.
+- `server/README.md` and the root `README.md` have now been updated to describe Telegram + generated summary as the current path.
 - Legacy Twilio/email client modules and webhook surface still exist as reserved integration scaffolding.
 
 Impact:
@@ -508,7 +508,7 @@ Relevant files:
 
 What I verified:
 
-- `NotificationManager` now dispatches the real path through Telegram and AI summary generation.
+- `NotificationManager` now dispatches the real path through Telegram and generated-summary delivery.
 - The notification package still contains email/Twilio clients and older multi-channel abstractions.
 - That is acceptable as future-work scaffolding, but it means the package surface is broader than the currently defended implementation.
 
@@ -776,7 +776,7 @@ What still needs explicit closure:
 
 - audit and documentation should explicitly state which env files must never be committed
 - generated report/build outputs should be checked to ensure they do not embed private local paths or tokens
-- notification documentation should define the minimum private env surface for Telegram and AI integration
+- notification documentation should define the minimum private env surface for Telegram and generated-summary integration
 
 ### Privacy
 

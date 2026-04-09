@@ -235,7 +235,7 @@ Recommended cloud deployment shape:
 - backend on Render web service
 - app data on SQLite with a persistent disk
 - Telegram caregiver notification
-- AI message analysis via Gemini API
+- optional generated event summary via Gemini API
 
 Suggested backend environment variables:
 
@@ -260,7 +260,7 @@ CORS_ALLOWED_ORIGINS=https://your-frontend-domain.onrender.com
 Operational note:
 
 - caregiver `telegram_chat_id` can come from the app database or the env fallback
-- Telegram and Gemini credentials should be stored only in Render environment variables
+- Telegram and summary-provider credentials should be stored only in Render environment variables
 - SMS / phone / email escalation are future-work channels, not the current implemented delivery path
 
 Suggested Render blueprint:

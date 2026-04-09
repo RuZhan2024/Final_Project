@@ -253,7 +253,7 @@ export default function SettingsPage() {
             <div className={styles.inlineInfo}>
               <div className={styles.inlineInfoTitle}>Notification Policy</div>
               <div>Telegram is the active notification channel for the current build.</div>
-              <div>Each alert includes a concise AI-generated caregiver summary when available.</div>
+              <div>Each alert includes a concise generated caregiver summary when available.</div>
               <div className={styles.subtleMeta}>
                 Caregiver status:
                 {` Name ${caregiverNameReady ? "ready" : "missing"}, Telegram Chat ID ${caregiverTelegramReady ? "ready" : "missing"}.`}
