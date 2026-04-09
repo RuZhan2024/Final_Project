@@ -166,11 +166,11 @@ This table is the working control sheet for the report narrative. A major claim 
 | --- | --- | --- | --- | --- |
 | Under the frozen primary-dataset protocol, the final CAUCAFall TCN candidate trends stronger than the matched CAUCAFall GCN candidate, but the comparative conclusion should remain statistically cautious at the current seed budget. | RQ1 | Results 9.1, Discussion 10 | [FINAL_CANDIDATES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/FINAL_CANDIDATES.md), [STABILITY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/STABILITY_REPORT.md), [stability_summary.csv](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/stability_summary.csv), [SIGNIFICANCE_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/SIGNIFICANCE_REPORT.md), [significance_summary.json](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/significance_summary.json) | Main comparison table; stability figure if needed |
 | Cross-dataset transfer is asymmetric and should be interpreted as a limitation boundary rather than evidence of universal robustness. | RQ1, RQ3 | Results 9.2, Discussion 10, Limitations 11 | [CROSS_DATASET_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/CROSS_DATASET_REPORT.md), [cross_dataset_summary.csv](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/cross_dataset_summary.csv), [cross_dataset_transfer_bars.png](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png) | Cross-dataset transfer figure |
-| Validation-side operating-point calibration is a substantive part of the system because alert behaviour depends on fitted operating points rather than raw single-window probabilities alone. | RQ2 | Sections 7 and 9.1, Discussion 10 | [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/OPS_POLICY_REPORT.md), [Compute_Threshold.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/Compute_Threshold.md), `src/fall_detection/core/calibration.py`, `src/fall_detection/evaluation/fit_ops.py`, [tcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.yaml), [gcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/gcn_caucafall.yaml) | OP/policy summary table |
+| Validation-side operating-point calibration is a substantive part of the system because alert behaviour depends on fitted operating points rather than raw single-window probabilities alone. | RQ2 | Sections 7 and 9.1, Discussion 10 | [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/OPS_POLICY_REPORT.md), [Compute_Threshold.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/Compute_Threshold.md), `src/fall_detection/core/calibration.py`, `src/fall_detection/evaluation/fit_ops.py`, [tcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.yaml), [gcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/gcn_caucafall.yaml) | OP/policy summary table |
 | The deployable alert path is grounded in the CAUCAFall TCN OP-2 runtime configuration rather than an arbitrary or undocumented threshold profile. | RQ2, RQ3 | Sections 7, 8, and 9.3 | [tcn_caucafall.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/configs/ops/tcn_caucafall.yaml), [DEPLOYMENT_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/DEPLOYMENT_LOCK.md), [README.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/README.md) | Deployment configuration table |
 | The replay/deployment path provides valid system evidence, but tuned replay behaviour must be framed as deployment/demo calibration rather than unseen-test model generalisation. | RQ3 | Sections 5, 9.3, and 11 | [REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md), [DEPLOYMENT_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/DEPLOYMENT_LOCK.md), [REPLAY_LIVE_ACCEPTANCE_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md), [deployment_lock_validation.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/deployment_lock_validation.md) | Deployment validation table |
 | The system has a real deployment path and demonstrable software artifact, but field/realtime evidence remains bounded and should not be overstated. | RQ3 | Results 9.3, Limitations 11 | [THESIS_EVIDENCE_MAP.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/THESIS_EVIDENCE_MAP.md), [DEPLOYMENT_FIELD_VALIDATION.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/DEPLOYMENT_FIELD_VALIDATION.md), [FIELD_VALIDATION_MINIMUM_PACK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/FIELD_VALIDATION_MINIMUM_PACK.md), [deployment_field_validation_summary.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/deployment_field_validation_summary.md) | Field/deployment evidence summary table |
-| Runtime latency and path-specific pipeline behaviour matter to practical alerting performance and belong in the system discussion, not the pure model-comparison claim. | RQ3 | Results 9.3, Discussion 10 | [LATENCY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/LATENCY_REPORT.md), runtime logs and deployment diagnostics referenced from [REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md), [READINESS_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/readiness/READINESS_REPORT.md) | Latency/runtime table or figure |
+| Runtime latency and path-specific pipeline behaviour matter to practical alerting performance and belong in the system discussion, not the pure model-comparison claim. | RQ3 | Results 9.3, Discussion 10 | [LATENCY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/LATENCY_REPORT.md), runtime logs and deployment diagnostics referenced from [REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md), [READINESS_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/readiness/READINESS_REPORT.md) | Latency/runtime table or figure |
 
 Rule:
 - no major claim may appear in the report unless it is represented in this mapping table and linked to a tracked evidence artifact
@@ -190,7 +190,7 @@ Tasks:
 - draft 3 to 4 contributions only
 
 Evidence inputs:
-- [OBJECTIVES_EVIDENCE_OUTCOMES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/OBJECTIVES_EVIDENCE_OUTCOMES.md)
+- [OBJECTIVES_EVIDENCE_OUTCOMES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md)
 - [CLAIM_TABLE.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/CLAIM_TABLE.md)
 - [PROJECT_FINAL_YEAR_EXECUTION_PLAN.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/PROJECT_FINAL_YEAR_EXECUTION_PLAN.md)
 
@@ -281,7 +281,7 @@ Evidence inputs:
 - dataset docs and config files
 - [DEPLOYMENT_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/DEPLOYMENT_LOCK.md)
 - [LOCKED_PARAMS_RUNBOOK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/LOCKED_PARAMS_RUNBOOK.md)
-- [EXPERIMENT_RECORDING_PROTOCOL.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/EXPERIMENT_RECORDING_PROTOCOL.md)
+- [EXPERIMENT_RECORDING_PROTOCOL.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/EXPERIMENT_RECORDING_PROTOCOL.md)
 
 Open caution:
 - this section must prevent any impression that demo clip tuning equals independent test evaluation
@@ -320,7 +320,7 @@ Tasks:
 - explain why single-window probability is not the final alert decision
 
 Evidence inputs:
-- [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/OPS_POLICY_REPORT.md)
+- [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/OPS_POLICY_REPORT.md)
 - [Compute_Threshold.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/Compute_Threshold.md)
 - `src/fall_detection/core/calibration.py`
 - `src/fall_detection/evaluation/fit_ops.py`
@@ -372,8 +372,8 @@ Evidence inputs:
 - [CROSS_DATASET_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/CROSS_DATASET_REPORT.md)
 - [STABILITY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/STABILITY_REPORT.md)
 - [SIGNIFICANCE_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/SIGNIFICANCE_REPORT.md)
-- [LATENCY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/LATENCY_REPORT.md)
-- [PLOT_SELECTION_FOR_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/PLOT_SELECTION_FOR_REPORT.md)
+- [LATENCY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/LATENCY_REPORT.md)
+- [PLOT_SELECTION_FOR_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/archive/planning/PLOT_SELECTION_FOR_REPORT.md)
 - [PLOT_EVIDENCE_CHECKLIST.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/PLOT_EVIDENCE_CHECKLIST.md)
 
 Open caution:
@@ -404,7 +404,7 @@ Tasks:
 
 Evidence inputs:
 - results section outputs
-- [ROBUSTNESS_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/ROBUSTNESS_REPORT.md)
+- [ROBUSTNESS_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/ROBUSTNESS_REPORT.md)
 - [READINESS_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/readiness/READINESS_REPORT.md)
 
 Open caution:

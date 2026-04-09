@@ -221,9 +221,20 @@ Relevant artifacts:
 - `artifacts/online_ops_fit_20260315/caucafall_tcn_refit.json`
 - `artifacts/fall_test_eval_20260315_online_reverify_20260315/tcn_op2_pose_raw_frontend_emulation_final_k2_v2.json`
 
-The last artifact above is the final frontend-style replay validation for the 24 custom corridor/kitchen videos with:
+The older frontend-style replay artifact below should no longer be treated as the current reference for the 24 custom corridor/kitchen videos:
 
 - `caucafall + TCN + OP2`
 - video mode
 - `2` consecutive fall windows required in the frontend
-- result: `TP=12 TN=12 FP=0 FN=0`
+- historical result: `TP=12 TN=12 FP=0 FN=0`
+
+Current reference:
+
+- `configs/delivery/tcn_caucafall_r2_train_hneg_four_video.yaml`
+- `artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2_metrics.json`
+
+Current interpretation:
+
+- the four-folder custom set is now evaluated under the same canonical online profile used by the monitor
+- current unified-profile result is `TP=3 TN=10 FP=2 FN=9`
+- treat this as a bounded runtime-alignment check, not as a deployment success claim

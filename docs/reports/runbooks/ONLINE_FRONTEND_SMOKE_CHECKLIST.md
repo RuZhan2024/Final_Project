@@ -99,24 +99,30 @@ If you only need a minimal acceptance pass, use:
 
 ### `caucafall + TCN + OP2`
 
-This is the main delivery path.
+This is the main online path.
 
-Use the 24 custom corridor/kitchen videos and verify:
+Use the 24 custom corridor/kitchen videos only as a bounded supporting check and verify:
 
 - fall videos trigger correctly
 - ADL videos do not trigger
 - video mode still requires `2` consecutive fall windows
 
-Reference artifact:
+Historical frontend reference artifact:
 
 - `artifacts/fall_test_eval_20260315_online_reverify_20260315/tcn_op2_pose_raw_frontend_emulation_final_k2_v2.json`
 
-Expected summary:
+Current canonical replay-eval reference:
 
-- `TP=12`
-- `TN=12`
-- `FP=0`
-- `FN=0`
+- `artifacts/fall_test_eval_20260330/unified_tcn_caucafall_op2_metrics.json`
+
+Current unified-profile summary:
+
+- `TP=3`
+- `TN=10`
+- `FP=2`
+- `FN=9`
+
+Do not use this custom set as a hard pass/fail gate for the main deployment claim.
 
 ## If A Check Fails
 

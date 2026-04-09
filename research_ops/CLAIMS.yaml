@@ -101,7 +101,7 @@ claims:
         - "src/fall_detection/evaluation/fit_ops.py"
       citation_refs:
         - "docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md"
-        - "docs/project_targets/OBJECTIVES_EVIDENCE_OUTCOMES.md"
+        - "docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md"
     notes: "Supported as a bounded system-design and quantitative trade-off claim through the current CAUCAFall TCN operating-point table in the draft."
 
 status_values:

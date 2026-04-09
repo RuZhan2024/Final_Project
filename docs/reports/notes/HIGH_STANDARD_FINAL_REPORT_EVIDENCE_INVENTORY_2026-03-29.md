@@ -58,8 +58,8 @@ Use:
 - [deployment_lock_validation.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/deployment_lock_validation.md)
 - [REPLAY_LIVE_ACCEPTANCE_LOCK.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md)
 - [FOUR_VIDEO_DELIVERY_PROFILE.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md)
-- [mc_replay_matrix_20260401.csv](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/mc_replay_matrix_20260401.csv)
-- [mc_replay_matrix_20260401.json](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/mc_replay_matrix_20260401.json)
+- [mc_replay_matrix_20260401.csv](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/archive/replay_matrix_legacy_20260402/mc_replay_matrix_20260401.csv)
+- [mc_replay_matrix_20260401.json](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/archive/replay_matrix_legacy_20260402/mc_replay_matrix_20260401.json)
 - [REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/notes/REPORT_RELEVANT_CHANGE_SUMMARY_2026-03-28.md)
 
 Use:
@@ -136,14 +136,14 @@ These files are useful, but should not be treated as primary final-report eviden
 
 - [PAPER_CLAIMS_AND_LIMITATIONS_DRAFT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/PAPER_CLAIMS_AND_LIMITATIONS_DRAFT.md)
   - good wording source, not primary evidence
-- [OBJECTIVES_EVIDENCE_OUTCOMES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/OBJECTIVES_EVIDENCE_OUTCOMES.md)
+- [OBJECTIVES_EVIDENCE_OUTCOMES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md)
   - useful framing summary, not a metrics source
-- [PAPER_SECTION_HEADINGS.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/PAPER_SECTION_HEADINGS.md)
+- [PAPER_SECTION_HEADINGS.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/archive/planning/PAPER_SECTION_HEADINGS.md)
   - structure aid only
 
 ### 4.2 Do Not Cite Directly As Main Evidence Without Refresh
 
-- [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/OPS_POLICY_REPORT.md)
+- [OPS_POLICY_REPORT.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/supporting/OPS_POLICY_REPORT.md)
   - current file explicitly says OP summaries should be recomputed before use
 - removed legacy analysis figures under the old `artifacts/figures/pr_curves`, `artifacts/figures/latency`, `artifacts/figures/stability`, and `artifacts/figures/cross_dataset` output paths
   - replaced by the report-specific figure pack under `artifacts/figures/report/`
