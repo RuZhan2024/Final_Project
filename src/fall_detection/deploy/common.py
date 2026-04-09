@@ -262,6 +262,8 @@ def predict_mu_sigma(
             raise ValueError(f"Unknown arch: {arch}")
         return torch.sigmoid(logits)
 
+    # Reuse the shared uncertainty helper so deploy-time sampling matches the
+    # same dropout-only contract used elsewhere in the project.
     mu, sigma = mc_predict_mu_sigma(model, forward_one, M=int(M))
     mu_f = float(mu.detach().float().cpu().numpy().reshape(-1)[0])
     sigma_f = float(sigma.detach().float().cpu().numpy().reshape(-1)[0])

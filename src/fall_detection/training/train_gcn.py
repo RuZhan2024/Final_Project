@@ -560,6 +560,8 @@ def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
 
 
 def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    # Persist only facts we can guarantee at train time. The richer pose-preprocess
+    # contract is filled only when a run can provide real provenance.
     return {
         "fps_default": float(fps_default),
     }

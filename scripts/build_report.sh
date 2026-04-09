@@ -43,6 +43,8 @@ base_name=""
 format_flag=""
 
 positionals=()
+# Support both the older positional form and simpler flag-only calls such as
+# `./scripts/build_report.sh --pdf-only`.
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
@@ -109,6 +111,8 @@ common_args=(
   --standalone
   --toc
   --number-sections
+  # Resolve figures from the repo root so the build behaves the same no matter
+  # which directory the caller runs the script from.
   --resource-path="$ROOT_DIR"
   --metadata=title:"$report_title"
   --metadata=author:"$report_author"

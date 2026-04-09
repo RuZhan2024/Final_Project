@@ -139,6 +139,8 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
 
 
 def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    # Persist only facts we can guarantee at train time. The richer pose-preprocess
+    # contract is filled only when a run can provide real provenance.
     return {
         "fps_default": float(fps_default),
     }

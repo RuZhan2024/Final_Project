@@ -15,6 +15,8 @@ export PYTHONPATH="$ROOT/src:$ROOT"
 mode="${1:-torch-free}"
 
 require_torch_importable() {
+  # Fail fast here so known local torch import issues do not surface later as
+  # less actionable pytest collection aborts.
   if bash -lc 'python3 -c "import torch; print(torch.__version__)" >/dev/null 2>&1'; then
     return 0
   fi
@@ -26,6 +28,8 @@ require_torch_importable() {
 
 case "$mode" in
   torch-free)
+    # Keep this slice runnable on the lowest-friction review environment while
+    # still covering the freeze-core regression tests that do not need torch.
     pytest -q \
       tests/test_import_smoke.py \
       tests/test_audit_api_contract.py \

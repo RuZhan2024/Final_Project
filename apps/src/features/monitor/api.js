@@ -58,6 +58,8 @@ export async function fetchReplayClips(apiBase) {
 }
 
 export async function fetchOperatingPoints(apiBase, modelCode, datasetCode = "caucafall") {
+  // The backend falls back to CAUCAFall if dataset_code is omitted, so always
+  // pass the active dataset when using this legacy compatibility path.
   return await apiRequest(
     apiBase,
     `/api/operating_points?model_code=${encodeURIComponent(modelCode)}&dataset_code=${encodeURIComponent(datasetCode)}`
