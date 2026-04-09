@@ -15,7 +15,7 @@ class EventClassifier:
             return TierDecision(
                 tier=SafeGuardTier.TIER3,
                 reason="not_alert_worthy",
-                actions={"email": False, "sms": False, "phone": False},
+                actions={"telegram": False},
                 recommendation="No caregiver action required. Keep event for audit only.",
             )
 
@@ -28,9 +28,7 @@ class EventClassifier:
                 tier=SafeGuardTier.TIER1,
                 reason="strong_margin_low_uncertainty",
                 actions={
-                    "email": bool(prefs.email_enabled),
-                    "sms": bool(prefs.sms_enabled),
-                    "phone": bool(prefs.phone_enabled),
+                    "telegram": bool(prefs.telegram_enabled),
                 },
                 recommendation="High-confidence fall. Escalate immediately and check the resident.",
             )
@@ -43,9 +41,7 @@ class EventClassifier:
                 else "borderline_margin_or_policy_promoted"
             ),
             actions={
-                "email": bool(prefs.email_enabled),
-                "sms": bool(prefs.sms_enabled),
-                "phone": False,
+                "telegram": bool(prefs.telegram_enabled),
             },
             recommendation="Borderline or ambiguous fall event. Review the live stream or recent clip.",
         )

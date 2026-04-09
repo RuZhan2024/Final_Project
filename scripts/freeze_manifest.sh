@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# This list is the defended freeze-core surface. The script checks existence and
+# cleanliness only for paths that belong to that handoff boundary.
 FREEZE_CORE_PATHS=(
   "README.md"
   "docker-compose.yml"

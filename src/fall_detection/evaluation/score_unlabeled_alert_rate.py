@@ -55,7 +55,9 @@ class UnlabeledWindows(Dataset):
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
 
-        self.files = sorted(glob.glob(os.path.join(win_dir, "*.npz")))
+        # Use recursive discovery here too so unlabeled FA-rate scoring sees the
+        # same window surface as the rest of the pipeline.
+        self.files = sorted(glob.glob(os.path.join(win_dir, "**", "*.npz"), recursive=True))
         if not self.files:
             raise FileNotFoundError(f"No .npz windows found under: {win_dir}")
 

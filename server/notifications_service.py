@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .core import _col_exists, _table_exists
+from .core import _col_exists, _ensure_caregivers_table, _table_exists
 from .notifications import get_notification_manager
 
 
@@ -52,9 +52,6 @@ def dispatch_fall_notifications(
             return out
 
         notify_on_every_fall = True
-        notify_sms = False
-        notify_phone = False
-
         with conn.cursor() as cur:
             if _table_exists(conn, "system_settings"):
                 cur.execute(
@@ -63,8 +60,6 @@ def dispatch_fall_notifications(
                 )
                 s = cur.fetchone() or {}
                 notify_on_every_fall = _as_bool(s.get("notify_on_every_fall"), True)
-                notify_sms = _as_bool(s.get("notify_sms"), False)
-                notify_phone = _as_bool(s.get("notify_phone"), False)
             elif _table_exists(conn, "settings"):
                 cur.execute(
                     "SELECT * FROM settings WHERE resident_id=%s LIMIT 1",
@@ -72,8 +67,6 @@ def dispatch_fall_notifications(
                 )
                 s = cur.fetchone() or {}
                 notify_on_every_fall = _as_bool(s.get("notify_on_every_fall"), True)
-                notify_sms = _as_bool(s.get("notify_sms"), False)
-                notify_phone = _as_bool(s.get("notify_phone"), False)
 
             if not notify_on_every_fall:
                 out["enabled"] = False
@@ -81,35 +74,32 @@ def dispatch_fall_notifications(
                 return out
             out["enabled"] = True
 
-            channels: List[str] = []
-            if notify_sms:
-                channels.append("sms")
-            if notify_phone:
-                channels.append("phone")
+            channels: List[str] = ["telegram"]
             out["channels"] = channels
-            if not channels:
-                out["reason"] = "no_channel_enabled"
-                return out
 
             # Optional caregiver details for human-readable message.
             caregiver_name = None
-            caregiver_phone = None
+            caregiver_telegram_chat_id = None
             if _table_exists(conn, "caregivers"):
+                _ensure_caregivers_table(conn)
+                select_cols = "name"
+                if _col_exists(conn, "caregivers", "telegram_chat_id"):
+                    select_cols += ", telegram_chat_id"
                 cur.execute(
-                    "SELECT name, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                    f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                     (int(resident_id),),
                 )
                 cg = cur.fetchone() or {}
                 caregiver_name = cg.get("name")
-                caregiver_phone = cg.get("phone")
+                caregiver_telegram_chat_id = cg.get("telegram_chat_id")
 
             score_txt = f"{float(p_fall):.3f}" if p_fall is not None else "n/a"
             msg = (
                 f"Fall detected (resident={resident_id}, event_id={event_id}, "
                 f"p_fall={score_txt}, source={source}, ts={datetime.now(timezone.utc).isoformat()})"
             )
-            if caregiver_name or caregiver_phone:
-                msg += f" -> caregiver={caregiver_name or 'unknown'} phone={caregiver_phone or 'n/a'}"
+            if caregiver_name or caregiver_telegram_chat_id:
+                msg += f" -> caregiver={caregiver_name or 'unknown'} telegram_chat_id={caregiver_telegram_chat_id or 'n/a'}"
 
             wrote = 0
             for ch in channels:

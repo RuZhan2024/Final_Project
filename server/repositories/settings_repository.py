@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 from ..core import (
     SettingsUpdatePayload,
+    _norm_op_code,
     _col_exists,
     _ensure_system_settings_schema,
     _safe_get,
@@ -30,7 +31,7 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
                 "monitoring_enabled": bool(_safe_get(row, "monitoring_enabled", system.get("monitoring_enabled", 0))),
                 "active_model_code": _safe_get(row, "active_model_code", system.get("active_model_code", "TCN")),
                 "active_operating_point": _safe_get(row, "active_operating_point", system.get("active_operating_point")),
-                "active_op_code": _safe_get(row, "active_op_code", system.get("active_op_code", "OP-2")),
+                "active_op_code": _norm_op_code(_safe_get(row, "active_op_code", system.get("active_op_code", "OP-2"))),
                 "fall_threshold": float(_safe_get(row, "fall_threshold", system.get("fall_threshold", 0.71)) or 0.71),
                 "alert_cooldown_sec": int(_safe_get(row, "alert_cooldown_sec", system.get("alert_cooldown_sec", 3)) or 3),
                 "store_event_clips": bool(_safe_get(row, "store_event_clips", system.get("store_event_clips", 0))),
@@ -89,7 +90,7 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
         ("mc_M", lambda v: deploy.setdefault("mc", {}).__setitem__("M", int(v))),
         ("mc_M_confirm", lambda v: deploy.setdefault("mc", {}).__setitem__("M_confirm", int(v))),
         ("active_dataset_code", lambda v: system.__setitem__("active_dataset_code", normalize_dataset_code(v))),
-        ("active_op_code", lambda v: system.__setitem__("active_op_code", str(v).upper())),
+        ("active_op_code", lambda v: system.__setitem__("active_op_code", _norm_op_code(v))),
         ("mc_enabled", lambda v: system.__setitem__("mc_enabled", bool(int(v)) if str(v).isdigit() else bool(v))),
     ]:
         if isinstance(sys_row, dict) and col in sys_row and sys_row.get(col) is not None:
@@ -168,7 +169,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
 
         if payload.active_op_code is not None and _col_exists(conn, "settings", "active_op_code"):
             sets.append("active_op_code=%s")
-            vals.append(str(payload.active_op_code).upper())
+            vals.append(_norm_op_code(payload.active_op_code))
 
         if sets:
             sql = "UPDATE settings SET " + ", ".join(sets) + f", updated_at={_updated_at_expr(conn)} WHERE resident_id=%s"
@@ -226,7 +227,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
         add("active_dataset_code", "active_dataset_code=%s", normalize_dataset_code(payload.active_dataset_code))
 
     if payload.active_op_code is not None and _col_exists(conn, "system_settings", "active_op_code"):
-        add("active_op_code", "active_op_code=%s", str(payload.active_op_code).upper())
+        add("active_op_code", "active_op_code=%s", _norm_op_code(payload.active_op_code))
 
     if payload.mc_enabled is not None:
         add("mc_enabled", "mc_enabled=%s", 1 if payload.mc_enabled else 0)

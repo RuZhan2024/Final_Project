@@ -126,6 +126,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             name TEXT,
             email TEXT,
             phone TEXT,
+            telegram_chat_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
@@ -163,7 +164,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             store_event_clips INTEGER NOT NULL DEFAULT 0,
             anonymize_skeleton_data INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            active_dataset_code TEXT NOT NULL DEFAULT 'le2i',
+            active_dataset_code TEXT NOT NULL DEFAULT 'caucafall',
             active_op_code TEXT NOT NULL DEFAULT 'OP-2',
             mc_enabled INTEGER NOT NULL DEFAULT 0,
             mc_M INTEGER NOT NULL DEFAULT 10,
@@ -233,7 +234,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT COUNT(*) FROM caregivers").fetchone()
     if row and int(row[0] or 0) == 0:
         conn.execute(
-            "INSERT INTO caregivers (resident_id, name, email, phone) VALUES (1, 'Demo Caregiver', 'caregiver@example.com', '0000000000')"
+            "INSERT INTO caregivers (resident_id, name, email, phone, telegram_chat_id) VALUES (1, 'Demo Caregiver', 'caregiver@example.com', '0000000000', '')"
         )
 
     row = conn.execute("SELECT COUNT(*) FROM models").fetchone()

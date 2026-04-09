@@ -384,6 +384,11 @@ def test_events_test_fall_v2_path(monkeypatch):
     resp = client.post("/api/events/test_fall")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+    inserts = [(sql, params) for sql, params in fake.executed if "INSERT INTO events" in sql]
+    assert inserts
+    insert_sql, insert_params = inserts[0]
+    assert "`status`" in insert_sql
+    assert "pending_review" in insert_params
 
 
 def test_events_upload_skeleton_clip_success(monkeypatch, tmp_path: Path):

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..notifications import NotificationPreferences, SafeGuardEvent, get_notification_manager
-from ..notifications_service import dispatch_fall_notifications
 from ..repositories.monitor_repository import MonitorRuntimeDefaults, insert_monitor_event
 
 
@@ -37,6 +36,7 @@ class MonitorRuntimeContext:
     caregiver_name: str
     caregiver_email: str
     caregiver_phone: str
+    caregiver_telegram_chat_id: str
 
 
 def merge_monitor_runtime_defaults(
@@ -48,14 +48,14 @@ def merge_monitor_runtime_defaults(
     active_model_code: str,
     defaults: MonitorRuntimeDefaults,
 ) -> MonitorRuntimeContext:
-    merged_dataset = str(dataset_code or defaults.dataset_code or "le2i")
+    merged_dataset = str(dataset_code or defaults.dataset_code or "caucafall")
     merged_op_code = str(op_code or defaults.op_code or "OP-2").upper().strip() or "OP-2"
 
     merged_use_mc = _coerce_optional_bool(use_mc)
     if merged_use_mc is None:
         merged_use_mc = _coerce_optional_bool(defaults.use_mc)
     if merged_use_mc is None:
-        merged_use_mc = True
+        merged_use_mc = False
 
     merged_mc_M = int(mc_M if mc_M is not None else (defaults.mc_M if defaults.mc_M is not None else 10))
     merged_model = str(active_model_code or defaults.active_model_code or "TCN")
@@ -75,6 +75,7 @@ def merge_monitor_runtime_defaults(
         caregiver_name=defaults.caregiver_name,
         caregiver_email=defaults.caregiver_email,
         caregiver_phone=defaults.caregiver_phone,
+        caregiver_telegram_chat_id=defaults.caregiver_telegram_chat_id,
     )
 
 
@@ -202,22 +203,13 @@ def persist_monitor_event(
         table_exists=table_exists,
     )
 
-    notification_dispatch = None
-    if saved_event_id is not None and persistence.persist_event_type == "fall":
-        notification_dispatch = dispatch_fall_notifications(
-            conn,
-            resident_id=int(resident_id),
-            event_id=int(saved_event_id),
-            p_fall=float(p_display),
-            source="monitor",
-        )
-
     conn.commit()
     session_state[persistence.persist_cd_key] = float(current_t_s)
 
+    notification_dispatch = None
     try:
         if persistence.persist_event_type == "fall" and runtime.notify_on_every_fall and saved_event_id is not None:
-            get_notification_manager().handle_event(
+            dispatch = get_notification_manager().handle_event(
                 SafeGuardEvent(
                     event_id=str(saved_event_id),
                     resident_id=int(resident_id),
@@ -242,14 +234,20 @@ def persist_monitor_event(
                     },
                 ),
                 NotificationPreferences(
-                    phone_enabled=bool(runtime.notify_phone),
-                    sms_enabled=bool(runtime.notify_sms),
-                    email_enabled=True,
+                    telegram_enabled=bool(runtime.notify_on_every_fall),
                     caregiver_name=runtime.caregiver_name,
-                    caregiver_phone=runtime.caregiver_phone,
-                    caregiver_email=runtime.caregiver_email,
+                    caregiver_telegram_chat_id=runtime.caregiver_telegram_chat_id,
                 ),
             )
+            notification_dispatch = {
+                "enabled": bool(dispatch.enabled),
+                "tier": dispatch.tier,
+                "reason": dispatch.reason,
+                "actions": dispatch.actions,
+                "enqueued": bool(dispatch.enqueued),
+                "state": dispatch.state,
+                "audit_backend": dispatch.audit_backend,
+            }
     except Exception:
         pass
 

@@ -19,6 +19,7 @@ class MonitorRuntimeDefaults:
     caregiver_name: str = ""
     caregiver_email: str = ""
     caregiver_phone: str = ""
+    caregiver_telegram_chat_id: str = ""
 
 
 def load_monitor_runtime_defaults(
@@ -44,10 +45,11 @@ def load_monitor_runtime_defaults(
     caregiver_name = ""
     caregiver_email = ""
     caregiver_phone = ""
+    caregiver_telegram_chat_id = ""
     if table_exists(conn, "caregivers"):
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                "SELECT * FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                 (resident_id,),
             )
             caregiver_row = cur.fetchone() or {}
@@ -55,12 +57,14 @@ def load_monitor_runtime_defaults(
             caregiver_name = str(caregiver_row.get("name") or "").strip()
             caregiver_email = str(caregiver_row.get("email") or "").strip()
             caregiver_phone = str(caregiver_row.get("phone") or "").strip()
+            caregiver_telegram_chat_id = str(caregiver_row.get("telegram_chat_id") or "").strip()
 
     if not isinstance(sys_row, dict):
         return MonitorRuntimeDefaults(
             caregiver_name=caregiver_name,
             caregiver_email=caregiver_email,
             caregiver_phone=caregiver_phone,
+            caregiver_telegram_chat_id=caregiver_telegram_chat_id,
         )
 
     return MonitorRuntimeDefaults(
@@ -75,6 +79,7 @@ def load_monitor_runtime_defaults(
         caregiver_name=caregiver_name,
         caregiver_email=caregiver_email,
         caregiver_phone=caregiver_phone,
+        caregiver_telegram_chat_id=caregiver_telegram_chat_id,
     )
 
 
@@ -92,18 +97,30 @@ def insert_monitor_event(
     if not table_exists(conn, "events"):
         return None
 
+    cols = _event_columns(conn)
+    insert_cols = ["resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta"]
+    insert_vals = [resident_id, str(event_type), str(severity), str(model_code), None, float(score), json.dumps(meta)]
+    if "status" in cols:
+        # Newer schemas track review state directly on events. Keep runtime-created
+        # rows aligned with the same pending-review contract used by the UI.
+        insert_cols.append("status")
+        insert_vals.append("pending_review")
+
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (
-                resident_id,
-                str(event_type),
-                str(severity),
-                str(model_code),
-                None,
-                float(score),
-                json.dumps(meta),
-            ),
+            f"INSERT INTO events ({', '.join(insert_cols)}) VALUES ({', '.join(['%s'] * len(insert_cols))})",
+            tuple(insert_vals),
         )
         return cur.lastrowid
+
+
+def _event_columns(conn: Any) -> set[str]:
+    with conn.cursor() as cur:
+        backend = str(getattr(conn, "db_backend", "mysql")).lower()
+        if backend == "sqlite":
+            cur.execute("PRAGMA table_info(`events`)")
+            rows = cur.fetchall() or []
+            return {str(r.get("name")) for r in rows if isinstance(r, dict) and r.get("name") is not None}
+        cur.execute("SHOW COLUMNS FROM `events`")
+        rows = cur.fetchall() or []
+        return {str(r.get("Field")) for r in rows if isinstance(r, dict) and r.get("Field") is not None}

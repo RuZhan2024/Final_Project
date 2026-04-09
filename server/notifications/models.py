@@ -14,12 +14,9 @@ class SafeGuardTier(str, Enum):
 
 @dataclass(frozen=True)
 class NotificationPreferences:
-    phone_enabled: bool = False
-    sms_enabled: bool = False
-    email_enabled: bool = True
+    telegram_enabled: bool = True
     caregiver_name: str = ""
-    caregiver_phone: str = ""
-    caregiver_email: str = ""
+    caregiver_telegram_chat_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -62,3 +59,14 @@ class DeliveryResult:
     attempted: bool
     status: str
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class DispatchAcceptance:
+    enabled: bool
+    tier: str
+    reason: str
+    actions: Dict[str, bool]
+    enqueued: bool
+    state: str
+    audit_backend: str = "sqlite"

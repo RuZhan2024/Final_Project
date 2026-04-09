@@ -20,6 +20,7 @@ import torch
 
 from fall_detection.core.ckpt import load_ckpt, get_cfg
 from fall_detection.core.models import build_model, logits_1d
+from fall_detection.core.uncertainty import mc_predict_mu_sigma
 from fall_detection.core.features import (
     FeatCfg,
     read_window_npz,
@@ -242,10 +243,10 @@ def predict_mu_sigma(
     two_stream: bool,
     M: int,
 ) -> Tuple[float, float]:
-    """MC Dropout mean/std (dropout enabled via model.train(), no gradients)."""
+    """MC Dropout mean/std with BatchNorm kept in eval mode."""
     arch = str(arch).lower()
 
-    def forward_one() -> float:
+    def forward_one() -> torch.Tensor:
         if arch == "tcn":
             xb = _to_tensor(X, device)
             logits = logits_1d(model(xb))
@@ -259,13 +260,11 @@ def predict_mu_sigma(
                 logits = logits_1d(model(xb))
         else:
             raise ValueError(f"Unknown arch: {arch}")
-        p = torch.sigmoid(logits).detach().float().cpu().numpy().reshape(-1)[0]
-        return float(p)
+        return torch.sigmoid(logits)
 
-    with torch.no_grad():
-        model.train()
-        ys = [forward_one() for _ in range(int(M))]
-        model.eval()
-
-    a = np.asarray(ys, dtype=np.float32)
-    return float(a.mean()), float(a.std(ddof=0))
+    # Reuse the shared uncertainty helper so deploy-time sampling matches the
+    # same dropout-only contract used elsewhere in the project.
+    mu, sigma = mc_predict_mu_sigma(model, forward_one, M=int(M))
+    mu_f = float(mu.detach().float().cpu().numpy().reshape(-1)[0])
+    sigma_f = float(sigma.detach().float().cpu().numpy().reshape(-1)[0])
+    return mu_f, sigma_f

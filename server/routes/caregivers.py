@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 def _caregiver_select_sql(conn) -> str:
     cols = ["id", "resident_id", "name", "email", "phone"]
+    if _col_exists(conn, "caregivers", "telegram_chat_id"):
+        cols.append("telegram_chat_id")
     if _col_exists(conn, "caregivers", "created_at"):
         cols.append("created_at")
     if _col_exists(conn, "caregivers", "updated_at"):
@@ -89,6 +91,8 @@ def upsert_caregiver(payload: CaregiverUpsertPayload = Body(...)) -> Dict[str, A
                 fields["email"] = payload.email
             if payload.phone is not None:
                 fields["phone"] = payload.phone
+            if payload.telegram_chat_id is not None and _col_exists(conn, "caregivers", "telegram_chat_id"):
+                fields["telegram_chat_id"] = payload.telegram_chat_id
 
             with conn.cursor() as cur:
                 if target_id is not None:
@@ -105,8 +109,8 @@ def upsert_caregiver(payload: CaregiverUpsertPayload = Body(...)) -> Dict[str, A
                     out = cur.fetchone() or {}
                 else:
                     cur.execute(
-                        "INSERT INTO caregivers (resident_id, name, email, phone) VALUES (%s,%s,%s,%s)",
-                        (resident_id, payload.name, payload.email, payload.phone),
+                        "INSERT INTO caregivers (resident_id, name, email, phone, telegram_chat_id) VALUES (%s,%s,%s,%s,%s)",
+                        (resident_id, payload.name, payload.email, payload.phone, payload.telegram_chat_id),
                     )
                     new_id = cur.lastrowid
                     cur.execute(

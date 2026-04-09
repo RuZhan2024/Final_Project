@@ -44,9 +44,11 @@ class SQLiteNotificationStore:
             margin REAL NOT NULL,
             uncertainty REAL NOT NULL,
             alert_tier TEXT NOT NULL,
+            telegram_attempted INTEGER NOT NULL DEFAULT 0,
             phone_attempted INTEGER NOT NULL DEFAULT 0,
             sms_attempted INTEGER NOT NULL DEFAULT 0,
             email_attempted INTEGER NOT NULL DEFAULT 0,
+            telegram_status TEXT,
             phone_status TEXT,
             sms_status TEXT,
             email_status TEXT,
@@ -83,6 +85,14 @@ class SQLiteNotificationStore:
         """
         with self._lock, self._connect() as conn:
             conn.executescript(schema)
+            cols = {
+                str(row["name"])
+                for row in (conn.execute("PRAGMA table_info(notification_events)").fetchall() or [])
+            }
+            if "telegram_attempted" not in cols:
+                conn.execute("ALTER TABLE notification_events ADD COLUMN telegram_attempted INTEGER NOT NULL DEFAULT 0")
+            if "telegram_status" not in cols:
+                conn.execute("ALTER TABLE notification_events ADD COLUMN telegram_status TEXT")
 
     def upsert_event(self, event: SafeGuardEvent, decision: TierDecision, prefs: NotificationPreferences) -> None:
         payload_json = json.dumps(
@@ -99,12 +109,9 @@ class SQLiteNotificationStore:
                 "source": event.source,
                 "meta": event.meta,
                 "preferences": {
-                    "phone_enabled": prefs.phone_enabled,
-                    "sms_enabled": prefs.sms_enabled,
-                    "email_enabled": prefs.email_enabled,
+                    "telegram_enabled": prefs.telegram_enabled,
                     "caregiver_name": prefs.caregiver_name,
-                    "caregiver_phone": prefs.caregiver_phone,
-                    "caregiver_email": prefs.caregiver_email,
+                    "caregiver_telegram_chat_id": prefs.caregiver_telegram_chat_id,
                 },
             }
         )
@@ -152,7 +159,7 @@ class SQLiteNotificationStore:
                 """
                 SELECT event_id FROM notification_events
                 WHERE event_id = ?
-                  AND (phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
+                  AND (telegram_attempted = 1 OR phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
                 LIMIT 1
                 """,
                 (event_id,),
@@ -166,7 +173,7 @@ class SQLiteNotificationStore:
                 SELECT timestamp FROM notification_events
                 WHERE resident_id = ?
                   AND alert_tier IN ('tier1_high_confidence_fall', 'tier2_ambiguous_fall')
-                  AND (phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
+                  AND (telegram_attempted = 1 OR phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
                 ORDER BY timestamp DESC
                 LIMIT 1
                 """,
@@ -240,3 +247,65 @@ class SQLiteNotificationStore:
                 (int(resident_id),),
             ).fetchone()
         return str(row["event_id"]) if row and row["event_id"] is not None else None
+
+    def list_recent_events(self, resident_id: int, limit: int = 50) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    event_id,
+                    resident_id,
+                    timestamp,
+                    location,
+                    alert_tier,
+                    telegram_attempted,
+                    telegram_status,
+                    notes,
+                    event_payload_json,
+                    unresolved,
+                    updated_at
+                FROM notification_events
+                WHERE resident_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (int(resident_id), int(limit)),
+            ).fetchall()
+
+        out: list[dict] = []
+        for row in rows or []:
+            payload = {}
+            raw_payload = row["event_payload_json"]
+            if raw_payload:
+                try:
+                    payload = json.loads(str(raw_payload))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    payload = {}
+            triage_state = str(payload.get("triage_state") or "").strip()
+            model_code = str(payload.get("model_code") or "").strip()
+            message = str(row["notes"] or "").strip()
+            if not message:
+                ref = str(row["event_id"] or "").strip()
+                location = str(row["location"] or "unknown")
+                tier = str(row["alert_tier"] or "unknown")
+                message = f"Safe Guard {tier} event at {location}"
+                if ref:
+                    message += f" (ref={ref})"
+            out.append(
+                {
+                    "id": str(row["event_id"]),
+                    "resident_id": int(row["resident_id"]),
+                    "ts": row["timestamp"],
+                    "channel": "telegram",
+                    "status": str(row["telegram_status"] or ("queued" if row["telegram_attempted"] else "pending")),
+                    "message": message,
+                    "event_id": str(row["event_id"]),
+                    "location": str(row["location"] or ""),
+                    "triage_state": triage_state,
+                    "model_code": model_code,
+                    "alert_tier": str(row["alert_tier"] or ""),
+                    "unresolved": bool(row["unresolved"]),
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return out

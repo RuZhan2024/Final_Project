@@ -37,31 +37,49 @@ require_tool() {
   fi
 }
 
-input_md="${1:-$DEFAULT_INPUT}"
-out_dir="${2:-$DEFAULT_OUT_DIR}"
-base_name="${3:-}"
-format_flag="${4:-}"
+input_md="$DEFAULT_INPUT"
+out_dir="$DEFAULT_OUT_DIR"
+base_name=""
+format_flag=""
 
-if [[ "${input_md:-}" == "-h" || "${input_md:-}" == "--help" ]]; then
-  show_help
-  exit 0
+positionals=()
+# Support both the older positional form and simpler flag-only calls such as
+# `./scripts/build_report.sh --pdf-only`.
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --pdf-only|--docx-only)
+      if [[ -n "$format_flag" ]]; then
+        echo "error: multiple format flags provided" >&2
+        show_help >&2
+        exit 2
+      fi
+      format_flag="$arg"
+      ;;
+    *)
+      positionals+=("$arg")
+      ;;
+  esac
+done
+
+if (( ${#positionals[@]} > 3 )); then
+  echo "error: too many positional arguments" >&2
+  show_help >&2
+  exit 2
 fi
 
-if [[ -z "${input_md:-}" ]]; then
-  input_md="$DEFAULT_INPUT"
+if (( ${#positionals[@]} >= 1 )) && [[ -n "${positionals[0]}" ]]; then
+  input_md="${positionals[0]}"
 fi
-if [[ -z "${out_dir:-}" ]]; then
-  out_dir="$DEFAULT_OUT_DIR"
+if (( ${#positionals[@]} >= 2 )) && [[ -n "${positionals[1]}" ]]; then
+  out_dir="${positionals[1]}"
 fi
-
-case "${format_flag:-}" in
-  ""|--pdf-only|--docx-only) ;;
-  *)
-    echo "error: unknown format flag '$format_flag'" >&2
-    show_help >&2
-    exit 2
-    ;;
-esac
+if (( ${#positionals[@]} >= 3 )) && [[ -n "${positionals[2]}" ]]; then
+  base_name="${positionals[2]}"
+fi
 
 if [[ ! -f "$input_md" ]]; then
   echo "error: input markdown not found: $input_md" >&2
@@ -93,6 +111,8 @@ common_args=(
   --standalone
   --toc
   --number-sections
+  # Resolve figures from the repo root so the build behaves the same no matter
+  # which directory the caller runs the script from.
   --resource-path="$ROOT_DIR"
   --metadata=title:"$report_title"
   --metadata=author:"$report_author"

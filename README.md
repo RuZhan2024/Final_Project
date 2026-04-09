@@ -204,6 +204,12 @@ Recommended contract/smoke test subset:
 ./scripts/run_canonical_tests.sh torch-free
 ```
 
+Server app / contract subset:
+
+```bash
+./scripts/run_canonical_tests.sh contract
+```
+
 Torch-dependent monitor subset:
 
 ```bash

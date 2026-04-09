@@ -118,6 +118,7 @@ export function MonitoringProvider({ children }) {
       if (togglingRef.current) return monitoringOnRef.current;
 
       togglingRef.current = true;
+      const previousRuntimeOn = monitoringOnRef.current;
       try {
         const nextOn = Boolean(next);
 
@@ -141,11 +142,22 @@ export function MonitoringProvider({ children }) {
 
         setMonitoringDesired(desired);
 
-        // sync with latest server truth
+        // Reconcile against server truth after persistence so runtime state and
+        // stored settings do not drift on partial failures.
         await refresh();
 
         return desired;
       } catch (e) {
+        const ctrl = controllerRef.current;
+        // Roll back the local runtime state if persistence failed after an
+        // optimistic toggle, otherwise monitor UI and backend truth diverge.
+        if (previousRuntimeOn) {
+          const restarted = await safeStart(ctrl);
+          setRuntimeOn(Boolean(restarted));
+        } else {
+          safeStop(ctrl);
+          setRuntimeOn(false);
+        }
         setError(String(e?.message || e));
         return false;
       } finally {

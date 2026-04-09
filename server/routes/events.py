@@ -18,6 +18,7 @@ except (ImportError, ModuleNotFoundError):
 from ..core import (
     SkeletonClipPayload,
     _anonymize_xy_inplace,
+    _col_exists,
     _cols,
     _detect_variants,
     _event_clips_dir,
@@ -33,7 +34,6 @@ from ..core import (
 from ..db import get_conn_optional
 from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
-from ..notifications_service import dispatch_fall_notifications
 from ..services.events_service import (
     EventsDeps,
     build_events_list_response,
@@ -69,13 +69,14 @@ def _dispatch_safe_guard_from_event(
     op_code: str = "OP-2",
     p_fall: float = 0.99,
     location: str = "events_test_fall",
-) -> None:
+) -> Dict[str, Any]:
     notify_on_every_fall = True
     notify_sms = False
     notify_phone = False
     caregiver_name = ""
     caregiver_email = ""
     caregiver_phone = ""
+    caregiver_telegram_chat_id = ""
 
     if _table_exists(conn, "system_settings"):
         with conn.cursor() as cur:
@@ -106,9 +107,12 @@ def _dispatch_safe_guard_from_event(
                 model_code = str(s.get("active_model_code") or model_code)
 
     if _table_exists(conn, "caregivers"):
+        select_cols = "name, email, phone"
+        if _col_exists(conn, "caregivers", "telegram_chat_id"):
+            select_cols += ", telegram_chat_id"
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                 (int(resident_id),),
             )
             cg = cur.fetchone() or {}
@@ -116,11 +120,20 @@ def _dispatch_safe_guard_from_event(
             caregiver_name = str(cg.get("name") or "").strip()
             caregiver_email = str(cg.get("email") or "").strip()
             caregiver_phone = str(cg.get("phone") or "").strip()
+            caregiver_telegram_chat_id = str(cg.get("telegram_chat_id") or "").strip()
 
     if not notify_on_every_fall:
-        return
+        return {
+            "enabled": False,
+            "tier": "disabled",
+            "reason": "notify_disabled",
+            "actions": {"telegram": False},
+            "enqueued": False,
+            "state": "disabled",
+            "audit_backend": "sqlite",
+        }
 
-    get_notification_manager().handle_event(
+    dispatch = get_notification_manager().handle_event(
         SafeGuardEvent(
             event_id=str(event_id),
             resident_id=int(resident_id),
@@ -139,14 +152,20 @@ def _dispatch_safe_guard_from_event(
             meta={"event_db_id": int(event_id)},
         ),
         NotificationPreferences(
-            phone_enabled=bool(notify_phone),
-            sms_enabled=bool(notify_sms),
-            email_enabled=True,
+            telegram_enabled=bool(notify_on_every_fall),
             caregiver_name=caregiver_name,
-            caregiver_phone=caregiver_phone,
-            caregiver_email=caregiver_email,
+            caregiver_telegram_chat_id=caregiver_telegram_chat_id,
         ),
     )
+    return {
+        "enabled": bool(dispatch.enabled),
+        "tier": dispatch.tier,
+        "reason": dispatch.reason,
+        "actions": dispatch.actions,
+        "enqueued": bool(dispatch.enqueued),
+        "state": dispatch.state,
+        "audit_backend": dispatch.audit_backend,
+    }
 
 
 @router.get("/api/events")
@@ -273,7 +292,7 @@ def test_fall() -> Dict[str, Any]:
                 add("event_time", now)
                 add("type", "fall")
                 if "status" in cols:
-                    add("status", "unreviewed")
+                    add("status", "pending_review")
                 if "p_fall" in cols:
                     add("p_fall", 0.99)
                 if "p_uncertain" in cols:
@@ -293,15 +312,17 @@ def test_fall() -> Dict[str, Any]:
                 )
                 cur.execute(sql, tuple(params))
                 new_id = cur.lastrowid
-                dispatch = dispatch_fall_notifications(
-                    conn,
-                    resident_id=int(rid),
-                    event_id=int(new_id),
-                    p_fall=0.99,
-                    source="events.test_fall",
-                )
+                dispatch = {
+                    "enabled": False,
+                    "tier": "disabled",
+                    "reason": "safe_guard_not_attempted",
+                    "actions": {"telegram": False},
+                    "enqueued": False,
+                    "state": "disabled",
+                    "audit_backend": "sqlite",
+                }
                 try:
-                    _dispatch_safe_guard_from_event(
+                    dispatch = _dispatch_safe_guard_from_event(
                         conn,
                         resident_id=int(rid),
                         event_id=int(new_id),
@@ -321,15 +342,17 @@ def test_fall() -> Dict[str, Any]:
                 (rid, now, "fall", "high", "TCN", 0.99, json.dumps(meta)),
             )
             new_id = cur.lastrowid
-            dispatch = dispatch_fall_notifications(
-                conn,
-                resident_id=int(rid),
-                event_id=int(new_id),
-                p_fall=0.99,
-                source="events.test_fall",
-            )
+            dispatch = {
+                "enabled": False,
+                "tier": "disabled",
+                "reason": "safe_guard_not_attempted",
+                "actions": {"telegram": False},
+                "enqueued": False,
+                "state": "disabled",
+                "audit_backend": "sqlite",
+            }
             try:
-                _dispatch_safe_guard_from_event(
+                dispatch = _dispatch_safe_guard_from_event(
                     conn,
                     resident_id=int(rid),
                     event_id=int(new_id),
