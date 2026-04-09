@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ..core import get_inmem_settings, normalize_dataset_code, normalize_model_code
+from ..core import _norm_op_code, get_inmem_settings, normalize_dataset_code, normalize_model_code
 
 
 def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> None:
     """Override UI thresholds/cooldown using YAML-derived deploy params (best-effort)."""
     try:
+        system.setdefault("active_dataset_code", "caucafall")
+        system.setdefault("active_model_code", "TCN")
         system.setdefault("active_op_code", "OP-2")
         dp = derive_ops_params_from_yaml(
             dataset_code=normalize_dataset_code(str(system.get("active_dataset_code") or "caucafall")),
@@ -18,7 +20,7 @@ def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> 
         ui = dp.get("ui") or {}
         system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.71)))
         system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
-        system["active_op_code"] = str(ui.get("op_code", system.get("active_op_code", "OP-2")))
+        system["active_op_code"] = _norm_op_code(str(ui.get("op_code", system.get("active_op_code", "OP-2"))))
         system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
     except (RuntimeError, OSError, TypeError, ValueError, KeyError):
         return
@@ -27,6 +29,7 @@ def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> 
 def build_settings_response(resident_id: int, system: Dict[str, Any], deploy: Dict[str, Any], *, db_available: bool) -> Dict[str, Any]:
     system["active_dataset_code"] = normalize_dataset_code(system.get("active_dataset_code"))
     system["active_model_code"] = normalize_model_code(system.get("active_model_code"))
+    system["active_op_code"] = _norm_op_code(str(system.get("active_op_code") or "OP-2"))
     system["store_anonymized_data"] = bool(
         system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
     )

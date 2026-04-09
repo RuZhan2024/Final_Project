@@ -34,7 +34,6 @@ from ..core import (
 from ..db import get_conn_optional
 from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
-from ..notifications_service import dispatch_fall_notifications
 from ..services.events_service import (
     EventsDeps,
     build_events_list_response,
@@ -69,7 +68,7 @@ def _dispatch_safe_guard_from_event(
     op_code: str = "OP-2",
     p_fall: float = 0.99,
     location: str = "events_test_fall",
-) -> None:
+) -> Dict[str, Any]:
     notify_on_every_fall = True
     notify_sms = False
     notify_phone = False
@@ -123,9 +122,17 @@ def _dispatch_safe_guard_from_event(
             caregiver_telegram_chat_id = str(cg.get("telegram_chat_id") or "").strip()
 
     if not notify_on_every_fall:
-        return
+        return {
+            "enabled": False,
+            "tier": "disabled",
+            "reason": "notify_disabled",
+            "actions": {"telegram": False},
+            "enqueued": False,
+            "state": "disabled",
+            "audit_backend": "sqlite",
+        }
 
-    get_notification_manager().handle_event(
+    dispatch = get_notification_manager().handle_event(
         SafeGuardEvent(
             event_id=str(event_id),
             resident_id=int(resident_id),
@@ -149,6 +156,15 @@ def _dispatch_safe_guard_from_event(
             caregiver_telegram_chat_id=caregiver_telegram_chat_id,
         ),
     )
+    return {
+        "enabled": bool(dispatch.enabled),
+        "tier": dispatch.tier,
+        "reason": dispatch.reason,
+        "actions": dispatch.actions,
+        "enqueued": bool(dispatch.enqueued),
+        "state": dispatch.state,
+        "audit_backend": dispatch.audit_backend,
+    }
 
 
 @router.get("/api/events")
@@ -275,7 +291,7 @@ def test_fall() -> Dict[str, Any]:
                 add("event_time", now)
                 add("type", "fall")
                 if "status" in cols:
-                    add("status", "unreviewed")
+                    add("status", "pending_review")
                 if "p_fall" in cols:
                     add("p_fall", 0.99)
                 if "p_uncertain" in cols:
@@ -295,15 +311,17 @@ def test_fall() -> Dict[str, Any]:
                 )
                 cur.execute(sql, tuple(params))
                 new_id = cur.lastrowid
-                dispatch = dispatch_fall_notifications(
-                    conn,
-                    resident_id=int(rid),
-                    event_id=int(new_id),
-                    p_fall=0.99,
-                    source="events.test_fall",
-                )
+                dispatch = {
+                    "enabled": False,
+                    "tier": "disabled",
+                    "reason": "safe_guard_not_attempted",
+                    "actions": {"telegram": False},
+                    "enqueued": False,
+                    "state": "disabled",
+                    "audit_backend": "sqlite",
+                }
                 try:
-                    _dispatch_safe_guard_from_event(
+                    dispatch = _dispatch_safe_guard_from_event(
                         conn,
                         resident_id=int(rid),
                         event_id=int(new_id),
@@ -323,15 +341,17 @@ def test_fall() -> Dict[str, Any]:
                 (rid, now, "fall", "high", "TCN", 0.99, json.dumps(meta)),
             )
             new_id = cur.lastrowid
-            dispatch = dispatch_fall_notifications(
-                conn,
-                resident_id=int(rid),
-                event_id=int(new_id),
-                p_fall=0.99,
-                source="events.test_fall",
-            )
+            dispatch = {
+                "enabled": False,
+                "tier": "disabled",
+                "reason": "safe_guard_not_attempted",
+                "actions": {"telegram": False},
+                "enqueued": False,
+                "state": "disabled",
+                "audit_backend": "sqlite",
+            }
             try:
-                _dispatch_safe_guard_from_event(
+                dispatch = _dispatch_safe_guard_from_event(
                     conn,
                     resident_id=int(rid),
                     event_id=int(new_id),

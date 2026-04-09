@@ -59,3 +59,14 @@ class DeliveryResult:
     attempted: bool
     status: str
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class DispatchAcceptance:
+    enabled: bool
+    tier: str
+    reason: str
+    actions: Dict[str, bool]
+    enqueued: bool
+    state: str
+    audit_backend: str = "sqlite"

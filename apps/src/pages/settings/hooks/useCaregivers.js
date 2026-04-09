@@ -33,11 +33,12 @@ export function useCaregivers(apiBase) {
 
   const upsert = useCallback(
     async (payload) => {
-      await apiRequest(apiBase, "/api/caregivers", {
+      const data = await apiRequest(apiBase, "/api/caregivers", {
         method: "PUT",
         body: { ...payload },
       });
       await reload();
+      return data;
     },
     [apiBase, reload]
   );

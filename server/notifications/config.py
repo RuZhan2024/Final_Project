@@ -28,7 +28,10 @@ def _load_local_env_files() -> None:
                 key = key.strip()
                 if not key or key in os.environ:
                     continue
-                os.environ[key] = value.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", "\""}:
+                    value = value[1:-1]
+                os.environ[key] = value
         except OSError:
             continue
     _ENV_LOADED = True

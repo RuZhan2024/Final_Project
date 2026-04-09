@@ -55,7 +55,7 @@ class UnlabeledWindows(Dataset):
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
 
-        self.files = sorted(glob.glob(os.path.join(win_dir, "*.npz")))
+        self.files = sorted(glob.glob(os.path.join(win_dir, "**", "*.npz"), recursive=True))
         if not self.files:
             raise FileNotFoundError(f"No .npz windows found under: {win_dir}")
 

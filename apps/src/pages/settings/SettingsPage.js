@@ -42,8 +42,7 @@ export default function SettingsPage() {
     if (!primary) return;
     setCgName(primary.name || "");
     setCgTelegramChatId(primary.telegram_chat_id || "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primary?.id]);
+  }, [primary?.id, primary?.name, primary?.telegram_chat_id]);
 
   const monitoringEnabled = readBool(sys.monitoring_enabled, false);
   const notifyOnEveryFall = readBool(sys.notify_on_every_fall, true);
@@ -51,7 +50,7 @@ export default function SettingsPage() {
   const caregiverTelegramReady = Boolean(String(cgTelegramChatId || "").trim());
 
   const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
-  const mcEnabled = readBool(sys.mc_enabled, true);
+  const mcEnabled = readBool(sys.mc_enabled, false);
   const storeAnonymizedData = readBool(
     sys.store_anonymized_data,
     readBool(sys.store_event_clips, false) && readBool(sys.anonymize_skeleton_data, true)
@@ -111,8 +110,14 @@ export default function SettingsPage() {
   async function saveCaregiver() {
     setLocalErr("");
     try {
-      await upsert({ id: primary?.id, name: cgName, telegram_chat_id: cgTelegramChatId });
+      const result = await upsert({ id: primary?.id, name: cgName, telegram_chat_id: cgTelegramChatId });
       setEditingCaregiver(false);
+      if (result?.db_available === false) {
+        setLocalErr(
+          "Caregiver information was accepted in fallback mode only. Save it again after database connectivity is restored."
+        );
+        return;
+      }
       showToast("Caregiver information saved. Telegram alerts will use this contact profile.");
     } catch (e) {
       setLocalErr(`Caregiver information could not be saved. ${String(e?.message || e)}`);

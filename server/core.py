@@ -826,7 +826,7 @@ def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int
         system["active_dataset_code"] = normalize_dataset_code(payload.active_dataset_code, default="caucafall")
 
     if payload.active_op_code is not None:
-        system["active_op_code"] = str(payload.active_op_code).upper()
+        system["active_op_code"] = _norm_op_code(payload.active_op_code)
 
     if payload.mc_M is not None:
         try:

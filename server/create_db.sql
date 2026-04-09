@@ -63,6 +63,8 @@ CREATE TABLE system_settings (
   fall_threshold DECIMAL(6,4) NULL DEFAULT 0.7100,
   store_event_clips TINYINT(1) NOT NULL DEFAULT 0,
   anonymize_skeleton_data TINYINT(1) NOT NULL DEFAULT 1,
+  active_dataset_code VARCHAR(16) NOT NULL DEFAULT 'caucafall',
+  active_op_code VARCHAR(8) NOT NULL DEFAULT 'OP-2',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_settings_resident FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE,
   CONSTRAINT fk_settings_op FOREIGN KEY (active_operating_point) REFERENCES operating_points(id) ON DELETE SET NULL

@@ -66,30 +66,42 @@ def load_today_counts(
     false_alarms = 0
 
     with conn.cursor() as cur:
-        if table_exists(conn, "events") and col_exists(conn, "events", "event_type"):
-            has_resident_id = col_exists(conn, "events", "resident_id")
-            resident_filter = " AND resident_id=%s" if has_resident_id else ""
-            params = (resident_id,) if has_resident_id else tuple()
-            cur.execute(
-                "SELECT COUNT(*) AS c FROM events "
-                f"WHERE {_today_filter_sql(conn, 'created_at')} "
-                "AND UPPER(event_type) IN ('FALL','FALL_DETECTED','FALL_CONFIRMED')"
-                + resident_filter,
-                params,
-            )
-            row = cur.fetchone() or {}
-            falls = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
+        if table_exists(conn, "events"):
+            type_col = None
+            if col_exists(conn, "events", "type"):
+                type_col = "type"
+            elif col_exists(conn, "events", "event_type"):
+                type_col = "event_type"
 
-            cur.execute(
-                "SELECT COUNT(*) AS c FROM events "
-                f"WHERE {_today_filter_sql(conn, 'created_at')} "
-                "AND UPPER(event_type) IN ('FALSE_ALARM','FALSE','FALSE_POSITIVE')"
-                + resident_filter,
-                params,
-            )
-            row = cur.fetchone() or {}
-            false_alarms = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
-            return {"falls_detected": falls, "false_alarms": false_alarms}
+            if type_col is not None:
+                time_col = "created_at"
+                for candidate in ("event_time", "ts", "created_at"):
+                    if col_exists(conn, "events", candidate):
+                        time_col = candidate
+                        break
+                has_resident_id = col_exists(conn, "events", "resident_id")
+                resident_filter = " AND resident_id=%s" if has_resident_id else ""
+                params = (resident_id,) if has_resident_id else tuple()
+                cur.execute(
+                    "SELECT COUNT(*) AS c FROM events "
+                    f"WHERE {_today_filter_sql(conn, time_col)} "
+                    f"AND UPPER({type_col}) IN ('FALL','FALL_DETECTED','FALL_CONFIRMED')"
+                    + resident_filter,
+                    params,
+                )
+                row = cur.fetchone() or {}
+                falls = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
+
+                cur.execute(
+                    "SELECT COUNT(*) AS c FROM events "
+                    f"WHERE {_today_filter_sql(conn, time_col)} "
+                    f"AND UPPER({type_col}) IN ('FALSE_ALARM','FALSE','FALSE_POSITIVE')"
+                    + resident_filter,
+                    params,
+                )
+                row = cur.fetchone() or {}
+                false_alarms = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
+                return {"falls_detected": falls, "false_alarms": false_alarms}
 
         if table_exists(conn, "fall_events"):
             has_resident_id = col_exists(conn, "fall_events", "resident_id")

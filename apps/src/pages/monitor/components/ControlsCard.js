@@ -23,6 +23,8 @@ export function ControlsCard({
   replayCurrentS,
   replayDurationS,
   onSeekReplay,
+  replayPersistEvents,
+  onToggleReplayPersist,
 }) {
   const replayPct = replayDurationS > 0 ? Math.max(0, Math.min(100, (replayCurrentS / replayDurationS) * 100)) : 0;
   const groupedReplayClips = (replayClips || []).reduce(
@@ -121,6 +123,25 @@ export function ControlsCard({
               <button className={styles.btnGray} onClick={() => onRefreshReplayClips?.()} disabled={replayClipsLoading}>
                 {replayClipsLoading ? "Refreshing..." : "Refresh Clips"}
               </button>
+            </div>
+          </div>
+          <div className={styles.toggleRow}>
+            <span>Persist Replay Events</span>
+            <label className={styles.switch}>
+              <input
+                type="checkbox"
+                checked={Boolean(replayPersistEvents)}
+                onChange={(e) => onToggleReplayPersist?.(e.target.checked)}
+              />
+              <span className={styles.slider}></span>
+            </label>
+          </div>
+          <div className={styles.inlineInfo}>
+            <div className={styles.inlineInfoTitle}>Replay Persistence</div>
+            <div>
+              {replayPersistEvents
+                ? "Replay detections will be written to event history and can trigger notifications."
+                : "Replay detections stay visual-only unless persistence is explicitly enabled."}
             </div>
           </div>
           <div className={styles.buttonGroup}>

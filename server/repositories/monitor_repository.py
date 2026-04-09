@@ -97,18 +97,28 @@ def insert_monitor_event(
     if not table_exists(conn, "events"):
         return None
 
+    cols = _event_columns(conn)
+    insert_cols = ["resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta"]
+    insert_vals = [resident_id, str(event_type), str(severity), str(model_code), None, float(score), json.dumps(meta)]
+    if "status" in cols:
+        insert_cols.append("status")
+        insert_vals.append("pending_review")
+
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO events (resident_id, type, severity, model_code, operating_point_id, score, meta) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (
-                resident_id,
-                str(event_type),
-                str(severity),
-                str(model_code),
-                None,
-                float(score),
-                json.dumps(meta),
-            ),
+            f"INSERT INTO events ({', '.join(insert_cols)}) VALUES ({', '.join(['%s'] * len(insert_cols))})",
+            tuple(insert_vals),
         )
         return cur.lastrowid
+
+
+def _event_columns(conn: Any) -> set[str]:
+    with conn.cursor() as cur:
+        backend = str(getattr(conn, "db_backend", "mysql")).lower()
+        if backend == "sqlite":
+            cur.execute("PRAGMA table_info(`events`)")
+            rows = cur.fetchall() or []
+            return {str(r.get("name")) for r in rows if isinstance(r, dict) and r.get("name") is not None}
+        cur.execute("SHOW COLUMNS FROM `events`")
+        rows = cur.fetchall() or []
+        return {str(r.get("Field")) for r in rows if isinstance(r, dict) and r.get("Field") is not None}
