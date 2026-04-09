@@ -6,9 +6,11 @@ Source: `./scripts/freeze_manifest.sh`
 ## Current Verdict
 
 Freeze-core path existence: **pass**  
-Freeze-core git cleanliness: **fail**
+Freeze-core git cleanliness: **pass**
 
-This means the current frozen boundary is now well defined and machine-checkable, but the repository still does not present a clean freeze snapshot.
+This means the current frozen boundary is now both well defined and clean at the allowlisted freeze-core level.
+
+The repository worktree is still dirty outside that boundary, so this is a **clean freeze-core state**, not a fully clean whole-repository state.
 
 ## What Is Already Closed
 
@@ -20,86 +22,49 @@ This means the current frozen boundary is now well defined and machine-checkable
 - report build has a stronger scripted entrypoint
 - canonical test entrypoint now exists
 
-## Freeze-Core Dirty Surface
+## Freeze-Core Status
 
-The latest `freeze_manifest` run shows these still-dirty freeze-core areas:
+The latest `freeze_manifest` run shows:
 
-### Runtime / code layer
-
-- `server/`
-- `src/fall_detection/evaluation/fit_ops.py`
-- `tests/server/*`
-- `apps/src/pages/monitor/components/ModelInfoCard.js`
-- `apps/src/pages/settings/SettingsPage.js`
-- `docker-compose.yml`
+- no missing freeze-core paths
+- no dirty freeze-core git-status entries
 
 Interpretation:
 
-- the live application/runtime layer is still changing
-- this is the highest-priority blocker for a true freeze snapshot
+- the defended freeze-core boundary is now internally coherent
+- the main remaining churn is outside that minimum frozen layer
 
-### Config / evidence layer
+## Remaining Non-Core Dirty Surface
 
-- `configs/ops/README.md`
-- `artifacts/reports/cross_dataset_manifest.json`
-- `artifacts/reports/cross_dataset_summary.csv`
-- `artifacts/figures/report/cross_dataset_transfer_summary.png`
-- untracked main report figures:
-  - `cross_dataset_f1_comparison.png`
-  - `online_mc_dropout_delta.png`
-  - `online_replay_accuracy_heatmap.png`
-  - `stability_f1_errorbars.png`
-- untracked replay matrix artifacts:
-  - `artifacts/reports/online_mc_replay_matrix_20260402.csv`
-  - `artifacts/reports/online_mc_replay_matrix_20260402.json`
+The repository still contains non-core dirty state, especially in:
+
+- archived ops and historical tuning families
+- archive/supporting docs not yet committed
+- branch-only `research_ops` and report-supporting notes
+- archive/diagnostic artifact directories
+- legacy tracked deletions outside the freeze-core boundary
 
 Interpretation:
 
-- the active evidence layer exists and is internally more coherent than before
-- but several authoritative artifacts are still untracked or locally modified
-
-### Control / submission-doc layer
-
-- `docs/project_targets/README.md`
-- `docs/project_targets/CLAIM_TABLE.md`
-- `docs/project_targets/CROSS_DATASET_REPORT.md`
-- `docs/project_targets/THESIS_EVIDENCE_MAP.md`
-- `docs/project_targets/FINAL_CANDIDATES.md`
-- `docs/project_targets/SIGNIFICANCE_REPORT.md`
-- `docs/project_targets/FIELD_VALIDATION_RUNBOOK.md`
-- `docs/project_targets/DEPLOYMENT_FIELD_VALIDATION.md`
-- `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
-- `docs/project_targets/FINAL_SUBMISSION_CHECKLIST.md`
-- `docs/project_targets/LOCKED_PARAMS_RUNBOOK.md`
-- `docs/project_targets/PAPER_PUBLICATION_READINESS_PLAN.md`
-- `docs/project_targets/PLOT_EVIDENCE_CHECKLIST.md`
-- `docs/project_targets/PROJECT_FINAL_YEAR_EXECUTION_PLAN.md`
-- untracked active control docs:
-  - `docs/project_targets/PAPER_CLAIMS_AND_LIMITATIONS_DRAFT.md`
-  - `docs/project_targets/PAPER_SUBMISSION_READINESS_CHECKLIST.md`
-  - `docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md`
-
-Interpretation:
-
-- the active thesis-control layer is still being rewritten
-- this is acceptable for branch work, but not for a frozen external snapshot
+- these remaining changes still matter for branch hygiene
+- but they no longer block the minimum frozen release boundary
 
 ## Main Remaining Blockers
 
-1. Live runtime code and server paths are still modified.
-2. Several freeze-core evidence artifacts remain untracked.
-3. Active thesis-control docs remain modified and partially untracked.
-4. Freeze-core still overlaps with a broader dirty worktree.
+1. The whole repository is not yet clean outside the freeze-core boundary.
+2. Archive/supporting material is not yet fully committed or deliberately parked.
+3. Branch-only docs and historical surfaces still need their own final hygiene pass.
 
 ## Recommended Next Sequence
 
-1. Stabilize the live runtime/code layer.
-2. Stage and freeze the authoritative evidence artifacts.
-3. Stage and freeze the active `docs/project_targets` control set.
-4. Re-run:
+1. Preserve the current freeze-core state.
+2. Decide whether to:
+   - commit remaining branch-only supporting/archive material, or
+   - leave it explicitly outside the defended freeze boundary.
+3. Re-run:
 
 ```bash
 ./scripts/freeze_manifest.sh
 ```
 
-5. Do not call the repo freeze-ready until `[freeze-core-git-status]` is empty or intentionally explained.
+4. Do not confuse a clean freeze-core with a fully clean all-files worktree.

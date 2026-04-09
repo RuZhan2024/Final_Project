@@ -168,7 +168,7 @@ Status: `closed`
 Priority: `P2`  
 Final release blocker: `no`
 
-### 3. High: Repository authoritative state is unclear because the worktree is heavily mixed
+### 3. Medium: Repository authoritative state is clearer than before and the freeze-core is now clean, but the wider worktree is still mixed
 
 Evidence:
 
@@ -185,21 +185,23 @@ What I found:
   - `artifacts/figures/report` -> main root plus `diagnostic/`
   - `configs/ops` -> active root plus `archive/muvim/`
   - `docs/project_targets` -> active root plus `archive/planning/` and `supporting/`
-- Even after that, the worktree still contains a large amount of uncommitted and mixed-state material.
+- The freeze-core allowlist now passes cleanly under `./scripts/freeze_manifest.sh`.
+- Even after that, the wider worktree still contains a large amount of non-core mixed-state material.
 
 Impact:
 
 - Live/archive/generated boundaries are better than before.
-- The repository is still not presenting one clean, authoritative frozen state.
+- The defended freeze-core boundary is now clean.
+- The repository as a whole is still not a fully clean all-files snapshot.
 
 Required action:
 
-- Finish the freeze pass against a clean worktree and commit snapshot.
-- Use the new freeze inventory and allowlists as the boundary contract.
+- Preserve the current clean freeze-core state.
+- Decide how much of the remaining non-core branch material should be committed versus left outside the defended freeze boundary.
 
 Status: `partially_closed`  
-Priority: `P0`  
-Final release blocker: `yes`
+Priority: `P1`  
+Final release blocker: `no`
 
 ### 4. High: Test contract is brittle and environment-sensitive
 
