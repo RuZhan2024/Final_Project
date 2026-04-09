@@ -18,6 +18,7 @@ except (ImportError, ModuleNotFoundError):
 from ..core import (
     SkeletonClipPayload,
     _anonymize_xy_inplace,
+    _col_exists,
     _cols,
     _detect_variants,
     _event_clips_dir,
@@ -75,6 +76,7 @@ def _dispatch_safe_guard_from_event(
     caregiver_name = ""
     caregiver_email = ""
     caregiver_phone = ""
+    caregiver_telegram_chat_id = ""
 
     if _table_exists(conn, "system_settings"):
         with conn.cursor() as cur:
@@ -105,9 +107,12 @@ def _dispatch_safe_guard_from_event(
                 model_code = str(s.get("active_model_code") or model_code)
 
     if _table_exists(conn, "caregivers"):
+        select_cols = "name, email, phone"
+        if _col_exists(conn, "caregivers", "telegram_chat_id"):
+            select_cols += ", telegram_chat_id"
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, email, phone FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
+                f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                 (int(resident_id),),
             )
             cg = cur.fetchone() or {}
@@ -115,6 +120,7 @@ def _dispatch_safe_guard_from_event(
             caregiver_name = str(cg.get("name") or "").strip()
             caregiver_email = str(cg.get("email") or "").strip()
             caregiver_phone = str(cg.get("phone") or "").strip()
+            caregiver_telegram_chat_id = str(cg.get("telegram_chat_id") or "").strip()
 
     if not notify_on_every_fall:
         return
@@ -138,12 +144,9 @@ def _dispatch_safe_guard_from_event(
             meta={"event_db_id": int(event_id)},
         ),
         NotificationPreferences(
-            phone_enabled=bool(notify_phone),
-            sms_enabled=bool(notify_sms),
-            email_enabled=True,
+            telegram_enabled=bool(notify_on_every_fall),
             caregiver_name=caregiver_name,
-            caregiver_phone=caregiver_phone,
-            caregiver_email=caregiver_email,
+            caregiver_telegram_chat_id=caregiver_telegram_chat_id,
         ),
     )
 

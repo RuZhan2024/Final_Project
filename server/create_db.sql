@@ -22,6 +22,7 @@ CREATE TABLE caregivers (
   name VARCHAR(100) NOT NULL,
   email VARCHAR(255) NULL,
   phone VARCHAR(50) NULL,
+  telegram_chat_id VARCHAR(120) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_caregiver_resident FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE CASCADE
 );

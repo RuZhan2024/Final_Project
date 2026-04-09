@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from email.message import EmailMessage
-
 from server.notifications.config import NotificationConfig
 from server.notifications.manager import NotificationManager
 from server.notifications.models import DeliveryResult, NotificationPreferences, SafeGuardEvent
@@ -20,6 +18,9 @@ def _cfg() -> NotificationConfig:
         low_uncertainty_threshold=0.05,
         high_uncertainty_threshold=0.15,
         alert_cooldown_seconds=30,
+        telegram_bot_token="bot-token",
+        telegram_chat_id="12345",
+        telegram_api_base="https://api.telegram.org",
         twilio_account_sid="sid",
         twilio_auth_token="token",
         twilio_from_phone="+10000000000",
@@ -57,36 +58,23 @@ def _event() -> SafeGuardEvent:
     )
 
 
-def test_notification_manager_dispatch_prefers_caregiver_contacts(monkeypatch):
+def test_notification_manager_dispatch_prefers_caregiver_chat_id(monkeypatch):
     manager = NotificationManager(config=_cfg())
-    sent = {"email_to": None, "sms_to": None, "phone_to": None, "email_body": None}
+    sent = {"chat_id": None, "text": None}
 
-    def _fake_email_send(msg: EmailMessage):
-        sent["email_to"] = msg["To"]
-        sent["email_body"] = msg.get_content()
-        return DeliveryResult(channel="email", attempted=True, status="sent", detail="")
+    def _fake_send_message(*, chat_id: str, text: str):
+        sent["chat_id"] = chat_id
+        sent["text"] = text
+        return DeliveryResult(channel="telegram", attempted=True, status="sent", detail="")
 
-    def _fake_sms(*, to_phone: str, message: str):
-        sent["sms_to"] = to_phone
-        return DeliveryResult(channel="sms", attempted=True, status="sent", detail=message)
-
-    def _fake_call(*, to_phone: str, message: str):
-        sent["phone_to"] = to_phone
-        return DeliveryResult(channel="phone", attempted=True, status="sent", detail=message)
-
-    monkeypatch.setattr(manager._email, "send", _fake_email_send)
-    monkeypatch.setattr(manager._twilio, "sms", _fake_sms)
-    monkeypatch.setattr(manager._twilio, "call", _fake_call)
+    monkeypatch.setattr(manager._telegram, "send_message", _fake_send_message)
 
     decision = manager._classifier.classify(
         _event(),
         NotificationPreferences(
-            phone_enabled=True,
-            sms_enabled=True,
-            email_enabled=True,
+            telegram_enabled=True,
             caregiver_name="Alice",
-            caregiver_phone="+447700900123",
-            caregiver_email="alice@example.com",
+            caregiver_telegram_chat_id="987654321",
         ),
     )
 
@@ -94,16 +82,12 @@ def test_notification_manager_dispatch_prefers_caregiver_contacts(monkeypatch):
         _event(),
         decision,
         NotificationPreferences(
-            phone_enabled=True,
-            sms_enabled=True,
-            email_enabled=True,
+            telegram_enabled=True,
             caregiver_name="Alice",
-            caregiver_phone="+447700900123",
-            caregiver_email="alice@example.com",
+            caregiver_telegram_chat_id="987654321",
         ),
     )
 
-    assert sent["email_to"] == "alice@example.com"
-    assert sent["sms_to"] == "+447700900123"
-    assert sent["phone_to"] == "+447700900123"
-    assert "ai_analysis_report:" in (sent["email_body"] or "")
+    assert sent["chat_id"] == "987654321"
+    assert "Safe Guard alert" in (sent["text"] or "")
+    assert "Ref: evt-123" in (sent["text"] or "")

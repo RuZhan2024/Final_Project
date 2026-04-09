@@ -3,6 +3,35 @@ from __future__ import annotations
 import os
 
 from dataclasses import dataclass
+from pathlib import Path
+
+
+_ENV_LOADED = False
+
+
+def _load_local_env_files() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+
+    repo_root = Path(__file__).resolve().parents[2]
+    for name in (".env.local.private", ".env.local", ".env"):
+        path = repo_root / name
+        if not path.exists():
+            continue
+        try:
+            for raw_line in path.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                os.environ[key] = value.strip()
+        except OSError:
+            continue
+    _ENV_LOADED = True
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -43,6 +72,9 @@ class NotificationConfig:
     low_uncertainty_threshold: float
     high_uncertainty_threshold: float
     alert_cooldown_seconds: int
+    telegram_bot_token: str
+    telegram_chat_id: str
+    telegram_api_base: str
     twilio_account_sid: str
     twilio_auth_token: str
     twilio_from_phone: str
@@ -61,6 +93,7 @@ class NotificationConfig:
 
 
 def load_notification_config() -> NotificationConfig:
+    _load_local_env_files()
     return NotificationConfig(
         safe_guard_enabled=_get_bool("SAFE_GUARD_ENABLED", False),
         sqlite_path=os.getenv("SAFE_GUARD_SQLITE_PATH", "server/safe_guard_notifications.sqlite3"),
@@ -72,6 +105,9 @@ def load_notification_config() -> NotificationConfig:
         low_uncertainty_threshold=_get_float("LOW_UNCERTAINTY_THRESHOLD", 0.05),
         high_uncertainty_threshold=_get_float("HIGH_UNCERTAINTY_THRESHOLD", 0.15),
         alert_cooldown_seconds=max(0, _get_int("ALERT_COOLDOWN_SECONDS", 60)),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("CAREGIVER_TELEGRAM_CHAT_ID", "").strip(),
+        telegram_api_base=os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
         twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
         twilio_from_phone=os.getenv("TWILIO_FROM_PHONE", "").strip(),

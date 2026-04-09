@@ -44,9 +44,11 @@ class SQLiteNotificationStore:
             margin REAL NOT NULL,
             uncertainty REAL NOT NULL,
             alert_tier TEXT NOT NULL,
+            telegram_attempted INTEGER NOT NULL DEFAULT 0,
             phone_attempted INTEGER NOT NULL DEFAULT 0,
             sms_attempted INTEGER NOT NULL DEFAULT 0,
             email_attempted INTEGER NOT NULL DEFAULT 0,
+            telegram_status TEXT,
             phone_status TEXT,
             sms_status TEXT,
             email_status TEXT,
@@ -83,6 +85,14 @@ class SQLiteNotificationStore:
         """
         with self._lock, self._connect() as conn:
             conn.executescript(schema)
+            cols = {
+                str(row["name"])
+                for row in (conn.execute("PRAGMA table_info(notification_events)").fetchall() or [])
+            }
+            if "telegram_attempted" not in cols:
+                conn.execute("ALTER TABLE notification_events ADD COLUMN telegram_attempted INTEGER NOT NULL DEFAULT 0")
+            if "telegram_status" not in cols:
+                conn.execute("ALTER TABLE notification_events ADD COLUMN telegram_status TEXT")
 
     def upsert_event(self, event: SafeGuardEvent, decision: TierDecision, prefs: NotificationPreferences) -> None:
         payload_json = json.dumps(
@@ -99,12 +109,9 @@ class SQLiteNotificationStore:
                 "source": event.source,
                 "meta": event.meta,
                 "preferences": {
-                    "phone_enabled": prefs.phone_enabled,
-                    "sms_enabled": prefs.sms_enabled,
-                    "email_enabled": prefs.email_enabled,
+                    "telegram_enabled": prefs.telegram_enabled,
                     "caregiver_name": prefs.caregiver_name,
-                    "caregiver_phone": prefs.caregiver_phone,
-                    "caregiver_email": prefs.caregiver_email,
+                    "caregiver_telegram_chat_id": prefs.caregiver_telegram_chat_id,
                 },
             }
         )
@@ -152,7 +159,7 @@ class SQLiteNotificationStore:
                 """
                 SELECT event_id FROM notification_events
                 WHERE event_id = ?
-                  AND (phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
+                  AND (telegram_attempted = 1 OR phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
                 LIMIT 1
                 """,
                 (event_id,),
@@ -166,7 +173,7 @@ class SQLiteNotificationStore:
                 SELECT timestamp FROM notification_events
                 WHERE resident_id = ?
                   AND alert_tier IN ('tier1_high_confidence_fall', 'tier2_ambiguous_fall')
-                  AND (phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
+                  AND (telegram_attempted = 1 OR phone_attempted = 1 OR sms_attempted = 1 OR email_attempted = 1)
                 ORDER BY timestamp DESC
                 LIMIT 1
                 """,
