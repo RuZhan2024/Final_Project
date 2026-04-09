@@ -116,10 +116,3 @@ export async function triggerTestFall(apiBase, modelCode) {
     body: { resident_id: 1, model_code: modelCode },
   });
 }
-
-export async function triggerTestNotification(apiBase, message) {
-  return await apiRequest(apiBase, "/api/notifications/test", {
-    method: "POST",
-    body: { resident_id: 1, channel: "email", message },
-  });
-}
