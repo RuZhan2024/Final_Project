@@ -1,396 +1,330 @@
 # Fall Detection v2
 
-End-to-end fall detection project with:
-- ML pipeline (pose windows -> TCN/GCN training -> fit operating points -> evaluation)
-- FastAPI backend for live/replay inference
-- React frontend monitor UI
+An end-to-end fall detection project with:
 
-Canonical Python package code lives in `src/fall_detection`.
+- pose-based preprocessing and window generation
+- TCN and GCN model training/evaluation
+- a FastAPI backend for online inference
+- a React frontend for live and replay monitoring
 
----
+The canonical Python package code lives in `src/fall_detection`.
 
-## 1) Quick Start
+## Submission Overview
 
-Run from repo root.
+This repository is prepared to be reviewed in two modes:
 
-### A. One command to run ML pipeline (CAUCAFall, TCN + GCN)
+1. lightweight demo mode
+   - frontend + backend
+   - no MySQL required
+   - lowest setup friction
+2. full persistent-system mode
+   - frontend + backend + MySQL
+   - Docker-backed database persistence
+   - preferred when the database layer also needs to be demonstrated
 
-```bash
-AUTO_DO_EXTRACT=0 ADAPTER_USE=1 make pipeline-auto-tcn-caucafall pipeline-auto-gcn-caucafall
-```
+For the current monitor demo, the recommended review path is:
 
-Notes:
-- `AUTO_DO_EXTRACT=0` means no raw extraction is triggered.
-- This assumes your `data/interim` / `data/processed` inputs already exist.
+- dataset: `caucafall`
+- model: `TCN`
+- operating point: `OP2`
 
-### B. One command to bootstrap + start backend + frontend
+That is the main delivery profile used in the project's online validation and four-folder custom video verification.
+That is the preferred live demonstration profile because it is the strongest bounded online replay row in the current fixed 24-clip matrix. It should be treated as the runtime demo preset, not as a replacement for the broader evidence pack.
+
+## Quick Start
+
+Run all commands from the repository root.
+
+### Option A: One-command local demo
 
 ```bash
 make bootstrap-dev
 ```
 
+What it does:
+
+- creates `.venv` if missing
+- installs Python dependencies if missing
+- installs frontend dependencies if missing
+- starts backend on `127.0.0.1:8000`
+- starts frontend on `127.0.0.1:3000`
+
 Open:
-- Frontend: `http://localhost:3000`
-- Backend health: `http://127.0.0.1:8000/api/health`
+
+- frontend: `http://localhost:3000`
+- backend health: `http://127.0.0.1:8000/api/health`
 
 Notes:
-- `make bootstrap-dev` creates `.venv` and installs missing frontend deps if needed.
-- If your environment is already prepared, `make dev` starts faster.
-- The command fails fast if port `8000` or `3000` is already in use.
-- When the frontend process exits, the script also stops the backend it started.
 
-### C. One command to start frontend + backend + MySQL with persistence
+- use `make dev` if `.venv` and `apps/node_modules` already exist
+- this mode does not require MySQL
+- DB-backed features fall back gracefully when DB is unavailable
+- for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
+
+### Option B: One-command full system with persistent MySQL
 
 ```bash
 docker compose up
 ```
 
 Open:
-- Frontend: `http://localhost:3000`
-- Backend health: `http://127.0.0.1:8000/api/health`
+
+- frontend: `http://localhost:3000`
+- backend health: `http://127.0.0.1:8000/api/health`
+
+What it starts:
+
+- `frontend`
+- `backend`
+- `mysql`
 
 Notes:
-- This starts `frontend`, `backend`, and `mysql` together.
-- MySQL data is persisted in the `mysql_data` Docker volume.
-- The first startup initializes the DB from `server/create_db.sql`.
-- This is the preferred full-system delivery mode when DB persistence needs to be demonstrated.
-- If host port `3306` is already occupied, keep the frontend/backend defaults and move only the exposed MySQL port:
+
+- MySQL data is persisted in the `mysql_data` Docker volume
+- the database is initialized from `server/create_db.sql`
+- if host port `3306` is already occupied, move only the exposed MySQL port:
 
 ```bash
 MYSQL_PORT=3307 docker compose up
 ```
 
----
+Makefile wrappers are also available:
 
-## 2) Project Layout
+```bash
+make compose-up
+make compose-down
+```
+
+## Requirements
+
+### Local dev mode
+
+- Python 3.10+
+- Node.js / npm
+
+### Full Docker mode
+
+- Docker Desktop or Docker Engine with `docker compose`
+
+## Repository Layout
 
 ```text
 .
-├── src/fall_detection/          # Core package (data, training, eval, deploy runtime)
-├── scripts/                     # CLI entrypoints used by Makefile
+├── src/fall_detection/          # Core package: data, training, eval, deploy runtime
 ├── server/                      # FastAPI backend
 ├── apps/                        # React frontend
-├── configs/                     # labels, splits, ops
-├── data/                        # raw/interim/processed
-├── outputs/                     # checkpoints, metrics, plots
-├── artifacts/                   # reports, manifests, audit outputs
-├── tests/                       # smoke + contract tests
-└── Makefile                     # primary orchestration interface
+├── scripts/                     # Utility and orchestration scripts
+├── configs/                     # labels, splits, ops, delivery profiles
+├── data/                        # raw/interim/processed datasets
+├── outputs/                     # checkpoints and training outputs
+├── artifacts/                   # evaluation outputs, figures, evidence bundles
+├── tests/                       # smoke and contract tests
+├── docs/                        # active docs, runbooks, submission guidance
+└── Makefile                     # main project entrypoint
 ```
 
----
+## Common Workflows
 
-## 3) Environment Setup
-
-## 3.1 Python
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e . --no-build-isolation
-```
-
-For reproducible installs:
-
-```bash
-pip install -r requirements.lock.txt
-```
-
-## 3.2 Frontend
-
-```bash
-cd apps
-npm install
-cd ..
-```
-
-## 3.3 Optional: DB-backed endpoints
-
-If you want DB persistence for settings/events/caregivers, configure env vars (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME`).
-
-Recommended delivery split:
-
-- lightweight review mode: `make bootstrap-dev`
-  - no MySQL required
-- full persistent-system mode: `docker compose up`
-  - Docker-backed frontend + backend + MySQL
-  - preferred for supervisor delivery when DB persistence needs to be demonstrated
-
-See:
-
-- `docs/reports/runbooks/SUPERVISOR_DELIVERY_MODES.md`
-
----
-
-## 4) Datasets and Data Modes
-
-Supported dataset codes:
-- `le2i`
-- `urfd`
-- `caucafall`
-- `muvim`
-
-Expected raw roots by default:
-- `data/raw/LE2i`
-- `data/raw/UR_Fall_clips`
-- `data/raw/CAUCAFall`
-- `data/raw/MUVIM`
-
-Two common usage modes:
-1. **Raw mode**: extraction + preprocess + labels + splits + windows
-2. **Raw-free mode**: start from existing `data/interim/.../pose_npz_raw` or `data/processed/...`
-
----
-
-## 5) Core Makefile Workflows
-
-Show all available targets:
+List available targets:
 
 ```bash
 make help
 ```
 
-## 5.1 Data preparation
+### Start the system
 
 ```bash
-make pipeline-data-le2i
+make bootstrap-dev
+make dev
+make compose-up
+make compose-down
+```
+
+### Prepare data
+
+```bash
 make pipeline-data-caucafall
+make pipeline-data-le2i
 ```
 
-No-extract mode:
+No-extract variants:
 
 ```bash
-make pipeline-le2i-noextract
 make pipeline-caucafall-noextract
+make pipeline-le2i-noextract
 ```
 
-## 5.2 Training
+### Train models
 
 ```bash
 make train-tcn-caucafall
 make train-gcn-caucafall
 ```
 
-## 5.3 Fit operating points + evaluate + plot
+### Fit operating points and evaluate
 
 ```bash
 make fit-ops-caucafall
 make fit-ops-gcn-caucafall
 make eval-caucafall
 make eval-gcn-caucafall
-make plot-caucafall
-make plot-gcn-caucafall
-make plot-confmat-caucafall
-make plot-confmat-gcn-caucafall
-make plot-failure-caucafall
-make plot-failure-gcn-caucafall
-make plot-balance-caucafall
 ```
 
-## 5.4 Full pipelines
-
-```bash
-make pipeline-caucafall
-make pipeline-gcn-caucafall
-```
-
-## 5.5 Auto pipelines (single command families)
+### Run auto pipelines
 
 ```bash
 make pipeline-auto-tcn-caucafall ADAPTER_USE=1
 make pipeline-auto-gcn-caucafall ADAPTER_USE=1
 ```
 
-Optional extraction toggle:
+If raw extraction should be included:
 
 ```bash
 AUTO_DO_EXTRACT=1 make pipeline-auto-tcn-caucafall ADAPTER_USE=1
 ```
 
----
+## Validation Before Submission
 
-## 6) Locked Reproducibility Profiles (CAUCAFall)
-
-Project includes locked TCN/GCN reproducibility paths.
-
-Reproduce locked profiles:
+Run the static release checks:
 
 ```bash
-make repro-best-caucafall ADAPTER_USE=1
-make repro-best-muvim ADAPTER_USE=1
+make release-check
 ```
 
-Promote locked ops to canonical deploy ops:
+This currently verifies:
+
+- git status visibility
+- release boundary script availability
+- Python compileability for `src/fall_detection`, `server`, and `scripts`
+- frontend production build
+
+Recommended contract/smoke test subset:
 
 ```bash
-make apply-locked-ops-caucafall ADAPTER_USE=1
+./scripts/run_canonical_tests.sh torch-free
 ```
 
-Current canonical deploy files:
+Torch-dependent monitor subset:
+
+```bash
+./scripts/run_canonical_tests.sh monitor
+```
+
+## Runtime Profiles and Delivery Notes
+
+Current online deployment profiles are loaded from:
+
 - `configs/ops/tcn_caucafall.yaml`
 - `configs/ops/gcn_caucafall.yaml`
+- `configs/ops/tcn_le2i.yaml`
+- `configs/ops/gcn_le2i.yaml`
 
-LE2i paper-comparison diagnostic profile (GCN, scene-scoped start-guard):
+Important delivery note:
 
-```bash
-make train-best-gcn-le2i-paper ADAPTER_USE=1
-make repro-best-gcn-le2i-paper ADAPTER_USE=1
-```
+## Render Deployment Notes
 
-Artifacts:
-- `configs/ops/gcn_le2i_paper_profile.yaml`
-- `outputs/metrics/gcn_le2i_opt33_r8_dataside_noise_paperops.json`
-- Full locked-parameter runbook:
-  - `docs/project_targets/LOCKED_PARAMS_RUNBOOK.md`
+Recommended cloud deployment shape:
 
-Locked LE2i GCN training parameters (dataset-specific, does not alter global defaults):
-- resume: `outputs/le2i_gcn_W48S12_opt33_r4_recallpush_promoted/best.pt`
-- epochs/min_epochs: `45/8`, lr: `3e-4`, batch: `128`
-- features: `motion=1, conf=1, bone=1, bonelen=1, two_stream=1, fuse=concat`
-- robustness: `x_noise_std=0.01, x_quant_step=0.002`
-- regularization: `dropout=0.18, mask_joint_p=0.00, mask_frame_p=0.00`
-- training stability: `use_ema=1, ema_decay=0.999, deterministic=1, num_workers=0`
+- frontend on Render static hosting
+- backend on Render web service
+- app data on SQLite with a persistent disk
+- Telegram caregiver notification
+- AI message analysis via Gemini API
 
----
-
-## 7) Backend API
-
-Run backend:
+Suggested backend environment variables:
 
 ```bash
-source .venv/bin/activate
-PYTHONPATH="$(pwd)/src:$(pwd)" uvicorn server.app:app --host 127.0.0.1 --port 8000
+DB_BACKEND=sqlite
+SQLITE_PATH=/var/data/cloud_demo.sqlite3
+SAFE_GUARD_ENABLED=1
+
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+CAREGIVER_TELEGRAM_CHAT_ID=your_telegram_chat_id
+
+AI_REPORTS_ENABLED=1
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash
+OPENAI_TIMEOUT_S=12
+
+APP_BASE_URL=https://your-frontend-domain.onrender.com
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.onrender.com
 ```
 
-Useful endpoints:
-- `GET /api/health`
-- `GET /api/spec`
-- `GET /api/settings?resident_id=1`
-- `POST /api/monitor/predict_window` (legacy HTTP path, still available)
-- `WS /api/monitor/ws` (live monitor primary inference path)
+Operational note:
 
-OpenAPI:
-- `http://127.0.0.1:8000/openapi.json`
+- caregiver `telegram_chat_id` can come from the app database or the env fallback
+- Telegram and Gemini credentials should be stored only in Render environment variables
+- SMS / phone / email escalation are future-work channels, not the current implemented delivery path
 
----
+Suggested Render blueprint:
 
-## 8) Frontend
+- [render.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/render.yaml)
+- backend uses a persistent disk mounted at `/var/data`
+- frontend should set `REACT_APP_API_BASE` to the backend Render URL
 
-Run frontend:
+- the main reviewed online path is `caucafall + TCN + OP2`
+- the four-folder custom delivery evaluation lives under `configs/delivery/` and `artifacts/fall_test_eval_20260315*/`
 
-```bash
-cd apps
-npm start
-```
+## Datasets and Data Modes
 
-Default URL:
-- `http://localhost:3000`
+Supported dataset codes:
 
-API base URL is configured in frontend config/env (default localhost backend).
+- `le2i`
+- `urfd`
+- `caucafall`
+- `muvim`
 
----
+Expected raw roots by default:
 
-## 9) Replay + Live Acceptance Lock
+- `data/raw/LE2i`
+- `data/raw/UR_Fall_clips`
+- `data/raw/CAUCAFall`
+- `data/raw/MUVIM`
 
-Use this to verify:
-1. replay mode is stable/repeatable
-2. live mode is acceptable on target hardware
+Two common usage modes:
 
-One command:
+1. raw mode
+   - extract poses
+   - preprocess poses
+   - generate labels and splits
+   - build train/eval windows
+2. raw-free mode
+   - start from existing `data/interim/...` or `data/processed/...`
+   - useful when processed data already exists
 
-```bash
-bash tools/run_replay_live_acceptance.sh
-```
+## Documentation Guide
 
-Outputs:
-- `artifacts/reports/replay_live_acceptance.md`
+Use these documents as the main entrypoints:
 
-Detailed lock/runbook:
-- `docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md`
+- documentation index: `docs/README.md`
+- submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
+- supervisor delivery modes: `docs/reports/runbooks/SUPERVISOR_DELIVERY_MODES.md`
+- user guide: `docs/reports/runbooks/USER_GUIDE.md`
+- demo runbook: `docs/reports/runbooks/DEMO_RUNBOOK.md`
+- final demo walkthrough: `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md`
+- delivery alignment status: `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
+- experiment evidence index: `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md`
+- config-to-result evidence map: `docs/reports/runbooks/CONFIG_RESULT_EVIDENCE_MAP.md`
 
-Recommended profile for acceptance:
-- dataset: `caucafall`
-- model: `TCN` (primary), `GCN` (secondary)
-- op: `OP-2`
-- transport: `WebSocket` (`/api/monitor/ws`)
+## Evidence and Reporting
 
----
+For report and thesis writing, the key evidence locations are:
 
-## 10) Quality and Audit Commands
+- runtime and delivery evidence: `configs/ops/`, `docs/reports/runbooks/ONLINE_OPS_PROFILE_MATRIX.md`
+- custom 24-video delivery evidence: `configs/delivery/`, `artifacts/fall_test_eval_20260315/`, `artifacts/fall_test_eval_20260315_online_reverify_20260315/`
+- online repair and refit evidence: `artifacts/online_ops_fit_20260315*/`, `artifacts/ops_reverify_20260315*/`
+- figures and summaries: `artifacts/figures/`, `artifacts/reports/`
 
-Quick integrity checks:
+Use `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md` as the shortest evidence navigation page.
 
-```bash
-python -m compileall src/fall_detection server scripts
-python -c "import fall_detection; import server.app"
-```
+## Notes for Reviewers
 
-Audit gates:
+- if you only want to see the system working, use `make bootstrap-dev`
+- if you want DB persistence included, use `docker compose up`
+- if local `3306` is already occupied, use `MYSQL_PORT=3307 docker compose up`
+- archived teaching/tutorial material has been moved under `docs/archive/tutorial_materials/`
+- active project/report/thesis material is under `docs/project_targets/`, `docs/reports/`, and `artifacts/`
 
-```bash
-make audit-smoke
-make audit-ci
-```
 
-API contract smoke:
-
-```bash
-PYTHONPATH="$(pwd)/src:$(pwd)" python3 scripts/smoke_api_contract.py
-```
-
----
-
-## 11) Common Issues
-
-## 11.1 `pipeline-auto-*` fails at extraction
-
-You likely do not have raw files matching expected glob patterns. Use raw-free mode:
-
-```bash
-AUTO_DO_EXTRACT=0 ADAPTER_USE=1 make pipeline-auto-tcn-caucafall
-```
-
-## 10.2 `fit_ops` feature mismatch (e.g. 17 vs 33 joints)
-
-Windows and checkpoint were built with different feature contracts. Rebuild windows and retrain consistently (same adapter/joint layout + feature flags).
-
-## 10.3 OpenMP shared-memory error in restricted environments
-
-Use:
-
-```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
-```
-
-before running eval/fit commands.
-
-## 10.4 Frontend “Failed to fetch”
-
-Check:
-- backend is running on the expected host/port
-- frontend API base URL points to backend
-- CORS settings permit frontend origin
-
----
-
-## 11) Recommended Demo Flow (Examiner/Supervisor)
-
-1. Run ML command (Section 1A)
-2. Run app command (Section 1B)
-3. In UI Settings:
-   - dataset: `caucafall`
-   - model: `TCN` or `GCN`
-   - OP: `OP-2`
-4. Use Replay mode with prepared demo clips
-
----
-
-## 12) Additional Docs
-
-- Documentation index: `docs/README.md`
-- Submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
-- Plot selection guide for report/paper: `docs/project_targets/PLOT_SELECTION_FOR_REPORT.md`
-- Backend details: `server/README.md`
-- Reports/checklists: `docs/reports/`
-- Project targets and execution plan: `docs/project_targets/`
+// uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
