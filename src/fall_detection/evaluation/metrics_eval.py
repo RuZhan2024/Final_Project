@@ -218,6 +218,8 @@ class LabeledWindows(Dataset):
         self.arch = str(arch).lower()
         self.two_stream = bool(two_stream)
 
+        # Keep evaluator discovery aligned with training/deploy runners, which
+        # also accept nested window directories.
         self.files = sorted(glob.glob(os.path.join(win_dir, "**", "*.npz"), recursive=True))
         if not self.files:
             raise FileNotFoundError(f"No .npz windows found under: {win_dir}")

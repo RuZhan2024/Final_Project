@@ -57,6 +57,8 @@ class NotificationManager:
             )
 
         decision = self._classifier.classify(event, prefs)
+        # Persist the decision first so the audit trail remains the source of truth
+        # even when the outbound channel is later suppressed or fails.
         self._store.upsert_event(event, decision, prefs)
 
         if decision.tier.value == "tier3_silent":
@@ -112,6 +114,8 @@ class NotificationManager:
                 )
             )
 
+        # Delivery attempts are recorded in the Safe Guard store, not the older
+        # queue-log surface, so operator-visible history matches actual dispatch.
         for result in results:
             self._store.record_delivery(event.event_id, result)
 

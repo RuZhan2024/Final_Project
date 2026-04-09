@@ -40,6 +40,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!primary) return;
+    // Re-sync even when the same caregiver row is rewritten with normalized data;
+    // depending only on the id would leave the form showing stale values.
     setCgName(primary.name || "");
     setCgTelegramChatId(primary.telegram_chat_id || "");
   }, [primary?.id, primary?.name, primary?.telegram_chat_id]);

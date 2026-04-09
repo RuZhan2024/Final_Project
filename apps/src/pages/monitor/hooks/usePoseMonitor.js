@@ -642,6 +642,8 @@ export function usePoseMonitor({
       streamFps: streamFps || fpsEstimateRef.current || null,
       mcEnabled,
       mcCfg,
+      // Replay persistence is explicit now; live mode still follows monitoring
+      // state so passive viewing does not silently create events.
       persist: (sourceMode === "video" ? replayPersistEvents : monitoringOnRef.current) || storeEventClips,
       endTs: windowEndTs,
     });

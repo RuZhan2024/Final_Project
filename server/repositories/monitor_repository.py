@@ -101,6 +101,8 @@ def insert_monitor_event(
     insert_cols = ["resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta"]
     insert_vals = [resident_id, str(event_type), str(severity), str(model_code), None, float(score), json.dumps(meta)]
     if "status" in cols:
+        # Newer schemas track review state directly on events. Keep runtime-created
+        # rows aligned with the same pending-review contract used by the UI.
         insert_cols.append("status")
         insert_vals.append("pending_review")
 

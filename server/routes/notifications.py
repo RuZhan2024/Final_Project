@@ -21,6 +21,8 @@ def list_notifications(
 ) -> Dict[str, Any]:
     manager = get_notification_manager()
     try:
+        # Expose the Safe Guard audit store directly so the API reflects actual
+        # notification attempts rather than the legacy queue-log surface.
         rows = manager.store.list_recent_events(int(resident_id), int(limit))
         return {
             "resident_id": int(resident_id),
@@ -68,6 +70,8 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
                 except Exception:
                     caregiver_name = ""
                     caregiver_chat_id = ""
+    # This route intentionally exercises the same manager path used by real
+    # persisted fall events; it should not bypass Safe Guard semantics.
     dispatch = manager.handle_event(
         SafeGuardEvent(
             event_id=f"manual-test-{int(datetime.now(timezone.utc).timestamp())}",

@@ -65,6 +65,8 @@ function Monitor({ isActive = true } = {}) {
   }, [settingsPayload]);
 
   const mode = useMemo(() => normModeFromCode(activeModelCode), [activeModelCode]);
+  // Keep the frontend target FPS tied to the active dataset contract so replay
+  // slicing and live-window construction stay aligned with backend expectations.
   const targetFps = useMemo(() => targetFpsForDataset(activeDatasetCode), [activeDatasetCode]);
 
   // ---- Backend spec + model picking ----

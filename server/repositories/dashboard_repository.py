@@ -74,6 +74,8 @@ def load_today_counts(
                 type_col = "event_type"
 
             if type_col is not None:
+                # Support the repo-native events schema first, but keep compatibility
+                # with older variants so dashboard counts do not silently drop to zero.
                 time_col = "created_at"
                 for candidate in ("event_time", "ts", "created_at"):
                     if col_exists(conn, "events", candidate):
