@@ -33,6 +33,8 @@ artifacts/ops_delivery_verify_20260315/
 artifacts/ops_reverify_20260315/
 artifacts/ops_reverify_20260315_after_gatefix/
 artifacts/ops_reverify_20260315_after_motionfix/
+artifacts/report_build/
+artifacts/replay_eval/
 !deploy_assets/
 !deploy_assets/checkpoints/
 !deploy_assets/checkpoints/*.pt
