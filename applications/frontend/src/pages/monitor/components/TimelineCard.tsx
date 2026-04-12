@@ -1,4 +1,4 @@
-import React from "react";
+import React, { type CSSProperties } from "react";
 
 import type { MarkerEntry } from "../types";
 
@@ -27,11 +27,13 @@ export function TimelineCard({ markers, statusText }: TimelineCardProps) {
           <div
             key={m.key ?? idx}
             className={styles.marker}
-            style={{
-              left: `${m.leftPct}%`,
-              "--marker-color": kindToColor(m.kind),
-              opacity: m.kind === "uncertain" ? 0.85 : 1,
-            }}
+            style={
+              {
+                left: `${m.leftPct}%`,
+                "--marker-color": kindToColor(m.kind),
+                opacity: m.kind === "uncertain" ? 0.85 : 1,
+              } as CSSProperties
+            }
             title={m.kind}
           />
         ))}
