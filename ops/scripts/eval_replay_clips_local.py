@@ -58,7 +58,7 @@ def _guess_expected_label(name: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Batch-evaluate local replay clips against the local backend.")
-    ap.add_argument("--clips_dir", default="deploy_assets/replay_clips")
+    ap.add_argument("--clips_dir", default="ops/deploy_assets/replay_clips")
     ap.add_argument("--endpoint", default="http://127.0.0.1:8000/api/monitor/predict_window")
     ap.add_argument("--dataset_code", default="caucafall")
     ap.add_argument("--mode", default="tcn")

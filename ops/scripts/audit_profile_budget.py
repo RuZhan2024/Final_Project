@@ -40,7 +40,7 @@ def _load_budget(gates_json: Path, profile: str, with_model: bool) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report_json", required=True)
-    ap.add_argument("--gates_json", default="configs/audit_gates.json")
+    ap.add_argument("--gates_json", default="ops/configs/audit_gates.json")
     args = ap.parse_args()
 
     report_path = Path(args.report_json)

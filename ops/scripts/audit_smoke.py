@@ -37,7 +37,7 @@ def main() -> None:
     ]
     failures.extend(_check_imports(modules))
 
-    cfg = root / "configs/experiments/data_sources.yaml"
+    cfg = root / "ops/configs/experiments/data_sources.yaml"
     if cfg.is_file():
         print(f"[ok] config exists: {cfg}")
     else:
@@ -49,7 +49,7 @@ def main() -> None:
     if test_files:
         print(f"[ok] tests detected: {len(test_files)}")
     else:
-        print("[fail] no test_*.py files found under tests/")
+        print("[fail] no test_*.py files found under qa/tests/")
         failures.append("missing tests")
 
     if failures:

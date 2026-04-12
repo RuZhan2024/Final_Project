@@ -42,7 +42,7 @@ def _check_one(fp: Path, eps: float) -> tuple[bool, str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ops_dir", default="configs/ops")
+    ap.add_argument("--ops_dir", default="ops/configs/ops")
     ap.add_argument("--pattern", default="*.sweep.json")
     ap.add_argument("--eps", type=float, default=1e-12)
     args = ap.parse_args()

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PY_BIN="${PY_BIN:-python3}"
 
 require_cmd() {
@@ -34,4 +34,4 @@ if [[ ! -d "applications/frontend/node_modules" ]]; then
   (cd applications/frontend && npm install)
 fi
 
-exec bash scripts/start_fullstack.sh
+exec bash ops/scripts/start_fullstack.sh

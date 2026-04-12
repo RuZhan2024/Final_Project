@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plot video-level confusion matrix from eval metrics JSON.
 
-Expected input: outputs from scripts/eval_metrics.py containing:
+Expected input: outputs from ops/scripts/eval_metrics.py containing:
 - detail.per_video[*].event_metrics.n_gt_events
 - detail.per_video[*].event_metrics.n_alert_events
 """

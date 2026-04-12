@@ -139,7 +139,7 @@ def models_summary() -> Dict[str, Any]:
 @router.get("/api/deploy/specs")
 @router.get("/api/v1/deploy/specs")
 def deploy_specs() -> Dict[str, Any]:
-    """Return dataset-specific specs discovered from configs/ops/*.yaml."""
+    """Return dataset-specific specs discovered from ops/configs/ops/*.yaml."""
     specs = _get_deploy_specs()
     out = []
     datasets = set()
@@ -209,5 +209,5 @@ def replay_clip_file(clip_path: str):
 @router.get("/api/deploy/modes")
 @router.get("/api/v1/deploy/modes")
 def deploy_modes() -> Dict[str, Any]:
-    """Expose deploy mode profile config from configs/deploy_modes.yaml."""
+    """Expose deploy mode profile config from ops/configs/deploy_modes.yaml."""
     return {"deploy_modes": _load_deploy_modes_yaml()}

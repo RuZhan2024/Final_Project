@@ -24,7 +24,7 @@ def _norm_path(path: str) -> str:
 
 def collect_backend_routes(root: Path) -> set[tuple[str, str]]:
     out: set[tuple[str, str]] = set()
-    routes_dir = root / "server" / "routes"
+    routes_dir = root / "applications" / "backend" / "routes"
     for fp in sorted(routes_dir.glob("*.py")):
         txt = fp.read_text(encoding="utf-8")
         for m in ROUTE_RE.finditer(txt):
@@ -36,7 +36,7 @@ def collect_backend_routes(root: Path) -> set[tuple[str, str]]:
 
 def collect_frontend_calls(root: Path) -> set[tuple[str, str]]:
     out: set[tuple[str, str]] = set()
-    apps_dir = root / "apps" / "src"
+    apps_dir = root / "applications" / "frontend" / "src"
     patterns = ("*.js", "*.jsx", "*.ts", "*.tsx")
     for pat in patterns:
         for fp in sorted(apps_dir.rglob(pat)):
@@ -57,7 +57,7 @@ def collect_frontend_calls(root: Path) -> set[tuple[str, str]]:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     backend = collect_backend_routes(root)
     frontend = collect_frontend_calls(root)
     missing = sorted([f"{m} {p}" for (m, p) in frontend if (m, p) not in backend])

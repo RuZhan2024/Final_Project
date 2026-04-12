@@ -103,12 +103,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Plot class balance from labels/splits")
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--labels_json", default="")
-    ap.add_argument("--splits_dir", default="configs/splits")
+    ap.add_argument("--splits_dir", default="ops/configs/splits")
     ap.add_argument("--out_fig", default="")
     args = ap.parse_args()
 
     ds = args.dataset.strip().lower()
-    labels_json = Path(args.labels_json) if args.labels_json else Path("configs/labels") / f"{ds}.json"
+    labels_json = Path(args.labels_json) if args.labels_json else Path("ops/configs/labels") / f"{ds}.json"
     out_fig = Path(args.out_fig) if args.out_fig else Path("artifacts/figures/dataset_balance") / f"{ds}_balance.png"
 
     plot(ds, labels_json, Path(args.splits_dir), out_fig)

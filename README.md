@@ -15,22 +15,6 @@ The repository now uses a normalized top-level structure:
 - `ml/src/fall_detection` for the ML package
 - `ops/` for operational configs, scripts, and deploy assets
 - `qa/tests` for the maintained test suite
-- `research/` for baselines, tuning tools, patches, and research operations
-
-Top-level compatibility links are kept temporarily so older scripts and imports
-do not break during the transition:
-
-- `apps` -> `applications/frontend`
-- `server` -> `applications/backend`
-- `src` -> `ml/src`
-- `configs` -> `ops/configs`
-- `scripts` -> `ops/scripts`
-- `deploy_assets` -> `ops/deploy_assets`
-- `tests` -> `qa/tests`
-- `baselines` -> `research/baselines`
-- `tools` -> `research/tools`
-- `patches` -> `research/patches`
-- `research_ops` -> `research/research_ops`
 
 ## Submission Overview
 
@@ -164,15 +148,8 @@ make compose-down
 │   └── deploy_assets/           # replay clips and shipped checkpoints
 ├── qa/
 │   └── tests/                   # smoke and contract tests
-├── research/
-│   ├── baselines/               # committed comparison baselines
-│   ├── tools/                   # tuning and research utilities
-│   ├── patches/                 # patch artifacts
-│   └── research_ops/            # research planning and evidence indexes
 ├── data/                        # raw/interim/processed datasets
 ├── outputs/                     # checkpoints and training outputs
-├── artifacts/                   # evaluation outputs, figures, evidence bundles
-├── docs/                        # active docs, runbooks, submission guidance
 └── Makefile                     # main project entrypoint
 ```
 
@@ -262,35 +239,35 @@ This currently verifies:
 
 - git status visibility
 - release boundary script availability
-- Python compileability for `ml/src/fall_detection`, `applications/backend`, and `scripts`
+- Python compileability for `ml/src/fall_detection`, `applications/backend`, and `ops/scripts`
 - frontend production build
 
 Recommended contract/smoke test subset:
 
 ```bash
-./scripts/run_canonical_tests.sh torch-free
+./ops/scripts/run_canonical_tests.sh torch-free
 ```
 
 Server app / contract subset:
 
 ```bash
-./scripts/run_canonical_tests.sh contract
+./ops/scripts/run_canonical_tests.sh contract
 ```
 
 Torch-dependent monitor subset:
 
 ```bash
-./scripts/run_canonical_tests.sh monitor
+./ops/scripts/run_canonical_tests.sh monitor
 ```
 
 ## Runtime Profiles and Delivery Notes
 
 Current online deployment profiles are loaded from:
 
-- `configs/ops/tcn_caucafall.yaml`
-- `configs/ops/gcn_caucafall.yaml`
-- `configs/ops/tcn_le2i.yaml`
-- `configs/ops/gcn_le2i.yaml`
+- `ops/configs/ops/tcn_caucafall.yaml`
+- `ops/configs/ops/gcn_caucafall.yaml`
+- `ops/configs/ops/tcn_le2i.yaml`
+- `ops/configs/ops/gcn_le2i.yaml`
 
 Important delivery note:
 
@@ -337,7 +314,7 @@ Suggested Render blueprint:
 - frontend should set `REACT_APP_API_BASE` to the backend Render URL
 
 - the main reviewed online path is `caucafall + TCN + OP2`
-- the four-folder custom delivery evaluation lives under `configs/delivery/` and `artifacts/fall_test_eval_20260315*/`
+- demo and replay delivery profiles live under `ops/configs/delivery/`
 
 ## Datasets and Data Modes
 
@@ -394,38 +371,13 @@ Two common usage modes:
    - start from existing `data/interim/...` or `data/processed/...`
    - useful when processed data already exists
 
-## Documentation Guide
-
-Use these documents as the main entrypoints:
-
-- documentation index: `docs/README.md`
-- submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
-- supervisor delivery modes: `docs/reports/runbooks/SUPERVISOR_DELIVERY_MODES.md`
-- user guide: `docs/reports/runbooks/USER_GUIDE.md`
-- demo runbook: `docs/reports/runbooks/DEMO_RUNBOOK.md`
-- final demo walkthrough: `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md`
-- delivery alignment status: `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
-- experiment evidence index: `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md`
-- config-to-result evidence map: `docs/reports/runbooks/CONFIG_RESULT_EVIDENCE_MAP.md`
-
-## Evidence and Reporting
-
-For report and thesis writing, the key evidence locations are:
-
-- runtime and delivery evidence: `configs/ops/`, `docs/reports/runbooks/ONLINE_OPS_PROFILE_MATRIX.md`
-- custom 24-video delivery evidence: `configs/delivery/`, `artifacts/fall_test_eval_20260315/`, `artifacts/fall_test_eval_20260315_online_reverify_20260315/`
-- online repair and refit evidence: `artifacts/online_ops_fit_20260315*/`, `artifacts/ops_reverify_20260315*/`
-- figures and summaries: `artifacts/figures/`, `artifacts/reports/`
-
-Use `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md` as the shortest evidence navigation page.
-
 ## Notes for Reviewers
 
 - if you only want to see the system working, use `make bootstrap-dev`
 - if you want DB persistence included, use `docker compose up`
 - if local `3306` is already occupied, use `MYSQL_PORT=3307 docker compose up`
-- archived teaching/tutorial material has been moved under `docs/archive/tutorial_materials/`
-- active project/report/thesis material is under `docs/project_targets/`, `docs/reports/`, and `artifacts/`
+- this branch is intentionally trimmed to runnable code, configuration, tests, and deployment assets
+- runtime-generated artifacts such as datasets, checkpoints produced during training, and local event clips are not part of the tracked submission surface
 
 
 // uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload

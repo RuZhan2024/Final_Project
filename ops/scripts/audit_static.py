@@ -30,8 +30,8 @@ def _scan_file(path: Path) -> tuple[list[str], list[str]]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--roots", default="src,scripts,server,configs")
-    ap.add_argument("--exclude", default="scripts/audit_static.py")
+    ap.add_argument("--roots", default="ml/src,ops/scripts,applications/backend,ops/configs")
+    ap.add_argument("--exclude", default="ops/scripts/audit_static.py")
     args = ap.parse_args()
 
     roots = [Path(r.strip()) for r in args.roots.split(",") if r.strip()]

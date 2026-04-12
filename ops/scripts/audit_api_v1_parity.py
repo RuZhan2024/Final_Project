@@ -21,8 +21,8 @@ def collect_api_paths(routes_dir: Path) -> set[str]:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[1]
-    routes_dir = root / "server" / "routes"
+    root = Path(__file__).resolve().parents[2]
+    routes_dir = root / "applications" / "backend" / "routes"
     paths = collect_api_paths(routes_dir)
 
     missing: list[tuple[str, str]] = []
@@ -45,4 +45,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

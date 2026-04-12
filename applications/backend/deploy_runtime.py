@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""server/deploy_runtime.py
+"""applications/backend/deploy_runtime.py
 
 Runtime model discovery + cached inference for the FastAPI backend.
 
@@ -9,7 +9,7 @@ inference for the live monitor endpoint.
 
 Source of truth
 ---------------
-For deployment behaviour, we treat **configs/ops/*.yaml** as the source of
+For deployment behaviour, we treat **ops/configs/ops/*.yaml** as the source of
 truth (not DB rows and not heuristics). These YAML files contain:
 - feat_cfg (how windows were built during training/eval)
 - alert_cfg (EMA smoothing, k-of-n persistence, cooldown, etc.)
@@ -43,10 +43,10 @@ class DeploySpec:
     dataset: str                  # le2i|caucafall
     arch: str                     # tcn|gcn
     ckpt: str                     # absolute path to best.pt
-    feat_cfg: Dict[str, Any]      # from configs/ops/*.yaml
+    feat_cfg: Dict[str, Any]      # from ops/configs/ops/*.yaml
     model_cfg: Dict[str, Any]     # from reports/ckpt (fallback)
     data_cfg: Dict[str, Any]      # from reports/ckpt (fallback)
-    alert_cfg: Dict[str, Any]     # from configs/ops/*.yaml
+    alert_cfg: Dict[str, Any]     # from ops/configs/ops/*.yaml
     ops: Dict[str, Dict[str, Any]]  # OP-1/2/3 -> op dict (includes tau_low/high)
     ops_path: str = ""            # where this spec came from
 
@@ -62,7 +62,7 @@ def _safe_float(x: Any, default: float) -> float:
 
 
 def _repo_root() -> Path:
-    # server/ is inside the project root.
+    # applications/backend/ is inside the project root.
     return Path(__file__).resolve().parents[1]
 
 
@@ -181,7 +181,7 @@ def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
 
 
 def _extract_ops_from_report(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Fallback when configs/ops/*.yaml is missing."""
+    """Fallback when ops/configs/ops/*.yaml is missing."""
     ops_eval = report.get("ops_eval") or {}
     out: Dict[str, Dict[str, Any]] = {}
     for k, op_code in [("op1", "OP-1"), ("op2", "OP-2"), ("op3", "OP-3")]:
@@ -262,7 +262,7 @@ def discover_specs() -> Dict[str, DeploySpec]:
     """Discover deployable specs.
 
     Preference:
-    1) configs/ops/*.yaml (real deploy params)
+    1) ops/configs/ops/*.yaml (real deploy params)
     2) outputs/reports/*.json (fallback)
     """
     root = _repo_root()
@@ -669,7 +669,7 @@ def predict_spec(
 ) -> Dict[str, Any]:
     """Run inference for one deploy spec and return p/mu/sigma.
 
-    Alerting state (EMA/k-of-n/cooldown) is handled by server/app.py.
+    Alerting state (EMA/k-of-n/cooldown) is handled by applications/backend/app.py.
     """
     specs = get_specs()
     if spec_key not in specs:

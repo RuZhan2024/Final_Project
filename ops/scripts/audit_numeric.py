@@ -64,7 +64,7 @@ def _read_window(fp: Path) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gates_json", default="configs/audit_gates.json")
+    ap.add_argument("--gates_json", default="ops/configs/audit_gates.json")
     ap.add_argument("--processed_root", default="data/processed")
     ap.add_argument("--datasets", default="le2i,urfd,caucafall,muvim")
     ap.add_argument("--max_windows_per_dataset", type=int, default=300)

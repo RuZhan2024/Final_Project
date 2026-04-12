@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""server/online_alert.py
+"""applications/backend/online_alert.py
 
 Small online alerting helper that applies the same core idea as
 core.alerting.detect_alert_events, but incrementally.
 
-We use the deployment parameters from configs/ops/*.yaml (via
-server.deploy_runtime.get_alert_cfg).
+We use the deployment parameters from ops/configs/ops/*.yaml (via
+applications.backend.deploy_runtime.get_alert_cfg).
 
 This is deliberately lightweight and dependency-free (no torch).
 """

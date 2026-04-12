@@ -75,9 +75,9 @@ caregivers, and notifications endpoints.
 
 ## Runtime config source of truth
 
-- FastAPI live inference uses deploy specs discovered from `configs/ops/*.yaml`
+- FastAPI live inference uses deploy specs discovered from `ops/configs/ops/*.yaml`
   (checkpoint path + `ops` + `alert_cfg`).
-- `configs/deploy_modes.yaml` is used by offline deploy scripts (for example
+- `ops/configs/deploy_modes.yaml` is used by offline deploy scripts (for example
   `ml/src/fall_detection/deploy/run_modes.py`) and is not the primary config source
   for `applications/backend/routes/monitor.py`.
 
@@ -204,7 +204,7 @@ Run the minimal demo:
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
+PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 ops/scripts/demo_safe_guard_notifications.py
 ```
 
 The demo simulates:
@@ -251,7 +251,7 @@ Run:
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
+PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 ops/scripts/demo_safe_guard_notifications.py
 ```
 
 Expected:

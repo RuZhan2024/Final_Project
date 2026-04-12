@@ -34,7 +34,7 @@ def _window_shape_and_fps(fp: Path, fps_default: float) -> tuple[int, float]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gates_json", default="configs/audit_gates.json")
+    ap.add_argument("--gates_json", default="ops/configs/audit_gates.json")
     ap.add_argument("--processed_root", default="data/processed")
     ap.add_argument("--datasets", default="le2i,urfd,caucafall,muvim")
     ap.add_argument("--stride_frames", type=int, default=12)

@@ -3,7 +3,7 @@
 
 Keep this module tiny so deployment commands such as
 `uvicorn applications.backend.app:app`
-remain stable while app assembly lives in :mod:`server.application`.
+remain stable while app assembly lives in :mod:`applications.backend.application`.
 """
 
 from __future__ import annotations

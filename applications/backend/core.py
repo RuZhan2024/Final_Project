@@ -1,4 +1,4 @@
-# server/core.py
+# applications/backend/core.py
 """Shared helpers/state for the FastAPI backend.
 
 This module centralises:
@@ -7,7 +7,7 @@ This module centralises:
   - YAML-derived operating-point parameter helpers
   - In-memory monitor session state
 
-Route handlers live under :mod:`server.routes.*`.
+Route handlers live under :mod:`applications.backend.routes.*`.
 """
 
 from __future__ import annotations
@@ -305,12 +305,12 @@ LAST_PRED_TS_ISO = None
 
 
 def touch_session_state(session_id: str, now_s: Optional[float] = None) -> Dict[str, Any]:
-    """Compatibility wrapper over :mod:`server.runtime_state` session state."""
+    """Compatibility wrapper over :mod:`applications.backend.runtime_state` session state."""
     return _runtime_state.touch_session_state(session_id, now_s=now_s)
 
 
 def prune_session_state(now_s: Optional[float] = None) -> int:
-    """Compatibility wrapper over :mod:`server.runtime_state` pruning logic."""
+    """Compatibility wrapper over :mod:`applications.backend.runtime_state` pruning logic."""
     return _runtime_state.prune_session_state(
         now_s=now_s,
         ttl_s=SESSION_TTL_S,
