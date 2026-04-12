@@ -1,9 +1,27 @@
 from __future__ import annotations
 
+import logging
+import time
+
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import AppConfig, get_app_config
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 def _register_routes(app: FastAPI, *, include_runtime_routes: bool = True) -> None:
@@ -33,8 +51,22 @@ def _register_routes(app: FastAPI, *, include_runtime_routes: bool = True) -> No
 
 
 def create_app(config: AppConfig | None = None, *, include_runtime_routes: bool = True) -> FastAPI:
+    _configure_logging()
     cfg = config or get_app_config()
-    app = FastAPI(title="Elder Fall Monitor API", version="0.3")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logger.info(
+            "app_startup db_backend=%s sqlite_path=%s event_clips_dir=%s app_base_url=%s runtime_routes=%s",
+            cfg.db_backend,
+            cfg.sqlite_path,
+            cfg.event_clips_dir,
+            cfg.app_base_url,
+            include_runtime_routes,
+        )
+        yield
+
+    app = FastAPI(title="Elder Fall Monitor API", version="0.3", lifespan=lifespan)
     app.state.app_config = cfg
 
     app.add_middleware(
@@ -44,6 +76,20 @@ def create_app(config: AppConfig | None = None, *, include_runtime_routes: bool 
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _log_requests(request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        logger.info(
+            "http_request method=%s path=%s status=%s duration_ms=%.2f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+        return response
 
     _register_routes(app, include_runtime_routes=include_runtime_routes)
     return app
