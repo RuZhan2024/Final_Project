@@ -526,6 +526,7 @@ def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]
         "recall_alert": resp.get("recall_alert"),
         "recall_state": resp.get("recall_state"),
         "event_id": resp.get("event_id"),
+        "window_end_t_ms": resp.get("window_end_t_ms"),
         "stale_drop": resp.get("stale_drop"),
         "stale_reason": resp.get("stale_reason"),
         "models": compact_models,
@@ -1307,12 +1308,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             mode=mode,
             op_code=op_code,
             effective_use_mc=bool(effective_use_mc),
-            requested_use_mc=bool(requested_use_mc),
-            effective_mc_M=int(effective_mc_M),
-            stale_reason=stale_reason,
-            seq_in=seq_in,
-            seq_prev=seq_prev,
-        )
+        requested_use_mc=bool(requested_use_mc),
+        effective_mc_M=int(effective_mc_M),
+        stale_reason=stale_reason,
+        window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
+        seq_in=seq_in,
+        seq_prev=seq_prev,
+    )
         log_monitor_perf_if_slow(
             logger,
             latency_ms=latency_ms,
@@ -1956,6 +1958,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         last_persist_ts=last_persist_ts,
         persist_dedup_key=persist_dedup_key,
         session_state=st,
+        window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
         seq_in=seq_in,
         seq_prev=seq_prev,
     )

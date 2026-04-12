@@ -3,7 +3,7 @@
 Date: 2026-04-05
 
 Scope:
-- Draft audited: `docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md`
+- Draft audited: `docs/reports/drafts/PAPER_FINAL_2026-04-11.md`
 - Claim ledger: `research_ops/CLAIMS.yaml`
 - Evidence ledger: `research_ops/EVIDENCE_INDEX.yaml`
 

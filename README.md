@@ -61,6 +61,17 @@ Notes:
 - DB-backed features fall back gracefully when DB is unavailable
 - for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
 
+Stop the local demo:
+
+```bash
+make stop-dev
+```
+
+```bash
+# if `make bootstrap-dev` or `make dev` is running in the current terminal
+Ctrl-C
+```
+
 ### Option B: One-command full system with persistent MySQL
 
 ```bash
@@ -136,8 +147,20 @@ make help
 ```bash
 make bootstrap-dev
 make dev
+make stop-dev
 make compose-up
 make compose-down
+```
+
+### Stop the local dev servers
+
+```bash
+make stop-dev
+```
+
+```bash
+# if the current local run is attached to your terminal
+Ctrl-C
 ```
 
 ### Prepare data

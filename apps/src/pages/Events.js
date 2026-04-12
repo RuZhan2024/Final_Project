@@ -3,6 +3,7 @@ import styles from "./Events.module.css";
 import { useMonitoring } from "../monitoring/MonitoringContext";
 import { toISODateInput, parseDateSafe, endOfDay } from "../lib/dates";
 import { eventStatusLabel, eventTypeLabel, EVENT_STATUS_OPTIONS } from "../lib/eventLabels";
+import { EventSkeletonClipPanel } from "./events/components/EventSkeletonClipPanel";
 import { useEventsData } from "./events/hooks/useEventsData";
 
 export default function Events() {
@@ -280,6 +281,8 @@ export default function Events() {
                 </label>
               ))}
             </div>
+
+            <EventSkeletonClipPanel apiBase={apiBase} event={reviewEvent} residentId={1} />
 
             <div className={styles.modalActions}>
               <button className={styles.secondaryBtn} onClick={closeReview} disabled={savingEventId != null}>

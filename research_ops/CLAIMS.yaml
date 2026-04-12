@@ -92,7 +92,7 @@ claims:
       result_files:
         - "configs/ops/tcn_caucafall.yaml"
         - "configs/ops/gcn_caucafall.yaml"
-        - "docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+        - "docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
       figure_refs:
         - "artifacts/figures/report/alert_policy_flow.svg"
       table_refs: []

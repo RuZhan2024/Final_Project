@@ -86,5 +86,5 @@
 - risks:
   - "Formatting quality is adequate for iteration but not yet polished for final submission packaging."
 - updated_files:
-  - "docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+  - "docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
   - "scripts/build_report.sh"

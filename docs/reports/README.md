@@ -2,6 +2,10 @@
 
 This folder contains active project reports, checklists, runbooks, and current notes.
 
+## Drafts
+- [PAPER_FINAL_2026-04-11.md](./drafts/PAPER_FINAL_2026-04-11.md) (active compact paper/manuscript draft)
+- [FULL_PROJECT_REPORT_FINAL_2026-04-11.md](./drafts/FULL_PROJECT_REPORT_FINAL_2026-04-11.md) (active full final-year report draft)
+
 ## Audit
 - [GLOBAL_AUDIT_REPORT.md](./audit/GLOBAL_AUDIT_REPORT.md)
 - [INTEGRATION_STATUS_REPORT.md](./audit/INTEGRATION_STATUS_REPORT.md) (canonical summary)
@@ -24,6 +28,8 @@ This folder contains active project reports, checklists, runbooks, and current n
 - [RELEASE_RUNBOOK.md](./runbooks/RELEASE_RUNBOOK.md)
 
 ## Notes
+- [PAPER_WRITING_MASTER_PLAN_2026-04-09.md](./notes/PAPER_WRITING_MASTER_PLAN_2026-04-09.md)
+- [FULL_REPORT_MASTER_PLAN_2026-04-09.md](./notes/FULL_REPORT_MASTER_PLAN_2026-04-09.md)
 - [Compute_Threshold.md](./notes/Compute_Threshold.md)
 
 Archived report plans and retired notes now live under:

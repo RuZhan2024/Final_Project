@@ -66,7 +66,7 @@ These are still actively useful and should remain in the current visible docs su
 - `docs/project_targets/DEPLOYMENT_FIELD_VALIDATION.md`
 - `docs/project_targets/REPLAY_LIVE_ACCEPTANCE_LOCK.md`
 - `docs/project_targets/SUBMISSION_PACK_INDEX.md`
-- `docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md`
+- `docs/reports/drafts/PAPER_FINAL_2026-04-11.md`
 - `docs/reports/readiness/READINESS_REPORT.md`
 - `docs/reports/runbooks/USER_GUIDE.md`
 - `docs/reports/runbooks/DEMO_RUNBOOK.md`

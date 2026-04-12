@@ -28,25 +28,29 @@ def fetch_events_v2_rows(
     page_size: int,
     offset: int,
 ) -> List[Dict[str, Any]]:
-    select_prob = f"e.`{prob_col}` AS score," if prob_col else "NULL AS score,"
+    select_prob = f"e.`{prob_col}` AS score" if prob_col else "NULL AS score"
 
     def optional_col(column_name: str, alias: str) -> str:
-        return f"e.{column_name} AS {alias}," if _has_column(conn, "events", column_name) else f"NULL AS {alias},"
+        return f"e.{column_name} AS {alias}" if _has_column(conn, "events", column_name) else f"NULL AS {alias}"
+
+    select_cols = [
+        "e.id",
+        "e.event_time AS ts",
+        "e.`type` AS type",
+        "e.`status` AS status",
+        select_prob,
+        "e.operating_point_id",
+        ("m.code AS model_code" if join_models else "e.model_code AS model_code"),
+        ("m.family AS model_family" if join_models else "NULL AS model_family"),
+        optional_col("notes", "notes"),
+        optional_col("fa24h_snapshot", "fa24h_snapshot"),
+        optional_col("payload_json", "payload_json"),
+        optional_col("meta", "meta"),
+    ]
 
     with conn.cursor() as cur:
         cur.execute(
-            f"""SELECT e.id,
-                         e.event_time AS ts,
-                         e.`type` AS type,
-                         e.`status` AS status,
-                         {select_prob}
-                         e.operating_point_id,
-                         {("m.code AS model_code," if join_models else "e.model_code AS model_code,")}
-                         {("m.family AS model_family," if join_models else "NULL AS model_family,")}
-                         {optional_col("notes", "notes")}
-                         {optional_col("fa24h_snapshot", "fa24h_snapshot")}
-                         {optional_col("payload_json", "payload_json")}
-                         {optional_col("meta", "meta")}
+            f"""SELECT {", ".join(select_cols)}
                   FROM events e
                   {from_sql}
                   WHERE {where_sql}

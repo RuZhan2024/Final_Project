@@ -60,13 +60,6 @@ def dispatch_fall_notifications(
                 )
                 s = cur.fetchone() or {}
                 notify_on_every_fall = _as_bool(s.get("notify_on_every_fall"), True)
-            elif _table_exists(conn, "settings"):
-                cur.execute(
-                    "SELECT * FROM settings WHERE resident_id=%s LIMIT 1",
-                    (int(resident_id),),
-                )
-                s = cur.fetchone() or {}
-                notify_on_every_fall = _as_bool(s.get("notify_on_every_fall"), True)
 
             if not notify_on_every_fall:
                 out["enabled"] = False

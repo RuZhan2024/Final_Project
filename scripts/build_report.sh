@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_INPUT="$ROOT_DIR/docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md"
+DEFAULT_INPUT="$ROOT_DIR/docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
 DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/report_build"
 DEFAULT_TITLE="Pose-Based Fall Detection with Temporal and Graph Neural Models"
 DEFAULT_AUTHOR="Ru Zhan"
@@ -15,7 +15,7 @@ Usage:
 
 Examples:
   ./scripts/build_report.sh
-  ./scripts/build_report.sh docs/reports/drafts/HIGH_STANDARD_FINAL_PROJECT_REPORT_DRAFT_2026-03-29.md
+  ./scripts/build_report.sh docs/reports/drafts/PAPER_FINAL_2026-04-11.md
   ./scripts/build_report.sh "" "" final_report --pdf-only
 
 Notes:

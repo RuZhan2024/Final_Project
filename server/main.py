@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .env import load_local_env_files
 from .routes.caregivers import router as caregivers_router
 from .routes.dashboard import router as dashboard_router
 from .routes.events import router as events_router
@@ -17,6 +18,8 @@ from .routes.settings import router as settings_router
 from .routes.specs import router as specs_router
 from .routes.twilio_webhook import router as twilio_webhook_router
 
+
+load_local_env_files()
 
 _DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:3000",
