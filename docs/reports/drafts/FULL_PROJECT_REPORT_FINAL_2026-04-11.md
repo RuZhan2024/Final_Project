@@ -924,6 +924,10 @@ The central lesson of the project is that technical maturity in this area depend
 
 On that basis, the report’s main contribution is not a claim of solved fall detection. It is the demonstration that a final-year research project can produce a serious, bounded, and defensible end-to-end study in which model, policy, runtime, persistence, delivery, and evidence control remain answerable to one another under review.
 
+# Acknowledgments
+
+The author acknowledges the support of the Intelligent Assistive Technology and Systems Lab (IATSL) at the University of Toronto through the sharing of data related to this research.
+
 # References
 
 The bibliography below is a working final reference set covering the main methodological and comparative foundations used in the report. It replaces the earlier empty placeholder, but it should still be checked against the final supervisor-preferred citation style before submission.
@@ -941,6 +945,9 @@ The bibliography below is a working final reference set covering the main method
 11. Skeleton-Based Human Fall Detection with Person Tracking and Temporal Deep Learning. *Automation in Construction* (2025).
 12. A Comparative Study for Pre-Impact and Post-Impact Fall Detection in Wearable Systems. *Pervasive and Mobile Computing* (2025).
 13. A Lightweight Transformer- and TCN-Based Architecture for Robust, Real-Time Fall Detection. *Scientific Reports* (2025).
+14. Eraso Guerrero, J. C., Muñoz España, E., Muñoz Añasco, M., and Pinto Lopera, J. E. (2022). Dataset for human fall recognition in an uncontrolled environment. *Data in Brief*, 45, 108610. https://doi.org/10.1016/j.dib.2022.108610
+15. Charfi, I., Mitéran, J., Dubois, J., Atri, M., and Tourki, R. (2013). Optimized spatio-temporal descriptors for real-time fall detection: comparison of support vector machine and Adaboost-based classification. *Journal of Electronic Imaging*, 22(4), 041106. https://doi.org/10.1117/1.JEI.22.4.041106
+16. Denkovski, S., Khan, S. S., Malamis, B., Moon, S. Y., Ye, B., and Mihailidis, A. (2022). Multi Visual Modality Fall Detection Dataset. *IEEE Access*, 10, 108288-108300. https://doi.org/10.1109/ACCESS.2022.3211939
 
 # Appendices
 
