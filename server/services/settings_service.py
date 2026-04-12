@@ -56,3 +56,55 @@ def build_settings_response(resident_id: int, system: Dict[str, Any], deploy: Di
 def base_settings_snapshot(resident_id: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
     base = get_inmem_settings(resident_id)
     return base["system"], base["deploy"]
+
+
+def normalize_settings_payload_threshold(payload) -> None:
+    if payload.fall_threshold is None:
+        return
+    try:
+        value = float(payload.fall_threshold)
+        if 1.0 < value <= 100.0:
+            payload.fall_threshold = value / 100.0
+    except (TypeError, ValueError):
+        return
+
+
+def build_settings_snapshot_response(
+    *,
+    resident_id: int,
+    get_conn,
+    load_settings_snapshot,
+    derive_ops_params_from_yaml,
+) -> Dict[str, object]:
+    system, deploy = base_settings_snapshot(resident_id)
+    system.setdefault("camera_source", "webcam")
+    db_available = False
+
+    try:
+        with get_conn() as conn:
+            db_available = True
+            load_settings_snapshot(conn, resident_id, system, deploy)
+    except Exception:
+        db_available = False
+
+    apply_yaml_override(system, derive_ops_params_from_yaml)
+    return build_settings_response(resident_id, system, deploy, db_available=db_available)
+
+
+def persist_settings_update_with_fallback(
+    *,
+    payload,
+    resident_id: int,
+    get_conn,
+    persist_settings_update,
+    apply_settings_update_inmem,
+) -> Dict[str, object]:
+    normalize_settings_payload_threshold(payload)
+
+    try:
+        with get_conn() as conn:
+            persist_settings_update(conn, resident_id, payload)
+            return {"ok": True, "persisted": True}
+    except Exception:
+        apply_settings_update_inmem(payload, resident_id=resident_id)
+        return {"ok": True, "persisted": False, "reason": "db_unavailable"}
