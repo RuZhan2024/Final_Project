@@ -16,8 +16,6 @@ from ..services.settings_service import (
 
 router = APIRouter()
 
-_derive_ops_params_from_yaml = derive_ops_params_from_yaml
-
 
 @router.get("/api/settings")
 @router.get("/api/v1/settings")

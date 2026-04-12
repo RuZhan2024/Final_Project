@@ -21,10 +21,6 @@ from ..services.caregivers_service import build_caregivers_list_response, build_
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_col_exists = col_exists
-_ensure_caregivers_table = ensure_caregivers_table
-_table_exists = table_exists
-
 
 @router.get("/api/caregivers")
 @router.get("/api/v1/caregivers")

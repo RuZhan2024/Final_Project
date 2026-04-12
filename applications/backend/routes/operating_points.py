@@ -17,11 +17,6 @@ from ..deploy_ops import derive_ops_params_from_yaml, detect_variants
 
 router = APIRouter()
 
-_derive_ops_params_from_yaml = derive_ops_params_from_yaml
-_detect_variants = detect_variants
-_ensure_system_settings_schema = ensure_system_settings_schema
-_table_exists = table_exists
-
 
 @router.get("/api/operating_points")
 @router.get("/api/v1/operating_points")

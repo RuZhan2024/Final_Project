@@ -37,31 +37,26 @@ from ..services.value_coercion import coerce_bool
 
 router = APIRouter()
 
-_col_exists = col_exists
-_cols = cols
+# Keep a minimal monkeypatch surface for legacy route-level tests while the
+# canonical implementation lives behind service/repository boundaries.
 _detect_variants = detect_variants
-_event_prob_col = event_prob_col
-_event_time_col = event_time_col
 _has_col = has_col
 _one_resident_id = one_resident_id
-_resident_exists = resident_exists
-_table_exists = table_exists
+_dispatch_safe_guard_from_event = dispatch_safe_guard_from_event
 
 
 def _events_deps() -> EventsDeps:
     return EventsDeps(
-        resident_exists=_resident_exists,
+        resident_exists=resident_exists,
         one_resident_id=_one_resident_id,
         detect_variants=_detect_variants,
-        event_time_col=_event_time_col,
-        event_prob_col=_event_prob_col,
-        cols=_cols,
+        event_time_col=event_time_col,
+        event_prob_col=event_prob_col,
+        cols=cols,
         has_col=_has_col,
-        table_exists=_table_exists,
+        table_exists=table_exists,
         jsonable=_jsonable,
     )
-
-_dispatch_safe_guard_from_event = dispatch_safe_guard_from_event
 
 
 @router.get("/api/events")

@@ -19,11 +19,6 @@ from ..services.dashboard_service import DashboardDeps, base_dashboard_summary, 
 
 router = APIRouter()
 
-_col_exists = col_exists
-_one_resident_id = one_resident_id
-_resident_exists = resident_exists
-_table_exists = table_exists
-
 
 def _dashboard_deps() -> DashboardDeps:
     return DashboardDeps(
