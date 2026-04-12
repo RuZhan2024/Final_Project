@@ -218,3 +218,12 @@ This gap-closure plan should be considered effectively executed when:
 At that point, the repository would still not be a full enterprise system, but
 it would be substantially closer to a disciplined industry-style project than a
 research prototype with cleanup.
+
+## Current Status On This Branch
+
+- Workstream 1: completed first usable pass
+- Workstream 2: completed first usable pass
+- Workstream 3: completed first usable pass
+- Workstream 4: completed first usable pass
+- Workstream 5: completed first usable pass once `ops/deploy_assets/manifest.json`
+  and its validation test are present

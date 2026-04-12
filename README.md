@@ -145,11 +145,11 @@ make compose-down
 ├── ops/
 │   ├── configs/                 # labels, splits, ops, delivery profiles
 │   ├── scripts/                 # utility and orchestration scripts
-│   └── deploy_assets/           # replay clips and shipped checkpoints
+│   └── deploy_assets/           # promoted runtime-approved checkpoints and replay clips
 ├── qa/
 │   └── tests/                   # smoke and contract tests
 ├── data/                        # raw/interim/processed datasets
-├── outputs/                     # checkpoints and training outputs
+├── outputs/                     # experimental/local training outputs (not promoted runtime assets)
 └── Makefile                     # main project entrypoint
 ```
 
@@ -419,6 +419,31 @@ Two common usage modes:
 - if local `3306` is already occupied, use `MYSQL_PORT=3307 docker compose up`
 - this branch is intentionally trimmed to runnable code, configuration, tests, and deployment assets
 - runtime-generated artifacts such as datasets, checkpoints produced during training, and local event clips are not part of the tracked submission surface
+
+## Runtime Asset Promotion
+
+The cleaned submission branch distinguishes between experimental ML outputs and
+runtime-approved deploy assets.
+
+- `ops/deploy_assets/manifest.json`
+  - tracked source of truth for promoted runtime assets
+  - lists the shipped checkpoints, canonical runtime operating-point YAMLs, and
+    replay clips intended for reviewer/demo use
+- `ops/deploy_assets/checkpoints/`
+  - promoted checkpoints approved for backend runtime loading on this branch
+- `ops/deploy_assets/replay_clips/`
+  - promoted replay clips approved for reviewer/demo playback
+- `ops/configs/ops/*.yaml`
+  - canonical runtime operating-point profiles; the promoted subset is listed in
+    `ops/deploy_assets/manifest.json`
+- `outputs/`
+  - experimental or locally produced training/evaluation outputs
+  - not treated as shipped runtime assets unless explicitly promoted into
+    `ops/deploy_assets/` and recorded in the manifest
+
+This branch does not rely on private research notes to identify deployable ML
+assets. Reviewers can use `ops/deploy_assets/manifest.json` as the explicit
+runtime promotion contract.
 
 
 // uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload

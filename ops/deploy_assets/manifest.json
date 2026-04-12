@@ -1,0 +1,136 @@
+{
+  "schema_version": "1.0",
+  "promotion_contract": {
+    "promoted_runtime_assets_root": "ops/deploy_assets",
+    "runtime_op_profiles_root": "ops/configs/ops",
+    "experimental_output_roots": [
+      "outputs",
+      "data/interim",
+      "data/processed"
+    ],
+    "local_runtime_roots": [
+      "applications/backend/event_clips"
+    ],
+    "notes": [
+      "Assets listed in this manifest are the tracked runtime-approved subset for the cleaned supervisor-facing branch.",
+      "Training outputs under outputs/ remain experimental or local unless explicitly promoted into ops/deploy_assets and referenced here.",
+      "Runtime profile YAMLs listed here are the canonical operating-point configs expected by the backend deploy path."
+    ]
+  },
+  "promoted_runtime_assets": {
+    "checkpoints": [
+      {
+        "id": "caucafall_tcn_runtime",
+        "dataset": "caucafall",
+        "arch": "tcn",
+        "path": "ops/deploy_assets/checkpoints/caucafall_tcn_best.pt",
+        "sha256": "eea9ea52eb8d0bdc1c98cd435ac6161fca918d2b5f285285fa4233b48848f2ee",
+        "size_bytes": 1219073
+      },
+      {
+        "id": "caucafall_gcn_runtime",
+        "dataset": "caucafall",
+        "arch": "gcn",
+        "path": "ops/deploy_assets/checkpoints/caucafall_gcn_best.pt",
+        "sha256": "838b706988221256a7cb46be1599d60c77e4a3ed99a36138b5d0338c19641d1a",
+        "size_bytes": 5926906
+      },
+      {
+        "id": "le2i_tcn_runtime",
+        "dataset": "le2i",
+        "arch": "tcn",
+        "path": "ops/deploy_assets/checkpoints/le2i_tcn_best.pt",
+        "sha256": "943d602660137826916b95dd84379a2a543bb587f0859fe61ad6ff523dc392a7",
+        "size_bytes": 1219073
+      },
+      {
+        "id": "le2i_gcn_runtime",
+        "dataset": "le2i",
+        "arch": "gcn",
+        "path": "ops/deploy_assets/checkpoints/le2i_gcn_best.pt",
+        "sha256": "2ad61e0042dfae31ce202300ccf1cc933ef51b873be391c8d5ae0d23efd8a98e",
+        "size_bytes": 2966660
+      }
+    ],
+    "op_profiles": [
+      {
+        "id": "caucafall_tcn_runtime_profile",
+        "dataset": "caucafall",
+        "arch": "tcn",
+        "path": "ops/configs/ops/tcn_caucafall.yaml"
+      },
+      {
+        "id": "caucafall_gcn_runtime_profile",
+        "dataset": "caucafall",
+        "arch": "gcn",
+        "path": "ops/configs/ops/gcn_caucafall.yaml"
+      },
+      {
+        "id": "le2i_tcn_runtime_profile",
+        "dataset": "le2i",
+        "arch": "tcn",
+        "path": "ops/configs/ops/tcn_le2i.yaml"
+      },
+      {
+        "id": "le2i_gcn_runtime_profile",
+        "dataset": "le2i",
+        "arch": "gcn",
+        "path": "ops/configs/ops/gcn_le2i.yaml"
+      }
+    ],
+    "replay_sets": [
+      {
+        "id": "corridor_fall",
+        "environment": "corridor",
+        "label": "fall",
+        "clips": [
+          "ops/deploy_assets/replay_clips/corridor/corridor_back_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor/corridor_back_2.mp4",
+          "ops/deploy_assets/replay_clips/corridor/corridor_front_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor/corridor_front_2.mp4",
+          "ops/deploy_assets/replay_clips/corridor/corridor_side_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor/corridor_side_2.mp4"
+        ]
+      },
+      {
+        "id": "corridor_adl",
+        "environment": "corridor",
+        "label": "adl",
+        "clips": [
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_bend_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_bend_2.mp4",
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_squat_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_squat_2.mp4",
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_walk_1.mp4",
+          "ops/deploy_assets/replay_clips/corridor_adl/corridor_walk_2.mp4"
+        ]
+      },
+      {
+        "id": "kitchen_fall",
+        "environment": "kitchen",
+        "label": "fall",
+        "clips": [
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_back_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_back_2.mp4",
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_front_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_front_2.mp4",
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_side_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen/kitchen_side_2.mp4"
+        ]
+      },
+      {
+        "id": "kitchen_adl",
+        "environment": "kitchen",
+        "label": "adl",
+        "clips": [
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_lie_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_lie_2.mp4",
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_sit_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_sit_2.mp4",
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_sit_bend_1.mp4",
+          "ops/deploy_assets/replay_clips/kitchen_adl/kitchen_walk_1.mp4"
+        ]
+      }
+    ]
+  }
+}
