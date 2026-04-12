@@ -50,6 +50,7 @@ from ..services.monitor_response_service import (
     log_monitor_perf_if_slow,
 )
 from ..services.monitor_request_service import prepare_monitor_request
+from ..services.monitor_inference_service import run_monitor_inference
 from ..services.monitor_uncertainty_service import apply_uncertainty_fall_gate
 from ..services.monitor_runtime_service import (
     persist_monitor_event,
@@ -434,192 +435,45 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         )
         return _compact_monitor_response(resp, mode) if compact_response else resp
 
-    def _guard_alert_p(p_raw: float, tau_low: float) -> float:
-        """Clamp tracker input when live sampling/motion quality is insufficient."""
-        if (
-            (
-                bool(live_guard["enable_low_motion_gate"])
-                and low_motion_block
-                and not recent_motion_support
-                and not low_motion_high_conf_bypass
-            )
-            or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
-        ):
-            return float(min(float(p_raw), float(tau_low) - 0.02))
-        return float(p_raw)
-
-    # -------------
-    # Inference
-    # -------------
-
-    models_out: Dict[str, Any] = {}
-    tri_tcn = None
-    tri_gcn = None
-    dual_policy_alerts: Dict[str, Any] = {}
-    low_motion_high_conf_bypass = False
-
-    run_tcn = mode in {"tcn", "hybrid"}
-    run_gcn = mode in {"gcn", "hybrid"}
-
-    if run_tcn:
-        t_inf = time.perf_counter()
-        out_tcn = _predict_spec(
-            spec_key=tcn_key,
-            joints_xy=xy,
-            conf=conf,
-            fps=float(expected_fps),
-            target_T=target_T,
-            op_code=op_code,
-            use_mc=effective_use_mc,
-            mc_M=effective_mc_M,
-        )
-
-        cfg_tcn = out_tcn.get("alert_cfg") or {}
-        tau_low_tcn = float(cfg_tcn.get("tau_low", out_tcn.get("tau_low", 0.0)))
-        tau_high_tcn = float(cfg_tcn.get("tau_high", out_tcn.get("tau_high", 0.0)))
-        p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
-        sigma_tcn = float(out_tcn.get("sigma", 0.0) or 0.0)
-        uncertainty_gate_tcn = out_tcn.get("uncertainty_gate") if isinstance(out_tcn.get("uncertainty_gate"), dict) else {}
-        bypass_tcn = _low_motion_high_conf_bypass(
-            st,
-            dataset_code=dataset_code,
-            mode="tcn",
-            p_raw=p_raw_tcn,
-            tau_high=tau_high_tcn,
-            lying_score=lying_score,
-            enabled=bool(live_guard.get("allow_low_motion_high_conf_bypass", False)),
-            min_hits=int(live_guard.get("low_motion_high_conf_k", 0)),
-            max_lying=live_guard.get("low_motion_high_conf_max_lying"),
-        )
-        low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_tcn)
-        p_alert_tcn = _guard_alert_p(p_raw_tcn, tau_low_tcn)
-        p_alert_tcn, uncertainty_eval_tcn = apply_uncertainty_fall_gate(
-            probability=float(p_alert_tcn),
-            sigma=float(sigma_tcn),
-            tau_low=float(tau_low_tcn),
-            tau_high=float(tau_high_tcn),
-            mc_applied=bool(out_tcn.get("mc_applied", False)),
-            uncertainty_cfg=uncertainty_gate_tcn,
-        )
-        out_tcn["uncertainty_gate_eval"] = uncertainty_eval_tcn
-        out_tcn["p_alert_in"] = float(p_alert_tcn)
-        out_tcn["lying_score"] = None if lying_score is None else float(lying_score)
-        out_tcn["confirm_motion_score"] = None if confirm_motion_score is None else float(confirm_motion_score)
-        trk = st_trackers.get(tcn_key)
-        if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
-            trk = OnlineAlertTracker(cfg_tcn)
-            st_trackers[tcn_key] = trk
-            st_trackers_cfg[tcn_key] = cfg_tcn
-        r = trk.step(
-            p=float(p_alert_tcn),
-            t_s=_t_s,
-        )
-        out_tcn["triage"] = {
-            "state": r.triage_state,
-            "ps": r.ps,
-            "p_in": r.p_in,
-            "tau_low": tau_low_tcn,
-            "tau_high": tau_high_tcn,
-            "ema_alpha": float(cfg_tcn.get("ema_alpha", 0.0)),
-            "k": int(cfg_tcn.get("k", 2)),
-            "n": int(cfg_tcn.get("n", 3)),
-            "cooldown_s": float(cfg_tcn.get("cooldown_s", 0.0)),
-            "cooldown_remaining_s": r.cooldown_remaining_s,
-        }
-        models_out["tcn"] = out_tcn
-        tri_tcn = r.triage_state
-        started_tcn = bool(r.started_event)
-        perf["infer_tcn_ms"] = int((time.perf_counter() - t_inf) * 1000)
-
-        # Optional dual-policy overlays (safe/recall) for deployment UI.
-        for pol in ("safe", "recall"):
-            pol_cfg = _load_dual_policy_cfg(dataset_code, pol, op_code)
-            if not isinstance(pol_cfg, dict):
-                continue
-            pol_key = f"{tcn_key}::dual::{pol}"
-            pol_trk = st_trackers.get(pol_key)
-            if pol_trk is None or st_trackers_cfg.get(pol_key) != pol_cfg:
-                pol_trk = OnlineAlertTracker(pol_cfg)
-                st_trackers[pol_key] = pol_trk
-                st_trackers_cfg[pol_key] = pol_cfg
-
-            pol_res = pol_trk.step(
-                p=float(p_alert_tcn),
-                t_s=_t_s,
-            )
-            dual_policy_alerts[pol] = {
-                "state": pol_res.triage_state,
-                "alert": bool(pol_res.triage_state == "fall"),
-                "started_event": bool(pol_res.started_event),
-                "tau_low": float(pol_cfg.get("tau_low", 0.0)),
-                "tau_high": float(pol_cfg.get("tau_high", 0.0)),
-                "cooldown_remaining_s": pol_res.cooldown_remaining_s,
-            }
-
-    if run_gcn:
-        t_inf = time.perf_counter()
-        out_gcn = _predict_spec(
-            spec_key=gcn_key,
-            joints_xy=xy,
-            conf=conf,
-            fps=float(expected_fps),
-            target_T=target_T,
-            op_code=op_code,
-            use_mc=effective_use_mc,
-            mc_M=effective_mc_M,
-        )
-        models_out["gcn"] = out_gcn
-
-        cfg_gcn = out_gcn.get("alert_cfg") or {}
-        tau_low_gcn = float(cfg_gcn.get("tau_low", out_gcn.get("tau_low", 0.0)))
-        tau_high_gcn = float(cfg_gcn.get("tau_high", out_gcn.get("tau_high", 0.0)))
-        p_raw_gcn = float(out_gcn.get("mu") or out_gcn.get("p_det") or 0.0)
-        sigma_gcn = float(out_gcn.get("sigma", 0.0) or 0.0)
-        uncertainty_gate_gcn = out_gcn.get("uncertainty_gate") if isinstance(out_gcn.get("uncertainty_gate"), dict) else {}
-        bypass_gcn = _low_motion_high_conf_bypass(
-            st,
-            dataset_code=dataset_code,
-            mode="gcn",
-            p_raw=p_raw_gcn,
-            tau_high=tau_high_gcn,
-            lying_score=lying_score,
-            enabled=bool(live_guard.get("allow_low_motion_high_conf_bypass", False)),
-            min_hits=int(live_guard.get("low_motion_high_conf_k", 0)),
-            max_lying=live_guard.get("low_motion_high_conf_max_lying"),
-        )
-        low_motion_high_conf_bypass = bool(low_motion_high_conf_bypass or bypass_gcn)
-        p_alert_gcn = _guard_alert_p(p_raw_gcn, tau_low_gcn)
-        p_alert_gcn, uncertainty_eval_gcn = apply_uncertainty_fall_gate(
-            probability=float(p_alert_gcn),
-            sigma=float(sigma_gcn),
-            tau_low=float(tau_low_gcn),
-            tau_high=float(tau_high_gcn),
-            mc_applied=bool(out_gcn.get("mc_applied", False)),
-            uncertainty_cfg=uncertainty_gate_gcn,
-        )
-        out_gcn["uncertainty_gate_eval"] = uncertainty_eval_gcn
-        out_gcn["p_alert_in"] = float(p_alert_gcn)
-        trk = st_trackers.get(gcn_key)
-        if trk is None or st_trackers_cfg.get(gcn_key) != cfg_gcn:
-            trk = OnlineAlertTracker(cfg_gcn)
-            st_trackers[gcn_key] = trk
-            st_trackers_cfg[gcn_key] = cfg_gcn
-        res = trk.step(p=float(p_alert_gcn), t_s=_t_s)
-        out_gcn["triage"] = {
-            "state": res.triage_state,
-            "ps": res.ps,
-            "p_in": res.p_in,
-            "tau_low": tau_low_gcn,
-            "tau_high": tau_high_gcn,
-            "ema_alpha": float(cfg_gcn.get("ema_alpha", 0.0)),
-            "k": int(cfg_gcn.get("k", 2)),
-            "n": int(cfg_gcn.get("n", 3)),
-            "cooldown_s": float(cfg_gcn.get("cooldown_s", 0.0)),
-            "cooldown_remaining_s": res.cooldown_remaining_s,
-        }
-        started_gcn = bool(res.started_event)
-        tri_gcn = res.triage_state
-        perf["infer_gcn_ms"] = int((time.perf_counter() - t_inf) * 1000)
+    inference = run_monitor_inference(
+        mode=mode,
+        xy=xy,
+        conf=conf,
+        expected_fps=float(expected_fps),
+        target_T=int(target_T),
+        op_code=op_code,
+        effective_use_mc=bool(effective_use_mc),
+        effective_mc_M=int(effective_mc_M),
+        tcn_key=tcn_key,
+        gcn_key=gcn_key,
+        dataset_code=dataset_code,
+        lying_score=lying_score,
+        confirm_motion_score=confirm_motion_score,
+        live_guard=live_guard,
+        st=st,
+        st_trackers=st_trackers,
+        st_trackers_cfg=st_trackers_cfg,
+        current_t_s=float(_t_s),
+        low_motion_block=bool(low_motion_block),
+        recent_motion_support=bool(recent_motion_support),
+        structural_quality_block=bool(structural_quality_block),
+        predict_spec=_predict_spec,
+        load_dual_policy_cfg=_load_dual_policy_cfg,
+        apply_uncertainty_fall_gate=apply_uncertainty_fall_gate,
+        tracker_cls=OnlineAlertTracker,
+        low_motion_high_conf_bypass_fn=_low_motion_high_conf_bypass,
+    )
+    models_out = inference.models_out
+    tri_tcn = inference.tri_tcn
+    tri_gcn = inference.tri_gcn
+    dual_policy_alerts = inference.dual_policy_alerts
+    low_motion_high_conf_bypass = inference.low_motion_high_conf_bypass
+    started_tcn = inference.started_tcn
+    started_gcn = inference.started_gcn
+    if inference.infer_tcn_ms is not None:
+        perf["infer_tcn_ms"] = int(inference.infer_tcn_ms)
+    if inference.infer_gcn_ms is not None:
+        perf["infer_gcn_ms"] = int(inference.infer_gcn_ms)
     _mark_perf("post_infer_policy_ms")
 
     # Primary alert signals.
