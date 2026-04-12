@@ -1,4 +1,0 @@
-clip_id,video_path,scene,lighting,camera_angle,distance,occlusion_level,subject_count,scenario_type,notes
-clip_001,data/field/raw/clip_001.mp4,home_day,bright,front,near,none,1,adl_walk,
-clip_002,data/field/raw/clip_002.mp4,home_evening,dim,side,far,partial,1,adl_bend,
-clip_003,data/field/raw/clip_003.mp4,office_day,mixed,front,near,partial,1,event_controlled_fall,
