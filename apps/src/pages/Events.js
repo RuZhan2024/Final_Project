@@ -6,6 +6,10 @@ import { eventStatusLabel, eventTypeLabel, EVENT_STATUS_OPTIONS } from "../lib/e
 import { EventSkeletonClipPanel } from "./events/components/EventSkeletonClipPanel";
 import { useEventsData } from "./events/hooks/useEventsData";
 
+function hasStoredReplay(ev) {
+  return Boolean(ev?.meta?.skeleton_clip?.path);
+}
+
 export default function Events() {
   const { apiBase } = useMonitoring();
   // Filters (default: last 7 days)
@@ -218,7 +222,17 @@ export default function Events() {
                       : String(ev.event_time)}
                   </td>
             
-                  <td>{eventTypeLabel(ev.type)}</td>
+                  <td>
+                    <div className={styles.typeCell}>
+                      <span>{eventTypeLabel(ev.type)}</span>
+                      <span
+                        className={hasStoredReplay(ev) ? styles.replayReadyBadge : styles.replayMissingBadge}
+                        title={hasStoredReplay(ev) ? "Stored skeleton replay available" : "No stored replay clip"}
+                      >
+                        {hasStoredReplay(ev) ? "Replay Ready" : "No Replay"}
+                      </span>
+                    </div>
+                  </td>
                   <td>{(ev.model_code || "—").toUpperCase()}</td>
                   <td>{ev.p_fall != null ? Number(ev.p_fall).toFixed(2) : "—"}</td>
                   <td>

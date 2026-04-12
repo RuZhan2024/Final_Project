@@ -25,6 +25,7 @@ export function EventSkeletonClipPanel({ apiBase, event, residentId = 1 }) {
   const [clipData, setClipData] = useState(null);
   const [clipFrameIdx, setClipFrameIdx] = useState(0);
   const [clipPlaying, setClipPlaying] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(0.75);
   const clipCanvasRef = useRef(null);
 
   useEffect(() => {
@@ -77,7 +78,8 @@ export function EventSkeletonClipPanel({ apiBase, event, residentId = 1 }) {
 
     const currentT = Number(tMs[currentIdx]) || 0;
     const nextT = Number(tMs[currentIdx + 1]) || currentT + 42;
-    const delayMs = Math.max(16, Math.min(120, nextT - currentT));
+    const speed = Number(playbackRate) > 0 ? Number(playbackRate) : 0.75;
+    const delayMs = Math.max(16, Math.min(200, (nextT - currentT) / speed));
     const timer = window.setTimeout(() => {
       setClipFrameIdx((prev) => {
         if (prev >= tMs.length - 1) {
@@ -88,7 +90,7 @@ export function EventSkeletonClipPanel({ apiBase, event, residentId = 1 }) {
       });
     }, delayMs);
     return () => window.clearTimeout(timer);
-  }, [clipPlaying, clipData, clipFrameIdx]);
+  }, [clipPlaying, clipData, clipFrameIdx, playbackRate]);
 
   useEffect(() => {
     const canvas = clipCanvasRef.current;
@@ -235,6 +237,18 @@ export function EventSkeletonClipPanel({ apiBase, event, residentId = 1 }) {
             >
               Restart
             </button>
+            <label className={styles.clipSpeedLabel}>
+              Speed
+              <select
+                className={styles.clipSpeedSelect}
+                value={String(playbackRate)}
+                onChange={(e) => setPlaybackRate(Number(e.target.value) || 0.75)}
+              >
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1">1.0x</option>
+              </select>
+            </label>
             <span className={styles.clipFrameLabel}>
               Frame {Math.min(clipFrameIdx + 1, clipFrameCount || 0)} / {clipFrameCount || 0}
             </span>
