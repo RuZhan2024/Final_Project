@@ -10,9 +10,10 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import _col_exists, _ensure_caregivers_table, _jsonable, _table_exists
-from ..core import get_inmem_caregivers, upsert_inmem_caregiver
+from ..core import _col_exists, _ensure_caregivers_table, _table_exists
 from ..db import get_conn_optional
+from ..inmemory_state import get_inmem_caregivers, upsert_inmem_caregiver
+from ..json_utils import jsonable as _jsonable
 from ..schemas import CaregiverUpsertPayload
 
 

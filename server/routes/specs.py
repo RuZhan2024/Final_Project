@@ -15,9 +15,9 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import _jsonable
 from ..db import get_conn
 from ..deploy_runtime import get_specs as _get_deploy_specs
+from ..json_utils import jsonable as _jsonable
 
 
 router = APIRouter()

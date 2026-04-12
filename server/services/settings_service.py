@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ..core import _norm_op_code, get_inmem_settings, normalize_dataset_code, normalize_model_code
+from ..core import _norm_op_code, normalize_dataset_code, normalize_model_code
+from ..inmemory_state import get_inmem_settings
 
 
 def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> None:

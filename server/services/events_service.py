@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..core import _jsonable
+from ..json_utils import jsonable as _jsonable
 from ..time_utils import serialize_event_timestamp
 from ..repositories.events_repository import (
     count_events,
