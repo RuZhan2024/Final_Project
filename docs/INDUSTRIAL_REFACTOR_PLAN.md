@@ -20,6 +20,48 @@ That means the immediate focus is:
 
 The training, evaluation, and broader monorepo package structure may be improved later, but they are not the primary surface of the first industrialization pass.
 
+## Future Monorepo Normalization
+
+The current repository still exposes a relatively flat top-level structure in which frontend, backend, and ML/training concerns sit side by side. That is workable for a research-first monorepo, but it is not the clearest long-term layout.
+
+A more production-oriented target shape would eventually separate these concerns more explicitly, for example:
+
+```text
+applications/
+  frontend/
+  backend/
+
+ml/
+  package/
+  scripts/
+  configs/
+
+deploy/
+tests/
+docs/
+```
+
+or, if migration cost needs to stay lower:
+
+```text
+apps/
+  frontend/
+  backend/
+
+ml/
+  src/
+  scripts/
+  configs/
+
+deploy/
+tests/
+docs/
+```
+
+The key principle is not one exact folder name. It is that frontend application code, backend application code, and ML/training code should eventually stop presenting themselves as one flat surface.
+
+This normalization is intentionally deferred. The current refactor focuses on backend boundary hardening first, because repo-wide directory movement would create a larger compatibility blast radius across imports, Make targets, Docker, tests, and documentation. In other words: structural clarity at the module and boundary level comes before full repository relocation.
+
 ## Current Problems
 
 The repository already contains substantial engineering work, but it still shows several research-first patterns that would be weak in a production codebase:

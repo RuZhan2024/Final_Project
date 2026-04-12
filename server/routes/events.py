@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import uuid
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 from fastapi import APIRouter, Body, HTTPException
 
 try:
@@ -39,6 +37,7 @@ from ..services.events_service import (
     build_event_skeleton_clip_response,
     build_events_list_response,
     build_events_summary_response,
+    persist_event_skeleton_clip,
     persist_event_status,
 )
 from ..services.value_coercion import coerce_bool
@@ -366,95 +365,24 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
     with get_conn_optional() as conn:
         if conn is None:
             raise HTTPException(status_code=503, detail="DB not available")
-        store_event_clips, anonymize = _read_clip_privacy_flags(conn, rid)
-        if not store_event_clips:
-            return {"ok": True, "skipped": True, "reason": "store_event_clips_disabled"}
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, resident_id, meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
-            row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
-        if int(row.get("resident_id") or 0) != rid:
-            raise HTTPException(status_code=403, detail="Event does not belong to resident")
-
-        t_ms = np.asarray(payload.t_ms, dtype=np.float32)
-        xy = np.asarray(payload.xy, dtype=np.float32)
-        if xy.ndim != 3 or xy.shape[-1] != 2:
-            raise HTTPException(status_code=400, detail="xy must be shaped [T,J,2]")
-        T = int(xy.shape[0])
-        if t_ms.shape[0] != T:
-            m = int(min(t_ms.shape[0], T))
-            t_ms = t_ms[:m]
-            xy = xy[:m]
-            T = m
-
-        if payload.conf is None:
-            conf = np.ones((T, xy.shape[1]), dtype=np.float32)
-        else:
-            conf = np.asarray(payload.conf, dtype=np.float32)
-            if conf.ndim != 2:
-                raise HTTPException(status_code=400, detail="conf must be shaped [T,J]")
-            if conf.shape[0] != T:
-                m = int(min(conf.shape[0], T))
-                conf = conf[:m]
-                t_ms = t_ms[:m]
-                xy = xy[:m]
-                T = m
-
-        if anonymize:
-            xy = _anonymize_xy_inplace(xy)
-            xy = np.round(xy, 4)
-            conf = np.round(conf, 4)
-
-        clips_dir = _event_clips_dir()
-        fname = f"event_{int(event_id)}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.npz"
-        fpath = clips_dir / fname
         try:
-            np.savez_compressed(fpath, t_ms=t_ms, xy=xy, conf=conf)
-        except (OSError, ValueError) as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save clip: {e}")
-
-        clip_rel = f"server/event_clips/{fname}"
-
-        meta = row.get("meta")
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except (TypeError, json.JSONDecodeError):
-                meta = {}
-        if not isinstance(meta, dict):
-            meta = {}
-
-        meta["skeleton_clip"] = {
-            "path": clip_rel,
-            "n_frames": int(T),
-            "n_joints": int(xy.shape[1]),
-            "pre_s": float(payload.pre_s) if payload.pre_s is not None else None,
-            "post_s": float(payload.post_s) if payload.post_s is not None else None,
-            "dataset_code": (payload.dataset_code or None),
-            "mode": (payload.mode or None),
-            "op_code": (payload.op_code or None),
-            "use_mc": bool(payload.use_mc) if payload.use_mc is not None else None,
-            "mc_M": int(payload.mc_M) if payload.mc_M is not None else None,
-            "anonymized": bool(anonymize),
-            "saved_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
-        }
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
-            conn.commit()
-        except (MySQLError, RuntimeError, TypeError, ValueError):
-            pass
-
-        return {
-            "ok": True,
-            "event_id": int(event_id),
-            "clip_path": clip_rel,
-            "n_frames": int(T),
-            "anonymized": bool(anonymize),
-        }
+            return persist_event_skeleton_clip(
+                conn,
+                event_id=int(event_id),
+                resident_id=rid,
+                payload=payload,
+                read_clip_privacy_flags=_read_clip_privacy_flags,
+                anonymize_xy_inplace=_anonymize_xy_inplace,
+                event_clips_dir=_event_clips_dir,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/api/events/{event_id}/skeleton_clip")

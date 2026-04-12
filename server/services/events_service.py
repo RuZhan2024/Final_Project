@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -296,6 +297,92 @@ def build_event_skeleton_clip_response(
         "t_ms": t_ms.tolist(),
         "xy": xy.tolist(),
         "conf": conf.tolist(),
+    }
+
+
+def persist_event_skeleton_clip(
+    conn: Any,
+    *,
+    event_id: int,
+    resident_id: int,
+    payload,
+    read_clip_privacy_flags,
+    anonymize_xy_inplace,
+    event_clips_dir,
+) -> Dict[str, Any]:
+    store_event_clips, anonymize = read_clip_privacy_flags(conn, resident_id)
+    if not store_event_clips:
+        return {"ok": True, "skipped": True, "reason": "store_event_clips_disabled"}
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, resident_id, meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
+        row = cur.fetchone()
+    if not row:
+        raise LookupError(f"Event {event_id} not found")
+    if int(row.get("resident_id") or 0) != int(resident_id):
+        raise PermissionError("Event does not belong to resident")
+
+    t_ms = np.asarray(payload.t_ms, dtype=np.float32)
+    xy = np.asarray(payload.xy, dtype=np.float32)
+    if xy.ndim != 3 or xy.shape[-1] != 2:
+        raise ValueError("xy must be shaped [T,J,2]")
+    frames = int(xy.shape[0])
+    if t_ms.shape[0] != frames:
+        m = int(min(t_ms.shape[0], frames))
+        t_ms = t_ms[:m]
+        xy = xy[:m]
+        frames = m
+
+    if payload.conf is None:
+        conf = np.ones((frames, xy.shape[1]), dtype=np.float32)
+    else:
+        conf = np.asarray(payload.conf, dtype=np.float32)
+        if conf.ndim != 2:
+            raise ValueError("conf must be shaped [T,J]")
+        if conf.shape[0] != frames:
+            m = int(min(conf.shape[0], frames))
+            conf = conf[:m]
+            t_ms = t_ms[:m]
+            xy = xy[:m]
+            frames = m
+
+    if anonymize:
+        xy = anonymize_xy_inplace(xy)
+        xy = np.round(xy, 4)
+        conf = np.round(conf, 4)
+
+    clips_dir = event_clips_dir()
+    fname = f"event_{int(event_id)}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.npz"
+    fpath = clips_dir / fname
+    np.savez_compressed(fpath, t_ms=t_ms, xy=xy, conf=conf)
+
+    clip_rel = f"server/event_clips/{fname}"
+    meta = parse_raw_meta(row.get("meta"))
+    meta["skeleton_clip"] = {
+        "path": clip_rel,
+        "n_frames": int(frames),
+        "n_joints": int(xy.shape[1]),
+        "pre_s": float(payload.pre_s) if payload.pre_s is not None else None,
+        "post_s": float(payload.post_s) if payload.post_s is not None else None,
+        "dataset_code": payload.dataset_code or None,
+        "mode": payload.mode or None,
+        "op_code": payload.op_code or None,
+        "use_mc": bool(payload.use_mc) if payload.use_mc is not None else None,
+        "mc_M": int(payload.mc_M) if payload.mc_M is not None else None,
+        "anonymized": bool(anonymize),
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE events SET meta=%s WHERE id=%s", (json.dumps(meta), int(event_id)))
+    conn.commit()
+
+    return {
+        "ok": True,
+        "event_id": int(event_id),
+        "clip_path": clip_rel,
+        "n_frames": int(frames),
+        "anonymized": bool(anonymize),
     }
 
 
