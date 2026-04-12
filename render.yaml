@@ -26,7 +26,7 @@ services:
       - key: SAFE_GUARD_SQLITE_PATH
         value: /var/data/safe_guard_notifications.sqlite3
       - key: REPLAY_CLIPS_DIR
-        value: /opt/render/project/src/deploy_assets/replay_clips
+        value: /opt/render/project/src/ops/deploy_assets/replay_clips
       - key: AI_REPORTS_ENABLED
         value: "1"
       - key: AI_PROVIDER

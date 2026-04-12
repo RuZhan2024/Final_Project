@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def _bootstrap_paths(root: Path) -> None:
+    ml_src = root / "ml" / "src"
+    for path in (str(root), str(ml_src)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
 def _run(cmd: List[str]) -> tuple[int, str]:
     try:
         out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
@@ -40,7 +47,8 @@ def main() -> None:
     ap.add_argument("--out_json", default="artifacts/reports/demo_doctor.json")
     args = ap.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
+    _bootstrap_paths(root)
     checks: List[Dict[str, Any]] = []
 
     def add(name: str, ok: bool, detail: str, critical: bool = True) -> None:
@@ -54,7 +62,7 @@ def main() -> None:
         add(f"import:{mod}", ok, detail, critical=True)
 
     add("frontend_dir", (root / "applications" / "frontend").is_dir(), str(root / "applications" / "frontend"), critical=True)
-    add("frontend_config", (root / "applications" / "frontend" / "src" / "lib" / "config.js").is_file(), "applications/frontend/src/lib/config.js", critical=True)
+    add("frontend_config", (root / "applications" / "frontend" / "src" / "lib" / "config.ts").is_file(), "applications/frontend/src/lib/config.ts", critical=True)
 
     npm_path = shutil.which("npm")
     add("npm_present", npm_path is not None, npm_path or "npm not found in PATH", critical=False)
@@ -65,8 +73,8 @@ def main() -> None:
     uvicorn_path = shutil.which("uvicorn")
     add("uvicorn_present", uvicorn_path is not None, uvicorn_path or "uvicorn not found in PATH", critical=False)
 
-    ckpt = root / "outputs" / f"{args.dataset}_{args.model}_W48S12" / "best.pt"
-    ops = root / "configs" / "ops" / f"{args.model}_{args.dataset}.yaml"
+    ckpt = root / "ops" / "deploy_assets" / "checkpoints" / f"{args.dataset}_{args.model}_best.pt"
+    ops = root / "ops" / "configs" / "ops" / f"{args.model}_{args.dataset}.yaml"
     add("checkpoint_exists", ckpt.is_file(), str(ckpt), critical=True)
     add("ops_yaml_exists", ops.is_file(), str(ops), critical=True)
 
