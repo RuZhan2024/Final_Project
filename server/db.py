@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from .env import load_local_env_files
-
+from .config import get_app_config
 try:
     from pymysql.err import MySQLError  # type: ignore
 except (ImportError, ModuleNotFoundError):
@@ -21,9 +21,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 def get_db_backend() -> str:
-    load_local_env_files()
-    raw = str(os.getenv("DB_BACKEND", "mysql")).strip().lower()
-    return "sqlite" if raw == "sqlite" else "mysql"
+    return get_app_config().db_backend
 
 
 def _require_env(name: str, default: str | None = None) -> str:
@@ -37,9 +35,7 @@ def _require_env(name: str, default: str | None = None) -> str:
 
 
 def _sqlite_path() -> Path:
-    load_local_env_files()
-    raw = str(os.getenv("SQLITE_PATH", "server/cloud_demo.sqlite3")).strip()
-    return Path(raw).expanduser().resolve()
+    return get_app_config().sqlite_path
 
 
 def _sqlite_placeholder_sql(sql: str) -> str:
@@ -308,9 +304,13 @@ def get_conn() -> Iterator[object]:
 
 @contextmanager
 def get_conn_optional() -> Iterator[Optional[object]]:
+    allow_test_mysql = (
+        "pymysql" in sys.modules
+        or os.getenv("FALL_DETECTION_ALLOW_TEST_DB", "").strip() in {"1", "true", "yes"}
+    )
     if (
         os.getenv("PYTEST_CURRENT_TEST")
-        and os.getenv("FALL_DETECTION_ALLOW_TEST_DB", "").strip() not in {"1", "true", "yes"}
+        and not allow_test_mysql
         and get_db_backend() != "sqlite"
     ):
         yield None

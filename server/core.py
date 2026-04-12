@@ -3,7 +3,6 @@
 
 This module centralises:
   - DB schema probing + lightweight caches
-  - Pydantic payloads shared by multiple endpoints
   - JSON-serialisation helpers
   - YAML-derived operating-point parameter helpers
   - In-memory monitor session state
@@ -25,9 +24,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 
+from .config import get_app_config
 from .deploy_runtime import get_specs as _get_deploy_specs
+from .schemas import CaregiverUpsertPayload, MonitorPredictPayload, SettingsUpdatePayload, SkeletonClipPayload
 from .services.monitor_uncertainty_service import resolve_uncertainty_cfg
 
 try:
@@ -35,132 +35,6 @@ try:
 except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
-
-
-# -----------------------------
-# Payloads
-# -----------------------------
-
-
-class SettingsUpdatePayload(BaseModel):
-    """Settings update payload.
-
-    The UI sends a mostly-flat JSON body. We ignore unknown keys so the API
-    remains backwards/forwards compatible.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    monitoring_enabled: Optional[bool] = None
-    api_online: Optional[bool] = None
-    alert_cooldown_sec: Optional[int] = None
-    notify_on_every_fall: Optional[bool] = None
-
-    fall_threshold: Optional[float] = Field(
-        default=None,
-        description="Probability threshold for fall decision (usually 0.0–1.0).",
-    )
-
-    store_event_clips: Optional[bool] = None
-    anonymize_skeleton_data: Optional[bool] = None
-    store_anonymized_data: Optional[bool] = None
-
-    active_model_code: Optional[str] = Field(default=None, description="TCN | GCN | HYBRID")
-    active_operating_point: Optional[int] = Field(default=None, description="operating_points.id")
-    active_dataset_code: Optional[str] = Field(default=None, description="le2i | caucafall")
-    active_op_code: Optional[str] = Field(default=None, description="OP-1 | OP-2 | OP-3")
-
-    mc_enabled: Optional[bool] = Field(default=None, description="Enable the live uncertainty gate")
-    mc_M: Optional[int] = Field(default=None, description="MC samples for boundary-window live inference")
-    mc_M_confirm: Optional[int] = Field(default=None, description="Reserved MC sample count for confirm-stage logic")
-
-    # v2-style extras
-    risk_profile: Optional[str] = None
-    notify_sms: Optional[bool] = None
-    notify_phone: Optional[bool] = None
-
-
-class SkeletonClipPayload(BaseModel):
-    """Skeleton-only event clip payload."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    resident_id: int = 1
-    dataset_code: Optional[str] = None
-    mode: Optional[str] = None
-    op_code: Optional[str] = None
-    use_mc: Optional[bool] = None
-    mc_M: Optional[int] = None
-    mc_sigma_tol: Optional[float] = None
-    mc_se_tol: Optional[float] = None
-    pre_s: Optional[float] = None
-    post_s: Optional[float] = None
-
-    t_ms: List[float]
-    xy: Optional[List[List[List[float]]]] = None
-    conf: Optional[List[List[float]]] = None
-    xy_flat: Optional[List[float]] = None
-    conf_flat: Optional[List[float]] = None
-    raw_joints: Optional[int] = None
-
-
-class MonitorPredictPayload(BaseModel):
-    """Live monitor inference payload.
-
-    Keep fields permissive to preserve backward compatibility while making
-    the request contract explicit and discoverable.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    session_id: Optional[str] = None
-    input_source: Optional[str] = None
-    mode: Optional[str] = None
-    dataset_code: Optional[str] = None
-    dataset: Optional[str] = None
-    op_code: Optional[str] = None
-    op: Optional[str] = None
-
-    model_tcn: Optional[str] = None
-    model_gcn: Optional[str] = None
-    model_id: Optional[str] = None
-
-    resident_id: Optional[int] = None
-    location: Optional[str] = None
-    use_mc: Optional[bool] = None
-    mc_M: Optional[int] = None
-    persist: Optional[bool] = None
-    compact_response: Optional[bool] = None
-
-    target_T: Optional[int] = None
-    target_fps: Optional[float] = None
-    fps: Optional[float] = None
-    capture_fps: Optional[float] = None
-    timestamp_ms: Optional[float] = None
-    window_end_t_ms: Optional[float] = None
-    window_seq: Optional[int] = None
-
-    raw_t_ms: Any = None
-    raw_xy: Any = None
-    raw_conf: Any = None
-    raw_xy_q: Any = None
-    raw_conf_q: Any = None
-    raw_shape: Any = None
-    xy: Any = None
-    conf: Any = None
-
-
-class CaregiverUpsertPayload(BaseModel):
-    """Create or update a caregiver record."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    id: Optional[int] = None
-    resident_id: int = 1
-    name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    telegram_chat_id: Optional[str] = None
 
 
 # -----------------------------
@@ -649,7 +523,7 @@ def _read_clip_privacy_flags(conn, resident_id: int) -> Tuple[bool, bool]:
 
 
 def _event_clips_dir() -> Path:
-    d = Path(__file__).resolve().parent / "event_clips"
+    d = get_app_config().event_clips_dir
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError:

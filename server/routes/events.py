@@ -16,7 +16,6 @@ except (ImportError, ModuleNotFoundError):
         pass
 
 from ..core import (
-    SkeletonClipPayload,
     _anonymize_xy_inplace,
     _col_exists,
     _cols,
@@ -34,6 +33,7 @@ from ..core import (
 from ..db import get_conn_optional
 from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
+from ..schemas import SkeletonClipPayload
 from ..services.events_service import (
     EventsDeps,
     build_event_skeleton_clip_response,

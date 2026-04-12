@@ -1,10 +1,12 @@
 # server/app.py
-"""FastAPI entrypoint.
+"""Stable ASGI entrypoint.
 
-Keep this module tiny so `uvicorn server.app:app` remains stable.
-The actual app assembly lives in :mod:`server.main`.
+Keep this module tiny so deployment commands such as `uvicorn server.app:app`
+remain stable while app assembly lives in :mod:`server.application`.
 """
 
 from __future__ import annotations
 
-from .main import app
+from .application import create_app
+
+app = create_app()

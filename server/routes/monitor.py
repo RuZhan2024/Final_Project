@@ -19,7 +19,7 @@ except (ImportError, ModuleNotFoundError):
         pass
 
 from .. import core
-from ..core import MonitorPredictPayload, _detect_variants, _ensure_system_settings_schema, _table_exists
+from ..core import _detect_variants, _ensure_system_settings_schema, _table_exists
 from ..core import normalize_dataset_code
 from ..db import get_conn
 from ..deploy_runtime import (
@@ -28,6 +28,7 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..online_alert import OnlineAlertTracker
+from ..schemas import MonitorPredictPayload
 from ..services.monitor_context_service import load_monitor_request_context
 from ..services.monitor_response_service import (
     build_monitor_prediction_response,

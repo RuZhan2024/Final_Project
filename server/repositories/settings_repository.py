@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from ..core import (
-    SettingsUpdatePayload,
     _norm_op_code,
     _col_exists,
     _ensure_system_settings_schema,
@@ -12,6 +11,7 @@ from ..core import (
     normalize_dataset_code,
     normalize_model_code,
 )
+from ..schemas import SettingsUpdatePayload
 
 
 def _updated_at_expr(conn: Any) -> str:

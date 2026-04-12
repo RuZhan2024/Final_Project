@@ -12,6 +12,25 @@ The server accepts **skeleton windows** and returns:
 
 It also keeps an **in-memory per-session** state machine for temporal rules.
 
+## Backend structure
+
+The backend is organized around explicit assembly and configuration boundaries:
+
+- `server/application.py`
+  - FastAPI application factory and route registration
+- `server/config.py`
+  - environment-backed runtime configuration and path resolution
+- `server/schemas.py`
+  - shared API payload models
+- `server/routes/`
+  - HTTP/WebSocket transport layer
+- `server/services/`
+  - runtime and response orchestration
+- `server/repositories/`
+  - persistence-facing read/write logic
+- `server/core.py`
+  - shared backend helpers and in-memory fallback state
+
 ## Run
 
 From the repo root:

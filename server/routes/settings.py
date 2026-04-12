@@ -11,12 +11,12 @@ except (ImportError, ModuleNotFoundError):
         pass
 
 from ..core import (
-    SettingsUpdatePayload,
     _derive_ops_params_from_yaml,
     apply_settings_update_inmem,
 )
 from ..db import get_conn
 from ..repositories.settings_repository import load_settings_snapshot, persist_settings_update
+from ..schemas import SettingsUpdatePayload
 from ..services.settings_service import (
     apply_yaml_override as _service_apply_yaml_override,
     base_settings_snapshot,

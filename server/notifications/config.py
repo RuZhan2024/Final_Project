@@ -4,6 +4,7 @@ import os
 
 from dataclasses import dataclass
 
+from ..config import get_app_config
 from ..env import load_local_env_files
 
 
@@ -67,9 +68,10 @@ class NotificationConfig:
 
 def load_notification_config() -> NotificationConfig:
     load_local_env_files()
+    app_config = get_app_config()
     return NotificationConfig(
         safe_guard_enabled=_get_bool("SAFE_GUARD_ENABLED", False),
-        sqlite_path=os.getenv("SAFE_GUARD_SQLITE_PATH", "server/safe_guard_notifications.sqlite3"),
+        sqlite_path=str(app_config.notification_sqlite_path),
         queue_size=max(10, _get_int("SAFE_GUARD_WORKER_QUEUE_SIZE", 256)),
         worker_poll_interval_s=max(0.05, _get_float("SAFE_GUARD_WORKER_POLL_INTERVAL_S", 0.25)),
         retry_count=max(0, _get_int("SAFE_GUARD_RETRY_COUNT", 2)),
