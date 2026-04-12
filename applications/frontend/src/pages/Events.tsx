@@ -197,7 +197,9 @@ export default function Events() {
           <div className={styles.filterActions}>
             <button
               className={styles.viewBtn}
-              onClick={reload}
+              onClick={() => {
+                void reload();
+              }}
               title="Refresh events"
             >
               Refresh
