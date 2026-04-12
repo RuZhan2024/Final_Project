@@ -70,6 +70,8 @@ export interface EventSkeletonClipResponse {
     saved_at?: string;
     n_frames?: number;
     anonymized?: boolean;
+    mode?: string;
+    op_code?: string;
     [key: string]: unknown;
   };
   [key: string]: unknown;

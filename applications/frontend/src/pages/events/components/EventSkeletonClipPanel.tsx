@@ -207,6 +207,8 @@ export function EventSkeletonClipPanel({
   const clipSavedAt = useMemo(() => {
     return clipData?.clip?.saved_at ? parseDateSafe(clipData.clip.saved_at) : null;
   }, [clipData]);
+  const clipSourceMode = String(clipData?.clip?.mode || "—");
+  const clipSourceOpCode = String(clipData?.clip?.op_code || "—");
 
   return (
     <div className={styles.clipPanel}>
@@ -276,7 +278,7 @@ export function EventSkeletonClipPanel({
             }}
           />
           <div className={styles.clipMetaRow}>
-            <span>Source: {clipData.clip.mode || "—"} / {clipData.clip.op_code || "—"}</span>
+            <span>{`Source: ${clipSourceMode} / ${clipSourceOpCode}`}</span>
             <span>{clipSavedAt ? clipSavedAt.toLocaleString() : "Saved clip"}</span>
           </div>
         </>
