@@ -10,8 +10,8 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import _col_exists, _ensure_caregivers_table, _table_exists
 from ..db import get_conn_optional
+from ..db_schema import col_exists, ensure_caregivers_table, table_exists
 from ..inmemory_state import get_inmem_caregivers, upsert_inmem_caregiver
 from ..json_utils import jsonable as _jsonable
 from ..schemas import CaregiverUpsertPayload
@@ -21,6 +21,10 @@ from ..services.caregivers_service import build_caregivers_list_response, build_
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_col_exists = col_exists
+_ensure_caregivers_table = ensure_caregivers_table
+_table_exists = table_exists
+
 
 @router.get("/api/caregivers")
 @router.get("/api/v1/caregivers")
@@ -29,13 +33,13 @@ def get_caregivers(resident_id: int = Query(1, description="Resident ID")) -> Di
         with get_conn_optional() as conn:
             if conn is None:
                 return {"resident_id": resident_id, "caregivers": get_inmem_caregivers(resident_id), "db_available": False}
-            _ensure_caregivers_table(conn)
-            if not _table_exists(conn, "caregivers"):
+            ensure_caregivers_table(conn)
+            if not table_exists(conn, "caregivers"):
                 return {"resident_id": resident_id, "caregivers": get_inmem_caregivers(resident_id), "db_available": False}
             return build_caregivers_list_response(
                 conn,
                 resident_id=resident_id,
-                col_exists=_col_exists,
+                col_exists=col_exists,
                 jsonable=_jsonable,
             )
     except Exception as e:
@@ -57,13 +61,13 @@ def upsert_caregiver(payload: CaregiverUpsertPayload = Body(...)) -> Dict[str, A
         with get_conn_optional() as conn:
             if conn is None:
                 return {"caregiver": _jsonable(upsert_inmem_caregiver(payload)), "db_available": False}
-            _ensure_caregivers_table(conn)
-            if not _table_exists(conn, "caregivers"):
+            ensure_caregivers_table(conn)
+            if not table_exists(conn, "caregivers"):
                 return {"caregiver": _jsonable(upsert_inmem_caregiver(payload)), "db_available": False}
             return build_upsert_caregiver_response(
                 conn,
                 payload=payload,
-                col_exists=_col_exists,
+                col_exists=col_exists,
                 jsonable=_jsonable,
             )
     except Exception as e:

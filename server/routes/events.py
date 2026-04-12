@@ -13,24 +13,15 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import (
-    _anonymize_xy_inplace,
-    _col_exists,
-    _cols,
-    _detect_variants,
-    _event_clips_dir,
-    _event_prob_col,
-    _event_time_col,
-    _has_col,
-    _jsonable,
-    _one_resident_id,
-    _read_clip_privacy_flags,
-    _resident_exists,
-    _table_exists,
-)
+from ..core import _anonymize_xy_inplace, _event_clips_dir, _read_clip_privacy_flags
 from ..db import get_conn_optional
+from ..db_schema import col_exists, cols, has_col, table_exists
+from ..deploy_ops import detect_variants
+from ..event_schema import event_prob_col, event_time_col
+from ..json_utils import jsonable as _jsonable
 from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
+from ..repositories.residents_repository import one_resident_id, resident_exists
 from ..schemas import SkeletonClipPayload
 from ..services.events_service import (
     EventsDeps,
@@ -45,16 +36,26 @@ from ..services.value_coercion import coerce_bool
 
 router = APIRouter()
 
+_col_exists = col_exists
+_cols = cols
+_detect_variants = detect_variants
+_event_prob_col = event_prob_col
+_event_time_col = event_time_col
+_has_col = has_col
+_one_resident_id = one_resident_id
+_resident_exists = resident_exists
+_table_exists = table_exists
+
 
 def _events_deps() -> EventsDeps:
     return EventsDeps(
-        resident_exists=_resident_exists,
-        one_resident_id=_one_resident_id,
-        detect_variants=_detect_variants,
-        event_time_col=_event_time_col,
-        event_prob_col=_event_prob_col,
-        has_col=_has_col,
-        table_exists=_table_exists,
+        resident_exists=resident_exists,
+        one_resident_id=one_resident_id,
+        detect_variants=detect_variants,
+        event_time_col=event_time_col,
+        event_prob_col=event_prob_col,
+        has_col=has_col,
+        table_exists=table_exists,
         jsonable=_jsonable,
     )
 
@@ -78,7 +79,7 @@ def _dispatch_safe_guard_from_event(
     caregiver_phone = ""
     caregiver_telegram_chat_id = ""
 
-    if _table_exists(conn, "system_settings"):
+    if table_exists(conn, "system_settings"):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
@@ -96,9 +97,9 @@ def _dispatch_safe_guard_from_event(
             if s.get("active_model_code"):
                 model_code = str(s.get("active_model_code") or model_code)
 
-    if _table_exists(conn, "caregivers"):
+    if table_exists(conn, "caregivers"):
         select_cols = "name, email, phone"
-        if _col_exists(conn, "caregivers", "telegram_chat_id"):
+        if col_exists(conn, "caregivers", "telegram_chat_id"):
             select_cols += ", telegram_chat_id"
         with conn.cursor() as cur:
             cur.execute(
@@ -249,15 +250,15 @@ def test_fall() -> Dict[str, Any]:
     with get_conn_optional() as conn:
         if conn is None:
             return {"ok": False, "reason": "db_unavailable"}
-        rid = _one_resident_id(conn)
-        variants = _detect_variants(conn)
+        rid = one_resident_id(conn)
+        variants = detect_variants(conn)
         now = datetime.utcnow()
 
         with conn.cursor() as cur:
             if variants["events"] == "v2":
                 model_id = None
                 op_id = None
-                if _has_col(conn, "system_settings", "active_model_id"):
+                if has_col(conn, "system_settings", "active_model_id"):
                     cur.execute(
                         "SELECT active_model_id, active_operating_point_id FROM system_settings WHERE resident_id=%s LIMIT 1",
                         (rid,),
@@ -266,13 +267,13 @@ def test_fall() -> Dict[str, Any]:
                     model_id = s.get("active_model_id")
                     op_id = s.get("active_operating_point_id")
 
-                cols = _cols(conn, "events")
+                event_cols = cols(conn, "events")
                 insert_cols = ["resident_id"]
                 insert_vals = ["%s"]
                 params: List[Any] = [rid]
 
                 def add(col: str, val: Any) -> None:
-                    if col in cols:
+                    if col in event_cols:
                         insert_cols.append(col)
                         insert_vals.append("%s")
                         params.append(val)
