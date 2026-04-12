@@ -4,9 +4,9 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Query
 
-from ..core import apply_settings_update_inmem
 from ..db import get_conn
 from ..deploy_ops import derive_ops_params_from_yaml
+from ..inmemory_state import apply_settings_update_inmem
 from ..repositories.settings_repository import load_settings_snapshot, persist_settings_update
 from ..schemas import SettingsUpdatePayload
 from ..services.settings_service import (
