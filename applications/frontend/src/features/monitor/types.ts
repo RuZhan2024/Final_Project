@@ -25,6 +25,7 @@ export interface ReplayClip {
   sizeBytes: number;
   url: string;
   group: ReplayClipGroup;
+  file?: File | null;
 }
 
 export interface ReplayClipsResponse {

@@ -2,6 +2,9 @@
   "name": "apps",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "dependencies": {
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/drawing_utils": "^0.3.1675466124",
@@ -28,6 +31,7 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "typecheck": "tsc --noEmit",
+    "render-parity": "npm ci && npm run build",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {

@@ -9,7 +9,8 @@ function normaliseUiParams(settingsPayload: SettingsResponse | null) {
   const sys = settingsPayload?.system || {};
   const ui = sys?.deploy_params?.ui || sys?.deploy_params || {};
 
-  const op_code = ui?.op_code || sys?.active_op_code || null;
+  const rawOpCode = ui?.op_code ?? sys?.active_op_code ?? null;
+  const op_code = rawOpCode != null ? String(rawOpCode) : null;
 
   const tau_high = ui?.tau_high != null ? Number(ui.tau_high) : null;
   const tau_low = ui?.tau_low != null ? Number(ui.tau_low) : null;
@@ -76,7 +77,7 @@ async function loadLegacyOperatingPoint(
           : null;
 
       return {
-        op_code: picked.code || picked.op_code || null,
+        op_code: picked.code != null ? String(picked.code) : picked.op_code != null ? String(picked.op_code) : null,
         tau_low: low != null && Number.isFinite(low) ? low : null,
         tau_high: high != null && Number.isFinite(high) ? high : null,
       };

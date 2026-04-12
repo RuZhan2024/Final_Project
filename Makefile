@@ -479,7 +479,7 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help bootstrap-dev up dev stop-dev compose-up compose-down release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
+.PHONY: help bootstrap-dev up dev stop-dev compose-up compose-down release-check release-manifest frontend-render-check serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
         eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
@@ -526,6 +526,9 @@ compose-down:
 
 release-check:
 	@bash ops/scripts/release_doctor.sh
+
+frontend-render-check:
+	@bash ops/scripts/frontend_render_parity.sh
 
 release-manifest:
 	@bash ops/scripts/release_manifest.sh
@@ -591,6 +594,7 @@ help:
 	@echo "  make compose-down       (stop docker compose services)"
 	@echo "  make release-manifest   (print the current delivery release subset)"
 	@echo "  make release-check      (static delivery checks)"
+	@echo "  make frontend-render-check (run clean frontend install + production build to mirror Render)"
 	@echo "  make serve-dev          (start backend only)"
 	@echo ""
 	@echo "Data prep:"

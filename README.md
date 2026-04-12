@@ -129,6 +129,7 @@ make compose-down
 
 - Python 3.10+
 - Node.js / npm
+- Node `22.22.0` recommended for parity with the current Render frontend build
 
 ### Full Docker mode
 
@@ -259,6 +260,32 @@ Torch-dependent monitor subset:
 
 ```bash
 ./ops/scripts/run_canonical_tests.sh monitor
+```
+
+## Pre-Deploy Frontend Parity Check
+
+Before pushing a frontend change for Render deployment, run the same clean-install
+path that Render uses:
+
+```bash
+make frontend-render-check
+```
+
+This performs:
+
+- `npm ci`
+- `npm run build`
+
+The repository also includes:
+
+- root `.nvmrc` pinned to `22.22.0`
+- `applications/frontend/package.json` `engines.node = 22.22.x`
+
+If you want `make release-check` to include this heavier frontend parity check,
+run:
+
+```bash
+RELEASE_DOCTOR_RENDER_PARITY=1 make release-check
 ```
 
 ## Runtime Profiles and Delivery Notes

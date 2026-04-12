@@ -23,7 +23,7 @@ import {
 import { prettyModelTag } from "../utils";
 import type { ReplayClip, SpecModel } from "../../../features/monitor/types";
 import type { SettingsResponse } from "../../../features/settings/types";
-import type { ChosenSpecs, MonitorControllerHandle, MonitorMode } from "../types";
+import type { CaptureResolutionPreset, ChosenSpecs, MonitorControllerHandle, MonitorMode } from "../types";
 
 interface UsePoseMonitorOptions {
   apiBase: string;
@@ -104,7 +104,7 @@ export function usePoseMonitor({
   const [liveRunning, setLiveRunning] = useState(false);
   const [streamFps, setStreamFps] = useState<number | null>(null);
   const [inputSource, setInputSource] = useState<"camera" | "video">("camera");
-  const [captureResolutionPreset, setCaptureResolutionPreset] = useState<"480p" | "540p" | "720p" | "1080p">("720p");
+  const [captureResolutionPreset, setCaptureResolutionPreset] = useState<CaptureResolutionPreset>("720p");
   const [selectedVideoName, setSelectedVideoName] = useState("");
   const [replayClip, setReplayClipState] = useState<ReplayClip | null>(null);
   const [startError, setStartError] = useState("");
@@ -377,9 +377,9 @@ export function usePoseMonitor({
     setStartError("");
   }, [makeSessionId, resetFrontendSessionState, stopLive]);
 
-  const setCaptureResolution = useCallback((preset: string) => {
+  const setCaptureResolution = useCallback((preset: CaptureResolutionPreset | string) => {
     if (!Object.prototype.hasOwnProperty.call(CAPTURE_RESOLUTIONS, preset)) return;
-    setCaptureResolutionPreset(String(preset));
+    setCaptureResolutionPreset(preset as CaptureResolutionPreset);
   }, []);
 
   const {

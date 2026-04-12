@@ -16,4 +16,9 @@ bash ops/scripts/release_manifest.sh >/dev/null
 echo "[check] frontend build"
 (cd applications/frontend && npm run build >/dev/null)
 
+if [[ "${RELEASE_DOCTOR_RENDER_PARITY:-0}" == "1" ]]; then
+  echo "[check] frontend render parity"
+  bash ops/scripts/frontend_render_parity.sh >/dev/null
+fi
+
 echo "[ok] static release checks passed"

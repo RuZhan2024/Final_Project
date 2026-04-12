@@ -53,8 +53,8 @@ export function useCaregivers(apiBase: string): UseCaregiversResult {
   }, [reload]);
 
   const upsert = useCallback(
-    async (payload) => {
-      const data = await apiRequest(apiBase, "/api/caregivers", {
+    async (payload: CaregiverUpsertPayload): Promise<CaregiversResponse> => {
+      const data = await apiRequest<CaregiversResponse>(apiBase, "/api/caregivers", {
         method: "PUT",
         body: { ...payload },
       });
