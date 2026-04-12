@@ -1,4 +1,4 @@
-export function normalizeModelCode(code: unknown) {
+export function normalizeModelCode(code: unknown): "TCN" | "GCN" | "HYBRID" {
   const v = String(code || "").trim().toUpperCase();
   if (v === "TCN") return "TCN";
   if (v === "GCN") return "GCN";
@@ -6,11 +6,11 @@ export function normalizeModelCode(code: unknown) {
   return "TCN";
 }
 
-export function modelCodeToLabel(code: unknown) {
+export function modelCodeToLabel(code: unknown): string {
   return normalizeModelCode(code);
 }
 
-export function modelLabelToCode(label: unknown) {
+export function modelLabelToCode(label: unknown): "TCN" | "GCN" | "HYBRID" {
   const v = String(label || "").toLowerCase();
   if (v.includes("hybrid")) return "HYBRID";
   if (v.includes("tcn")) return "TCN";

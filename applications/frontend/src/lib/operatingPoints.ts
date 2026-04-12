@@ -1,6 +1,6 @@
 export const PRESET_LABELS = ["High Sensitivity", "Balanced", "Low Sensitivity"] as const;
 
-export function normalizeOpCode(opCode: unknown) {
+export function normalizeOpCode(opCode: unknown): "OP-1" | "OP-2" | "OP-3" {
   const s = String(opCode || "").trim().toUpperCase().replace("_", "-");
   if (s === "OP1" || s === "OP-1") return "OP-1";
   if (s === "OP2" || s === "OP-2") return "OP-2";
@@ -8,14 +8,14 @@ export function normalizeOpCode(opCode: unknown) {
   return "OP-2";
 }
 
-export function presetFromOpCode(opCode: unknown) {
+export function presetFromOpCode(opCode: unknown): (typeof PRESET_LABELS)[number] {
   const c = String(normalizeOpCode(opCode)).toUpperCase();
   if (c === "OP-1") return "High Sensitivity";
   if (c === "OP-3") return "Low Sensitivity";
   return "Balanced";
 }
 
-export function opCodeForPreset(presetLabel: unknown) {
+export function opCodeForPreset(presetLabel: unknown): "OP-1" | "OP-2" | "OP-3" {
   const p = String(presetLabel || "").toLowerCase();
   if (p.includes("high")) return "OP-1";
   if (p.includes("low")) return "OP-3";

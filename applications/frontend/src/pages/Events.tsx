@@ -276,7 +276,13 @@ export default function Events() {
       </div>
 
       {reviewEvent && (
-        <div className={styles.modalOverlay} onClick={closeReview} role="presentation">
+        <div
+          className={styles.modalOverlay}
+          onClick={() => {
+            closeReview();
+          }}
+          role="presentation"
+        >
           <div
             className={styles.modalCard}
             onClick={(e) => e.stopPropagation()}
@@ -296,7 +302,13 @@ export default function Events() {
                     : String(reviewEvent.event_time)}
                 </p>
               </div>
-              <button className={styles.modalCloseBtn} onClick={closeReview} disabled={savingEventId != null}>
+              <button
+                className={styles.modalCloseBtn}
+                onClick={() => {
+                  closeReview();
+                }}
+                disabled={savingEventId != null}
+              >
                 Close
               </button>
             </div>
@@ -320,10 +332,22 @@ export default function Events() {
             <EventSkeletonClipPanel apiBase={apiBase} event={reviewEvent} residentId={1} />
 
             <div className={styles.modalActions}>
-              <button className={styles.secondaryBtn} onClick={closeReview} disabled={savingEventId != null}>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => {
+                  closeReview();
+                }}
+                disabled={savingEventId != null}
+              >
                 Cancel
               </button>
-              <button className={styles.primaryBtn} onClick={submitReview} disabled={savingEventId != null}>
+              <button
+                className={styles.primaryBtn}
+                onClick={() => {
+                  void submitReview();
+                }}
+                disabled={savingEventId != null}
+              >
                 {savingEventId != null ? "Saving..." : "Confirm"}
               </button>
             </div>
