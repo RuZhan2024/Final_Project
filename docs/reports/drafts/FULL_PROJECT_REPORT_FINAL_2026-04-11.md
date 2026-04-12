@@ -904,6 +904,14 @@ It is also useful to separate future work by the layer of evidence it would stre
 
 From that perspective, the highest-priority next steps are not necessarily the most ambitious engineering additions. The most valuable next steps are the ones that would most directly tighten the current defended contribution: stronger bounded runtime evidence, stronger field-style validation, and more stable environment-sensitive verification. This ordering matters because it keeps future work aligned with the project’s central methodological lesson: stronger systems claims come from stronger evidence and clearer boundaries, not only from additional features.
 
+# Data Availability Statement
+
+The code submission does not redistribute the raw training datasets used in this project. Public datasets used in the project, including `CAUCAFall`, `LE2i`, and `URFD`, should be obtained from their original public sources rather than from this repository.
+
+`MUVIM` was obtained from the Intelligent Assistive Technology and Systems Lab (IATSL), University of Toronto, under a signed research data agreement. The dataset is used for research purposes only and is not redistributed in this repository. Access is restricted and must be arranged directly with the data owner, subject to the provider's terms.
+
+Research outputs using `MUVIM` should cite S. Denkovski, S. S. Khan, B. Malamis, S. Y. Moon, B. Ye and A. Mihailidis, "Multi Visual Modality Fall Detection Dataset," *IEEE Access*, 2022, doi: `10.1109/ACCESS.2022.3211939`, and acknowledge the support of the Intelligent Assistive Technology and Systems Lab (IATSL) at the University of Toronto through the sharing of data related to this research.
+
 # Conclusion
 
 This report has presented a research-led study of pose-based fall detection as an integrated monitoring problem rather than as a classifier-only benchmark task. The project combined frozen offline comparison, validation-side operating-point fitting, temporal policy design, runtime monitoring, event persistence, and caregiver-facing delivery within one coherent technical pipeline.

@@ -311,6 +311,34 @@ Expected raw roots by default:
 - `data/raw/CAUCAFall`
 - `data/raw/MUVIM`
 
+Dataset availability:
+
+- `CAUCAFall`
+  - primary benchmark and deployment-target dataset in this project
+  - publicly available for research use from its original dataset source
+  - source: `https://data.mendeley.com/datasets/7w7fccy7ky/4`
+  - this repository does not redistribute the raw dataset
+- `LE2i`
+  - comparative and transfer-boundary dataset in this project
+  - publicly available for research use from its original dataset source
+  - source: `http://le2i.cnrs.fr/Fall-detection-Dataset?lang=fr`
+  - this repository does not redistribute the raw dataset
+- `URFD`
+  - supported by the codebase as an additional dataset option
+  - publicly available from its original dataset source
+  - source: `http://fenix.univ.rzeszow.pl/~mkepski/ds/uf.html`
+  - this repository does not redistribute the raw dataset
+- `MUVIM`
+  - secondary exploratory dataset in this project
+  - obtained from the Intelligent Assistive Technology and Systems Lab, University of Toronto, under a signed research data agreement
+  - not redistributed in this repository
+  - access is restricted and must be arranged directly with the data owner, subject to the provider's terms
+
+Required acknowledgment for `MUVIM`-based research use:
+
+- citation: S. Denkovski, S. S. Khan, B. Malamis, S. Y. Moon, B. Ye and A. Mihailidis, "Multi Visual Modality Fall Detection Dataset," *IEEE Access*, 2022, doi: `10.1109/ACCESS.2022.3211939`
+- acknowledgment: `The author acknowledges the support of the Intelligent Assistive Technology and Systems Lab (IATSL) at the University of Toronto through the sharing of data related to this research.`
+
 Two common usage modes:
 
 1. raw mode
