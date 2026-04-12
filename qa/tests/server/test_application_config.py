@@ -10,6 +10,10 @@ def test_app_config_uses_env_for_cors_and_runtime_paths(monkeypatch):
     monkeypatch.setenv("SQLITE_PATH", "tmp/test_app.sqlite3")
     monkeypatch.setenv("EVENT_CLIPS_DIR", "tmp/test_event_clips")
     monkeypatch.setenv("SAFE_GUARD_SQLITE_PATH", "tmp/test_notifications.sqlite3")
+    monkeypatch.setenv("APP_BASE_URL", "https://frontend.example.com")
+    monkeypatch.setenv("APP_TIMEZONE", "UTC")
+    monkeypatch.setenv("SESSION_TTL_S", "2400")
+    monkeypatch.setenv("SESSION_MAX_STATES", "120")
     get_app_config.cache_clear()
 
     cfg = get_app_config()
@@ -19,6 +23,10 @@ def test_app_config_uses_env_for_cors_and_runtime_paths(monkeypatch):
     assert str(cfg.sqlite_path).endswith("tmp/test_app.sqlite3")
     assert str(cfg.event_clips_dir).endswith("tmp/test_event_clips")
     assert str(cfg.notification_sqlite_path).endswith("tmp/test_notifications.sqlite3")
+    assert cfg.app_base_url == "https://frontend.example.com"
+    assert cfg.app_timezone == "UTC"
+    assert cfg.session_ttl_s == 2400
+    assert cfg.session_max_states == 120
 
     get_app_config.cache_clear()
 

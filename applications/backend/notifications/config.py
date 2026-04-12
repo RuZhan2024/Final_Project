@@ -4,34 +4,7 @@ import os
 
 from dataclasses import dataclass
 
-from ..config import get_app_config
-from ..env import load_local_env_files
-
-
-def _get_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    val = raw.strip().lower()
-    if val in {"1", "true", "yes", "on"}:
-        return True
-    if val in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _get_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _get_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return float(default)
+from ..config import get_app_config, get_env_bool, get_env_float, get_env_int, get_env_str
 
 
 @dataclass(frozen=True)
@@ -67,35 +40,34 @@ class NotificationConfig:
 
 
 def load_notification_config() -> NotificationConfig:
-    load_local_env_files()
     app_config = get_app_config()
     return NotificationConfig(
-        safe_guard_enabled=_get_bool("SAFE_GUARD_ENABLED", False),
+        safe_guard_enabled=get_env_bool("SAFE_GUARD_ENABLED", False),
         sqlite_path=str(app_config.notification_sqlite_path),
-        queue_size=max(10, _get_int("SAFE_GUARD_WORKER_QUEUE_SIZE", 256)),
-        worker_poll_interval_s=max(0.05, _get_float("SAFE_GUARD_WORKER_POLL_INTERVAL_S", 0.25)),
-        retry_count=max(0, _get_int("SAFE_GUARD_RETRY_COUNT", 2)),
-        http_timeout_s=max(1.0, _get_float("SAFE_GUARD_HTTP_TIMEOUT_S", 8.0)),
-        high_conf_margin=_get_float("HIGH_CONF_MARGIN", 0.08),
-        low_uncertainty_threshold=_get_float("LOW_UNCERTAINTY_THRESHOLD", 0.05),
-        high_uncertainty_threshold=_get_float("HIGH_UNCERTAINTY_THRESHOLD", 0.15),
-        alert_cooldown_seconds=max(0, _get_int("ALERT_COOLDOWN_SECONDS", 60)),
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-        telegram_chat_id=os.getenv("CAREGIVER_TELEGRAM_CHAT_ID", "").strip(),
-        telegram_api_base=os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
-        twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
-        twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
-        twilio_from_phone=os.getenv("TWILIO_FROM_PHONE", "").strip(),
-        caregiver_phone=os.getenv("CAREGIVER_PHONE", "").strip(),
-        resend_api_key=os.getenv("RESEND_API_KEY", "").strip(),
-        email_from=os.getenv("EMAIL_FROM", "").strip(),
-        caregiver_email=os.getenv("CAREGIVER_EMAIL", "").strip(),
-        app_base_url=os.getenv("APP_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
-        ai_provider=os.getenv("AI_PROVIDER", "openai").strip().lower(),
-        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip(),
-        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip(),
-        openai_timeout_s=max(3.0, _get_float("OPENAI_TIMEOUT_S", 12.0)),
-        ai_reports_enabled=_get_bool("AI_REPORTS_ENABLED", True),
+        queue_size=get_env_int("SAFE_GUARD_WORKER_QUEUE_SIZE", 256, minimum=10),
+        worker_poll_interval_s=get_env_float("SAFE_GUARD_WORKER_POLL_INTERVAL_S", 0.25, minimum=0.05),
+        retry_count=get_env_int("SAFE_GUARD_RETRY_COUNT", 2, minimum=0),
+        http_timeout_s=get_env_float("SAFE_GUARD_HTTP_TIMEOUT_S", 8.0, minimum=1.0),
+        high_conf_margin=get_env_float("HIGH_CONF_MARGIN", 0.08),
+        low_uncertainty_threshold=get_env_float("LOW_UNCERTAINTY_THRESHOLD", 0.05),
+        high_uncertainty_threshold=get_env_float("HIGH_UNCERTAINTY_THRESHOLD", 0.15),
+        alert_cooldown_seconds=get_env_int("ALERT_COOLDOWN_SECONDS", 60, minimum=0),
+        telegram_bot_token=get_env_str("TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=get_env_str("CAREGIVER_TELEGRAM_CHAT_ID", ""),
+        telegram_api_base=get_env_str("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
+        twilio_account_sid=get_env_str("TWILIO_ACCOUNT_SID", ""),
+        twilio_auth_token=get_env_str("TWILIO_AUTH_TOKEN", ""),
+        twilio_from_phone=get_env_str("TWILIO_FROM_PHONE", ""),
+        caregiver_phone=get_env_str("CAREGIVER_PHONE", ""),
+        resend_api_key=get_env_str("RESEND_API_KEY", ""),
+        email_from=get_env_str("EMAIL_FROM", ""),
+        caregiver_email=get_env_str("CAREGIVER_EMAIL", ""),
+        app_base_url=app_config.app_base_url,
+        ai_provider=get_env_str("AI_PROVIDER", "openai").lower(),
+        openai_api_key=get_env_str("OPENAI_API_KEY", ""),
+        openai_model=get_env_str("OPENAI_MODEL", "gpt-4.1-mini"),
+        gemini_api_key=get_env_str("GEMINI_API_KEY", ""),
+        gemini_model=get_env_str("GEMINI_MODEL", "gemini-2.0-flash"),
+        openai_timeout_s=get_env_float("OPENAI_TIMEOUT_S", 12.0, minimum=3.0),
+        ai_reports_enabled=get_env_bool("AI_REPORTS_ENABLED", True),
     )

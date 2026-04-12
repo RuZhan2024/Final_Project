@@ -307,6 +307,47 @@ Operational note:
 - Telegram and summary-provider credentials should be stored only in Render environment variables
 - SMS / phone / email escalation are future-work channels, not the current implemented delivery path
 
+## Configuration and Secrets
+
+Backend runtime configuration is centered on:
+
+- `.env.example` as the documented variable inventory
+- `applications/backend/config.py` as the canonical config parsing layer
+- deployment environment variables as the source for real secrets
+
+Configuration should be read in four groups:
+
+1. safe local defaults
+   - `APP_BASE_URL`
+   - `APP_TIMEZONE`
+   - `CORS_ALLOWED_ORIGINS`
+   - `SESSION_TTL_S`
+   - `SESSION_MAX_STATES`
+2. runtime paths
+   - `SQLITE_PATH`
+   - `SAFE_GUARD_SQLITE_PATH`
+   - `EVENT_CLIPS_DIR`
+3. backend mode selection
+   - `DB_BACKEND`
+   - `DB_HOST`
+   - `DB_PORT`
+   - `DB_USER`
+   - `DB_PASS`
+   - `DB_NAME`
+4. secret-bearing integrations
+   - `TELEGRAM_BOT_TOKEN`
+   - `TWILIO_*`
+   - `RESEND_API_KEY`
+   - `OPENAI_API_KEY`
+   - `GEMINI_API_KEY`
+
+Operational rules:
+
+- keep real secrets out of git and store them only in local private env files or deployment secret stores
+- prefer SQLite for local demo and supervisor review
+- treat `.env.example` as the documented contract, not as a source of real credentials
+- if a deployment requires third-party delivery or AI summaries, configure those values explicitly rather than relying on undeclared defaults
+
 Suggested Render blueprint:
 
 - [render.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/render.yaml)

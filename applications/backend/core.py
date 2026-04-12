@@ -24,6 +24,7 @@ from fastapi import HTTPException
 import numpy as np
 
 from . import db_schema as _db_schema_module
+from .config import get_app_config
 from .code_normalization import (
     norm_op_code as _norm_op_code_impl,
     normalize_dataset_code as _normalize_dataset_code_impl,
@@ -294,8 +295,8 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
 
 
 _SESSION_STATE = _runtime_state.get_session_store()
-SESSION_TTL_S = _runtime_state.SESSION_TTL_S
-SESSION_MAX_STATES = _runtime_state.SESSION_MAX_STATES
+SESSION_TTL_S = get_app_config().session_ttl_s
+SESSION_MAX_STATES = get_app_config().session_max_states
 
 LAST_PRED_LATENCY_MS = None
 LAST_PRED_P_FALL = None

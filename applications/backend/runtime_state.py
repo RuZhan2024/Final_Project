@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Optional
+
+from .config import get_app_config
 
 
 SESSION_STATE: Dict[str, Dict[str, Any]] = {}
-SESSION_TTL_S = int(os.getenv("SESSION_TTL_S", "1800"))
-SESSION_MAX_STATES = int(os.getenv("SESSION_MAX_STATES", "1000"))
 
 LAST_PRED_LATENCY_MS: Optional[float] = None
 LAST_PRED_P_FALL: Optional[float] = None
@@ -52,8 +51,9 @@ def prune_session_state(
         return 0
 
     t_s = float(now_s if now_s is not None else time.time())
-    effective_ttl = max(60, int(ttl_s if ttl_s is not None else SESSION_TTL_S))
-    effective_cap = max(10, int(max_states if max_states is not None else SESSION_MAX_STATES))
+    cfg = get_app_config()
+    effective_ttl = max(60, int(ttl_s if ttl_s is not None else cfg.session_ttl_s))
+    effective_cap = max(10, int(max_states if max_states is not None else cfg.session_max_states))
     cutoff = t_s - float(effective_ttl)
     removed = 0
 
