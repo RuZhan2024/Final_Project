@@ -137,7 +137,6 @@ function Monitor({ isActive = true }: MonitorProps) {
   // Monitor page no longer polls /api/summary (dashboard owns summary polling).
   const summaryErr = "";
   const [showLivePreview, setShowLivePreview] = useState(false);
-  const [replayPersistEvents, setReplayPersistEvents] = useState(false);
 
   // ---- Live pipeline (camera + pose + inference) ----
   const {
@@ -181,7 +180,6 @@ function Monitor({ isActive = true }: MonitorProps) {
     mcCfg,
     activeDatasetCode: resolvedDatasetCode,
     chosenSpec,
-    replayPersistEvents,
     onAutoStop: () => setMonitoringOn(false),
   });
 
@@ -278,8 +276,6 @@ function Monitor({ isActive = true }: MonitorProps) {
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}
             onSeekReplay={seekReplay}
-            replayPersistEvents={replayPersistEvents}
-            onToggleReplayPersist={setReplayPersistEvents}
           />
 
           <TimelineCard markers={markers} statusText={timelineStatusText} />

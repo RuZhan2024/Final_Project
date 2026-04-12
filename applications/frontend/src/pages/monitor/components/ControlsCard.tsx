@@ -27,8 +27,6 @@ interface ControlsCardProps {
   replayCurrentS: number;
   replayDurationS: number;
   onSeekReplay?: (positionRatio: number) => void;
-  replayPersistEvents: boolean;
-  onToggleReplayPersist?: (next: boolean) => void;
 }
 
 export function ControlsCard({
@@ -52,8 +50,6 @@ export function ControlsCard({
   replayCurrentS,
   replayDurationS,
   onSeekReplay,
-  replayPersistEvents,
-  onToggleReplayPersist,
 }: ControlsCardProps) {
   const replayPct = replayDurationS > 0 ? Math.max(0, Math.min(100, (replayCurrentS / replayDurationS) * 100)) : 0;
   const groupedReplayClips = (replayClips || []).reduce(
@@ -156,17 +152,6 @@ export function ControlsCard({
                 </optgroup>
               ) : null}
             </select>
-          </div>
-          <div className={styles.toggleRow}>
-            <span>Persist Replay Events</span>
-            <label className={styles.switch}>
-              <input
-                type="checkbox"
-                checked={Boolean(replayPersistEvents)}
-                onChange={(e) => onToggleReplayPersist?.(e.target.checked)}
-              />
-              <span className={styles.slider}></span>
-            </label>
           </div>
           <div className={styles.buttonGroup}>
             {!monitoringOn ? (

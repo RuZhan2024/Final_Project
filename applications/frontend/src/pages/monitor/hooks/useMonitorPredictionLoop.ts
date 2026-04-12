@@ -28,7 +28,6 @@ export function useMonitorPredictionLoop({
   settingsPayload,
   mcEnabled,
   mcCfg,
-  replayPersistEventsRef,
   selectedVideoName,
   replayClipRef,
   inputSourceRef,
@@ -89,7 +88,6 @@ export function useMonitorPredictionLoop({
       const nFrames = Array.isArray(frames) ? frames.length : 0;
       if (nFrames < 2) return null;
 
-      const { storeEventClips } = clipFlags;
       const payload = buildPredictPayload({
         slice: frames,
         sessionId: sessionIdRef.current,
@@ -105,9 +103,7 @@ export function useMonitorPredictionLoop({
         streamFps,
         mcEnabled,
         mcCfg,
-        persist:
-          (sourceMode === "video" ? replayPersistEventsRef.current : monitoringOnRef.current) ||
-          storeEventClips,
+        persist: sourceMode === "video" ? false : monitoringOnRef.current,
         endTs: windowEndTs,
       });
 
@@ -119,14 +115,12 @@ export function useMonitorPredictionLoop({
     [
       activeDatasetCode,
       chosen,
-      clipFlags,
       deployW,
       mcCfg,
       mcEnabled,
       mode,
       monitoringOnRef,
       opCode,
-      replayPersistEventsRef,
       sessionIdRef,
       settingsPayload,
       streamFps,

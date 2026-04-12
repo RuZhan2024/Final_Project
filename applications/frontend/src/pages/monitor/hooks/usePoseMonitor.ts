@@ -40,7 +40,6 @@ interface UsePoseMonitorOptions {
   mcCfg: { M: number | null; M_confirm: number | null };
   activeDatasetCode: string;
   chosenSpec: SpecModel | null;
-  replayPersistEvents?: boolean;
   onAutoStop?: ((next: boolean) => void | boolean | Promise<void | boolean>) | null;
 }
 
@@ -68,7 +67,6 @@ export function usePoseMonitor({
   mcCfg,
   activeDatasetCode,
   chosenSpec,
-  replayPersistEvents = false,
   onAutoStop,
 }: UsePoseMonitorOptions) {
   // Refs for camera + mediapipe
@@ -111,10 +109,9 @@ export function usePoseMonitor({
   const [replayCurrentS, setReplayCurrentS] = useState(0);
   const [replayDurationS, setReplayDurationS] = useState(0);
   // MediaPipe result callbacks can outlive the render that started monitoring.
-  // Read the latest persisted flags from refs so replay windows do not keep
-  // sending stale values after toggles change.
+  // Read the latest persisted-monitoring flag from a ref so live windows do not
+  // keep sending stale `persist: false` after monitoring is toggled on.
   const monitoringOnRef = useRef(Boolean(monitoringOn));
-  const replayPersistEventsRef = useRef(Boolean(replayPersistEvents));
 
   // Prediction UI
   // Frame buffer for windowing
@@ -207,10 +204,6 @@ export function usePoseMonitor({
   useEffect(() => {
     monitoringOnRef.current = Boolean(monitoringOn);
   }, [monitoringOn]);
-
-  useEffect(() => {
-    replayPersistEventsRef.current = Boolean(replayPersistEvents);
-  }, [replayPersistEvents]);
 
   useEffect(() => {
     showLivePreviewRef.current = Boolean(showLivePreview);
@@ -401,7 +394,6 @@ export function usePoseMonitor({
     settingsPayload,
     mcEnabled,
     mcCfg,
-    replayPersistEventsRef,
     selectedVideoName,
     replayClipRef,
     inputSourceRef,

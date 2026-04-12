@@ -116,7 +116,6 @@ export interface UseMonitorPredictionLoopOptions {
   settingsPayload: SettingsResponse | null;
   mcEnabled: boolean;
   mcCfg: { M: number | null; M_confirm: number | null };
-  replayPersistEventsRef: MutableRefObject<boolean>;
   selectedVideoName: string;
   replayClipRef: MutableRefObject<ReplayClip | null>;
   inputSourceRef: MutableRefObject<string>;
