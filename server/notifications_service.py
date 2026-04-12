@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .core import _col_exists, _ensure_caregivers_table, _table_exists
+from .db_schema import col_exists, ensure_caregivers_table, table_exists
 from .notifications import get_notification_manager
 
 
@@ -47,13 +47,13 @@ def dispatch_fall_notifications(
     }
     try:
         out["safe_guard_enabled"] = bool(get_notification_manager().enabled)
-        if not _table_exists(conn, "notifications_log"):
+        if not table_exists(conn, "notifications_log"):
             out["reason"] = "notifications_log_missing"
             return out
 
         notify_on_every_fall = True
         with conn.cursor() as cur:
-            if _table_exists(conn, "system_settings"):
+            if table_exists(conn, "system_settings"):
                 cur.execute(
                     "SELECT * FROM system_settings WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                     (int(resident_id),),
@@ -73,10 +73,10 @@ def dispatch_fall_notifications(
             # Optional caregiver details for human-readable message.
             caregiver_name = None
             caregiver_telegram_chat_id = None
-            if _table_exists(conn, "caregivers"):
-                _ensure_caregivers_table(conn)
+            if table_exists(conn, "caregivers"):
+                ensure_caregivers_table(conn)
                 select_cols = "name"
-                if _col_exists(conn, "caregivers", "telegram_chat_id"):
+                if col_exists(conn, "caregivers", "telegram_chat_id"):
                     select_cols += ", telegram_chat_id"
                 cur.execute(
                     f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
@@ -98,7 +98,7 @@ def dispatch_fall_notifications(
             for ch in channels:
                 cols = ["resident_id", "channel", "status", "message"]
                 vals = [int(resident_id), ch, "queued", msg]
-                if _col_exists(conn, "notifications_log", "event_id"):
+                if col_exists(conn, "notifications_log", "event_id"):
                     cols.append("event_id")
                     vals.append(int(event_id) if event_id is not None else None)
                 sql = f"INSERT INTO notifications_log ({', '.join(cols)}) VALUES ({', '.join(['%s']*len(cols))})"
@@ -108,7 +108,7 @@ def dispatch_fall_notifications(
             out["rows_written"] = wrote
 
             # Best effort: mark events.alert_sent=1 when available.
-            if event_id is not None and _table_exists(conn, "events") and _col_exists(conn, "events", "alert_sent"):
+            if event_id is not None and table_exists(conn, "events") and col_exists(conn, "events", "alert_sent"):
                 try:
                     cur.execute("UPDATE events SET alert_sent=%s WHERE id=%s", (1, int(event_id)))
                 except Exception:

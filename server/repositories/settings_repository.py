@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..core import (
-    _norm_op_code,
-    _col_exists,
-    _ensure_system_settings_schema,
-    _safe_get,
-    _table_exists,
-    normalize_dataset_code,
-    normalize_model_code,
-)
+from ..code_normalization import norm_op_code, normalize_dataset_code, normalize_model_code
+from ..db_schema import col_exists, ensure_system_settings_schema, table_exists
 from ..schemas import SettingsUpdatePayload
+
+_norm_op_code = norm_op_code
+_col_exists = col_exists
+_ensure_system_settings_schema = ensure_system_settings_schema
+_table_exists = table_exists
 
 
 def _updated_at_expr(conn: Any) -> str:
@@ -55,7 +53,7 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
         ("mc_M", lambda v: deploy.setdefault("mc", {}).__setitem__("M", int(v))),
         ("mc_M_confirm", lambda v: deploy.setdefault("mc", {}).__setitem__("M_confirm", int(v))),
         ("active_dataset_code", lambda v: system.__setitem__("active_dataset_code", normalize_dataset_code(v))),
-        ("active_op_code", lambda v: system.__setitem__("active_op_code", _norm_op_code(v))),
+        ("active_op_code", lambda v: system.__setitem__("active_op_code", norm_op_code(v))),
         ("mc_enabled", lambda v: system.__setitem__("mc_enabled", bool(int(v)) if str(v).isdigit() else bool(v))),
     ]:
         if isinstance(sys_row, dict) and col in sys_row and sys_row.get(col) is not None:
@@ -122,7 +120,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
         add("active_dataset_code", "active_dataset_code=%s", normalize_dataset_code(payload.active_dataset_code))
 
     if payload.active_op_code is not None and _col_exists(conn, "system_settings", "active_op_code"):
-        add("active_op_code", "active_op_code=%s", _norm_op_code(payload.active_op_code))
+        add("active_op_code", "active_op_code=%s", norm_op_code(payload.active_op_code))
 
     if payload.mc_enabled is not None:
         add("mc_enabled", "mc_enabled=%s", 1 if payload.mc_enabled else 0)

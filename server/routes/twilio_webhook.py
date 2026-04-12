@@ -14,12 +14,15 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import _detect_variants, _has_col
 from ..db import get_conn_optional
+from ..db_schema import has_col
+from ..deploy_ops import detect_variants
 from ..notifications import get_notification_manager
 
 
 router = APIRouter()
+_detect_variants = detect_variants
+_has_col = has_col
 _EVENT_REF_RE = re.compile(r"\bref[:#\s-]*([A-Za-z0-9_-]+)\b", re.IGNORECASE)
 
 
@@ -47,15 +50,15 @@ def _update_canonical_event_status(event_id: str, db_status: str) -> bool:
     with get_conn_optional() as conn:
         if conn is None:
             return False
-        variants = _detect_variants(conn)
+        variants = detect_variants(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM events WHERE id=%s LIMIT 1", (event_id,))
             row = cur.fetchone()
             if not row:
                 return False
-            if variants.get("events") == "v2" and _has_col(conn, "events", "status"):
+            if variants.get("events") == "v2" and has_col(conn, "events", "status"):
                 cur.execute("UPDATE events SET status=%s WHERE id=%s", (db_status, event_id))
-            elif _has_col(conn, "events", "meta"):
+            elif has_col(conn, "events", "meta"):
                 cur.execute("SELECT meta FROM events WHERE id=%s LIMIT 1", (event_id,))
                 meta_row = cur.fetchone() or {}
                 meta = meta_row.get("meta")

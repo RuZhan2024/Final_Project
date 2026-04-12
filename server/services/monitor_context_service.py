@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from ..core import _norm_op_code, normalize_dataset_code
+from ..code_normalization import norm_op_code, normalize_dataset_code
 from .monitor_runtime_service import MonitorRuntimeContext
 from .value_coercion import coerce_bool
 
@@ -72,7 +72,7 @@ def load_monitor_request_context(
 ) -> MonitorRequestContext:
     sys_row = None
     resolved_dataset_code = normalize_dataset_code(dataset_code)
-    resolved_op_code = _norm_op_code(str(op_code or ""))
+    resolved_op_code = norm_op_code(str(op_code or ""))
     resolved_active_model = str(active_model_code or mode.upper())
     cooldown_sec = 30
     notify_on_every_fall = True
@@ -106,7 +106,7 @@ def load_monitor_request_context(
                 notify_phone = coerce_bool(sys_row.get("notify_phone"), False)
 
             if (not resolved_op_code) and sys_row.get("active_op_code"):
-                resolved_op_code = _norm_op_code(str(sys_row.get("active_op_code") or ""))
+                resolved_op_code = norm_op_code(str(sys_row.get("active_op_code") or ""))
 
             op_id = None
             for key in ("active_operating_point", "active_operating_point_id"):
@@ -118,7 +118,7 @@ def load_monitor_request_context(
                     cur.execute("SELECT code FROM operating_points WHERE id=%s LIMIT 1", (int(op_id),))
                     row = cur.fetchone() or {}
                     if isinstance(row, dict) and row.get("code"):
-                        resolved_op_code = _norm_op_code(str(row.get("code") or ""))
+                        resolved_op_code = norm_op_code(str(row.get("code") or ""))
 
         if table_exists(conn, "caregivers"):
             with conn.cursor() as cur:

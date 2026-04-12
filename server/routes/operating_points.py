@@ -10,17 +10,17 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import (
-    _derive_ops_params_from_yaml,
-    _detect_variants,
-    _ensure_system_settings_schema,
-    _table_exists,
-    normalize_dataset_code,
-    normalize_model_code,
-)
+from ..code_normalization import normalize_dataset_code, normalize_model_code
 from ..db import get_conn
+from ..db_schema import ensure_system_settings_schema, table_exists
+from ..deploy_ops import derive_ops_params_from_yaml, detect_variants
 
 router = APIRouter()
+
+_derive_ops_params_from_yaml = derive_ops_params_from_yaml
+_detect_variants = detect_variants
+_ensure_system_settings_schema = ensure_system_settings_schema
+_table_exists = table_exists
 
 
 @router.get("/api/operating_points")
@@ -43,10 +43,10 @@ def operating_points(
     # Try DB path first
     try:
         with get_conn() as conn:
-            _ensure_system_settings_schema(conn)
-            variants = _detect_variants(conn)
+            ensure_system_settings_schema(conn)
+            variants = detect_variants(conn)
             with conn.cursor() as cur:
-                if variants["ops"] == "v2" and _table_exists(conn, "models"):
+                if variants["ops"] == "v2" and table_exists(conn, "models"):
                     cur.execute("SELECT id FROM models WHERE code=%s", (model_code,))
                     m = cur.fetchone()
                     if not m:
@@ -134,7 +134,7 @@ def operating_points(
         # YAML fallback
         ops = []
         for oc in ["OP-1", "OP-2", "OP-3"]:
-            dp = _derive_ops_params_from_yaml(dataset_code=dataset_code, model_code=model_code, op_code=oc)
+            dp = derive_ops_params_from_yaml(dataset_code=dataset_code, model_code=model_code, op_code=oc)
             ui = dp.get("ui") or {}
             ops.append(
                 {

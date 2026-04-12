@@ -5,8 +5,8 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Query
 
-from ..core import _col_exists, _ensure_caregivers_table
 from ..db import get_conn_optional
+from ..db_schema import col_exists, ensure_caregivers_table
 from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
 
@@ -56,9 +56,9 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
         if conn is not None:
             with conn.cursor() as cur:
                 try:
-                    _ensure_caregivers_table(conn)
+                    ensure_caregivers_table(conn)
                     select_cols = "name"
-                    if _col_exists(conn, "caregivers", "telegram_chat_id"):
+                    if col_exists(conn, "caregivers", "telegram_chat_id"):
                         select_cols += ", telegram_chat_id"
                     cur.execute(
                         f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",

@@ -4,11 +4,9 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Query
 
-from ..core import (
-    _derive_ops_params_from_yaml,
-    apply_settings_update_inmem,
-)
+from ..core import apply_settings_update_inmem
 from ..db import get_conn
+from ..deploy_ops import derive_ops_params_from_yaml
 from ..repositories.settings_repository import load_settings_snapshot, persist_settings_update
 from ..schemas import SettingsUpdatePayload
 from ..services.settings_service import (
@@ -18,6 +16,8 @@ from ..services.settings_service import (
 
 router = APIRouter()
 
+_derive_ops_params_from_yaml = derive_ops_params_from_yaml
+
 
 @router.get("/api/settings")
 @router.get("/api/v1/settings")
@@ -26,7 +26,7 @@ def get_settings(resident_id: int = Query(1, description="Resident id")) -> Dict
         resident_id=resident_id,
         get_conn=get_conn,
         load_settings_snapshot=load_settings_snapshot,
-        derive_ops_params_from_yaml=_derive_ops_params_from_yaml,
+        derive_ops_params_from_yaml=derive_ops_params_from_yaml,
     )
 
 

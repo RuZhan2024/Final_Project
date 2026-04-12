@@ -10,21 +10,27 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from .. import core
-from ..core import _col_exists, _one_resident_id, _resident_exists, _table_exists
 from ..db import get_conn
+from ..db_schema import col_exists, table_exists
+from ..repositories.residents_repository import one_resident_id, resident_exists
+from ..runtime_state import get_last_pred_latency_ms
 from ..services.dashboard_service import DashboardDeps, base_dashboard_summary, build_dashboard_summary_response
 
 
 router = APIRouter()
 
+_col_exists = col_exists
+_one_resident_id = one_resident_id
+_resident_exists = resident_exists
+_table_exists = table_exists
+
 
 def _dashboard_deps() -> DashboardDeps:
     return DashboardDeps(
-        resident_exists=_resident_exists,
-        one_resident_id=_one_resident_id,
-        table_exists=_table_exists,
-        col_exists=_col_exists,
+        resident_exists=resident_exists,
+        one_resident_id=one_resident_id,
+        table_exists=table_exists,
+        col_exists=col_exists,
     )
 
 
@@ -32,7 +38,7 @@ def _dashboard_deps() -> DashboardDeps:
 @router.get("/api/v1/dashboard/summary")
 def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
     """Summary used by /Dashboard. Never returns 500."""
-    summary = base_dashboard_summary(core.LAST_PRED_LATENCY_MS or 0)
+    summary = base_dashboard_summary(get_last_pred_latency_ms() or 0)
 
     try:
         with get_conn() as conn:
@@ -40,7 +46,7 @@ def dashboard_summary(resident_id: Optional[int] = None) -> Dict[str, Any]:
                 conn,
                 resident_id=resident_id,
                 deps=_dashboard_deps(),
-                last_pred_latency_ms=core.LAST_PRED_LATENCY_MS or 0,
+                last_pred_latency_ms=get_last_pred_latency_ms() or 0,
             )
     except (MySQLError, RuntimeError, TypeError, ValueError) as err:
         summary["system"]["api_online"] = False
