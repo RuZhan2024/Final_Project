@@ -1,6 +1,0 @@
-source ".venv/bin/activate" && PYTHONPATH="/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src:/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2" python3 scripts/preprocess_pose.py \
-	  --in_dir  "data/interim/muvim/pose_npz_raw" \
-	  --out_dir "data/interim/muvim/pose_npz" \
-	  --recursive --skip_existing \
-	  --conf_thr "0.20" --smooth_k "5" --max_gap "4" \
-	  --normalize "torso" --pelvis_fill "nearest"
