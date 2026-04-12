@@ -1,5 +1,0 @@
-exp,metrics_json,ops_yaml,ap,auc,op2_f1,op2_recall,op2_precision,op2_fa24h,op2_tau_high,op2_tau_low
-stb_s17,outputs/metrics/gcn_caucafall_stb_s17.json,configs/ops/gcn_caucafall.yaml,0.9700689874787912,0.9782774390243902,0.888888888888889,0.8,1.0,0.0,0.85999995470047,0.670799970626831
-r1_augreg,outputs/metrics/gcn_caucafall_r1_augreg.json,configs/ops/gcn_caucafall_r1_augreg.yaml,0.9701781715849758,0.978658536585366,0.6666666666666666,1.0,0.5,4704.545454545455,0.23000000417232513,0.1793999969959259
-r1_recovery,outputs/metrics/gcn_caucafall_r1_recovery.json,configs/ops/gcn_caucafall_r1_recovery.yaml,0.9740088223300339,0.9830411585365854,0.6666666666666666,1.0,0.5,4704.545454545455,0.23000000417232513,0.1793999969959259
-r1_recovery_min40,outputs/metrics/gcn_caucafall_r1_recovery_min40.json,configs/ops/gcn_caucafall_r1_recovery_min40.yaml,0.9740088223300339,0.9830411585365854,0.888888888888889,0.8,1.0,0.0,0.41999998688697815,0.32760000228881836
