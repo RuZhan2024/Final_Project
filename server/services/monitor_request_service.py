@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+try:
+    from pymysql.err import MySQLError  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    class MySQLError(Exception):
+        pass
 
 from ..runtime_state import get_session_store
 from .monitor_context_service import load_monitor_request_context
@@ -133,7 +138,7 @@ def prepare_monitor_request(
                 detect_variants=detect_variants,
                 table_exists=table_exists,
             )
-    except (RuntimeError, OSError, TypeError, ValueError) as exc:
+    except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
         logger.warning(
             "monitor.prepare_request: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
             resident_id,
