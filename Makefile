@@ -15,7 +15,7 @@ SHELL := /bin/bash
 # -------------------------
 PY      ?= python3
 VENV    ?= source ".venv/bin/activate"
-PYTHONPATH := $(CURDIR)/src:$(CURDIR)
+PYTHONPATH := $(CURDIR)/ml/src:$(CURDIR)
 export PYTHONPATH
 RUN := $(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY)
 
@@ -489,10 +489,10 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # Utility targets
 # -------------------------
 bootstrap-dev up:
-	@bash scripts/bootstrap_dev.sh
+	@bash ops/scripts/bootstrap_dev.sh
 
 dev:
-	@bash scripts/start_fullstack.sh
+	@bash ops/scripts/start_fullstack.sh
 
 stop-dev:
 	@backend_pids="$$(lsof -ti tcp:8000 2>/dev/null || true)"; \
@@ -525,13 +525,13 @@ compose-down:
 	@docker compose down
 
 release-check:
-	@bash scripts/release_doctor.sh
+	@bash ops/scripts/release_doctor.sh
 
 release-manifest:
-	@bash scripts/release_manifest.sh
+	@bash ops/scripts/release_manifest.sh
 
 serve-dev:
-	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
+	$(RUN) -m uvicorn applications.backend.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
 
 clean-stamps:
 	@echo "[clean] removing stamps: $(STAMP_DIR)/"
@@ -682,7 +682,7 @@ $(STAMP_DIR)/extract/%.stamp:
 	@touch "$@"
 
 define EXTRACT_CMD_le2i
-$(RUN) scripts/extract_pose_videos.py \
+$(RUN) ops/scripts/extract_pose_videos.py \
   --videos_glob "$(RAW_le2i)/**/Videos/*.avi" "$(RAW_le2i)/**/*.avi" "$(RAW_le2i)/**/Videos/*.mp4" "$(RAW_le2i)/**/*.mp4" \
   --out_dir "$(call pose_raw_dir,le2i)" \
   --fps_default "$(FPS_le2i)" \
@@ -690,7 +690,7 @@ $(RUN) scripts/extract_pose_videos.py \
 endef
 
 define EXTRACT_CMD_urfd
-$(RUN) scripts/extract_pose_images.py \
+$(RUN) ops/scripts/extract_pose_images.py \
   --images_glob "$(RAW_urfd)/*/*.jpg" "$(RAW_urfd)/*/*.png" \
   --sequence_id_depth "$(SEQUENCE_ID_DEPTH)" \
   --out_dir "$(call pose_raw_dir,urfd)" \
@@ -700,7 +700,7 @@ $(RUN) scripts/extract_pose_images.py \
 endef
 
 define EXTRACT_CMD_caucafall
-$(RUN) scripts/extract_pose_images.py \
+$(RUN) ops/scripts/extract_pose_images.py \
   --images_glob $(CAUC_IMAGES_GLOB) \
   --sequence_id_depth "$(SEQUENCE_ID_DEPTH)" \
   --out_dir "$(call pose_raw_dir,caucafall)" \
@@ -710,7 +710,7 @@ $(RUN) scripts/extract_pose_images.py \
 endef
 
 define EXTRACT_CMD_muvim
-$(RUN) scripts/extract_pose_images.py \
+$(RUN) ops/scripts/extract_pose_images.py \
   --images_glob \
     "$(RAW_muvim)/ZED_RGB/**/*.jpg" "$(RAW_muvim)/ZED_RGB/**/*.png" \
     "$(RAW_muvim)/Fall/**/*.jpg" "$(RAW_muvim)/Fall/**/*.png" \
@@ -736,7 +736,7 @@ preprocess-only-%: $(STAMP_DIR)/pose/%.stamp
 $(STAMP_DIR)/pose/%.stamp: $$(if $$(filter 1,$$(DO_EXTRACT)),$(STAMP_DIR)/extract/$$*.stamp,)
 	$(call REQUIRE_DATASET,$*)
 	@mkdir -p "$(@D)" "$(call pose_dir,$*)"
-	$(RUN) scripts/preprocess_pose.py \
+	$(RUN) ops/scripts/preprocess_pose.py \
 	  --in_dir  "$(call pose_raw_dir,$*)" \
 	  --out_dir "$(call pose_dir,$*)" \
 	  --recursive --skip_existing \
@@ -756,7 +756,7 @@ URFD_ANN_ARGS = $(if $(strip $(URFD_ANN_GLOB)),--ann_glob "$(URFD_ANN_GLOB)" --u
 CAUCA_SPAN_ARGS = $(if $(filter 1,$(strip $(USE_PER_FRAME_ACTION_TXT))),--use_per_frame_action_txt 1 --fall_class_id "$(CAUCA_FALL_CLASS_ID)" --min_run "$(CAUCA_MIN_RUN)" --gap_fill "$(CAUCA_GAP_FILL)" --frame_label_mode auto --clamp_to_npz_len,)
 
 define LABEL_CMD_le2i
-$(RUN) scripts/make_labels_le2i.py \
+$(RUN) ops/scripts/make_labels_le2i.py \
   --npz_dir "$(call pose_dir,le2i)" \
   --raw_root "$(RAW_le2i)" \
   --out_labels "$(call labels_json,le2i)" \
@@ -764,7 +764,7 @@ $(RUN) scripts/make_labels_le2i.py \
 endef
 
 define LABEL_CMD_urfd
-$(RUN) scripts/make_labels_urfall.py \
+$(RUN) ops/scripts/make_labels_urfall.py \
   --npz_dir "$(call pose_dir,urfd)" \
   --out_labels "$(call labels_json,urfd)" \
   --out_spans  "$(call spans_json,urfd)" \
@@ -772,7 +772,7 @@ $(RUN) scripts/make_labels_urfall.py \
 endef
 
 define LABEL_CMD_caucafall
-$(RUN) scripts/make_labels_caucafall.py \
+$(RUN) ops/scripts/make_labels_caucafall.py \
   --raw_root "$(RAW_caucafall)" \
   --npz_dir "$(call pose_dir,caucafall)" \
   --out_labels "$(call labels_json,caucafall)" \
@@ -784,7 +784,7 @@ endef
 MUVIM_ZED_ARGS = $(if $(strip $(MUVIM_ZED_CSV)),--zed_csv "$(MUVIM_ZED_CSV)",)
 
 define LABEL_CMD_muvim
-$(RUN) scripts/make_labels_muvim.py \
+$(RUN) ops/scripts/make_labels_muvim.py \
   --npz_dir "$(call pose_dir,muvim)" \
   $(MUVIM_ZED_ARGS) \
   --out_labels "$(call labels_json,muvim)" \
@@ -807,7 +807,7 @@ SPLIT_EXTRA_muvim =
 $(STAMP_DIR)/splits/%.stamp: $(STAMP_DIR)/labels/%.stamp
 	@mkdir -p "$(@D)" "$(SPLITS_DIR)"
 	$(SPLIT_GUARD_$*)
-	$(RUN) scripts/make_splits.py \
+	$(RUN) ops/scripts/make_splits.py \
 	  --labels_json "$(call labels_json,$*)" \
 	  --out_dir "$(SPLITS_DIR)" --prefix "$*" \
 	  $(SPLIT_EXTRA_$*) \
@@ -823,7 +823,7 @@ splits-unlabeled-%: $(STAMP_DIR)/splits_unlabeled/%.stamp
 
 $(STAMP_DIR)/splits_unlabeled/%.stamp: $(STAMP_DIR)/pose/%.stamp
 	@mkdir -p "$(@D)" "$(SPLITS_DIR)"
-	$(RUN) scripts/make_unlabeled_test_list.py \
+	$(RUN) ops/scripts/make_unlabeled_test_list.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --out "$(call split_unlabeled,$*)" \
 	  --scenes $(call get,UNLABELED_SCENES,$*)
@@ -834,7 +834,7 @@ check-spans-%: $(STAMP_DIR)/check_spans/%.stamp
 	@:
 $(STAMP_DIR)/check_spans/%.stamp: $(STAMP_DIR)/labels/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/check_spans.py --labels_json "$(call labels_json,$*)" --spans_json "$(call spans_json,$*)" --require_nonempty 1
+	$(RUN) ops/scripts/check_spans.py --labels_json "$(call labels_json,$*)" --spans_json "$(call spans_json,$*)" --require_nonempty 1
 	@touch "$@"
 
 WINDOW_PREREQ_caucafall = $(STAMP_DIR)/check_spans/caucafall.stamp
@@ -858,7 +858,7 @@ windows-%: $(STAMP_DIR)/windows/%.stamp
 $(STAMP_DIR)/windows/%.stamp: $(STAMP_DIR)/splits/%.stamp $$(WINDOW_PREREQ_$$*)
 	@mkdir -p "$(@D)" "$(call win_dir,$*)"
 	@if [ "$(WIN_CLEAN)" = "1" ]; then rm -rf "$(call win_dir,$*)/train" "$(call win_dir,$*)/val" "$(call win_dir,$*)/test" || true; fi
-	$(RUN) scripts/make_windows.py \
+	$(RUN) ops/scripts/make_windows.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --labels_json "$(call labels_json,$*)" \
 	  --spans_json  "$(call spans_json,$*)" \
@@ -876,7 +876,7 @@ windows-eval-%: $(STAMP_DIR)/windows_eval/%.stamp
 $(STAMP_DIR)/windows_eval/%.stamp: $(STAMP_DIR)/splits/%.stamp $$(WINDOW_PREREQ_$$*)
 	@mkdir -p "$(@D)" "$(call win_eval_dir,$*)"
 	@if [ "$(WIN_EVAL_CLEAN)" = "1" ]; then rm -rf "$(call win_eval_dir,$*)/train" "$(call win_eval_dir,$*)/val" "$(call win_eval_dir,$*)/test" || true; fi
-	$(RUN) scripts/make_windows.py \
+	$(RUN) ops/scripts/make_windows.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --labels_json "$(call labels_json,$*)" \
 	  --spans_json  "$(call spans_json,$*)" \
@@ -893,7 +893,7 @@ windows-unlabeled-%: $(STAMP_DIR)/windows_unlabeled/%.stamp
 
 $(STAMP_DIR)/windows_unlabeled/%.stamp: $(STAMP_DIR)/splits_unlabeled/%.stamp
 	@mkdir -p "$(@D)" "$(call win_unlabeled_dir,$*)"
-	$(RUN) scripts/make_unlabeled_windows.py \
+	$(RUN) ops/scripts/make_unlabeled_windows.py \
 	  --npz_dir "$(call pose_dir,$*)" \
 	  --stems_txt "$(call split_unlabeled,$*)" \
 	  --out_dir "$(call win_unlabeled_dir,$*)" \
@@ -912,7 +912,7 @@ fa-windows-%: $(STAMP_DIR)/fa_windows/%.stamp
 	@:
 $(STAMP_DIR)/fa_windows/%.stamp: $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)" "$(call fa_win_dir,$*)"
-	$(RUN) scripts/make_fa_windows.py \
+	$(RUN) ops/scripts/make_fa_windows.py \
 	  --in_root  "$(call win_eval_dir,$*)" \
 	  --out_root "$(call fa_win_dir,$*)" \
 	  --split "$(FA_SPLIT)" \
@@ -939,7 +939,7 @@ train-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt
 
 $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/train_tcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
+	$(RUN) ops/scripts/train_tcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
 	  --epochs "200" --batch "128" --lr "0.001" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_caucafall)" \
 	  --center "pelvis" --use_motion "1" --use_conf_channel "1" --use_bone "1" --use_bone_length "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
 	  --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" \
@@ -960,7 +960,7 @@ $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_GCN_CAUC_RESUME)" || (echo "[ERR] missing locked GCN resume ckpt: $(LOCK_GCN_CAUC_RESUME)" && exit 1)
 	@test -f "$(LOCK_GCN_CAUC_HNEG_LIST)" || (echo "[ERR] missing locked GCN hard-neg list: $(LOCK_GCN_CAUC_HNEG_LIST)" && exit 1)
-	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
+	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
 	  --epochs "80" --batch "128" --lr "0.0003" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_caucafall)" \
 	  --center "pelvis" \
 	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
@@ -983,7 +983,7 @@ $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/le2i.stamp
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_GCN_LE2I_TRAIN_RESUME)" || (echo "[ERR] missing locked LE2i GCN resume ckpt: $(LOCK_GCN_LE2I_TRAIN_RESUME)" && exit 1)
-	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,le2i)/train" --val_dir "$(call win_dir,le2i)/val" \
+	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,le2i)/train" --val_dir "$(call win_dir,le2i)/val" \
 	  --epochs "45" --min_epochs "8" --batch "128" --lr "3e-4" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_le2i)" \
 	  --center "pelvis" \
 	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" \
@@ -1010,7 +1010,7 @@ train-gcn-%: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
 # NOTE: fixed evaluation-order bug by inlining $(call get,...) inside Make (no bash vars for flags)
 $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/train_tcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
+	$(RUN) ops/scripts/train_tcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
 	  --epochs "$(EPOCHS)" --batch "$(BATCH)" --lr "$(call get,LR_TCN,$*)" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_$*)" \
 	  $(FEAT_FLAGS_TCN) \
 	  $(if $(strip $(TCN_RESUME)),--resume "$(strip $(TCN_RESUME))",) \
@@ -1033,7 +1033,7 @@ $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 
 $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/train_gcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
+	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
 	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(call get,LR_GCN,$*)" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_$*)" \
 	  $(FEAT_FLAGS_GCN) \
 	  $(if $(strip $(GCN_RESUME)),--resume "$(strip $(GCN_RESUME))",) \
@@ -1122,7 +1122,7 @@ $(LOCK_GCN_LE2I_PAPER_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i paper-profile ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
 	@test -f "$(LOCK_GCN_LE2I_PAPER_OPS)" || (echo "[ERR] missing LE2i paper-profile ops: $(LOCK_GCN_LE2I_PAPER_OPS)" && exit 1)
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,le2i)/test" \
 	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
 	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
@@ -1133,7 +1133,7 @@ $(LOCK_GCN_LE2I_PAPER_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
 $(LOCK_GCN_LE2I_DEPLOY_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i deploy ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,le2i)/test" \
 	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
 	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
@@ -1145,7 +1145,7 @@ $(LOCK_TCN_MUVIM_MET): $(LOCK_TCN_MUVIM_OPS)
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_TCN_MUVIM_CKPT)" || (echo "[ERR] missing MUVIM locked TCN ckpt: $(LOCK_TCN_MUVIM_CKPT)" && exit 1)
 	@test -f "$(LOCK_TCN_MUVIM_OPS)" || (echo "[ERR] missing MUVIM locked TCN ops: $(LOCK_TCN_MUVIM_OPS)" && exit 1)
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,muvim)/test" \
 	  --ckpt "$(LOCK_TCN_MUVIM_CKPT)" \
 	  --ops_yaml "$(LOCK_TCN_MUVIM_OPS)" \
@@ -1157,7 +1157,7 @@ $(LOCK_GCN_MUVIM_MET): $(LOCK_GCN_MUVIM_OPS)
 	@mkdir -p "$(@D)"
 	@test -f "$(LOCK_GCN_MUVIM_CKPT)" || (echo "[ERR] missing MUVIM locked GCN ckpt: $(LOCK_GCN_MUVIM_CKPT)" && exit 1)
 	@test -f "$(LOCK_GCN_MUVIM_OPS)" || (echo "[ERR] missing MUVIM locked GCN ops: $(LOCK_GCN_MUVIM_OPS)" && exit 1)
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,muvim)/test" \
 	  --ckpt "$(LOCK_GCN_MUVIM_CKPT)" \
 	  --ops_yaml "$(LOCK_GCN_MUVIM_OPS)" \
@@ -1172,7 +1172,7 @@ $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	  test -f "$@" || (echo "[ERR] missing precomputed locked TCN ops: $@" && exit 1); \
 	  echo "[ok] using precomputed locked TCN ops: $@"; \
 	else \
-	  $(RUN) scripts/fit_ops.py --arch tcn \
+	  $(RUN) ops/scripts/fit_ops.py --arch tcn \
 	    --val_dir "$(call win_eval_dir,caucafall)/val" \
 	    --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
 	    --out "$@" \
@@ -1188,7 +1188,7 @@ $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 $(LOCK_GCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	@mkdir -p "$(@D)" "$(MET_DIR)"
 	@test -f "$(LOCK_GCN_CAUC_CKPT)" || (echo "[ERR] missing locked GCN ckpt: $(LOCK_GCN_CAUC_CKPT)" && exit 1)
-	$(RUN) scripts/fit_ops.py --arch gcn \
+	$(RUN) ops/scripts/fit_ops.py --arch gcn \
 	  --val_dir "$(call win_eval_dir,caucafall)/val" \
 	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
 	  --out "$@" \
@@ -1202,7 +1202,7 @@ $(LOCK_GCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 
 $(LOCK_TCN_CAUC_MET): $(LOCK_TCN_CAUC_OPS)
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,caucafall)/test" \
 	  --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
 	  --ops_yaml "$(LOCK_TCN_CAUC_OPS)" \
@@ -1212,7 +1212,7 @@ $(LOCK_TCN_CAUC_MET): $(LOCK_TCN_CAUC_OPS)
 
 $(LOCK_GCN_CAUC_MET): $(LOCK_GCN_CAUC_OPS)
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,caucafall)/test" \
 	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
 	  --ops_yaml "$(LOCK_GCN_CAUC_OPS)" \
@@ -1226,7 +1226,7 @@ $(LOCK_GCN_CAUC_MET): $(LOCK_GCN_CAUC_OPS)
 $(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
 	@mkdir -p "$(@D)" "$(CAL_DIR)"
 	@test -f "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-tcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
-	$(RUN) scripts/fit_ops.py --arch tcn \
+	$(RUN) ops/scripts/fit_ops.py --arch tcn \
 	  --val_dir "$(call win_eval_dir,$*)/val" \
 	  --ckpt "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --out "$@" \
@@ -1239,7 +1239,7 @@ $(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filt
 $(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
 	@mkdir -p "$(@D)" "$(CAL_DIR)"
 	@test -f "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-gcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
-	$(RUN) scripts/fit_ops.py --arch gcn \
+	$(RUN) ops/scripts/fit_ops.py --arch gcn \
 	  --val_dir "$(call win_eval_dir,$*)/val" \
 	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --out "$@" \
@@ -1271,7 +1271,7 @@ $(addprefix eval-unlabeled-gcn-,$(DATASETS)): eval-unlabeled-gcn-%: $(UNLABELED_
 
 $(MET_DIR)/tcn_%$(OUT_TAG).json: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,$*)/test" \
 	  --ckpt "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --ops_yaml "$(OPS_DIR)/tcn_$*$(OUT_TAG).yaml" \
@@ -1281,7 +1281,7 @@ $(MET_DIR)/tcn_%$(OUT_TAG).json: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_tc
 
 $(MET_DIR)/gcn_%$(OUT_TAG).json: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,$*)/test" \
 	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --ops_yaml "$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml" \
@@ -1291,7 +1291,7 @@ $(MET_DIR)/gcn_%$(OUT_TAG).json: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_gc
 
 $(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unlabeled/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_unlabeled_dir,$*)/$(UNLABELED_SUBSET_EVAL)" \
 	  --ckpt "$(if $(strip $(UNLABELED_CKPT)),$(UNLABELED_CKPT),$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt)" \
 	  --ops_yaml "$(if $(strip $(UNLABELED_OPS_YAML)),$(UNLABELED_OPS_YAML),$(OPS_DIR)/tcn_$*$(OUT_TAG).yaml)" \
@@ -1301,7 +1301,7 @@ $(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unl
 
 $(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unlabeled/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/eval_metrics.py \
+	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_unlabeled_dir,$*)/$(UNLABELED_SUBSET_EVAL)" \
 	  --ckpt "$(if $(strip $(UNLABELED_CKPT)),$(UNLABELED_CKPT),$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt)" \
 	  --ops_yaml "$(if $(strip $(UNLABELED_OPS_YAML)),$(UNLABELED_OPS_YAML),$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml)" \
@@ -1348,39 +1348,39 @@ $(addprefix plot-balance-,$(DATASETS)): plot-balance-%: \
 
 $(PLOT_DIR)/tcn_%$(OUT_TAG)_recall_vs_fa.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_fa_recall.py --reports "$<" --out_fig "$@"
+	$(RUN) ops/scripts/plot_fa_recall.py --reports "$<" --out_fig "$@"
 
 $(PLOT_DIR)/tcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
+	$(RUN) ops/scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
 
 $(PLOT_DIR)/gcn_%$(OUT_TAG)_recall_vs_fa.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_fa_recall.py --reports "$<" --out_fig "$@"
+	$(RUN) ops/scripts/plot_fa_recall.py --reports "$<" --out_fig "$@"
 
 $(PLOT_DIR)/gcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
+	$(RUN) ops/scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
 
 $(PLOT_DIR)/tcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
+	$(RUN) ops/scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
 
 $(PLOT_DIR)/gcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
+	$(RUN) ops/scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
 
 $(PLOT_DIR)/tcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
+	$(RUN) ops/scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
 
 $(PLOT_DIR)/gcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
+	$(RUN) ops/scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
 
 $(PLOT_DIR)/%$(OUT_TAG)_class_balance.png: $(LABELS_DIR)/%.json $(SPLITS_DIR)/%_train.txt $(SPLITS_DIR)/%_val.txt $(SPLITS_DIR)/%_test.txt
 	@mkdir -p "$(@D)"
-	$(RUN) scripts/plot_dataset_balance.py --dataset "$*" --labels_json "$(LABELS_DIR)/$*.json" --splits_dir "$(SPLITS_DIR)" --out_fig "$@"
+	$(RUN) ops/scripts/plot_dataset_balance.py --dataset "$*" --labels_json "$(LABELS_DIR)/$*.json" --splits_dir "$(SPLITS_DIR)" --out_fig "$@"
 
 # ============================================================
 # Sanity checks
@@ -1388,7 +1388,7 @@ $(PLOT_DIR)/%$(OUT_TAG)_class_balance.png: $(LABELS_DIR)/%.json $(SPLITS_DIR)/%_
 check-windows: $(addprefix check-windows-,$(DATASETS))
 
 check-windows-%: windows-%
-	$(RUN) scripts/check_windows.py --root "$(call win_dir,$*)"
+	$(RUN) ops/scripts/check_windows.py --root "$(call win_dir,$*)"
 
 # ============================================================
 # Audit gates
@@ -1402,54 +1402,54 @@ PROFILE_IO_ONLY ?= 1
 .PHONY: audit-smoke audit-ci audit-static audit-runtime-imports audit-api-contract audit-api-v1-parity audit-api-smoke audit-integration-contract audit-ops-sanity audit-artifact-bundle audit-promoted-profiles audit-numeric audit-temporal audit-parity-le2i audit-parity-le2i-strict baseline-capture-le2i audit-all profile-infer
 
 audit-smoke:
-	$(RUN) scripts/audit_smoke.py --root "."
+	$(RUN) ops/scripts/audit_smoke.py --root "."
 
 audit-ci: audit-smoke audit-static audit-runtime-imports audit-api-contract audit-api-v1-parity audit-api-smoke
-	$(RUN) -m pytest -q tests/test_import_smoke.py tests/test_data_sources_config.py tests/test_windows_contract.py tests/test_adapter_contract.py tests/test_event_time_semantics.py tests/test_audit_api_contract.py tests/test_audit_api_v1_parity.py tests/test_server_integration_contract.py tests/test_repro_manifest_schema.py tests/test_monitor_benchmark_schema.py tests/test_monitor_fault_injection.py tests/test_split_group_leakage.py
+	$(RUN) -m pytest -q qa/tests/test_import_smoke.py qa/tests/test_data_sources_config.py qa/tests/test_windows_contract.py qa/tests/test_adapter_contract.py qa/tests/test_event_time_semantics.py qa/tests/test_audit_api_contract.py qa/tests/test_audit_api_v1_parity.py qa/tests/test_server_integration_contract.py qa/tests/test_repro_manifest_schema.py qa/tests/test_monitor_benchmark_schema.py qa/tests/test_monitor_fault_injection.py qa/tests/test_split_group_leakage.py
 	@echo "[ok] audit-ci passed"
 
 audit-static:
-	$(RUN) scripts/audit_static.py --roots "src,scripts,server,configs,baselines,artifacts"
+	$(RUN) ops/scripts/audit_static.py --roots "ml/src,ops/scripts,applications/backend,ops/configs"
 
 audit-runtime-imports:
-	$(RUN) scripts/audit_runtime_imports.py --paths "src/fall_detection/deploy,server/deploy_runtime.py"
+	$(RUN) ops/scripts/audit_runtime_imports.py --paths "ml/src/fall_detection/deploy,applications/backend/deploy_runtime.py"
 
 audit-api-contract:
-	$(RUN) scripts/audit_api_contract.py
+	$(RUN) ops/scripts/audit_api_contract.py
 
 audit-api-v1-parity:
-	$(RUN) scripts/audit_api_v1_parity.py
+	$(RUN) ops/scripts/audit_api_v1_parity.py
 
 audit-api-smoke:
-	$(RUN) scripts/smoke_api_contract.py
+	$(RUN) ops/scripts/smoke_api_contract.py
 
 audit-integration-contract: audit-api-contract audit-api-v1-parity audit-api-smoke
-	$(RUN) -m pytest -q tests/test_server_integration_contract.py
+	$(RUN) -m pytest -q qa/tests/test_server_integration_contract.py
 	@echo "[ok] integration-contract audit passed"
 
 audit-ops-sanity:
-	$(RUN) scripts/audit_ops_sanity.py --ops_dir "configs/ops"
+	$(RUN) ops/scripts/audit_ops_sanity.py --ops_dir "ops/configs/ops"
 
 audit-artifact-bundle:
-	$(RUN) scripts/audit_artifact_bundle.py --bundle_json "artifacts/artifact_bundle.json"
+	$(RUN) ops/scripts/audit_artifact_bundle.py --bundle_json "artifacts/artifact_bundle.json"
 
 audit-promoted-profiles:
-	$(RUN) scripts/audit_promoted_profiles.py \
+	$(RUN) ops/scripts/audit_promoted_profiles.py \
 	  --check "le2i_tcn|outputs/metrics/tcn_le2i_hneg_pack_tsm_promoted.json|artifacts/reports/hneg_cycle/tcn_le2i_hneg_pack_tsm_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
 	  --check "caucafall_tcn|outputs/metrics/tcn_caucafall_promoted.json|artifacts/reports/hneg_cycle/caucafall_tcn_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
 	  --check "caucafall_gcn|outputs/metrics/gcn_caucafall_promoted2.json|artifacts/reports/hneg_cycle/gcn_caucafall_promoted2_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
 	  --out_json "artifacts/reports/promoted_profiles_$(shell date +%Y%m%d).json"
 
 audit-numeric:
-	$(RUN) scripts/audit_numeric.py \
-	  --gates_json "configs/audit_gates.json" \
+	$(RUN) ops/scripts/audit_numeric.py \
+	  --gates_json "ops/configs/audit_gates.json" \
 	  --processed_root "$(PROCESSED)" \
 	  --datasets "$(AUDIT_DATASETS)" \
 	  --out_json "artifacts/reports/numeric_fingerprint_$(shell date +%Y%m%d).json"
 
 audit-temporal:
-	$(RUN) scripts/audit_temporal.py \
-	  --gates_json "configs/audit_gates.json" \
+	$(RUN) ops/scripts/audit_temporal.py \
+	  --gates_json "ops/configs/audit_gates.json" \
 	  --processed_root "$(PROCESSED)" \
 	  --datasets "$(AUDIT_DATASETS)" \
 	  --stride_frames "$(WIN_S)" \
@@ -1458,14 +1458,14 @@ audit-temporal:
 	  --out_json "artifacts/reports/temporal_span_$(shell date +%Y%m%d).json"
 
 audit-parity-le2i:
-	$(RUN) scripts/audit_parity.py \
+	$(RUN) ops/scripts/audit_parity.py \
 	  --baseline_dir "baselines/le2i/58813e8" \
 	  --op "op2" \
 	  --current_metrics_json "$(MET_DIR)/$(MODEL)_le2i.json" \
 	  --out_json "artifacts/reports/parity_le2i_$(MODEL)_$(shell date +%Y%m%d).json"
 
 audit-parity-le2i-strict:
-	$(RUN) scripts/audit_parity.py \
+	$(RUN) ops/scripts/audit_parity.py \
 	  --baseline_dir "baselines/le2i/58813e8" \
 	  --op "op2" \
 	  --current_metrics_json "$(MET_DIR)/$(MODEL)_le2i.json" \
@@ -1474,7 +1474,7 @@ audit-parity-le2i-strict:
 	  --out_json "artifacts/reports/parity_le2i_$(MODEL)_strict_$(shell date +%Y%m%d).json"
 
 baseline-capture-le2i:
-	$(RUN) scripts/baseline_set_performance.py \
+	$(RUN) ops/scripts/baseline_set_performance.py \
 	  --baseline_perf_json "baselines/le2i/58813e8/performance_baseline.json" \
 	  --metrics_json "$(MET_DIR)/$(MODEL)_le2i.json" \
 	  --checkpoint "$(OUT_DIR)/le2i_$(MODEL)_W$(WIN_W)S$(WIN_S)/best.pt" \
@@ -1485,7 +1485,7 @@ audit-all: audit-smoke audit-static audit-runtime-imports audit-integration-cont
 	@echo "[ok] audit-all passed"
 
 profile-infer:
-	$(RUN) scripts/profile_infer.py \
+	$(RUN) ops/scripts/profile_infer.py \
 	  --profile "$(PROFILE)" \
 	  --arch "$(MODEL)" \
 	  --win_dir "$(call win_eval_dir,$(DS))/test" \

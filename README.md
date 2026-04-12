@@ -7,7 +7,14 @@ An end-to-end fall detection project with:
 - a FastAPI backend for online inference
 - a React frontend for live and replay monitoring
 
-The canonical Python package code lives in `src/fall_detection`.
+The canonical Python package code lives in `ml/src/fall_detection`.
+The repository now uses a normalized top-level structure:
+
+- `applications/frontend` for the React client
+- `applications/backend` for the FastAPI service
+- `ml/src/fall_detection` for the ML package
+- `ops/` for operational configs, scripts, and deploy assets
+- `qa/tests` for the maintained test suite
 
 ## Submission Overview
 
@@ -65,10 +72,11 @@ Open:
 
 Notes:
 
-- use `make dev` if `.venv` and `apps/node_modules` already exist
+- use `make dev` if `.venv` and `applications/frontend/node_modules` already exist
 - this mode does not require MySQL
 - DB-backed features fall back gracefully when DB is unavailable
 - for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
+- local SQLite demo files are created at runtime and are not part of the tracked submission surface
 
 Stop the local demo:
 
@@ -101,7 +109,7 @@ What it starts:
 Notes:
 
 - MySQL data is persisted in the `mysql_data` Docker volume
-- the database is initialized from `server/create_db.sql`
+- the database is initialized from `applications/backend/create_db.sql`
 - if host port `3306` is already occupied, move only the exposed MySQL port:
 
 ```bash
@@ -130,16 +138,19 @@ make compose-down
 
 ```text
 .
-├── src/fall_detection/          # Core package: data, training, eval, deploy runtime
-├── server/                      # FastAPI backend
-├── apps/                        # React frontend
-├── scripts/                     # Utility and orchestration scripts
-├── configs/                     # labels, splits, ops, delivery profiles
+├── applications/
+│   ├── backend/                 # FastAPI backend
+│   └── frontend/                # React frontend
+├── ml/
+│   └── src/fall_detection/      # Core package: data, training, eval, deploy runtime
+├── ops/
+│   ├── configs/                 # labels, splits, ops, delivery profiles
+│   ├── scripts/                 # utility and orchestration scripts
+│   └── deploy_assets/           # promoted runtime-approved checkpoints and replay clips
+├── qa/
+│   └── tests/                   # smoke and contract tests
 ├── data/                        # raw/interim/processed datasets
-├── outputs/                     # checkpoints and training outputs
-├── artifacts/                   # evaluation outputs, figures, evidence bundles
-├── tests/                       # smoke and contract tests
-├── docs/                        # active docs, runbooks, submission guidance
+├── outputs/                     # experimental/local training outputs (not promoted runtime assets)
 └── Makefile                     # main project entrypoint
 ```
 
@@ -229,35 +240,35 @@ This currently verifies:
 
 - git status visibility
 - release boundary script availability
-- Python compileability for `src/fall_detection`, `server`, and `scripts`
+- Python compileability for `ml/src/fall_detection`, `applications/backend`, and `ops/scripts`
 - frontend production build
 
 Recommended contract/smoke test subset:
 
 ```bash
-./scripts/run_canonical_tests.sh torch-free
+./ops/scripts/run_canonical_tests.sh torch-free
 ```
 
 Server app / contract subset:
 
 ```bash
-./scripts/run_canonical_tests.sh contract
+./ops/scripts/run_canonical_tests.sh contract
 ```
 
 Torch-dependent monitor subset:
 
 ```bash
-./scripts/run_canonical_tests.sh monitor
+./ops/scripts/run_canonical_tests.sh monitor
 ```
 
 ## Runtime Profiles and Delivery Notes
 
 Current online deployment profiles are loaded from:
 
-- `configs/ops/tcn_caucafall.yaml`
-- `configs/ops/gcn_caucafall.yaml`
-- `configs/ops/tcn_le2i.yaml`
-- `configs/ops/gcn_le2i.yaml`
+- `ops/configs/ops/tcn_caucafall.yaml`
+- `ops/configs/ops/gcn_caucafall.yaml`
+- `ops/configs/ops/tcn_le2i.yaml`
+- `ops/configs/ops/gcn_le2i.yaml`
 
 Important delivery note:
 
@@ -297,14 +308,55 @@ Operational note:
 - Telegram and summary-provider credentials should be stored only in Render environment variables
 - SMS / phone / email escalation are future-work channels, not the current implemented delivery path
 
+## Configuration and Secrets
+
+Backend runtime configuration is centered on:
+
+- `.env.example` as the documented variable inventory
+- `applications/backend/config.py` as the canonical config parsing layer
+- deployment environment variables as the source for real secrets
+
+Configuration should be read in four groups:
+
+1. safe local defaults
+   - `APP_BASE_URL`
+   - `APP_TIMEZONE`
+   - `CORS_ALLOWED_ORIGINS`
+   - `SESSION_TTL_S`
+   - `SESSION_MAX_STATES`
+2. runtime paths
+   - `SQLITE_PATH`
+   - `SAFE_GUARD_SQLITE_PATH`
+   - `EVENT_CLIPS_DIR`
+3. backend mode selection
+   - `DB_BACKEND`
+   - `DB_HOST`
+   - `DB_PORT`
+   - `DB_USER`
+   - `DB_PASS`
+   - `DB_NAME`
+4. secret-bearing integrations
+   - `TELEGRAM_BOT_TOKEN`
+   - `TWILIO_*`
+   - `RESEND_API_KEY`
+   - `OPENAI_API_KEY`
+   - `GEMINI_API_KEY`
+
+Operational rules:
+
+- keep real secrets out of git and store them only in local private env files or deployment secret stores
+- prefer SQLite for local demo and supervisor review
+- treat `.env.example` as the documented contract, not as a source of real credentials
+- if a deployment requires third-party delivery or AI summaries, configure those values explicitly rather than relying on undeclared defaults
+
 Suggested Render blueprint:
 
-- [render.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/render.yaml)
+- [render.yaml](render.yaml)
 - backend uses a persistent disk mounted at `/var/data`
 - frontend should set `REACT_APP_API_BASE` to the backend Render URL
 
 - the main reviewed online path is `caucafall + TCN + OP2`
-- the four-folder custom delivery evaluation lives under `configs/delivery/` and `artifacts/fall_test_eval_20260315*/`
+- demo and replay delivery profiles live under `ops/configs/delivery/`
 
 ## Datasets and Data Modes
 
@@ -361,38 +413,35 @@ Two common usage modes:
    - start from existing `data/interim/...` or `data/processed/...`
    - useful when processed data already exists
 
-## Documentation Guide
-
-Use these documents as the main entrypoints:
-
-- documentation index: `docs/README.md`
-- submission pack index: `docs/project_targets/SUBMISSION_PACK_INDEX.md`
-- supervisor delivery modes: `docs/reports/runbooks/SUPERVISOR_DELIVERY_MODES.md`
-- user guide: `docs/reports/runbooks/USER_GUIDE.md`
-- demo runbook: `docs/reports/runbooks/DEMO_RUNBOOK.md`
-- final demo walkthrough: `docs/project_targets/FINAL_DEMO_WALKTHROUGH.md`
-- delivery alignment status: `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
-- experiment evidence index: `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md`
-- config-to-result evidence map: `docs/reports/runbooks/CONFIG_RESULT_EVIDENCE_MAP.md`
-
-## Evidence and Reporting
-
-For report and thesis writing, the key evidence locations are:
-
-- runtime and delivery evidence: `configs/ops/`, `docs/reports/runbooks/ONLINE_OPS_PROFILE_MATRIX.md`
-- custom 24-video delivery evidence: `configs/delivery/`, `artifacts/fall_test_eval_20260315/`, `artifacts/fall_test_eval_20260315_online_reverify_20260315/`
-- online repair and refit evidence: `artifacts/online_ops_fit_20260315*/`, `artifacts/ops_reverify_20260315*/`
-- figures and summaries: `artifacts/figures/`, `artifacts/reports/`
-
-Use `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md` as the shortest evidence navigation page.
-
 ## Notes for Reviewers
 
 - if you only want to see the system working, use `make bootstrap-dev`
 - if you want DB persistence included, use `docker compose up`
 - if local `3306` is already occupied, use `MYSQL_PORT=3307 docker compose up`
-- archived teaching/tutorial material has been moved under `docs/archive/tutorial_materials/`
-- active project/report/thesis material is under `docs/project_targets/`, `docs/reports/`, and `artifacts/`
+- this branch is intentionally trimmed to runnable code, configuration, tests, and deployment assets
+- runtime-generated artifacts such as datasets, checkpoints produced during training, and local event clips are not part of the tracked submission surface
 
+## Runtime Asset Promotion
 
-// uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+The cleaned submission branch distinguishes between experimental ML outputs and
+runtime-approved deploy assets.
+
+- `ops/deploy_assets/manifest.json`
+  - tracked source of truth for promoted runtime assets
+  - lists the shipped checkpoints, canonical runtime operating-point YAMLs, and
+    replay clips intended for reviewer/demo use
+- `ops/deploy_assets/checkpoints/`
+  - promoted checkpoints approved for backend runtime loading on this branch
+- `ops/deploy_assets/replay_clips/`
+  - promoted replay clips approved for reviewer/demo playback
+- `ops/configs/ops/*.yaml`
+  - canonical runtime operating-point profiles; the promoted subset is listed in
+    `ops/deploy_assets/manifest.json`
+- `outputs/`
+  - experimental or locally produced training/evaluation outputs
+  - not treated as shipped runtime assets unless explicitly promoted into
+    `ops/deploy_assets/` and recorded in the manifest
+
+This branch does not rely on private research notes to identify deployable ML
+assets. Reviewers can use `ops/deploy_assets/manifest.json` as the explicit
+runtime promotion contract.
