@@ -13,9 +13,24 @@ The repository now uses a normalized top-level structure:
 - `applications/frontend` for the React client
 - `applications/backend` for the FastAPI service
 - `ml/src/fall_detection` for the ML package
+- `ops/` for operational configs, scripts, and deploy assets
+- `qa/tests` for the maintained test suite
+- `research/` for baselines, tuning tools, patches, and research operations
 
-Top-level `apps`, `server`, and `src` compatibility links are kept temporarily so
-older scripts and imports do not break during the transition.
+Top-level compatibility links are kept temporarily so older scripts and imports
+do not break during the transition:
+
+- `apps` -> `applications/frontend`
+- `server` -> `applications/backend`
+- `src` -> `ml/src`
+- `configs` -> `ops/configs`
+- `scripts` -> `ops/scripts`
+- `deploy_assets` -> `ops/deploy_assets`
+- `tests` -> `qa/tests`
+- `baselines` -> `research/baselines`
+- `tools` -> `research/tools`
+- `patches` -> `research/patches`
+- `research_ops` -> `research/research_ops`
 
 ## Submission Overview
 
@@ -143,12 +158,20 @@ make compose-down
 │   └── frontend/                # React frontend
 ├── ml/
 │   └── src/fall_detection/      # Core package: data, training, eval, deploy runtime
-├── scripts/                     # Utility and orchestration scripts
-├── configs/                     # labels, splits, ops, delivery profiles
+├── ops/
+│   ├── configs/                 # labels, splits, ops, delivery profiles
+│   ├── scripts/                 # utility and orchestration scripts
+│   └── deploy_assets/           # replay clips and shipped checkpoints
+├── qa/
+│   └── tests/                   # smoke and contract tests
+├── research/
+│   ├── baselines/               # committed comparison baselines
+│   ├── tools/                   # tuning and research utilities
+│   ├── patches/                 # patch artifacts
+│   └── research_ops/            # research planning and evidence indexes
 ├── data/                        # raw/interim/processed datasets
 ├── outputs/                     # checkpoints and training outputs
 ├── artifacts/                   # evaluation outputs, figures, evidence bundles
-├── tests/                       # smoke and contract tests
 ├── docs/                        # active docs, runbooks, submission guidance
 └── Makefile                     # main project entrypoint
 ```
