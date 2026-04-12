@@ -13,14 +13,15 @@ Route handlers live under :mod:`server.routes.*`.
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException
+import numpy as np
 
 from .code_normalization import (
     norm_op_code as _norm_op_code_impl,
@@ -52,6 +53,7 @@ from .runtime_assets import (
     event_clips_dir as _event_clips_dir_impl,
     read_clip_privacy_flags as _read_clip_privacy_flags_impl,
 )
+from . import runtime_state as _runtime_state
 from .schemas import CaregiverUpsertPayload, MonitorPredictPayload, SettingsUpdatePayload, SkeletonClipPayload
 
 try:
@@ -130,60 +132,29 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
 # -----------------------------
 
 
-_SESSION_STATE: Dict[str, Dict[str, Any]] = {}
-SESSION_TTL_S = int(os.getenv("SESSION_TTL_S", "1800"))
-SESSION_MAX_STATES = int(os.getenv("SESSION_MAX_STATES", "1000"))
+_SESSION_STATE = _runtime_state.get_session_store()
+SESSION_TTL_S = _runtime_state.SESSION_TTL_S
+SESSION_MAX_STATES = _runtime_state.SESSION_MAX_STATES
 
-LAST_PRED_LATENCY_MS: Optional[float] = None
-LAST_PRED_P_FALL: Optional[float] = None
-LAST_PRED_DECISION: Optional[str] = None
-LAST_PRED_MODEL_CODE: Optional[str] = None
-LAST_PRED_TS_ISO: Optional[str] = None
+LAST_PRED_LATENCY_MS = None
+LAST_PRED_P_FALL = None
+LAST_PRED_DECISION = None
+LAST_PRED_MODEL_CODE = None
+LAST_PRED_TS_ISO = None
 
 
 def touch_session_state(session_id: str, now_s: Optional[float] = None) -> Dict[str, Any]:
-    """Mark a session as active and return its state dict."""
-    t_s = float(now_s if now_s is not None else time.time())
-    st = _SESSION_STATE.setdefault(str(session_id), {})
-    st["last_seen_s"] = t_s
-    return st
+    """Compatibility wrapper over :mod:`server.runtime_state` session state."""
+    return _runtime_state.touch_session_state(session_id, now_s=now_s)
 
 
 def prune_session_state(now_s: Optional[float] = None) -> int:
-    """Drop stale sessions and cap max in-memory session entries."""
-    if not _SESSION_STATE:
-        return 0
-
-    t_s = float(now_s if now_s is not None else time.time())
-    ttl_s = max(60, int(SESSION_TTL_S))
-    max_states = max(10, int(SESSION_MAX_STATES))
-    cutoff = t_s - float(ttl_s)
-    removed = 0
-
-    stale_ids = []
-    for sid, st in _SESSION_STATE.items():
-        try:
-            last_seen = float((st or {}).get("last_seen_s", 0.0) or 0.0)
-        except Exception:
-            last_seen = 0.0
-        if last_seen < cutoff:
-            stale_ids.append(sid)
-
-    for sid in stale_ids:
-        if _SESSION_STATE.pop(sid, None) is not None:
-            removed += 1
-
-    if len(_SESSION_STATE) > max_states:
-        ordered = sorted(
-            _SESSION_STATE.items(),
-            key=lambda kv: float((kv[1] or {}).get("last_seen_s", 0.0) or 0.0),
-        )
-        overflow = len(_SESSION_STATE) - max_states
-        for sid, _ in ordered[:overflow]:
-            if _SESSION_STATE.pop(sid, None) is not None:
-                removed += 1
-
-    return removed
+    """Compatibility wrapper over :mod:`server.runtime_state` pruning logic."""
+    return _runtime_state.prune_session_state(
+        now_s=now_s,
+        ttl_s=SESSION_TTL_S,
+        max_states=SESSION_MAX_STATES,
+    )
 
 
 # -----------------------------

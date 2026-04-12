@@ -5,7 +5,8 @@ import math
 import time
 from datetime import datetime, timezone
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+import numpy as np
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -25,8 +26,6 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..monitor_policy import (
-    DEFAULT_LIVE_GUARD_BY_DATASET as _DEFAULT_LIVE_GUARD_BY_DATASET,
-    DEFAULT_LIVE_GUARD_GLOBAL as _DEFAULT_LIVE_GUARD_GLOBAL,
     load_dual_policy_cfg as _load_dual_policy_cfg,
     op_delivery_gate as _op_delivery_gate,
     op_live_guard as _op_live_guard,
@@ -45,18 +44,18 @@ from ..monitor_windowing import (
 )
 from ..online_alert import OnlineAlertTracker
 from ..schemas import MonitorPredictPayload
-from ..services.monitor_context_service import load_monitor_request_context
 from ..services.monitor_response_service import (
     build_monitor_prediction_response,
     build_stale_monitor_response,
     log_monitor_perf_if_slow,
 )
+from ..services.monitor_request_service import prepare_monitor_request
 from ..services.monitor_uncertainty_service import apply_uncertainty_fall_gate
 from ..services.monitor_runtime_service import (
     persist_monitor_event,
     resolve_monitor_persistence_plan,
 )
-from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
+from ..services.monitor_session_service import reset_monitor_session
 from ..services.value_coercion import coerce_bool
 from ..runtime_state import get_session_store, set_last_prediction_snapshot
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
@@ -207,9 +206,6 @@ def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
 @router.post("/api/v1/monitor/predict_window")
 def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one window from the live monitor UI."""
-    payload_d = payload.model_dump()
-    compact_response = coerce_bool(payload_d.get("compact_response"), False)
-
     t0 = time.time()
     perf_started = time.perf_counter()
     perf_last = perf_started
@@ -221,171 +217,63 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         perf[name] = int((now - perf_last) * 1000)
         perf_last = now
 
-    # -------------
-    # Inputs
-    # -------------
-    session_id = str(payload_d.get("session_id") or "default")
-    input_source = str(payload_d.get("input_source") or "").strip().lower()
-    is_replay = input_source in {"video", "replay", "file"}
-
-    requested_mode = str(payload_d.get("mode") or "tcn").lower().strip()
-    mode = requested_mode
-    if mode in {"hyb", "hybrid", "dual"}:
-        mode = "hybrid"
-    elif mode not in {"tcn", "gcn", "hybrid"}:
-        mode = "tcn"
-
-    dataset_code = normalize_dataset_code(payload_d.get("dataset_code") or payload_d.get("dataset"))
-    op_code = str(payload_d.get("op_code") or payload_d.get("op") or "").upper().strip()
-
-    requested_use_mc = payload_d.get("use_mc")
-    requested_mc_M = payload_d.get("mc_M")
-
-    persist = coerce_bool(payload_d.get("persist", False), False)
-
-    target_T = int(payload_d.get("target_T") or 48)
-    raw_xy = payload_d.get("raw_xy")
-    raw_conf = payload_d.get("raw_conf")
-    raw_xy_q = payload_d.get("raw_xy_q")
-    raw_conf_q = payload_d.get("raw_conf_q")
-    raw_shape = payload_d.get("raw_shape")
-    raw_t_ms = payload_d.get("raw_t_ms")
-    window_end_t_ms = payload_d.get("window_end_t_ms", None)
-    window_seq = payload_d.get("window_seq", None)
-    if raw_xy is None and raw_xy_q is not None:
-        dec_xy, dec_conf = _decode_quantized_raw_window(raw_xy_q, raw_conf_q, raw_shape)
-        if dec_xy is not None:
-            raw_xy = dec_xy
-            raw_conf = dec_conf
-
-    raw_stats = _raw_window_stats(raw_t_ms, raw_xy, raw_conf)
-
-    xy: List[Any] = []
-    conf: List[Any] = []
-    cap_fps_est: Optional[float] = None
+    prepared = prepare_monitor_request(
+        payload=payload,
+        logger=logger,
+        get_conn=get_conn,
+        normalize_dataset_code=normalize_dataset_code,
+        coerce_bool=coerce_bool,
+        decode_quantized_raw_window=_decode_quantized_raw_window,
+        raw_window_stats=_raw_window_stats,
+        resolve_runtime_fps=_resolve_runtime_fps,
+        resolve_monitor_specs=_resolve_monitor_specs,
+        get_pose_preprocess_cfg=_get_pose_preprocess_cfg,
+        resample_pose_window=_resample_pose_window,
+        preprocess_online_raw_window=_preprocess_online_raw_window,
+        direct_window_stats=_direct_window_stats,
+        get_deploy_specs=_get_deploy_specs,
+        ensure_system_settings_schema=_ensure_system_settings_schema,
+        detect_variants=_detect_variants,
+        table_exists=_table_exists,
+    )
+    compact_response = prepared.compact_response
     _mark_perf("parse_inputs_ms")
-
-    # -------------
-    # Defaults from DB (if available)
-    # -------------
-    resident_id = int(payload_d.get("resident_id") or 1)
-    active_model_code = mode.upper()
-    try:
-        with get_conn() as conn:
-            request_context = load_monitor_request_context(
-                conn=conn,
-                resident_id=resident_id,
-                input_source=input_source,
-                mode=mode,
-                dataset_code=dataset_code,
-                op_code=op_code,
-                event_location=payload_d.get("location"),
-                active_model_code=active_model_code,
-                requested_use_mc=requested_use_mc,
-                requested_mc_M=requested_mc_M,
-                is_replay=is_replay,
-                ensure_system_settings_schema=_ensure_system_settings_schema,
-                detect_variants=_detect_variants,
-                table_exists=_table_exists,
-            )
-    except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
-        logger.warning(
-            "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
-            resident_id,
-            session_id,
-            mode,
-            dataset_code or "unset",
-            exc,
-        )
     _mark_perf("db_defaults_ms")
-    if "request_context" not in locals():
-        request_context = load_monitor_request_context(
-            conn=None,
-            resident_id=resident_id,
-            input_source=input_source,
-            mode=mode,
-            dataset_code=dataset_code,
-            op_code=op_code,
-            event_location=payload_d.get("location"),
-            active_model_code=active_model_code,
-            requested_use_mc=requested_use_mc,
-            requested_mc_M=requested_mc_M,
-            is_replay=is_replay,
-            ensure_system_settings_schema=lambda _conn: None,
-            detect_variants=lambda _conn: {},
-            table_exists=lambda _conn, _table: False,
-        )
 
-    event_location = request_context.event_location
-    dataset_code = request_context.dataset_code
-    op_code = request_context.op_code
-    active_model_code = request_context.active_model_code
-    cooldown_sec = request_context.cooldown_sec
-    requested_use_mc = request_context.requested_use_mc
-    requested_mc_M = request_context.requested_mc_M
-    effective_use_mc = request_context.effective_use_mc
-    effective_mc_M = request_context.effective_mc_M
-    runtime = request_context.runtime
-
-    raw_fps_est = raw_stats.get("raw_fps_est")
-    expected_fps, effective_fps = _resolve_runtime_fps(
-        dataset_code=dataset_code,
-        payload_d=payload_d,
-        raw_fps_est=raw_fps_est,
-        is_replay=is_replay,
-    )
-    _t_s = time.time()
-    st = get_monitor_session_state(get_session_store(), session_id, _t_s)
-
-    specs = _get_deploy_specs()
-    spec_selection = _resolve_monitor_specs(
-        specs=specs,
-        dataset_code=dataset_code,
-        mode=mode,
-        payload_d=payload_d,
-    )
-    mode = spec_selection["mode"]
-    tcn_key = spec_selection["tcn_key"]
-    gcn_key = spec_selection["gcn_key"]
-    guard_spec_key = spec_selection["guard_spec_key"]
-    primary_spec_key = spec_selection["primary_spec_key"]
-    primary_model_key = spec_selection["primary_model_key"]
-
-    raw_preproc_cfg = None
-    if raw_xy is not None and raw_t_ms is not None:
-        try:
-            raw_preproc_cfg = _get_pose_preprocess_cfg(primary_spec_key)
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-            raw_preproc_cfg = None
-
-    if raw_xy is not None and raw_t_ms is not None:
-        xy, conf, _, _, cap_fps_est = _resample_pose_window(
-            raw_t_ms=raw_t_ms,
-            raw_xy=raw_xy,
-            raw_conf=raw_conf,
-            target_fps=float(effective_fps),
-            target_T=target_T,
-            window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
-        )
-        if xy:
-            xy, conf = _preprocess_online_raw_window(xy, conf, cfg=raw_preproc_cfg)
-
-    if not xy:
-        xy = payload_d.get("xy") or []
-        conf = payload_d.get("conf") or []
-
-    # Direct `xy/conf` payloads are already fixed-length windows; synthesize
-    # timing/coverage stats so live quality gates don't treat them as empty raw streams.
-    if (
-        (raw_xy is None or raw_t_ms is None)
-        and isinstance(xy, list)
-        and len(xy) > 0
-        and (raw_stats.get("raw_len") or 0) <= 0
-    ):
-        raw_stats = _direct_window_stats(xy, conf, effective_fps=float(effective_fps))
-
-    if not xy:
-        raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
+    session_id = prepared.session_id
+    input_source = prepared.input_source
+    is_replay = prepared.is_replay
+    requested_mode = prepared.requested_mode
+    mode = prepared.mode
+    dataset_code = prepared.dataset_code
+    op_code = prepared.op_code
+    requested_use_mc = prepared.requested_use_mc
+    requested_mc_M = prepared.requested_mc_M
+    effective_use_mc = prepared.effective_use_mc
+    effective_mc_M = prepared.effective_mc_M
+    persist = prepared.persist
+    target_T = prepared.target_T
+    raw_stats = prepared.raw_stats
+    xy = prepared.xy
+    conf = prepared.conf
+    cap_fps_est = prepared.cap_fps_est
+    resident_id = prepared.resident_id
+    active_model_code = prepared.active_model_code
+    cooldown_sec = prepared.cooldown_sec
+    runtime = prepared.runtime
+    event_location = prepared.event_location
+    expected_fps = prepared.expected_fps
+    effective_fps = prepared.effective_fps
+    st = prepared.session_state
+    _t_s = prepared.current_t_s
+    specs = prepared.specs
+    tcn_key = prepared.tcn_key
+    gcn_key = prepared.gcn_key
+    guard_spec_key = prepared.guard_spec_key
+    primary_spec_key = prepared.primary_spec_key
+    primary_model_key = prepared.primary_model_key
+    window_end_t_ms = prepared.window_end_t_ms
+    window_seq = prepared.window_seq
     _mark_perf("window_prepare_ms")
 
     motion_score = _window_motion_score(xy)
