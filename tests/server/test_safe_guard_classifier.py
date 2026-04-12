@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from server.notifications.classifier import EventClassifier
-from server.notifications.config import NotificationConfig
-from server.notifications.models import NotificationPreferences, SafeGuardEvent, SafeGuardTier
+from applications.backend.notifications.classifier import EventClassifier
+from applications.backend.notifications.config import NotificationConfig
+from applications.backend.notifications.models import NotificationPreferences, SafeGuardEvent, SafeGuardTier
 
 
 def _cfg() -> NotificationConfig:

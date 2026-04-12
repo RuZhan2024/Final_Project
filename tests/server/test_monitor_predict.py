@@ -6,8 +6,8 @@ import math
 import numpy as np
 from fastapi.testclient import TestClient
 
-from server.main import app
-from server.routes import monitor as monitor_route
+from applications.backend.main import app
+from applications.backend.routes import monitor as monitor_route
 
 
 class _DummyTracker:

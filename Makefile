@@ -15,7 +15,7 @@ SHELL := /bin/bash
 # -------------------------
 PY      ?= python3
 VENV    ?= source ".venv/bin/activate"
-PYTHONPATH := $(CURDIR)/src:$(CURDIR)
+PYTHONPATH := $(CURDIR)/ml/src:$(CURDIR)
 export PYTHONPATH
 RUN := $(VENV) && PYTHONPATH="$(PYTHONPATH)" $(PY)
 
@@ -531,7 +531,7 @@ release-manifest:
 	@bash scripts/release_manifest.sh
 
 serve-dev:
-	$(RUN) -m uvicorn server.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
+	$(RUN) -m uvicorn applications.backend.app:app --host "$(SERVER_HOST)" --port "$(SERVER_PORT)" --reload
 
 clean-stamps:
 	@echo "[clean] removing stamps: $(STAMP_DIR)/"
@@ -1412,7 +1412,7 @@ audit-static:
 	$(RUN) scripts/audit_static.py --roots "src,scripts,server,configs,baselines,artifacts"
 
 audit-runtime-imports:
-	$(RUN) scripts/audit_runtime_imports.py --paths "src/fall_detection/deploy,server/deploy_runtime.py"
+	$(RUN) scripts/audit_runtime_imports.py --paths "ml/src/fall_detection/deploy,applications/backend/deploy_runtime.py"
 
 audit-api-contract:
 	$(RUN) scripts/audit_api_contract.py

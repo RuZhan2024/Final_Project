@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from server.notifications.models import SafeGuardEvent, SafeGuardTier, TierDecision
-from server.notifications.templates import build_telegram_message
+from applications.backend.notifications.models import SafeGuardEvent, SafeGuardTier, TierDecision
+from applications.backend.notifications.templates import build_telegram_message
 
 
 def test_build_telegram_message_formats_timestamp_in_app_timezone(monkeypatch):

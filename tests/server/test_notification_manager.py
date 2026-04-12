@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from server.notifications.config import NotificationConfig
-from server.notifications.manager import NotificationManager
-from server.notifications.models import DeliveryResult, NotificationPreferences, SafeGuardEvent
+from applications.backend.notifications.config import NotificationConfig
+from applications.backend.notifications.manager import NotificationManager
+from applications.backend.notifications.models import DeliveryResult, NotificationPreferences, SafeGuardEvent
 
 
 def _cfg() -> NotificationConfig:

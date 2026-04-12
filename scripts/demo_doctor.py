@@ -49,12 +49,12 @@ def main() -> None:
     add("python_version", sys.version_info >= (3, 10), f"{sys.version.split()[0]}", critical=True)
     add("venv_exists", (root / ".venv").is_dir(), str(root / ".venv"), critical=False)
 
-    for mod in ("fall_detection", "server.app", "fastapi"):
+    for mod in ("fall_detection", "applications.backend.app", "fastapi"):
         ok, detail = _check_import(mod)
         add(f"import:{mod}", ok, detail, critical=True)
 
-    add("frontend_dir", (root / "apps").is_dir(), str(root / "apps"), critical=True)
-    add("frontend_config", (root / "apps" / "src" / "lib" / "config.js").is_file(), "apps/src/lib/config.js", critical=True)
+    add("frontend_dir", (root / "applications" / "frontend").is_dir(), str(root / "applications" / "frontend"), critical=True)
+    add("frontend_config", (root / "applications" / "frontend" / "src" / "lib" / "config.js").is_file(), "applications/frontend/src/lib/config.js", critical=True)
 
     npm_path = shutil.which("npm")
     add("npm_present", npm_path is not None, npm_path or "npm not found in PATH", critical=False)
@@ -85,8 +85,8 @@ def main() -> None:
         "critical_failures": [c["name"] for c in critical_failures],
         "quick_start": [
             "source .venv/bin/activate",
-            "uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload",
-            "cd apps && npm install && npm start",
+            "uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload",
+            "cd applications/frontend && npm install && npm start",
         ],
     }
 
@@ -106,4 +106,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

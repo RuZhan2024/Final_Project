@@ -358,7 +358,7 @@ def persist_event_skeleton_clip(
     fpath = clips_dir / fname
     np.savez_compressed(fpath, t_ms=t_ms, xy=xy, conf=conf)
 
-    clip_rel = f"server/event_clips/{fname}"
+    clip_rel = f"applications/backend/event_clips/{fname}"
     meta = parse_raw_meta(row.get("meta"))
     meta["skeleton_clip"] = {
         "path": clip_rel,

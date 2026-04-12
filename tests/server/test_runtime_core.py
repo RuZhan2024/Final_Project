@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from server import core as core_mod
-from server import deploy_runtime as dr
-from server.online_alert import OnlineAlertTracker
+from applications.backend import core as core_mod
+from applications.backend import deploy_runtime as dr
+from applications.backend.online_alert import OnlineAlertTracker
 
 
 class _FakeCursor:

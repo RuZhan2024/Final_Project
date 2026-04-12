@@ -1,7 +1,8 @@
-# server/app.py
+# applications/backend/app.py
 """Stable ASGI entrypoint.
 
-Keep this module tiny so deployment commands such as `uvicorn server.app:app`
+Keep this module tiny so deployment commands such as
+`uvicorn applications.backend.app:app`
 remain stable while app assembly lives in :mod:`server.application`.
 """
 

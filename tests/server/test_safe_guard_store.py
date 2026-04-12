@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from server.notifications.models import DeliveryResult, NotificationPreferences, SafeGuardEvent, SafeGuardTier, TierDecision
-from server.notifications.sqlite_store import SQLiteNotificationStore
+from applications.backend.notifications.models import DeliveryResult, NotificationPreferences, SafeGuardEvent, SafeGuardTier, TierDecision
+from applications.backend.notifications.sqlite_store import SQLiteNotificationStore
 
 
 def _event(event_id: str) -> SafeGuardEvent:

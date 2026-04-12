@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from server.app import app
-from server.deploy_runtime import discover_specs, _discover_from_ops_yaml
-import server.main as server_main
-from server.routes import monitor as monitor_routes
+from applications.backend.app import app
+from applications.backend.deploy_runtime import discover_specs, _discover_from_ops_yaml
+import applications.backend.main as server_main
+from applications.backend.routes import monitor as monitor_routes
 from fall_detection.preprocessing.pose_resample import resample_pose_window
 
 

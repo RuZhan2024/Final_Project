@@ -1,7 +1,7 @@
 import pytest
 import types
 
-from server import db as db_mod
+from applications.backend import db as db_mod
 
 
 def test_require_env_raises_when_missing(monkeypatch):

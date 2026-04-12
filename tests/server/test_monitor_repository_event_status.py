@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from server.repositories.monitor_repository import insert_monitor_event
+from applications.backend.repositories.monitor_repository import insert_monitor_event
 
 
 class _FakeCursor:

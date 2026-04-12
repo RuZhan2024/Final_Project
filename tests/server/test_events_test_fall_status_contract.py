@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from server.routes import events as events_route
+from applications.backend.routes import events as events_route
 
 
 class _FakeCursor:

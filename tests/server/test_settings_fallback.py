@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from server.main import app
-from server.routes import settings as settings_route
+from applications.backend.main import app
+from applications.backend.routes import settings as settings_route
 
 
 def test_settings_falls_back_when_db_unavailable(monkeypatch):

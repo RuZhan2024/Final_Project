@@ -2,9 +2,9 @@ from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
-from server.main import app
-from server.routes import events as events_route
-from server.routes import monitor as monitor_route
+from applications.backend.main import app
+from applications.backend.routes import events as events_route
+from applications.backend.routes import monitor as monitor_route
 
 
 def test_monitor_predict_window_rejects_missing_xy_payload():

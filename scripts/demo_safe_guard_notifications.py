@@ -8,10 +8,10 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from server.notifications.classifier import EventClassifier
-from server.notifications.config import NotificationConfig
-from server.notifications.manager import NotificationManager
-from server.notifications.models import NotificationPreferences, SafeGuardEvent
+from applications.backend.notifications.classifier import EventClassifier
+from applications.backend.notifications.config import NotificationConfig
+from applications.backend.notifications.manager import NotificationManager
+from applications.backend.notifications.models import NotificationPreferences, SafeGuardEvent
 
 
 def build_demo_config(sqlite_path: str) -> NotificationConfig:
@@ -61,7 +61,7 @@ def build_base_event() -> SafeGuardEvent:
 
 
 def main() -> None:
-    cfg = build_demo_config("server/safe_guard_demo.sqlite3")
+    cfg = build_demo_config("applications/backend/safe_guard_demo.sqlite3")
     manager = NotificationManager(cfg)
     classifier = EventClassifier(cfg)
     prefs = NotificationPreferences(phone_enabled=True, sms_enabled=True, email_enabled=True)

@@ -1,4 +1,4 @@
-from server import core
+from applications.backend import core
 
 
 def test_prune_session_state_removes_stale_and_caps():

@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import yaml
 
-from server.deploy_runtime import get_specs, predict_spec
-from server.online_alert import OnlineAlertTracker
-from server.routes.monitor import (
+from applications.backend.deploy_runtime import get_specs, predict_spec
+from applications.backend.online_alert import OnlineAlertTracker
+from applications.backend.routes.monitor import (
     _DEFAULT_LIVE_GUARD_BY_DATASET,
     _LOW_MOTION_MEMORY_WINDOWS,
     _direct_window_stats,

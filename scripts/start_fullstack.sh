@@ -70,7 +70,7 @@ require_cmd python3
 require_cmd npm
 require_cmd curl
 require_path "${ROOT_DIR}/.venv/bin/activate"
-require_path "${ROOT_DIR}/apps/node_modules"
+require_path "${ROOT_DIR}/applications/frontend/node_modules"
 
 if port_in_use "${BACKEND_HOST}" "${BACKEND_PORT}"; then
   echo "[err] backend port already in use: ${BACKEND_HOST}:${BACKEND_PORT}" >&2
@@ -86,8 +86,8 @@ echo "[dev] starting backend on ${BACKEND_HOST}:${BACKEND_PORT}"
 (
   cd "${ROOT_DIR}"
   source ".venv/bin/activate"
-  export PYTHONPATH="${ROOT_DIR}/src:${ROOT_DIR}"
-  exec python3 -m uvicorn server.app:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}"
+  export PYTHONPATH="${ROOT_DIR}/ml/src:${ROOT_DIR}"
+  exec python3 -m uvicorn applications.backend.app:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}"
 ) >"${BACKEND_LOG}" 2>&1 &
 BACKEND_PID="$!"
 
@@ -101,7 +101,7 @@ echo "[dev] backend healthy: ${HEALTH_URL}"
 echo "[dev] backend log: ${BACKEND_LOG}"
 echo "[dev] starting frontend on ${FRONTEND_HOST}:${FRONTEND_PORT}"
 
-cd "${ROOT_DIR}/apps"
+cd "${ROOT_DIR}/applications/frontend"
 HOST="${FRONTEND_HOST}" \
 PORT="${FRONTEND_PORT}" \
 BROWSER="${BROWSER_MODE}" \

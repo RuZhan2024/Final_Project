@@ -10,7 +10,7 @@ if [[ ! -d .venv ]]; then
 fi
 
 source .venv/bin/activate
-export PYTHONPATH="$ROOT/src:$ROOT"
+export PYTHONPATH="$ROOT/ml/src:$ROOT"
 
 mode="${1:-torch-free}"
 

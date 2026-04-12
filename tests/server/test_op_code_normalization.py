@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from server import core as core_mod
-from server.repositories import settings_repository as repo
-from server.services import monitor_context_service as ctx_service
-from server.services import settings_service
+from applications.backend import core as core_mod
+from applications.backend.repositories import settings_repository as repo
+from applications.backend.services import monitor_context_service as ctx_service
+from applications.backend.services import settings_service
 
 
 class _NoopCursor:

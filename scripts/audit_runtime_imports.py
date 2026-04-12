@@ -30,7 +30,7 @@ def _imports_from_file(path: Path) -> list[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--paths", default="src/fall_detection/deploy,server/deploy_runtime.py")
+    ap.add_argument("--paths", default="ml/src/fall_detection/deploy,applications/backend/deploy_runtime.py")
     ap.add_argument("--forbidden_prefix", default="fall_detection.training")
     args = ap.parse_args()
 
@@ -61,4 +61,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

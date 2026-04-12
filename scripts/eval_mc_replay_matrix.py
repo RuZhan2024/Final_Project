@@ -13,7 +13,7 @@ import numpy as np
 from fall_detection.core.alerting import AlertCfg, detect_alert_events, times_from_windows
 from fall_detection.core.confirm import confirm_scores_window
 from fall_detection.core.features import read_window_npz
-from server.deploy_runtime import get_specs, predict_spec
+from applications.backend.deploy_runtime import get_specs, predict_spec
 
 
 def truth_from_src(src: str, fall_contains: list[str], nonfall_contains: list[str]) -> int | None:

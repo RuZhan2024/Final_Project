@@ -16,19 +16,19 @@ It also keeps an **in-memory per-session** state machine for temporal rules.
 
 The backend is organized around explicit assembly and configuration boundaries:
 
-- `server/application.py`
+- `applications/backend/application.py`
   - FastAPI application factory and route registration
-- `server/config.py`
+- `applications/backend/config.py`
   - environment-backed runtime configuration and path resolution
-- `server/schemas.py`
+- `applications/backend/schemas.py`
   - shared API payload models
-- `server/routes/`
+- `applications/backend/routes/`
   - HTTP/WebSocket transport layer
-- `server/services/`
+- `applications/backend/services/`
   - runtime and response orchestration
-- `server/repositories/`
+- `applications/backend/repositories/`
   - persistence-facing read/write logic
-- `server/core.py`
+- `applications/backend/core.py`
   - shared backend helpers and in-memory fallback state
 
 ## Run
@@ -38,7 +38,7 @@ From the repo root:
 ```bash
 source .venv/bin/activate
 pip install -r requirements_server.txt
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## Front-end -> server payload
@@ -78,8 +78,8 @@ caregivers, and notifications endpoints.
 - FastAPI live inference uses deploy specs discovered from `configs/ops/*.yaml`
   (checkpoint path + `ops` + `alert_cfg`).
 - `configs/deploy_modes.yaml` is used by offline deploy scripts (for example
-  `src/fall_detection/deploy/run_modes.py`) and is not the primary config source
-  for `server/routes/monitor.py`.
+  `ml/src/fall_detection/deploy/run_modes.py`) and is not the primary config source
+  for `applications/backend/routes/monitor.py`.
 
 ## Integration audit commands
 
@@ -97,7 +97,7 @@ The server is **stateless per request**, but keeps a **session state** keyed by
 ## Safe Guard notifications
 
 The repository now includes a threshold-aware "Safe Guard" notification layer
-under `server/notifications/`.
+under `applications/backend/notifications/`.
 
 Current implemented delivery path:
 
@@ -125,16 +125,16 @@ From repo root:
 ```bash
 cp .env.example .env
 source .venv/bin/activate
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Important environment variables:
 
 ```bash
 DB_BACKEND=sqlite
-SQLITE_PATH=server/cloud_demo.sqlite3
+SQLITE_PATH=applications/backend/cloud_demo.sqlite3
 SAFE_GUARD_ENABLED=1
-SAFE_GUARD_SQLITE_PATH=server/safe_guard_notifications.sqlite3
+SAFE_GUARD_SQLITE_PATH=applications/backend/safe_guard_notifications.sqlite3
 HIGH_CONF_MARGIN=0.08
 LOW_UNCERTAINTY_THRESHOLD=0.05
 HIGH_UNCERTAINTY_THRESHOLD=0.15
@@ -171,7 +171,7 @@ Telegram behavior:
 ### Runtime integration
 
 Safe Guard is triggered after a new fall event has already been persisted to
-the main `events` table inside `server/routes/monitor.py`.
+the main `events` table inside `applications/backend/routes/monitor.py`.
 
 The monitor payload can now include:
 
@@ -187,7 +187,7 @@ The current front-end integration sends:
 Safe Guard writes local audit records to SQLite. By default:
 
 ```text
-server/safe_guard_notifications.sqlite3
+applications/backend/safe_guard_notifications.sqlite3
 ```
 
 This local SQLite database stores:
@@ -204,7 +204,7 @@ Run the minimal demo:
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH="$(pwd)/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
+PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
 ```
 
 The demo simulates:
@@ -216,7 +216,7 @@ The demo simulates:
 and writes results to:
 
 ```text
-server/safe_guard_demo.sqlite3
+applications/backend/safe_guard_demo.sqlite3
 ```
 
 ### Legacy webhook surface
@@ -236,14 +236,14 @@ Use this checklist before treating the feature as release-ready.
 
 ```bash
 source .venv/bin/activate
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Expected:
 
 - `/api/health` responds successfully
 - backend starts without import errors
-- `server/safe_guard_notifications.sqlite3` is created when Safe Guard handles events
+- `applications/backend/safe_guard_notifications.sqlite3` is created when Safe Guard handles events
 
 ### 2. Demo script
 
@@ -251,7 +251,7 @@ Run:
 
 ```bash
 source .venv/bin/activate
-PYTHONPATH="$(pwd)/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
+PYTHONPATH="$(pwd)/ml/src:$(pwd)" python3 scripts/demo_safe_guard_notifications.py
 ```
 
 Expected:
@@ -259,7 +259,7 @@ Expected:
 - one Tier 1 event printed
 - one Tier 2 event printed
 - one Tier 3 event printed
-- `server/safe_guard_demo.sqlite3` is created
+- `applications/backend/safe_guard_demo.sqlite3` is created
 
 ### 3. SQLite audit verification
 

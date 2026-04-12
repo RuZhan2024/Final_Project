@@ -3,8 +3,8 @@ from datetime import datetime
 
 from fastapi.testclient import TestClient
 
-from server.main import app
-from server.routes import events as events_route
+from applications.backend.main import app
+from applications.backend.routes import events as events_route
 
 
 class _FakeCursor:

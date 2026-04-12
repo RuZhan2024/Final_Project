@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 FREEZE_CORE_PATHS=(
   "README.md"
   "docker-compose.yml"
-  "src/fall_detection"
+  "ml/src/fall_detection"
   "server"
   "apps"
   "scripts"

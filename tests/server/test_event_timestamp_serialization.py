@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from server.services.events_service import map_v1_event_row, map_v2_event_row
+from applications.backend.services.events_service import map_v1_event_row, map_v2_event_row
 
 
 def test_map_v2_event_row_normalizes_naive_db_timestamp_to_utc_iso():

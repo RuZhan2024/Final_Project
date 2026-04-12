@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 import numpy as np
 from fastapi.testclient import TestClient
 
-from server import core
-from server.app import app
+from applications.backend import core
+from applications.backend.app import app
 
 
 def _group_windows(windows_dir: Path) -> Dict[str, List[Path]]:

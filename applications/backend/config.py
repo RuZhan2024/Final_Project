@@ -51,10 +51,10 @@ def get_app_config() -> AppConfig:
     raw_backend = str(os.getenv("DB_BACKEND", "mysql")).strip().lower()
     db_backend = "sqlite" if raw_backend == "sqlite" else "mysql"
 
-    sqlite_path = _resolve_repo_path(str(os.getenv("SQLITE_PATH", "server/cloud_demo.sqlite3")).strip())
-    event_clips_dir = _resolve_repo_path(str(os.getenv("EVENT_CLIPS_DIR", "server/event_clips")).strip())
+    sqlite_path = _resolve_repo_path(str(os.getenv("SQLITE_PATH", "applications/backend/cloud_demo.sqlite3")).strip())
+    event_clips_dir = _resolve_repo_path(str(os.getenv("EVENT_CLIPS_DIR", "applications/backend/event_clips")).strip())
     notification_sqlite_path = _resolve_repo_path(
-        str(os.getenv("SAFE_GUARD_SQLITE_PATH", "server/safe_guard_notifications.sqlite3")).strip()
+        str(os.getenv("SAFE_GUARD_SQLITE_PATH", "applications/backend/safe_guard_notifications.sqlite3")).strip()
     )
 
     return AppConfig(

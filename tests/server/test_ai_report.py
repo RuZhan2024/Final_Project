@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from server.notifications import ai_report
-from server.notifications.ai_report import generate_event_ai_report
-from server.notifications.config import NotificationConfig
-from server.notifications.models import SafeGuardEvent, SafeGuardTier, TierDecision
+from applications.backend.notifications import ai_report
+from applications.backend.notifications.ai_report import generate_event_ai_report
+from applications.backend.notifications.config import NotificationConfig
+from applications.backend.notifications.models import SafeGuardEvent, SafeGuardTier, TierDecision
 
 
 def _cfg(**overrides) -> NotificationConfig:

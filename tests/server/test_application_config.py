@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from server.application import create_app
-from server.config import get_app_config
+from applications.backend.application import create_app
+from applications.backend.config import get_app_config
 
 
 def test_app_config_uses_env_for_cors_and_runtime_paths(monkeypatch):

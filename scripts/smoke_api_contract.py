@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from server.app import app
+from applications.backend.app import app
 
 
 def _check(cond: bool, msg: str) -> None:

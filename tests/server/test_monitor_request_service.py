@@ -1,7 +1,7 @@
 import logging
 
-from server.schemas import MonitorPredictPayload
-from server.services.monitor_request_service import MySQLError, prepare_monitor_request
+from applications.backend.schemas import MonitorPredictPayload
+from applications.backend.services.monitor_request_service import MySQLError, prepare_monitor_request
 
 
 def test_prepare_monitor_request_falls_back_when_db_defaults_fail():

@@ -5,7 +5,7 @@ services:
     plan: starter
     region: frankfurt
     buildCommand: pip install -r requirements.txt -r requirements_server.txt
-    startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn applications.backend.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     disk:
@@ -14,7 +14,7 @@ services:
       sizeGB: 1
     envVars:
       - key: PYTHONPATH
-        value: /opt/render/project/src/src:/opt/render/project/src
+        value: /opt/render/project/src/ml/src:/opt/render/project/src
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: DB_BACKEND
@@ -49,7 +49,7 @@ services:
   - name: fall-detection-frontend
     type: web
     runtime: static
-    rootDir: apps
+    rootDir: applications/frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: build
     autoDeployTrigger: commit

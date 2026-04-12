@@ -9,13 +9,13 @@ This app is the examiner-facing UI for the fall-detection system.
 
 ## Environment
 
-Create `apps/.env`:
+Create `applications/frontend/.env`:
 
 ```bash
 REACT_APP_API_BASE=http://localhost:8000
 ```
 
-`REACT_APP_API_BASE` is read in `apps/src/lib/config.js`.
+`REACT_APP_API_BASE` is read in `applications/frontend/src/lib/config.js`.
 
 ## Run (Local Demo)
 
@@ -24,13 +24,13 @@ From repo root, run backend:
 ```bash
 source .venv/bin/activate
 pip install -r requirements_server.txt
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 In a second terminal, run frontend:
 
 ```bash
-cd apps
+cd applications/frontend
 npm install
 npm start
 ```
@@ -86,5 +86,5 @@ curl -s -X POST http://localhost:8000/api/monitor/predict_window \
 - Default ports:
   - frontend: `3000`
   - backend: `8000`
-- If browser CORS issues appear, verify backend CORS settings in `server/app.py`.
+- If browser CORS issues appear, verify backend CORS settings in `applications/backend/app.py`.
 - The UI supports `/api/*` and `/api/v1/*` compatibility routes exposed by the backend.

@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-ENV PYTHONPATH=/app/src:/app
+ENV PYTHONPATH=/app/ml/src:/app
 ENV MEDIAPIPE_DISABLE_GPU=1
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "applications.backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
 

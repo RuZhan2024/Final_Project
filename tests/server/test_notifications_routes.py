@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from server.routes import notifications as notifications_route
+from applications.backend.routes import notifications as notifications_route
 
 
 class _FakeStore:

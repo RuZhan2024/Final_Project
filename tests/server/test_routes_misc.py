@@ -3,15 +3,15 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from server.main import app
-from server import core as core_mod
-from server.routes import caregivers as caregivers_route
-from server.routes import dashboard as dashboard_route
-from server.routes import events as events_route
-from server.routes import monitor as monitor_route
-from server.routes import operating_points as ops_route
-from server.routes import settings as settings_route
-from server.routes import specs as specs_route
+from applications.backend.main import app
+from applications.backend import core as core_mod
+from applications.backend.routes import caregivers as caregivers_route
+from applications.backend.routes import dashboard as dashboard_route
+from applications.backend.routes import events as events_route
+from applications.backend.routes import monitor as monitor_route
+from applications.backend.routes import operating_points as ops_route
+from applications.backend.routes import settings as settings_route
+from applications.backend.routes import specs as specs_route
 
 
 def test_dashboard_summary_fallback_when_db_error(monkeypatch):

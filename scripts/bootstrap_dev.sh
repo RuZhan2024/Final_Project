@@ -29,9 +29,9 @@ if ! python3 -c "import fastapi, uvicorn, yaml, numpy" >/dev/null 2>&1; then
   python3 -m pip install -e . --no-build-isolation
 fi
 
-if [[ ! -d "apps/node_modules" ]]; then
+if [[ ! -d "applications/frontend/node_modules" ]]; then
   echo "[bootstrap] installing frontend dependencies"
-  (cd apps && npm install)
+  (cd applications/frontend && npm install)
 fi
 
 exec bash scripts/start_fullstack.sh

@@ -4,8 +4,8 @@ import logging
 
 from fastapi.testclient import TestClient
 
-from server.app import app
-from server.routes import monitor as monitor_routes
+from applications.backend.app import app
+from applications.backend.routes import monitor as monitor_routes
 
 
 def _install_mock_runtime(monkeypatch) -> None:

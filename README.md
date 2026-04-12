@@ -7,7 +7,15 @@ An end-to-end fall detection project with:
 - a FastAPI backend for online inference
 - a React frontend for live and replay monitoring
 
-The canonical Python package code lives in `src/fall_detection`.
+The canonical Python package code lives in `ml/src/fall_detection`.
+The repository now uses a normalized top-level structure:
+
+- `applications/frontend` for the React client
+- `applications/backend` for the FastAPI service
+- `ml/src/fall_detection` for the ML package
+
+Top-level `apps`, `server`, and `src` compatibility links are kept temporarily so
+older scripts and imports do not break during the transition.
 
 ## Submission Overview
 
@@ -65,7 +73,7 @@ Open:
 
 Notes:
 
-- use `make dev` if `.venv` and `apps/node_modules` already exist
+- use `make dev` if `.venv` and `applications/frontend/node_modules` already exist
 - this mode does not require MySQL
 - DB-backed features fall back gracefully when DB is unavailable
 - for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
@@ -101,7 +109,7 @@ What it starts:
 Notes:
 
 - MySQL data is persisted in the `mysql_data` Docker volume
-- the database is initialized from `server/create_db.sql`
+- the database is initialized from `applications/backend/create_db.sql`
 - if host port `3306` is already occupied, move only the exposed MySQL port:
 
 ```bash
@@ -130,9 +138,11 @@ make compose-down
 
 ```text
 .
-├── src/fall_detection/          # Core package: data, training, eval, deploy runtime
-├── server/                      # FastAPI backend
-├── apps/                        # React frontend
+├── applications/
+│   ├── backend/                 # FastAPI backend
+│   └── frontend/                # React frontend
+├── ml/
+│   └── src/fall_detection/      # Core package: data, training, eval, deploy runtime
 ├── scripts/                     # Utility and orchestration scripts
 ├── configs/                     # labels, splits, ops, delivery profiles
 ├── data/                        # raw/interim/processed datasets
@@ -229,7 +239,7 @@ This currently verifies:
 
 - git status visibility
 - release boundary script availability
-- Python compileability for `src/fall_detection`, `server`, and `scripts`
+- Python compileability for `ml/src/fall_detection`, `applications/backend`, and `scripts`
 - frontend production build
 
 Recommended contract/smoke test subset:
@@ -395,4 +405,4 @@ Use `docs/reports/runbooks/EXPERIMENT_EVIDENCE_INDEX.md` as the shortest evidenc
 - active project/report/thesis material is under `docs/project_targets/`, `docs/reports/`, and `artifacts/`
 
 
-// uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+// uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload

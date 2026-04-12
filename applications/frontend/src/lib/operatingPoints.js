@@ -30,7 +30,7 @@ export function pickOperatingPoint(operatingPoints, presetLabel) {
 
   const want = opCodeForPreset(presetLabel).toLowerCase();
 
-  // Most reliable: explicit op_code field from server.
+  // Most reliable: explicit op_code field from applications.backend.
   const byCode = ops.find((o) => String(o.op_code || "").toLowerCase() === want);
   if (byCode) return byCode;
 

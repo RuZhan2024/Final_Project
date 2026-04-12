@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from server.repositories.dashboard_repository import load_today_counts
+from applications.backend.repositories.dashboard_repository import load_today_counts
 
 
 class _FakeCursor:
