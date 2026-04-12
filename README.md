@@ -31,6 +31,15 @@ For the current monitor demo, the recommended review path is:
 That is the main delivery profile used in the project's online validation and four-folder custom video verification.
 That is the preferred live demonstration profile because it is the strongest bounded online replay row in the current fixed 24-clip matrix. It should be treated as the runtime demo preset, not as a replacement for the broader evidence pack.
 
+## Reviewer Note
+
+The default reviewer path for this repository is the runnable system/demo path, not the full ML reproduction path.
+
+- `make bootstrap-dev`, `make dev`, and `docker compose up` do not require raw training datasets
+- raw datasets, `data/interim`, and `data/processed` are not distributed with this submission
+- dataset-dependent extraction, preprocessing, training, and evaluation commands are retained for research traceability, but they require separately acquired datasets
+- as a result, reviewers are not expected to rerun the full ML pipeline unless dataset access has been arranged separately
+
 ## Quick Start
 
 Run all commands from the repository root.
@@ -164,6 +173,8 @@ Ctrl-C
 ```
 
 ### Prepare data
+
+These commands are optional research-reproduction workflows. They require separately acquired datasets and are not part of the default reviewer/demo path.
 
 ```bash
 make pipeline-data-caucafall
