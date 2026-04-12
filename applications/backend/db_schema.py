@@ -86,6 +86,7 @@ def ensure_system_settings_schema(conn: Any) -> None:
     try:
         if not table_exists(conn, "system_settings"):
             return
+        backend = str(getattr(conn, "db_backend", "mysql")).lower()
 
         wanted: Dict[str, str] = {
             "fall_threshold": "DECIMAL(6,4) NULL",
@@ -110,7 +111,11 @@ def ensure_system_settings_schema(conn: Any) -> None:
 
         if alters:
             with conn.cursor() as cur:
-                cur.execute(f"ALTER TABLE `system_settings` {', '.join(alters)}")
+                if backend == "sqlite":
+                    for alter in alters:
+                        cur.execute(f"ALTER TABLE `system_settings` {alter}")
+                else:
+                    cur.execute(f"ALTER TABLE `system_settings` {', '.join(alters)}")
             conn.commit()
             _COL_CACHE.pop("system_settings", None)
     except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
