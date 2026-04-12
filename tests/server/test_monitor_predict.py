@@ -138,6 +138,29 @@ def test_predict_window_accepts_raw_payload(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_predict_window_raw_path_works_without_window_end_timestamp(monkeypatch):
+    monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
+    monkeypatch.setattr(monitor_route, "_get_pose_preprocess_cfg", lambda _spec_key: {"smooth_k": 5})
+    monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
+    monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/monitor/predict_window",
+        json={
+            "session_id": "s-raw-no-window-end",
+            "mode": "tcn",
+            "dataset_code": "caucafall",
+            "raw_t_ms": [0.0, 40.0],
+            "raw_xy": [[[0.0, 0.0]], [[0.1, 0.1]]],
+            "raw_conf": [[1.0], [1.0]],
+            "target_T": 2,
+        },
+    )
+
+    assert resp.status_code == 200
+
+
 def test_predict_window_raw_path_uses_spec_pose_preprocess_cfg(monkeypatch):
     seen = {"cfg": None}
 

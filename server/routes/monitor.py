@@ -253,6 +253,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     effective_mc_M = prepared.effective_mc_M
     persist = prepared.persist
     target_T = prepared.target_T
+    raw_t_ms = prepared.raw_t_ms
     raw_stats = prepared.raw_stats
     xy = prepared.xy
     conf = prepared.conf

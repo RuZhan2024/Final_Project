@@ -33,6 +33,7 @@ class MonitorPreparedRequest:
     effective_mc_M: int
     persist: bool
     target_T: int
+    raw_t_ms: Any
     raw_stats: Dict[str, Any]
     xy: List[Any]
     conf: List[Any]
@@ -245,6 +246,7 @@ def prepare_monitor_request(
         effective_mc_M=int(effective_mc_M),
         persist=bool(persist),
         target_T=target_T,
+        raw_t_ms=raw_t_ms,
         raw_stats=raw_stats,
         xy=xy,
         conf=conf,
