@@ -76,6 +76,7 @@ Notes:
 - this mode does not require MySQL
 - DB-backed features fall back gracefully when DB is unavailable
 - for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
+- local SQLite demo files are created at runtime and are not part of the tracked submission surface
 
 Stop the local demo:
 
@@ -350,7 +351,7 @@ Operational rules:
 
 Suggested Render blueprint:
 
-- [render.yaml](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/render.yaml)
+- [render.yaml](render.yaml)
 - backend uses a persistent disk mounted at `/var/data`
 - frontend should set `REACT_APP_API_BASE` to the backend Render URL
 
@@ -444,6 +445,3 @@ runtime-approved deploy assets.
 This branch does not rely on private research notes to identify deployable ML
 assets. Reviewers can use `ops/deploy_assets/manifest.json` as the explicit
 runtime promotion contract.
-
-
-// uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload

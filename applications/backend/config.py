@@ -18,7 +18,7 @@ _DEFAULT_ALLOWED_ORIGINS = (
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parent.parent.parent
 
 
 def _resolve_repo_path(raw: str) -> Path:

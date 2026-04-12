@@ -5,6 +5,13 @@ export function queueReplayWindowEnds({
   deployS,
   nextWindowEndRef,
   queueRef,
+}: {
+  rawFrames: Array<{ t: number }>;
+  targetFps: number;
+  deployW: number;
+  deployS: number;
+  nextWindowEndRef: { current: number | null };
+  queueRef: { current: number[] };
 }) {
   if (!rawFrames || rawFrames.length < 2) return false;
 
@@ -28,7 +35,17 @@ export function queueReplayWindowEnds({
   return queuedAny;
 }
 
-export function sliceReplayWindowFrames({ rawFrames, targetFps, deployW, windowEndTs }) {
+export function sliceReplayWindowFrames<T extends { t: number }>({
+  rawFrames,
+  targetFps,
+  deployW,
+  windowEndTs,
+}: {
+  rawFrames: T[];
+  targetFps: number;
+  deployW: number;
+  windowEndTs: number;
+}) {
   if (!rawFrames || rawFrames.length < 2) return null;
 
   const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
@@ -45,7 +62,15 @@ export function sliceReplayWindowFrames({ rawFrames, targetFps, deployW, windowE
   return rawFrames.slice(boundedStart, endIndex);
 }
 
-export function sliceLiveWindowFrames({ rawFrames, targetFps, deployW }) {
+export function sliceLiveWindowFrames<T extends { t: number }>({
+  rawFrames,
+  targetFps,
+  deployW,
+}: {
+  rawFrames: T[];
+  targetFps: number;
+  deployW: number;
+}) {
   if (!rawFrames || rawFrames.length < 2) return null;
 
   const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);

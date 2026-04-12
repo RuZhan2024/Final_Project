@@ -115,7 +115,7 @@ export function useOperatingPointParams({
     // If YAML-derived deploy params exist, don't fetch legacy DB operating points.
     if (uiParams.hasUi && (uiParams.tau_high != null || uiParams.tau_low != null)) {
       setLegacy({ tau_low: null, tau_high: null, op_code: null });
-      return;
+      return undefined;
     }
 
     const sys = settingsPayload?.system || {};

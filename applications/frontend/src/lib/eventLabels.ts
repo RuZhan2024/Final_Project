@@ -1,6 +1,4 @@
-// Shared helpers for event type + review status labels.
-
-export function eventTypeLabel(type) {
+export function eventTypeLabel(type: unknown) {
   const t = String(type || "").toLowerCase();
   if (t === "fall") return "Fall";
   if (t === "uncertain") return "Uncertain";
@@ -8,7 +6,7 @@ export function eventTypeLabel(type) {
   return type || "—";
 }
 
-export function eventStatusLabel(status) {
+export function eventStatusLabel(status: unknown) {
   const s = String(status || "").toLowerCase();
   if (s === "confirmed_fall") return "Confirmed";
   if (s === "false_alarm") return "False Alarm";
@@ -22,4 +20,4 @@ export const EVENT_STATUS_OPTIONS = [
   "confirmed_fall",
   "false_alarm",
   "dismissed",
-];
+] as const;

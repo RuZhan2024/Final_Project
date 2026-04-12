@@ -1,6 +1,6 @@
 import { buildMonitorWebSocketUrl } from "./api";
 
-function makeAbortError(message) {
+function makeAbortError(message: string) {
   const err = new Error(message);
   err.name = "AbortError";
   return err;
@@ -11,18 +11,26 @@ export function createMonitorSocketClient({
   connectTimeoutMs,
   predictTimeoutMs,
   WebSocketImpl = WebSocket,
+}: {
+  apiBase: string;
+  connectTimeoutMs: number;
+  predictTimeoutMs: number;
+  WebSocketImpl?: typeof WebSocket;
 }) {
-  let socket = null;
+  let socket: WebSocket | null = null;
   let ready = false;
   let closeState = { message: "WebSocket closed", abort: false };
-  let pending = null;
+  let pending: {
+    resolve?: (message: any) => void;
+    reject?: (error: any) => void;
+  } | null = null;
 
   const clearSocket = () => {
     socket = null;
     ready = false;
   };
 
-  const rejectPending = (error) => {
+  const rejectPending = (error: unknown) => {
     if (!pending) return;
     const current = pending;
     pending = null;
@@ -51,7 +59,7 @@ export function createMonitorSocketClient({
     socket = ws;
     ready = false;
 
-    return await new Promise((resolve, reject) => {
+    return await new Promise<WebSocket>((resolve, reject) => {
       let settled = false;
       const timeoutId = window.setTimeout(() => {
         if (settled) return;
@@ -93,12 +101,12 @@ export function createMonitorSocketClient({
         try {
           const data = JSON.parse(String(event?.data || "{}"));
           if (data?.error) {
-            pending.reject(new Error(String(data?.detail || "predict_window ws error")));
+            pending.reject?.(new Error(String(data?.detail || "predict_window ws error")));
           } else {
-            pending.resolve(data);
+            pending.resolve?.(data);
           }
         } catch (err) {
-          pending.reject(err);
+          pending.reject?.(err);
         } finally {
           pending = null;
         }
@@ -106,9 +114,9 @@ export function createMonitorSocketClient({
     });
   };
 
-  const sendOnce = async (payload) => {
+  const sendOnce = async (payload: unknown) => {
     const ws = await ensureOpen();
-    return await new Promise((resolve, reject) => {
+    return await new Promise<any>((resolve, reject) => {
       const timeoutId = window.setTimeout(() => {
         pending = null;
         try {
@@ -141,12 +149,12 @@ export function createMonitorSocketClient({
     });
   };
 
-  const isTransientSocketError = (error) => {
-    const message = String(error?.message || error || "");
+  const isTransientSocketError = (error: unknown) => {
+    const message = String((error as any)?.message || error || "");
     return /WebSocket predict timeout|WebSocket closed|WebSocket connect failed/i.test(message);
   };
 
-  const predict = async (payload) => {
+  const predict = async (payload: unknown) => {
     try {
       return await sendOnce(payload);
     } catch (err) {

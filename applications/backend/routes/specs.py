@@ -28,7 +28,10 @@ def _replay_clips_root() -> Path:
     raw = os.getenv("REPLAY_CLIPS_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return (Path(__file__).resolve().parents[2] / "data" / "replay_clips").resolve()
+    root = Path(__file__).resolve().parents[3]
+    canonical = (root / "ops" / "deploy_assets" / "replay_clips").resolve()
+    legacy = (root / "data" / "replay_clips").resolve()
+    return canonical if canonical.exists() else legacy
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -76,8 +79,10 @@ def _list_replay_clips() -> list[Dict[str, Any]]:
 
 
 def _load_deploy_modes_yaml() -> Dict[str, Any]:
-    root = Path(__file__).resolve().parents[2]
-    path = root / "configs" / "deploy_modes.yaml"
+    root = Path(__file__).resolve().parents[3]
+    canonical = root / "ops" / "configs" / "deploy_modes.yaml"
+    legacy = root / "configs" / "deploy_modes.yaml"
+    path = canonical if canonical.exists() else legacy
     if not path.exists():
         return {}
     try:

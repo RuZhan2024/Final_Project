@@ -1,6 +1,4 @@
-// Shared helpers for mapping model codes/labels.
-
-export function normalizeModelCode(code) {
+export function normalizeModelCode(code: unknown) {
   const v = String(code || "").trim().toUpperCase();
   if (v === "TCN") return "TCN";
   if (v === "GCN") return "GCN";
@@ -8,12 +6,11 @@ export function normalizeModelCode(code) {
   return "TCN";
 }
 
-export function modelCodeToLabel(code) {
-  const v = normalizeModelCode(code);
-  return v;
+export function modelCodeToLabel(code: unknown) {
+  return normalizeModelCode(code);
 }
 
-export function modelLabelToCode(label) {
+export function modelLabelToCode(label: unknown) {
   const v = String(label || "").toLowerCase();
   if (v.includes("hybrid")) return "HYBRID";
   if (v.includes("tcn")) return "TCN";

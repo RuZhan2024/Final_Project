@@ -1,4 +1,4 @@
-export function readBool(value, fallback = false) {
+export function readBool(value: unknown, fallback = false) {
   if (value == null) return Boolean(fallback);
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;

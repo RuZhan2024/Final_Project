@@ -1,4 +1,10 @@
-export function syncReplayPlaybackRate(videoEl, latencyMs, inputSource) {
+import type { MutableRefObject } from "react";
+
+export function syncReplayPlaybackRate(
+  videoEl: HTMLVideoElement | null,
+  latencyMs: number,
+  inputSource: string
+) {
   if (!videoEl || inputSource !== "video") return;
 
   let nextRate = 1.0;
@@ -12,7 +18,15 @@ export function syncReplayPlaybackRate(videoEl, latencyMs, inputSource) {
   }
 }
 
-export function resetVideoSource({ streamRef, videoRef, videoObjectUrlRef }) {
+export function resetVideoSource({
+  streamRef,
+  videoRef,
+  videoObjectUrlRef,
+}: {
+  streamRef: MutableRefObject<MediaStream | null>;
+  videoRef: MutableRefObject<HTMLVideoElement | null>;
+  videoObjectUrlRef: MutableRefObject<string | null>;
+}) {
   if (streamRef.current) {
     streamRef.current.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -42,9 +56,9 @@ export function resetVideoSource({ streamRef, videoRef, videoObjectUrlRef }) {
   }
 }
 
-function getVideoLoadErrorMessage(videoEl, file) {
+function getVideoLoadErrorMessage(videoEl: HTMLVideoElement | null, file: File | Blob | { type?: string } | null) {
   const code = Number(videoEl?.error?.code || 0);
-  const byCode = {
+  const byCode: Record<number, string> = {
     1: "Video loading aborted.",
     2: "Network/media fetch error while loading video.",
     3: "Video decode error (codec may be unsupported).",
@@ -55,8 +69,8 @@ function getVideoLoadErrorMessage(videoEl, file) {
   return `${base}${typeHint ? ` File type: ${typeHint}.` : ""} Try an H.264 MP4 (AAC) or WebM file.`;
 }
 
-export async function awaitVideoReady(videoEl, clipLabel) {
-  await new Promise((resolve, reject) => {
+export async function awaitVideoReady(videoEl: HTMLVideoElement, clipLabel: File | Blob | { type?: string } | null) {
+  await new Promise<void>((resolve, reject) => {
     if (videoEl.readyState >= 2) {
       resolve();
       return;
@@ -113,6 +127,14 @@ export async function prepareReplayVideo({
   setStartInfo,
   fetchReplayClipBlob,
   resetVideoSource,
+}: {
+  videoEl: HTMLVideoElement;
+  clip: any;
+  clipUrl: string;
+  videoObjectUrlRef: MutableRefObject<string | null>;
+  setStartInfo: (value: string) => void;
+  fetchReplayClipBlob: (clipUrl: string) => Promise<Blob>;
+  resetVideoSource: () => void;
 }) {
   const clipFile = clip?.file instanceof File ? clip.file : null;
 
@@ -142,6 +164,11 @@ export async function prepareCameraStream({
   captureResolution,
   targetFps,
   streamRef,
+}: {
+  videoEl: HTMLVideoElement;
+  captureResolution: { w: number; h: number };
+  targetFps: number;
+  streamRef: MutableRefObject<MediaStream | null>;
 }) {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {

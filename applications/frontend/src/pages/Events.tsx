@@ -76,7 +76,11 @@ export default function Events() {
   function openReview(ev: EventRecord) {
     const current = String(ev?.status || "pending_review").toLowerCase();
     setReviewEvent(ev);
-    setReviewStatus(EVENT_STATUS_OPTIONS.includes(current) ? (current as EventStatus) : "pending_review");
+    setReviewStatus(
+      (EVENT_STATUS_OPTIONS as readonly string[]).includes(current)
+        ? (current as EventStatus)
+        : "pending_review"
+    );
   }
 
   function closeReview(force = false) {
@@ -90,7 +94,7 @@ export default function Events() {
     const current = String(reviewEvent.status || "pending_review").toLowerCase();
     const normalizedNext = String(reviewStatus || "").toLowerCase();
     if (!normalizedNext || normalizedNext === current) return;
-    if (!EVENT_STATUS_OPTIONS.includes(normalizedNext)) return;
+    if (!(EVENT_STATUS_OPTIONS as readonly string[]).includes(normalizedNext)) return;
     try {
       setSavingEventId(reviewEvent.id);
       await updateStatus(reviewEvent.id, normalizedNext as EventStatus);

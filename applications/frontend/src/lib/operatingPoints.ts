@@ -1,8 +1,6 @@
-// Helpers for mapping operating points between UI presets and backend codes.
+export const PRESET_LABELS = ["High Sensitivity", "Balanced", "Low Sensitivity"] as const;
 
-export const PRESET_LABELS = ["High Sensitivity", "Balanced", "Low Sensitivity"];
-
-export function normalizeOpCode(opCode) {
+export function normalizeOpCode(opCode: unknown) {
   const s = String(opCode || "").trim().toUpperCase().replace("_", "-");
   if (s === "OP1" || s === "OP-1") return "OP-1";
   if (s === "OP2" || s === "OP-2") return "OP-2";
@@ -10,31 +8,32 @@ export function normalizeOpCode(opCode) {
   return "OP-2";
 }
 
-export function presetFromOpCode(opCode) {
+export function presetFromOpCode(opCode: unknown) {
   const c = String(normalizeOpCode(opCode)).toUpperCase();
   if (c === "OP-1") return "High Sensitivity";
   if (c === "OP-3") return "Low Sensitivity";
   return "Balanced";
 }
 
-export function opCodeForPreset(presetLabel) {
+export function opCodeForPreset(presetLabel: unknown) {
   const p = String(presetLabel || "").toLowerCase();
   if (p.includes("high")) return "OP-1";
   if (p.includes("low")) return "OP-3";
   return "OP-2";
 }
 
-export function pickOperatingPoint(operatingPoints, presetLabel) {
+export function pickOperatingPoint<T extends { id?: number | null; op_code?: string | null; name?: string | null }>(
+  operatingPoints: T[] | null | undefined,
+  presetLabel: unknown
+) {
   const ops = Array.isArray(operatingPoints) ? operatingPoints : [];
   if (!ops.length) return null;
 
   const want = opCodeForPreset(presetLabel).toLowerCase();
 
-  // Most reliable: explicit op_code field from applications.backend.
   const byCode = ops.find((o) => String(o.op_code || "").toLowerCase() === want);
   if (byCode) return byCode;
 
-  // Fallback: name match.
   const byName = ops.find((o) => {
     const n = String(o.name || "").toLowerCase();
     if (want === "op-1") return n.includes("high") || n.includes("recall");
@@ -43,7 +42,6 @@ export function pickOperatingPoint(operatingPoints, presetLabel) {
   });
   if (byName) return byName;
 
-  // Final fallback: numeric order.
   const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
   if (want === "op-1") return sorted[0] || null;
   if (want === "op-3") return sorted[sorted.length - 1] || null;

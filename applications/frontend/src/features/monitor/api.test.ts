@@ -1,3 +1,5 @@
+/// <reference types="jest" />
+
 import { fetchOperatingPoints } from "./api";
 import { apiRequest } from "../../lib/apiClient";
 
@@ -8,8 +10,9 @@ jest.mock("../../lib/apiClient", () => ({
 
 describe("fetchOperatingPoints", () => {
   beforeEach(() => {
-    apiRequest.mockReset();
-    apiRequest.mockResolvedValue({ operating_points: [] });
+    const mockedApiRequest = apiRequest as any;
+    mockedApiRequest.mockReset();
+    mockedApiRequest.mockResolvedValue({ operating_points: [] });
   });
 
   test("includes dataset_code in the request query", async () => {

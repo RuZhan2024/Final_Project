@@ -251,7 +251,7 @@ export function usePoseMonitor({
       adaptiveInferFpsRef.current = 0;
       degradedModeRef.current = false;
       lowFpsSinceMsRef.current = 0;
-      return;
+      return undefined;
     }
 
     const id = setInterval(() => {
@@ -530,7 +530,7 @@ export function usePoseMonitor({
 
   // Register start/stop with the MonitoringContext so other pages can toggle runtime.
   useEffect(() => {
-    if (!registerController) return;
+    if (!registerController) return undefined;
 
     registerController({
       start: startLive,
