@@ -292,8 +292,12 @@ def get_specs() -> Dict[str, DeploySpec]:
     return _SPECS
 
 
-def get_pose_preprocess_cfg(spec_key: str) -> Dict[str, Any]:
-    """Resolve pose-preprocess cfg for a deploy spec with checkpoint precedence."""
+def get_pose_preprocess_cfg(spec_key: str, *, enrich_from_checkpoint: bool = True) -> Dict[str, Any]:
+    """Resolve pose-preprocess cfg for a deploy spec.
+
+    Checkpoint enrichment is optional so request-shaping paths can stay import-safe
+    in environments where torch-backed runtime loading is unavailable.
+    """
     if spec_key in _POSE_PREPROCESS_CACHE:
         return dict(_POSE_PREPROCESS_CACHE[spec_key])
 
@@ -304,6 +308,10 @@ def get_pose_preprocess_cfg(spec_key: str) -> Dict[str, Any]:
 
     spec_data_cfg = spec.data_cfg if isinstance(spec.data_cfg, dict) else {}
     cfg = get_pose_preprocess_cfg_from_data_cfg(spec_data_cfg)
+
+    if not enrich_from_checkpoint:
+        _POSE_PREPROCESS_CACHE[spec_key] = dict(cfg)
+        return dict(cfg)
 
     runtime = _get_ml_runtime()
     load_ckpt = runtime["load_ckpt"]

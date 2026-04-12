@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
 import numpy as np
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -26,6 +27,8 @@ from ..deploy_runtime import (
     predict_spec as _predict_spec,
 )
 from ..monitor_policy import (
+    DEFAULT_LIVE_GUARD_BY_DATASET,
+    DEFAULT_LIVE_GUARD_GLOBAL,
     load_dual_policy_cfg as _load_dual_policy_cfg,
     op_delivery_gate as _op_delivery_gate,
     op_live_guard as _op_live_guard,
@@ -60,7 +63,7 @@ from ..services.monitor_runtime_service import (
 from ..services.monitor_session_service import reset_monitor_session
 from ..services.value_coercion import coerce_bool
 from ..runtime_state import get_session_store, set_last_prediction_snapshot
-from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
+from fall_detection.deploy.confirm import WindowRaw, compute_confirm_scores
 
 
 router = APIRouter()
@@ -72,6 +75,27 @@ _detect_variants = detect_variants
 _ensure_system_settings_schema = ensure_system_settings_schema
 _table_exists = table_exists
 _norm_op_code = norm_op_code
+
+
+def _compute_confirm_scores_from_window(
+    *,
+    xy: List[Any],
+    conf: Optional[List[Any]],
+    effective_fps: float,
+) -> tuple[Optional[float], Optional[float]]:
+    """Compute confirm scores without importing torch-backed runtime modules."""
+    try:
+        raw_window = WindowRaw(
+            joints_xy=np.asarray(xy, dtype=np.float32),
+            motion_xy=None,
+            conf=np.asarray(conf, dtype=np.float32) if conf else None,
+            mask=None,
+            fps=float(effective_fps),
+            meta=None,
+        )
+        return compute_confirm_scores(raw_window)
+    except Exception:
+        return None, None
 
 
 def _recent_motion_support(
@@ -294,20 +318,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         _now_ms = time.time() * 1000.0
     _t_s = float(_now_ms) / 1000.0
 
-    try:
-        xy_np = np.asarray(xy, dtype=np.float32)
-        conf_np = np.asarray(conf, dtype=np.float32) if conf else None
-        raw_window = WindowRaw(
-            joints_xy=xy_np,
-            motion_xy=None,
-            conf=conf_np,
-            mask=None,
-            fps=float(effective_fps),
-            meta=None,
-        )
-        lying_score, confirm_motion_score = compute_confirm_scores(raw_window)
-    except Exception:
-        lying_score, confirm_motion_score = None, None
+    lying_score, confirm_motion_score = _compute_confirm_scores_from_window(
+        xy=xy,
+        conf=conf,
+        effective_fps=float(effective_fps),
+    )
     _mark_perf("confirm_scores_ms")
 
     st_trackers = st["trackers"]
@@ -315,9 +330,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     started_tcn = False
     started_gcn = False
 
-    live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code)
-    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code)
-    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code)
+    live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code, norm_op_code=_norm_op_code)
+    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code, norm_op_code=_norm_op_code)
+    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code, norm_op_code=_norm_op_code)
     min_motion = float(live_guard["min_motion_for_fall"])
     low_motion_block = bool(motion_score is not None and motion_score < min_motion)
     recent_motion_support = _recent_motion_support(
@@ -333,6 +348,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         effective_fps=float(effective_fps),
         target_T=int(target_T),
         dataset_code=dataset_code,
+        live_guard_by_dataset=DEFAULT_LIVE_GUARD_BY_DATASET,
+        live_guard_global=DEFAULT_LIVE_GUARD_GLOBAL,
         min_fps_ratio_override=float(live_guard["min_fps_ratio"]),
         min_frames_ratio_override=float(live_guard["min_frames_ratio"]),
         min_coverage_ratio_override=float(live_guard["min_coverage_ratio"]),
@@ -459,7 +476,12 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         recent_motion_support=bool(recent_motion_support),
         structural_quality_block=bool(structural_quality_block),
         predict_spec=_predict_spec,
-        load_dual_policy_cfg=_load_dual_policy_cfg,
+        load_dual_policy_cfg=lambda dataset_code, policy_name, op_code: _load_dual_policy_cfg(
+            dataset_code,
+            policy_name,
+            op_code,
+            norm_op_code=_norm_op_code,
+        ),
         apply_uncertainty_fall_gate=apply_uncertainty_fall_gate,
         tracker_cls=OnlineAlertTracker,
         low_motion_high_conf_bypass_fn=_low_motion_high_conf_bypass,

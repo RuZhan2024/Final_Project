@@ -205,7 +205,7 @@ def prepare_monitor_request(
     raw_preproc_cfg = None
     if raw_xy is not None and raw_t_ms is not None:
         try:
-            raw_preproc_cfg = get_pose_preprocess_cfg(primary_spec_key)
+            raw_preproc_cfg = get_pose_preprocess_cfg(primary_spec_key, enrich_from_checkpoint=False)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
             raw_preproc_cfg = None
 

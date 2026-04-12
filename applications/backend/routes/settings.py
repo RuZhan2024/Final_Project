@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Query
 
+from ..code_normalization import norm_op_code, normalize_dataset_code, normalize_model_code
 from ..db import get_conn
 from ..deploy_ops import derive_ops_params_from_yaml
 from ..inmemory_state import apply_settings_update_inmem
@@ -38,4 +39,7 @@ def update_settings(payload: SettingsUpdatePayload, resident_id: Optional[int] =
         get_conn=get_conn,
         persist_settings_update=persist_settings_update,
         apply_settings_update_inmem=apply_settings_update_inmem,
+        normalize_model_code=normalize_model_code,
+        normalize_dataset_code=normalize_dataset_code,
+        norm_op_code=norm_op_code,
     )

@@ -98,6 +98,9 @@ def persist_settings_update_with_fallback(
     get_conn,
     persist_settings_update,
     apply_settings_update_inmem,
+    normalize_model_code,
+    normalize_dataset_code,
+    norm_op_code,
 ) -> Dict[str, object]:
     normalize_settings_payload_threshold(payload)
 
@@ -106,5 +109,11 @@ def persist_settings_update_with_fallback(
             persist_settings_update(conn, resident_id, payload)
             return {"ok": True, "persisted": True}
     except Exception:
-        apply_settings_update_inmem(payload, resident_id=resident_id)
+        apply_settings_update_inmem(
+            payload,
+            resident_id=resident_id,
+            normalize_model_code=normalize_model_code,
+            normalize_dataset_code=normalize_dataset_code,
+            norm_op_code=norm_op_code,
+        )
         return {"ok": True, "persisted": False, "reason": "db_unavailable"}

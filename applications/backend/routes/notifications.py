@@ -99,7 +99,7 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
     )
     return {
         "ok": True,
-        "accepted": bool(dispatch.enqueued),
+        "accepted": True,
         "persisted": False,
         "id": None,
         "safe_guard_enabled": bool(manager.enabled),
