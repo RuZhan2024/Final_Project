@@ -18,15 +18,23 @@ import time
 import uuid
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import numpy as np
 from fastapi import HTTPException
 
-from .config import get_app_config
 from .deploy_runtime import get_specs as _get_deploy_specs
+from .inmemory_state import (
+    apply_settings_update_inmem as _apply_settings_update_inmem_impl,
+    get_inmem_caregivers as _get_inmem_caregivers_impl,
+    get_inmem_settings as _get_inmem_settings_impl,
+    upsert_inmem_caregiver as _upsert_inmem_caregiver_impl,
+)
+from .json_utils import jsonable as _jsonable_impl
+from .runtime_assets import (
+    anonymize_xy_inplace as _anonymize_xy_inplace_impl,
+    event_clips_dir as _event_clips_dir_impl,
+    read_clip_privacy_flags as _read_clip_privacy_flags_impl,
+)
 from .schemas import CaregiverUpsertPayload, MonitorPredictPayload, SettingsUpdatePayload, SkeletonClipPayload
 from .services.monitor_uncertainty_service import resolve_uncertainty_cfg
 
@@ -37,30 +45,8 @@ except (ImportError, ModuleNotFoundError):
         pass
 
 
-# -----------------------------
-# JSON helpers
-# -----------------------------
-
-
 def _jsonable(x: Any) -> Any:
-    if isinstance(x, (str, int, float, bool)) or x is None:
-        return x
-    if isinstance(x, Decimal):
-        return float(x)
-    if isinstance(x, datetime):
-        if x.tzinfo is None:
-            return x.replace(tzinfo=timezone.utc).isoformat()
-        return x.isoformat()
-    if isinstance(x, (bytes, bytearray)):
-        try:
-            return x.decode("utf-8")
-        except UnicodeDecodeError:
-            return x.hex()
-    if isinstance(x, dict):
-        return {k: _jsonable(v) for k, v in x.items()}
-    if isinstance(x, list):
-        return [_jsonable(v) for v in x]
-    return str(x)
+    return _jsonable_impl(x)
 
 
 # -----------------------------
@@ -493,57 +479,21 @@ def _event_prob_col(conn) -> Optional[str]:
     return None
 
 
-# -----------------------------
-# Event clip persistence helpers
-# -----------------------------
-
-
 def _read_clip_privacy_flags(conn, resident_id: int) -> Tuple[bool, bool]:
-    """Return (store_event_clips, anonymize_skeleton_data)."""
-    store_event_clips = False
-    anonymize = True
-    try:
-        _ensure_system_settings_schema(conn)
-        row = None
-        with conn.cursor() as cur:
-            if _table_exists(conn, "system_settings"):
-                cur.execute(
-                    "SELECT store_event_clips, anonymize_skeleton_data FROM system_settings WHERE resident_id=%s LIMIT 1",
-                    (resident_id,),
-                )
-                row = cur.fetchone()
-        if isinstance(row, dict):
-            if row.get("store_event_clips") is not None:
-                store_event_clips = bool(int(row.get("store_event_clips"))) if str(row.get("store_event_clips")).isdigit() else bool(row.get("store_event_clips"))
-            if row.get("anonymize_skeleton_data") is not None:
-                anonymize = bool(int(row.get("anonymize_skeleton_data"))) if str(row.get("anonymize_skeleton_data")).isdigit() else bool(row.get("anonymize_skeleton_data"))
-    except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
-        pass
-    return store_event_clips, anonymize
+    return _read_clip_privacy_flags_impl(
+        conn,
+        resident_id,
+        ensure_system_settings_schema=_ensure_system_settings_schema,
+        table_exists=_table_exists,
+    )
 
 
 def _event_clips_dir() -> Path:
-    d = get_app_config().event_clips_dir
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    return d
+    return _event_clips_dir_impl()
 
 
 def _anonymize_xy_inplace(xy: np.ndarray) -> np.ndarray:
-    """Make coordinates relative to pelvis center (privacy-friendly)."""
-    try:
-        if xy.ndim != 3 or xy.shape[-1] != 2:
-            return xy
-        T, J, _ = xy.shape
-        if J < 25:
-            return xy
-        pelvis = 0.5 * (xy[:, 23, :] + xy[:, 24, :])
-        xy = xy - pelvis[:, None, :]
-        return xy
-    except (AttributeError, TypeError, ValueError, IndexError):
-        return xy
+    return _anonymize_xy_inplace_impl(xy)
 
 
 # -----------------------------
@@ -601,177 +551,23 @@ def _ensure_caregivers_table(conn) -> None:
         pass
 
 
-# -----------------------------
-# In-memory settings fallback (when DB is not available)
-# -----------------------------
-
-_DEFAULT_SYSTEM_SETTINGS: Dict[str, Any] = {
-    "monitoring_enabled": False,
-    "api_online": True,
-    "alert_cooldown_sec": 3,
-    "notify_on_every_fall": True,
-    "notify_sms": False,
-    "notify_phone": False,
-    "fall_threshold": 0.71,
-    "store_event_clips": False,
-    "anonymize_skeleton_data": True,
-    "store_anonymized_data": False,
-    "active_model_code": "TCN",
-    "active_operating_point": None,
-    "active_dataset_code": "caucafall",
-    "active_op_code": "OP-2",
-    "mc_enabled": False,
-    "mc_M": 10,
-    "mc_M_confirm": 25,
-}
-
-_DEFAULT_DEPLOY_SETTINGS: Dict[str, Any] = {
-    "fps": 30,
-    "window": {"W": 48, "S": 12},
-    "mc": {"M": 10, "M_confirm": 25},
-}
-
-# resident_id -> {system, deploy}
-_INMEM_SETTINGS: Dict[int, Dict[str, Any]] = {}
-_INMEM_CAREGIVERS: Dict[int, List[Dict[str, Any]]] = {}
-
-
 def get_inmem_settings(resident_id: int = 1) -> Dict[str, Any]:
-    """Return a copy of the current in-memory settings."""
-    rid = int(resident_id or 1)
-    if rid not in _INMEM_SETTINGS:
-        _INMEM_SETTINGS[rid] = {
-            "system": dict(_DEFAULT_SYSTEM_SETTINGS),
-            "deploy": json.loads(json.dumps(_DEFAULT_DEPLOY_SETTINGS)),
-        }
-    # deep-ish copy to avoid accidental mutation by callers
-    return {
-        "system": dict(_INMEM_SETTINGS[rid]["system"]),
-        "deploy": json.loads(json.dumps(_INMEM_SETTINGS[rid]["deploy"])),
-    }
+    return _get_inmem_settings_impl(resident_id)
 
 
 def apply_settings_update_inmem(payload: SettingsUpdatePayload, resident_id: int = 1) -> None:
-    """Apply a SettingsUpdatePayload to in-memory settings (best-effort)."""
-    rid = int(resident_id or 1)
-    cur = get_inmem_settings(rid)
-    system = cur["system"]
-    deploy = cur["deploy"]
-
-    # Accept either 0-1 or 0-100.
-    fall_thr = payload.fall_threshold
-    if fall_thr is not None:
-        try:
-            v = float(fall_thr)
-            if 1.0 < v <= 100.0:
-                v = v / 100.0
-            system["fall_threshold"] = max(0.0, min(1.0, float(v)))
-        except (TypeError, ValueError):
-            pass
-
-    if payload.store_anonymized_data is not None:
-        v = bool(payload.store_anonymized_data)
-        system["store_event_clips"] = v
-        system["anonymize_skeleton_data"] = v
-        system["store_anonymized_data"] = v
-
-    for k in [
-        "monitoring_enabled",
-        "api_online",
-        "notify_on_every_fall",
-        "notify_sms",
-        "notify_phone",
-        "store_event_clips",
-        "anonymize_skeleton_data",
-        "mc_enabled",
-    ]:
-        v = getattr(payload, k, None)
-        if v is not None:
-            system[k] = bool(v)
-
-    if payload.notify_on_every_fall is False:
-        system["notify_sms"] = False
-        system["notify_phone"] = False
-
-    system["store_anonymized_data"] = bool(
-        system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
+    _apply_settings_update_inmem_impl(
+        payload,
+        resident_id=resident_id,
+        normalize_model_code=normalize_model_code,
+        normalize_dataset_code=normalize_dataset_code,
+        norm_op_code=_norm_op_code,
     )
-
-    if payload.alert_cooldown_sec is not None:
-        try:
-            system["alert_cooldown_sec"] = int(payload.alert_cooldown_sec)
-        except (TypeError, ValueError):
-            pass
-
-    if payload.active_model_code is not None:
-        system["active_model_code"] = normalize_model_code(payload.active_model_code, default="TCN")
-
-    if payload.active_operating_point is not None:
-        system["active_operating_point"] = payload.active_operating_point
-
-    if payload.active_dataset_code is not None:
-        system["active_dataset_code"] = normalize_dataset_code(payload.active_dataset_code, default="caucafall")
-
-    if payload.active_op_code is not None:
-        system["active_op_code"] = _norm_op_code(payload.active_op_code)
-
-    if payload.mc_M is not None:
-        try:
-            system["mc_M"] = int(payload.mc_M)
-            deploy.setdefault("mc", {})["M"] = int(payload.mc_M)
-        except (TypeError, ValueError):
-            pass
-
-    if payload.mc_M_confirm is not None:
-        try:
-            system["mc_M_confirm"] = int(payload.mc_M_confirm)
-            deploy.setdefault("mc", {})["M_confirm"] = int(payload.mc_M_confirm)
-        except (TypeError, ValueError):
-            pass
-
-    _INMEM_SETTINGS[rid] = {"system": system, "deploy": deploy}
 
 
 def get_inmem_caregivers(resident_id: int = 1) -> List[Dict[str, Any]]:
-    """Return in-memory caregivers list for DB-offline fallback."""
-    rid = int(resident_id or 1)
-    rows = _INMEM_CAREGIVERS.get(rid, [])
-    return [dict(r) for r in rows]
+    return _get_inmem_caregivers_impl(resident_id)
 
 
 def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
-    """Upsert caregiver in memory when DB is unavailable."""
-    rid = int(payload.resident_id or 1)
-    rows = _INMEM_CAREGIVERS.setdefault(rid, [])
-    target_id = int(payload.id) if payload.id else (rows[0]["id"] if rows else 1)
-
-    row = None
-    for r in rows:
-        if int(r.get("id", 0)) == target_id:
-            row = r
-            break
-
-    now = datetime.now(timezone.utc).isoformat()
-    if row is None:
-        row = {
-            "id": target_id,
-            "resident_id": rid,
-            "name": None,
-            "email": None,
-            "phone": None,
-            "telegram_chat_id": None,
-            "created_at": now,
-            "updated_at": now,
-        }
-        rows.append(row)
-
-    if payload.name is not None:
-        row["name"] = payload.name
-    if payload.email is not None:
-        row["email"] = payload.email
-    if payload.phone is not None:
-        row["phone"] = payload.phone
-    if payload.telegram_chat_id is not None:
-        row["telegram_chat_id"] = payload.telegram_chat_id
-    row["updated_at"] = now
-    return dict(row)
+    return _upsert_inmem_caregiver_impl(payload)
