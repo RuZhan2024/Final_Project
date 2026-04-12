@@ -161,14 +161,22 @@ export default function Events() {
             />
           </div>
 
-          <select className={styles.selectField} value={eventType} onChange={(e) => setEventType(e.target.value)}>
+          <select
+            className={styles.selectField}
+            value={eventType}
+            onChange={(e) => setEventType(e.target.value as EventFilterType)}
+          >
             <option>All</option>
             <option>Fall</option>
             <option>Uncertain</option>
             <option>Safe</option>
           </select>
 
-          <select className={styles.selectField} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select
+            className={styles.selectField}
+            value={status}
+            onChange={(e) => setStatus(e.target.value as StatusFilterType)}
+          >
             <option>All</option>
             <option>Unreviewed</option>
             <option>Confirmed</option>
@@ -176,7 +184,11 @@ export default function Events() {
             <option>Dismissed</option>
           </select>
 
-          <select className={styles.selectField} value={model} onChange={(e) => setModel(e.target.value)}>
+          <select
+            className={styles.selectField}
+            value={model}
+            onChange={(e) => setModel(e.target.value as ModelFilterType)}
+          >
             <option>All</option>
             <option>TCN</option>
             <option>GCN</option>
