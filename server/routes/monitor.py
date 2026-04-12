@@ -18,10 +18,10 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from .. import core
-from ..core import _detect_variants, _ensure_system_settings_schema, _table_exists
-from ..core import normalize_dataset_code
+from ..code_normalization import norm_op_code, normalize_dataset_code
 from ..db import get_conn
+from ..db_schema import ensure_system_settings_schema, table_exists
+from ..deploy_ops import detect_variants
 from ..deploy_runtime import (
     get_pose_preprocess_cfg as _get_pose_preprocess_cfg,
     get_specs as _get_deploy_specs,
@@ -42,6 +42,7 @@ from ..services.monitor_runtime_service import (
 )
 from ..services.monitor_session_service import get_monitor_session_state, reset_monitor_session
 from ..services.value_coercion import coerce_bool
+from ..runtime_state import get_session_store, set_last_prediction_snapshot
 from fall_detection.deploy.common import WindowRaw, compute_confirm_scores
 from fall_detection.pose.preprocess_config import normalize_pose_preprocess_cfg
 from fall_detection.pose.preprocess_pose_npz import (
@@ -85,15 +86,10 @@ _MONITOR_Q_SCALE = 1000.0
 _LOW_MOTION_MEMORY_WINDOWS = 5
 
 
-def _norm_op_code(op_code: str) -> str:
-    c = (op_code or "").strip().upper().replace("_", "-")
-    if c in {"OP1", "OP-1", "1"}:
-        return "OP-1"
-    if c in {"OP2", "OP-2", "2"}:
-        return "OP-2"
-    if c in {"OP3", "OP-3", "3"}:
-        return "OP-3"
-    return "OP-2"
+_detect_variants = detect_variants
+_ensure_system_settings_schema = ensure_system_settings_schema
+_table_exists = table_exists
+_norm_op_code = norm_op_code
 
 
 def _recent_motion_support(
@@ -987,7 +983,7 @@ def _resample_pose_window(
 @router.post("/api/monitor/reset_session")
 @router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
-    return reset_monitor_session(core._SESSION_STATE, session_id)
+    return reset_monitor_session(get_session_store(), session_id)
 
 
 @router.post("/api/monitor/predict_window")
@@ -1122,7 +1118,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         is_replay=is_replay,
     )
     _t_s = time.time()
-    st = get_monitor_session_state(core._SESSION_STATE, session_id, _t_s)
+    st = get_monitor_session_state(get_session_store(), session_id, _t_s)
 
     specs = _get_deploy_specs()
     spec_selection = _resolve_monitor_specs(
@@ -1900,11 +1896,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     latency_ms = int((time.time() - t0) * 1000)
     perf["total_ms"] = int((time.perf_counter() - perf_started) * 1000)
-    core.LAST_PRED_LATENCY_MS = latency_ms
-    core.LAST_PRED_P_FALL = float(p_display)
-    core.LAST_PRED_DECISION = str(triage_state)
-    core.LAST_PRED_MODEL_CODE = str(active_model_code)
-    core.LAST_PRED_TS_ISO = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    set_last_prediction_snapshot(
+        latency_ms=latency_ms,
+        p_fall=float(p_display),
+        decision=str(triage_state),
+        model_code=str(active_model_code),
+        ts_iso=datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+    )
     st["last_window_seq"] = seq_in
     st["last_triage_state"] = str(triage_state)
 
