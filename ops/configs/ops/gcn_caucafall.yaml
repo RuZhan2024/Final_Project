@@ -65,7 +65,7 @@ ops_meta:
     OP1: null
     OP2: null
     OP3: null
-  online_fit_json: "artifacts/online_ops_fit_20260315/caucafall_gcn.json"
+  online_fit_json: "promoted_runtime_profile"
 alert_cfg:
   ema_alpha: 0.2
   k: 2

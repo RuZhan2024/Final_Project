@@ -62,8 +62,8 @@ def _safe_float(x: Any, default: float) -> float:
 
 
 def _repo_root() -> Path:
-    # applications/backend/ is inside the project root.
-    return Path(__file__).resolve().parents[1]
+    # applications/backend/ is inside applications/, which is inside the repo root.
+    return Path(__file__).resolve().parents[2]
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -122,60 +122,72 @@ def _standardise_ops(ops: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _iter_ops_dirs(root: Path) -> tuple[Path, ...]:
+    """Return canonical ops dirs, keeping the legacy layout only as test compatibility."""
+    dirs: list[Path] = []
+    canonical = root / "ops" / "configs" / "ops"
+    legacy = root / "configs" / "ops"
+    for path in (canonical, legacy):
+        if path.exists():
+            dirs.append(path)
+    return tuple(dirs)
+
+
 def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
     specs: Dict[str, DeploySpec] = {}
-    ops_dir = root / "configs" / "ops"
-    if not ops_dir.exists():
+    ops_dirs = _iter_ops_dirs(root)
+    if not ops_dirs:
         return specs
 
-    for p in sorted(list(ops_dir.glob("*.yaml")) + list(ops_dir.glob("*.yml"))):
-        data = _load_yaml(p)
-        if not data:
-            continue
-        model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
+    for ops_dir in ops_dirs:
+        for p in sorted(list(ops_dir.glob("*.yaml")) + list(ops_dir.glob("*.yml"))):
+            data = _load_yaml(p)
+            if not data:
+                continue
+            model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
 
-        # Filename pattern: <arch>_<dataset>.yaml (e.g. gcn_muvim.yaml)
-        stem = p.stem.lower().strip()
-        parts = stem.split("_")
-        if len(parts) < 2:
-            continue
-        arch_guess, dataset_guess = parts[0], "_".join(parts[1:])
+            # Filename pattern: <arch>_<dataset>.yaml (e.g. gcn_muvim.yaml)
+            stem = p.stem.lower().strip()
+            parts = stem.split("_")
+            if len(parts) < 2:
+                continue
+            arch_guess, dataset_guess = parts[0], "_".join(parts[1:])
 
-        arch = str(data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
-        dataset = dataset_guess.lower().strip()
-        if arch not in {"tcn", "gcn"}:
-            continue
-        ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
-        if not ckpt_rel:
-            continue
-        if os.path.isabs(ckpt_rel):
-            ckpt_path = Path(ckpt_rel)
-        else:
-            ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
-            ckpt_from_root = (root / ckpt_rel).resolve()
-            ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
-        if not ckpt_path.exists():
-            # Skip broken configs
-            continue
+            arch = str(data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
+            dataset = dataset_guess.lower().strip()
+            if arch not in {"tcn", "gcn"}:
+                continue
+            ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
+            if not ckpt_rel:
+                continue
+            if os.path.isabs(ckpt_rel):
+                ckpt_path = Path(ckpt_rel)
+            else:
+                ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
+                ckpt_from_root = (root / ckpt_rel).resolve()
+                ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
+            if not ckpt_path.exists():
+                # Skip broken configs
+                continue
 
-        spec_key = f"{dataset}_{arch}"
+            spec_key = f"{dataset}_{arch}"
 
-        feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
-        alert_cfg = data.get("alert_cfg") or {}
-        ops = _standardise_ops(data.get("ops") or {})
+            feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
+            alert_cfg = data.get("alert_cfg") or {}
+            ops = _standardise_ops(data.get("ops") or {})
 
-        specs[spec_key] = DeploySpec(
-            key=spec_key,
-            dataset=dataset,
-            arch=arch,
-            ckpt=str(ckpt_path),
-            feat_cfg=feat_cfg if isinstance(feat_cfg, dict) else {},
-            model_cfg={},
-            data_cfg={},
-            alert_cfg=alert_cfg if isinstance(alert_cfg, dict) else {},
-            ops=ops,
-            ops_path=str(p),
-        )
+            specs[spec_key] = DeploySpec(
+                key=spec_key,
+                dataset=dataset,
+                arch=arch,
+                ckpt=str(ckpt_path),
+                feat_cfg=feat_cfg if isinstance(feat_cfg, dict) else {},
+                model_cfg={},
+                data_cfg={},
+                alert_cfg=alert_cfg if isinstance(alert_cfg, dict) else {},
+                ops=ops,
+                ops_path=str(p),
+            )
 
     return specs
 
@@ -261,15 +273,12 @@ def _discover_from_reports(root: Path) -> Dict[str, DeploySpec]:
 def discover_specs() -> Dict[str, DeploySpec]:
     """Discover deployable specs.
 
-    Preference:
-    1) ops/configs/ops/*.yaml (real deploy params)
-    2) outputs/reports/*.json (fallback)
+    Clean-branch runtime discovery must resolve only from canonical operating-point
+    YAMLs. Legacy report-based discovery is retained as a test helper, not as the
+    active runtime contract on the supervisor-facing branch.
     """
     root = _repo_root()
-    specs = _discover_from_ops_yaml(root)
-    if specs:
-        return specs
-    return _discover_from_reports(root)
+    return _discover_from_ops_yaml(root)
 
 
 _SPECS: Optional[Dict[str, DeploySpec]] = None

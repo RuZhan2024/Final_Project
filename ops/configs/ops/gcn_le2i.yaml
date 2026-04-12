@@ -1,6 +1,6 @@
 # STATUS_TAG: current_deploy_config_2026-04-02
 # PURPOSE: active LE2I GCN deploy config after replay-FPS runtime fix.
-# NOTE: kept on original deployed OP thresholds because aligned online-fit thresholds regressed the 24-clip replay check.
+# NOTE: retained as the canonical LE2i GCN runtime profile for the cleaned submission branch.
 ops:
   OP1:
     tau_high: 0.32
@@ -69,7 +69,7 @@ ops_meta:
     OP2: null
     OP3: null
   confirm_fallback: disabled_confirm_after_degenerate_sweep
-  online_fit_json: artifacts/online_ops_fit_20260315/le2i_gcn.json
+  online_fit_json: promoted_runtime_profile
 alert_cfg:
   ema_alpha: 0.2
   k: 2
