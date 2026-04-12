@@ -56,6 +56,30 @@ export function useEventsData(apiBase, residentId = 1) {
     return () => abortRef.current?.abort?.();
   }, [reload]);
 
+  useEffect(() => {
+    function refreshVisible() {
+      if (document.visibilityState !== "visible") return;
+      void reload({ silent: true });
+    }
+
+    function refreshOnFocus() {
+      void reload({ silent: true });
+    }
+
+    const pollId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void reload({ silent: true });
+    }, 10000);
+
+    document.addEventListener("visibilitychange", refreshVisible);
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      window.clearInterval(pollId);
+      document.removeEventListener("visibilitychange", refreshVisible);
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [reload]);
+
   const updateStatus = useCallback(
     async (eventId, status) => {
       await updateEventStatus(apiBase, eventId, status);

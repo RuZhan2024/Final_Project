@@ -3,38 +3,8 @@ from __future__ import annotations
 import os
 
 from dataclasses import dataclass
-from pathlib import Path
 
-
-_ENV_LOADED = False
-
-
-def _load_local_env_files() -> None:
-    global _ENV_LOADED
-    if _ENV_LOADED:
-        return
-
-    repo_root = Path(__file__).resolve().parents[2]
-    for name in (".env.local.private", ".env.local", ".env"):
-        path = repo_root / name
-        if not path.exists():
-            continue
-        try:
-            for raw_line in path.read_text().splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if not key or key in os.environ:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", "\""}:
-                    value = value[1:-1]
-                os.environ[key] = value
-        except OSError:
-            continue
-    _ENV_LOADED = True
+from ..env import load_local_env_files
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -96,7 +66,7 @@ class NotificationConfig:
 
 
 def load_notification_config() -> NotificationConfig:
-    _load_local_env_files()
+    load_local_env_files()
     return NotificationConfig(
         safe_guard_enabled=_get_bool("SAFE_GUARD_ENABLED", False),
         sqlite_path=os.getenv("SAFE_GUARD_SQLITE_PATH", "server/safe_guard_notifications.sqlite3"),

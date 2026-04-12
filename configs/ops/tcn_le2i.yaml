@@ -121,7 +121,7 @@ calibration:
   ece_after: 0.09753112273684651
 model:
   arch: "tcn"
-  ckpt: "../../outputs/le2i_tcn_W48S12_opt33_r2/best.pt"
+  ckpt: "../../deploy_assets/checkpoints/le2i_tcn_best.pt"
   model_cfg:
     hidden: 128
     dropout: 0.4

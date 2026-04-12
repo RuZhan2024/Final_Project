@@ -11,11 +11,22 @@ import {
   uploadSkeletonClip,
 } from "../../../features/monitor/api";
 import {
+  prepareCameraStream as prepareCameraStreamSource,
+  prepareReplayVideo as prepareReplayVideoSource,
+  resetVideoSource as resetVideoSourceResources,
+  syncReplayPlaybackRate as applyReplayPlaybackRate,
+} from "../../../features/monitor/media";
+import {
   buildPendingClip,
   buildPredictPayload,
   extractPredictionState,
 } from "../../../features/monitor/prediction";
 import { createMonitorSocketClient } from "../../../features/monitor/socketClient";
+import {
+  queueReplayWindowEnds,
+  sliceLiveWindowFrames,
+  sliceReplayWindowFrames,
+} from "../../../features/monitor/windowing";
 import {
   CLIP_POST_S,
   CLIP_PRE_S,
@@ -53,20 +64,6 @@ function getClipFlags(settingsPayload) {
     storeEventClips: readBool(sys?.store_event_clips, false),
     anonymize: readBool(sys?.anonymize_skeleton_data, true),
   };
-}
-
-function getVideoLoadErrorMessage(videoEl, file) {
-  const code = Number(videoEl?.error?.code || 0);
-  const byCode = {
-    1: "Video loading aborted.",
-    2: "Network/media fetch error while loading video.",
-    3: "Video decode error (codec may be unsupported).",
-    4: "Video format not supported by this browser.",
-  };
-  const base = byCode[code] || "Unknown video load error.";
-  const t = String(file?.type || "").trim();
-  const hint = t ? ` File type: ${t}.` : "";
-  return `${base}${hint} Try an H.264 MP4 (AAC) or WebM file.`;
 }
 
 /**
@@ -174,6 +171,7 @@ export function usePoseMonitor({
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
+  const pendingClipTimerRef = useRef(null);
   const uploadedClipIdsRef = useRef(new Set());
 
   // Session id for server-side state machine
@@ -192,17 +190,18 @@ export function usePoseMonitor({
   );
 
   const syncReplayPlaybackRate = useCallback((videoEl) => {
-    if (!videoEl || (inputSourceRef.current || "camera") !== "video") return;
+    applyReplayPlaybackRate(
+      videoEl,
+      Number(replayPredictLatencyMsRef.current) || 0,
+      inputSourceRef.current || "camera"
+    );
+  }, []);
 
-    const latencyMs = Number(replayPredictLatencyMsRef.current) || 0;
-    let nextRate = 1.0;
-    if (latencyMs >= 2200) nextRate = 0.9;
-
-    if (Math.abs(Number(videoEl.playbackRate || 1) - nextRate) < 0.01) return;
-    try {
-      videoEl.playbackRate = nextRate;
-    } catch {
-      // ignore
+  const clearPendingClipTimer = useCallback(() => {
+    const timerId = pendingClipTimerRef.current;
+    if (timerId != null) {
+      window.clearTimeout(timerId);
+      pendingClipTimerRef.current = null;
     }
   }, []);
 
@@ -294,33 +293,11 @@ export function usePoseMonitor({
   }, []);
 
   const resetVideoSource = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    const videoEl = videoRef.current;
-    if (videoEl) {
-      try {
-        videoEl.pause();
-      } catch {
-        // ignore
-      }
-      videoEl.srcObject = null;
-      if (videoObjectUrlRef.current) {
-        videoEl.removeAttribute("src");
-        videoEl.load?.();
-      }
-    }
-
-    if (videoObjectUrlRef.current) {
-      try {
-        URL.revokeObjectURL(videoObjectUrlRef.current);
-      } catch {
-        // ignore
-      }
-      videoObjectUrlRef.current = null;
-    }
+    resetVideoSourceResources({
+      streamRef,
+      videoRef,
+      videoObjectUrlRef,
+    });
   }, []);
 
   const resetPredictionTransport = useCallback(() => {
@@ -351,6 +328,7 @@ export function usePoseMonitor({
 
     // Clip upload state
     pendingClipRef.current = null;
+    clearPendingClipTimer();
     uploadedClipIdsRef.current = new Set();
 
     // Reset UI
@@ -373,7 +351,7 @@ export function usePoseMonitor({
     setStartError("");
     setStartInfo("");
     setPredictError("");
-  }, [resetPredictionTransport, resetVideoSource]);
+  }, [clearPendingClipTimer, resetPredictionTransport, resetVideoSource]);
 
   const resetFrontendSessionState = useCallback(() => {
     rawFramesRef.current = [];
@@ -384,6 +362,7 @@ export function usePoseMonitor({
     replayNextWindowEndRef.current = null;
     replayWindowQueueRef.current = [];
     pendingClipRef.current = null;
+    clearPendingClipTimer();
     uploadedClipIdsRef.current = new Set();
     setPFall(null);
     setSigma(null);
@@ -407,7 +386,7 @@ export function usePoseMonitor({
       pFall: null,
       sigma: null,
     };
-  }, []);
+  }, [clearPendingClipTimer]);
 
   const setReplayClip = useCallback((clip) => {
     stopLive();
@@ -474,10 +453,11 @@ export function usePoseMonitor({
     });
   }, []);
 
-  const maybeFinalizeClipUpload = useCallback(async () => {
+  const maybeFinalizeClipUpload = useCallback(async ({ force = false } = {}) => {
     const { storeEventClips } = getClipFlags(settingsPayload);
     if (!storeEventClips) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
@@ -489,19 +469,21 @@ export function usePoseMonitor({
 
     const lastT = raw[raw.length - 1]?.t;
     if (typeof lastT !== "number") return;
-    if (lastT < pending.deadlineTs) return;
+    if (!force && lastT < pending.deadlineTs) return;
 
     const sent = uploadedClipIdsRef.current;
     if (sent && sent.has(String(pending.eventId))) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
     const startTs = pending.triggerEndTs - pending.preMs;
-    const endTs = pending.triggerEndTs + pending.postMs;
+    const endTs = force ? Math.max(pending.triggerEndTs, lastT) : pending.triggerEndTs + pending.postMs;
     const frames = raw.filter((fr) => fr && typeof fr.t === "number" && fr.t >= startTs && fr.t <= endTs);
     if (!frames || frames.length < 2) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
@@ -540,8 +522,18 @@ export function usePoseMonitor({
       console.error("Failed to upload skeleton clip", err);
     } finally {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
     }
-  }, [apiBase, settingsPayload]);
+  }, [apiBase, clearPendingClipTimer, settingsPayload]);
+
+  const schedulePendingClipFinalize = useCallback((pending) => {
+    clearPendingClipTimer();
+    if (!pending) return;
+    const delayMs = Math.max(500, Math.round(Number(pending.postMs || 0) + 250));
+    pendingClipTimerRef.current = window.setTimeout(() => {
+      void maybeFinalizeClipUpload({ force: true });
+    }, delayMs);
+  }, [clearPendingClipTimer, maybeFinalizeClipUpload]);
 
   const ensurePredictClient = useCallback(() => {
     if (predictClientRef.current) return predictClientRef.current;
@@ -612,7 +604,7 @@ export function usePoseMonitor({
         const already = sent && sent.has(String(evId));
         const pending = pendingClipRef.current;
         if (!already && (!pending || String(pending.eventId) !== String(evId))) {
-          pendingClipRef.current = buildPendingClip({
+          const nextPending = buildPendingClip({
             eventId: evId,
             endTs,
             activeDatasetCode,
@@ -624,6 +616,8 @@ export function usePoseMonitor({
             clipPreS: CLIP_PRE_S,
             clipPostS: CLIP_POST_S,
           });
+          pendingClipRef.current = nextPending;
+          schedulePendingClipFinalize(nextPending);
         }
       }
     } catch {
@@ -652,6 +646,7 @@ export function usePoseMonitor({
     opCode,
     settingsPayload,
     maybeFinalizeClipUpload,
+    schedulePendingClipFinalize,
   ]);
 
   const buildPredictionPayload = useCallback(({ sourceMode, frames, windowEndTs, location }) => {
@@ -699,28 +694,14 @@ export function usePoseMonitor({
   ]);
 
   const queueReplayWindows = useCallback(() => {
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return false;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const strideMs = Math.max(dtMs, Number(deployS) * dtMs);
-    const endTs = raw[raw.length - 1].t;
-    const firstEligibleEndTs = raw[0].t + needMs;
-    if (!Number.isFinite(firstEligibleEndTs) || endTs < firstEligibleEndTs) return false;
-
-    if (replayNextWindowEndRef.current == null || replayNextWindowEndRef.current < firstEligibleEndTs) {
-      replayNextWindowEndRef.current = firstEligibleEndTs;
-    }
-
-    const queue = replayWindowQueueRef.current;
-    let queuedAny = false;
-    while (Number(replayNextWindowEndRef.current) <= endTs) {
-      queue.push(Number(replayNextWindowEndRef.current));
-      replayNextWindowEndRef.current += strideMs;
-      queuedAny = true;
-    }
-    return queuedAny;
+    return queueReplayWindowEnds({
+      rawFrames: rawFramesRef.current,
+      targetFps,
+      deployW,
+      deployS,
+      nextWindowEndRef: replayNextWindowEndRef,
+      queueRef: replayWindowQueueRef,
+    });
   }, [deployS, deployW, targetFps]);
 
   const buildReplayPayload = useCallback(() => {
@@ -728,18 +709,14 @@ export function usePoseMonitor({
     const raw = rawFramesRef.current;
     if (!queue.length || !raw || raw.length < 2) return null;
 
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
     const windowEndTs = Number(queue[0]);
-    const startWindowTs = windowEndTs - needMs;
-    if (raw[0].t > startWindowTs) return null;
-
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startWindowTs) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    let endIdx = raw.length;
-    while (endIdx > startIdx + 1 && raw[endIdx - 1].t > windowEndTs) endIdx--;
-    const frames = raw.slice(startIdx, endIdx);
+    const frames = sliceReplayWindowFrames({
+      rawFrames: raw,
+      targetFps,
+      deployW,
+      windowEndTs,
+    });
+    if (!frames) return null;
 
     return buildPredictionPayload({
       sourceMode: "video",
@@ -750,24 +727,17 @@ export function usePoseMonitor({
   }, [buildPredictionPayload, deployW, selectedVideoName, targetFps]);
 
   const buildLivePayload = useCallback(() => {
-    const raw = rawFramesRef.current;
-    if (!raw || raw.length < 2) return null;
-
-    const dtMs = 1000 / Math.max(1, Number(targetFps) || 30);
-    const needMs = (deployW - 1) * dtMs;
-    const endTs = raw[raw.length - 1].t;
-    const startNeed = endTs - needMs;
-    if (raw[0].t > startNeed) return null;
-
-    let i0 = 0;
-    while (i0 < raw.length && raw[i0].t < startNeed) i0++;
-    const startIdx = Math.max(0, i0 - 1);
-    const frames = raw.slice(startIdx);
+    const liveSlice = sliceLiveWindowFrames({
+      rawFrames: rawFramesRef.current,
+      targetFps,
+      deployW,
+    });
+    if (!liveSlice) return null;
 
     return buildPredictionPayload({
       sourceMode: "camera",
-      frames,
-      windowEndTs: endTs,
+      frames: liveSlice.frames,
+      windowEndTs: liveSlice.endTs,
       location: "camera_live",
     });
   }, [buildPredictionPayload, deployW, targetFps]);
@@ -1052,94 +1022,42 @@ export function usePoseMonitor({
     }
   }, [handlePoseResults]);
 
-  const awaitVideoReady = useCallback(async (videoEl, clipLabel) => {
-    await new Promise((resolve, reject) => {
-      if (videoEl.readyState >= 2) {
-        resolve();
-        return;
-      }
+  useEffect(() => {
+    if (!poseRef.current?.onResults) return;
+    // MediaPipe keeps the original callback until it is explicitly rebound.
+    // Without this, Settings changes (for example store_event_clips) leave the
+    // live monitor running against stale closures from the first mount.
+    poseRef.current.onResults(handlePoseResults);
+  }, [handlePoseResults]);
 
-      let done = false;
-      const timer = window.setTimeout(() => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(new Error("Video metadata load timeout"));
-      }, 10000);
-
-      const cleanup = () => {
-        videoEl.removeEventListener("loadedmetadata", onReady);
-        videoEl.removeEventListener("loadeddata", onReady);
-        videoEl.removeEventListener("canplay", onReady);
-        videoEl.removeEventListener("error", onErr);
-        window.clearTimeout(timer);
-      };
-
-      const onReady = () => {
-        if (done || videoEl.readyState < 2) return;
-        done = true;
-        cleanup();
-        resolve();
-      };
-
-      const onErr = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(new Error(getVideoLoadErrorMessage(videoEl, clipLabel)));
-      };
-
-      videoEl.addEventListener("loadedmetadata", onReady, { once: true });
-      videoEl.addEventListener("loadeddata", onReady, { once: true });
-      videoEl.addEventListener("canplay", onReady, { once: true });
-      videoEl.addEventListener("error", onErr, { once: true });
-
-      try {
-        videoEl.load?.();
-      } catch {
-        // ignore
-      }
-    });
-  }, []);
+  useEffect(() => {
+    return () => {
+      clearPendingClipTimer();
+    };
+  }, [clearPendingClipTimer]);
 
   const prepareReplayVideo = useCallback(async (videoEl, clip, clipUrl) => {
-    const clipFile = clip?.file instanceof File ? clip.file : null;
-
-    resetVideoSource();
-    if (clipFile) {
-      const objectUrl = URL.createObjectURL(clipFile);
-      videoObjectUrlRef.current = objectUrl;
-      videoEl.src = objectUrl;
-    } else {
-      setStartInfo("Loading replay clip...");
-      const blob = await fetchReplayClipBlob(clipUrl);
-      const objectUrl = URL.createObjectURL(blob);
-      videoObjectUrlRef.current = objectUrl;
-      videoEl.src = objectUrl;
-    }
-
-    videoEl.currentTime = 0;
-    videoEl.muted = true;
-    videoEl.playsInline = true;
-    videoEl.preload = "auto";
-
-    await awaitVideoReady(videoEl, clipFile || clip);
-  }, [awaitVideoReady, resetVideoSource]);
+    await prepareReplayVideoSource({
+      videoEl,
+      clip,
+      clipUrl,
+      videoObjectUrlRef,
+      setStartInfo,
+      fetchReplayClipBlob,
+      resetVideoSource,
+    });
+  }, [resetVideoSource]);
 
   const prepareCameraStream = useCallback(async (videoEl) => {
-    const cap = CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: cap.w, max: cap.w },
-        height: { ideal: cap.h, max: cap.h },
-        frameRate: { ideal: targetFps, max: targetFps },
-      },
-      audio: false,
+    const captureResolution =
+      CAPTURE_RESOLUTIONS[captureResolutionPreset] || CAPTURE_RESOLUTIONS["720p"];
+    await prepareCameraStreamSource({
+      videoEl,
+      captureResolution,
+      targetFps,
+      streamRef,
     });
-    streamRef.current = stream;
-    videoEl.srcObject = stream;
-    await awaitVideoReady(videoEl, null);
-  }, [awaitVideoReady, captureResolutionPreset, targetFps]);
+  }, [captureResolutionPreset, targetFps]);
 
   const resetSession = useCallback(async () => {
     try {

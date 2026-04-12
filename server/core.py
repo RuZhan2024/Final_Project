@@ -284,6 +284,9 @@ def _ensure_system_settings_schema(conn) -> None:
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
             "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
             "notify_phone": "TINYINT(1) NOT NULL DEFAULT 0",
+            "fps": "INT NOT NULL DEFAULT 30",
+            "window_size": "INT NOT NULL DEFAULT 48",
+            "stride": "INT NOT NULL DEFAULT 12",
         }
 
         alters: List[str] = []
@@ -327,15 +330,13 @@ def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str
 
 
 def _detect_variants(conn) -> Dict[str, str]:
-    """Return {'settings': 'v1|v2', 'events': 'v1|v2', 'ops': 'v1|v2'}."""
-    settings_cols = _cols(conn, "system_settings")
+    """Return active schema variants for system-backed settings, events, and ops."""
     events_cols = _cols(conn, "events")
     ops_cols = _cols(conn, "operating_points")
 
-    settings_v = "v2" if "active_model_id" in settings_cols else "v1"
     events_v = "v2" if "event_time" in events_cols else "v1"
     ops_v = "v2" if "model_id" in ops_cols else "v1"
-    return {"settings": settings_v, "events": events_v, "ops": ops_v}
+    return {"settings": "v2", "events": events_v, "ops": ops_v}
 
 
 # -----------------------------
@@ -373,13 +374,32 @@ def _derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: st
             return obj.get(name, default)
         return default
 
+    def _lookup_op_entry(ops: Dict[str, Any], normalized_code: str) -> Dict[str, Any]:
+        candidates = [
+            normalized_code,
+            normalized_code.replace("-", ""),
+            normalized_code.lower(),
+            normalized_code.replace("-", "").lower(),
+        ]
+        for candidate in candidates:
+            entry = ops.get(candidate)
+            if isinstance(entry, dict):
+                return dict(entry)
+
+        fallback_candidates = ["OP-2", "OP2", "op-2", "op2"]
+        for candidate in fallback_candidates:
+            entry = ops.get(candidate)
+            if isinstance(entry, dict):
+                return dict(entry)
+        return {}
+
     def pack(spec_key: str) -> Optional[Dict[str, Any]]:
         s = specs.get(spec_key)
         if s is None:
             return None
         alert_cfg = dict(_get_attr_or_key(s, "alert_cfg", {}) or {})
         ops = dict(_get_attr_or_key(s, "ops", {}) or {})
-        op = dict(ops.get(oc) or ops.get("OP-2") or {})
+        op = _lookup_op_entry(ops, oc)
         return {"spec_key": spec_key, "alert_cfg": alert_cfg, "op": op}
 
     tcn = pack(f"{ds}_tcn")
@@ -610,18 +630,11 @@ def _read_clip_privacy_flags(conn, resident_id: int) -> Tuple[bool, bool]:
     anonymize = True
     try:
         _ensure_system_settings_schema(conn)
-        variants = _detect_variants(conn)
         row = None
         with conn.cursor() as cur:
-            if variants.get("settings") == "v2" and _table_exists(conn, "system_settings"):
+            if _table_exists(conn, "system_settings"):
                 cur.execute(
                     "SELECT store_event_clips, anonymize_skeleton_data FROM system_settings WHERE resident_id=%s LIMIT 1",
-                    (resident_id,),
-                )
-                row = cur.fetchone()
-            elif _table_exists(conn, "settings"):
-                cur.execute(
-                    "SELECT store_event_clips, anonymize_skeleton_data FROM settings WHERE resident_id=%s LIMIT 1",
                     (resident_id,),
                 )
                 row = cur.fetchone()

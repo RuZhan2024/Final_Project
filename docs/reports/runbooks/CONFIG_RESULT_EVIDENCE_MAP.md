@@ -26,7 +26,7 @@ Interpretation docs:
 
 - `docs/reports/runbooks/ONLINE_OPS_PROFILE_MATRIX.md`
 - `docs/project_targets/DEPLOYMENT_DEFAULT_PROFILE.md`
-- `docs/project_targets/OPS_POLICY_REPORT.md`
+- `docs/project_targets/supporting/OPS_POLICY_REPORT.md`
 
 ### `caucafall + GCN`
 
@@ -183,7 +183,7 @@ Interpretation docs:
 
 - `docs/project_targets/STABILITY_REPORT.md`
 - `docs/project_targets/SIGNIFICANCE_REPORT.md`
-- `docs/project_targets/ROBUSTNESS_REPORT.md`
+- `docs/project_targets/supporting/ROBUSTNESS_REPORT.md`
 
 ## F. Cross-Dataset / Transfer Track
 
@@ -222,7 +222,7 @@ Result artifacts:
 Interpretation docs:
 
 - `docs/project_targets/LOCKED_PARAMS_RUNBOOK.md`
-- `docs/project_targets/PLOT_SELECTION_FOR_REPORT.md`
+- `docs/project_targets/archive/planning/PLOT_SELECTION_FOR_REPORT.md`
 
 ## Suggested Use
 

@@ -61,6 +61,16 @@ Notes:
 - DB-backed features fall back gracefully when DB is unavailable
 - for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
 
+Stop the local demo:
+
+```bash
+make stop-dev
+```
+
+```bash
+# if `make bootstrap-dev` or `make dev` is running in the current terminal
+Ctrl-C
+```
 ### Option B: One-command full system with persistent MySQL
 
 ```bash
@@ -136,10 +146,21 @@ make help
 ```bash
 make bootstrap-dev
 make dev
+make stop-dev
 make compose-up
 make compose-down
 ```
 
+### Stop the local dev servers
+
+```bash
+make stop-dev
+```
+
+```bash
+# if the current local run is attached to your terminal
+Ctrl-C
+```
 ### Prepare data
 
 ```bash
@@ -235,7 +256,11 @@ Recommended cloud deployment shape:
 - backend on Render web service
 - app data on SQLite with a persistent disk
 - Telegram caregiver notification
+<<<<<<< HEAD
 - AI message analysis via Gemini API
+=======
+- optional generated event summary via Gemini API
+>>>>>>> feature/monitor-architecture-refactor
 
 Suggested backend environment variables:
 
@@ -260,7 +285,11 @@ CORS_ALLOWED_ORIGINS=https://your-frontend-domain.onrender.com
 Operational note:
 
 - caregiver `telegram_chat_id` can come from the app database or the env fallback
+<<<<<<< HEAD
 - Telegram and Gemini credentials should be stored only in Render environment variables
+=======
+- Telegram and summary-provider credentials should be stored only in Render environment variables
+>>>>>>> feature/monitor-architecture-refactor
 - SMS / phone / email escalation are future-work channels, not the current implemented delivery path
 
 Suggested Render blueprint:

@@ -122,7 +122,7 @@ calibration:
   ece_after: 0.09918135814113568
 model:
   arch: gcn
-  ckpt: ../../outputs/le2i_gcn_W48S12_opt33_r2/best.pt
+  ckpt: ../../deploy_assets/checkpoints/le2i_gcn_best.pt
   model_cfg:
     num_joints: 33
     gcn_hidden: 96

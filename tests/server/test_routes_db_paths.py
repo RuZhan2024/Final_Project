@@ -101,10 +101,11 @@ def test_settings_get_uses_settings_table(monkeypatch):
     assert body["deploy"]["window"]["W"] == 48
 
 
-def test_settings_update_uses_settings_table(monkeypatch):
+def test_settings_update_uses_system_settings_table(monkeypatch):
     fake = _FakeConn()
     monkeypatch.setattr(settings_route, "get_conn", lambda: _cm_conn(fake))
-    monkeypatch.setattr(settings_route, "_table_exists", lambda _c, t: t == "settings")
+    monkeypatch.setattr(settings_route, "_ensure_system_settings_schema", lambda _c: None)
+    monkeypatch.setattr(settings_route, "_table_exists", lambda _c, t: t == "system_settings")
     monkeypatch.setattr(settings_route, "_col_exists", lambda *_a, **_k: True)
 
     client = TestClient(app)
@@ -119,7 +120,7 @@ def test_settings_update_uses_settings_table(monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["persisted"] is True
-    assert any("UPDATE settings SET" in sql for sql, _ in fake.executed)
+    assert any("UPDATE system_settings SET" in sql for sql, _ in fake.executed)
 
 
 def test_caregivers_get_and_upsert_db_paths(monkeypatch):

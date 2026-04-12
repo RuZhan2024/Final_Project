@@ -18,14 +18,15 @@ Use these when describing what the deployed system currently does:
 - `docs/reports/runbooks/ONLINE_FRONTEND_SMOKE_CHECKLIST.md`
 - `docs/reports/runbooks/DELIVERY_RELEASE_BOUNDARY.md`
 
-## 24-Video Custom Delivery Evidence
+## 24-Video Custom Replay Evidence
 
-Use these for the corridor/kitchen four-folder evaluation story:
+Use these for the corridor/kitchen four-folder bounded replay-evidence story:
 
 - `configs/delivery/tcn_caucafall_r2_train_hneg_four_video.yaml`
 - `docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md`
-- `artifacts/fall_test_eval_20260315/`
-- `artifacts/fall_test_eval_20260315_online_reverify_20260315/`
+- `artifacts/fall_test_eval_20260330/`
+
+Do not treat the older `artifacts/fall_test_eval_20260315/` or `artifacts/fall_test_eval_20260315_online_reverify_20260315/` results as the current canonical claim line.
 
 ## Online Ops Fitting and Recovery Evidence
 
@@ -55,7 +56,7 @@ Use these when discussing repeatability, stability, or operational robustness:
 - `artifacts/figures/stability/`
 - `artifacts/reports/stability_*`
 - `artifacts/reports/op123_*`
-- `docs/project_targets/LATENCY_REPORT.md`
+- `docs/project_targets/supporting/LATENCY_REPORT.md`
 - `docs/reports/readiness/READINESS_REPORT.md`
 
 ## Model-Tuning Evidence

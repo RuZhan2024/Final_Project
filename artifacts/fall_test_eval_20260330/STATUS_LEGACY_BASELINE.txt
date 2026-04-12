@@ -1,0 +1,14 @@
+STATUS_TAG: legacy_replay_baseline
+DATE_CONTEXT: 2026-03-30
+
+This directory is kept as historical replay baseline evidence.
+Do not treat these files as the current deploy/runtime ground truth after the 2026-04-02 replay-FPS fix.
+
+Use for:
+- before/after comparisons
+- thesis evidence trail
+- debugging regressions against older replay behavior
+
+Do not use for:
+- selecting current deploy thresholds
+- claiming current live runtime behavior

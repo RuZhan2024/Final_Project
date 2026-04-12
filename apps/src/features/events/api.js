@@ -18,3 +18,11 @@ export async function updateEventStatus(apiBase, eventId, status) {
     body: { status },
   });
 }
+
+export async function fetchEventSkeletonClip(apiBase, eventId, { residentId = 1, signal } = {}) {
+  return await apiRequest(
+    apiBase,
+    `/api/events/${eventId}/skeleton_clip?resident_id=${encodeURIComponent(residentId)}`,
+    { signal }
+  );
+}

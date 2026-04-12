@@ -36,10 +36,12 @@ from ..notifications import get_notification_manager
 from ..notifications.models import NotificationPreferences, SafeGuardEvent
 from ..services.events_service import (
     EventsDeps,
+    build_event_skeleton_clip_response,
     build_events_list_response,
     build_events_summary_response,
     persist_event_status,
 )
+from ..services.value_coercion import coerce_bool
 
 
 router = APIRouter()
@@ -85,23 +87,13 @@ def _dispatch_safe_guard_from_event(
             )
             s = cur.fetchone() or {}
         if isinstance(s, dict):
-            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
-            notify_sms = bool(s.get("notify_sms", False))
-            notify_phone = bool(s.get("notify_phone", False))
+            notify_on_every_fall = coerce_bool(s.get("notify_on_every_fall", True), True)
+            notify_sms = coerce_bool(s.get("notify_sms", False), False)
+            notify_phone = coerce_bool(s.get("notify_phone", False), False)
             if s.get("active_dataset_code"):
                 dataset_code = str(s.get("active_dataset_code") or dataset_code)
             if s.get("active_op_code"):
                 op_code = str(s.get("active_op_code") or op_code).upper()
-            if s.get("active_model_code"):
-                model_code = str(s.get("active_model_code") or model_code)
-    elif _table_exists(conn, "settings"):
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (int(resident_id),))
-            s = cur.fetchone() or {}
-        if isinstance(s, dict):
-            notify_on_every_fall = bool(s.get("notify_on_every_fall", True))
-            notify_sms = bool(s.get("notify_sms", False))
-            notify_phone = bool(s.get("notify_phone", False))
             if s.get("active_model_code"):
                 model_code = str(s.get("active_model_code") or model_code)
 
@@ -463,3 +455,28 @@ def upload_skeleton_clip(event_id: int, payload: SkeletonClipPayload = Body(...)
             "n_frames": int(T),
             "anonymized": bool(anonymize),
         }
+
+
+@router.get("/api/events/{event_id}/skeleton_clip")
+@router.get("/api/v1/events/{event_id}/skeleton_clip")
+def get_skeleton_clip(event_id: int, resident_id: Optional[int] = None) -> Dict[str, Any]:
+    rid = int(resident_id or 1)
+
+    with get_conn_optional() as conn:
+        if conn is None:
+            raise HTTPException(status_code=503, detail="DB not available")
+        try:
+            return build_event_skeleton_clip_response(
+                conn,
+                event_id=int(event_id),
+                resident_id=rid,
+                event_clips_dir=_event_clips_dir(),
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))

@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from .env import load_local_env_files
+
 try:
     from pymysql.err import MySQLError  # type: ignore
 except (ImportError, ModuleNotFoundError):
@@ -19,6 +21,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 def get_db_backend() -> str:
+    load_local_env_files()
     raw = str(os.getenv("DB_BACKEND", "mysql")).strip().lower()
     return "sqlite" if raw == "sqlite" else "mysql"
 
@@ -34,6 +37,7 @@ def _require_env(name: str, default: str | None = None) -> str:
 
 
 def _sqlite_path() -> Path:
+    load_local_env_files()
     raw = str(os.getenv("SQLITE_PATH", "server/cloud_demo.sqlite3")).strip()
     return Path(raw).expanduser().resolve()
 
@@ -170,25 +174,10 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             mc_M INTEGER NOT NULL DEFAULT 10,
             mc_M_confirm INTEGER NOT NULL DEFAULT 25,
             notify_sms INTEGER NOT NULL DEFAULT 0,
-            notify_phone INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS settings (
-            resident_id INTEGER PRIMARY KEY,
-            monitoring_enabled INTEGER NOT NULL DEFAULT 0,
-            active_model_code TEXT NOT NULL DEFAULT 'TCN',
-            active_operating_point INTEGER,
-            active_op_code TEXT NOT NULL DEFAULT 'OP-2',
-            fall_threshold REAL DEFAULT 0.7100,
-            alert_cooldown_sec INTEGER NOT NULL DEFAULT 3,
-            store_event_clips INTEGER NOT NULL DEFAULT 0,
-            anonymize_skeleton_data INTEGER NOT NULL DEFAULT 1,
-            notify_on_every_fall INTEGER NOT NULL DEFAULT 1,
-            notify_sms INTEGER NOT NULL DEFAULT 0,
             notify_phone INTEGER NOT NULL DEFAULT 0,
             fps INTEGER NOT NULL DEFAULT 30,
             window_size INTEGER NOT NULL DEFAULT 48,
-            stride INTEGER NOT NULL DEFAULT 12,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            stride INTEGER NOT NULL DEFAULT 12
         );
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,12 +252,6 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
     if row and int(row[0] or 0) == 0:
         conn.execute(
             "INSERT INTO system_settings (resident_id, active_model_code, active_operating_point, alert_cooldown_sec, notify_on_every_fall) VALUES (1, 'TCN', 2, 3, 1)"
-        )
-
-    row = conn.execute("SELECT COUNT(*) FROM settings").fetchone()
-    if row and int(row[0] or 0) == 0:
-        conn.execute(
-            "INSERT INTO settings (resident_id, active_model_code, active_operating_point, active_op_code, alert_cooldown_sec, notify_on_every_fall) VALUES (1, 'TCN', 2, 'OP-2', 3, 1)"
         )
 
     conn.commit()

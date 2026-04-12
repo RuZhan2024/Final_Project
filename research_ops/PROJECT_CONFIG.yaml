@@ -1,0 +1,159 @@
+project_name: "fall_detection_v2"
+topic: "Pose-based fall detection with temporal and graph neural models, deployment-aware evaluation, alert-policy calibration, and runtime analysis"
+target_conference:
+  name: "Goldsmiths Final Project Report / Thesis Submission"
+  short_name: "FYP"
+  deadline: "2026-04-30"
+current_date: "2026-04-05"
+page_limit:
+  main_body_pages: 40
+  appendix_allowed: true
+  acknowledgements: false
+  reproducibility_statement: false
+
+title: "Pose-Based Fall Detection with Temporal and Graph Neural Models: Deployment-Aware Evaluation, Alert Policy Calibration, and Runtime Analysis"
+
+abstract:
+  preserve_existing: true
+  source_path: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
+  policy: "reuse_when_consistent_else_minimally_revise"
+
+project_paths:
+  root: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2"
+  docs_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs"
+  code_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/src"
+  data_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/data"
+  paper_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts"
+  sections_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts"
+  figures_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/figures/report"
+  results_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports"
+  plans_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/research_ops/plans"
+  progress_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/research_ops/PROGRESS.md"
+  claims_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/research_ops/CLAIMS.yaml"
+  template_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports"
+  bib_file: ""
+  build_script: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/scripts/build_report.sh"
+  draft_file: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
+  build_output_dir: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/report_build"
+
+docs_to_read_first:
+  - "docs/project_targets/THESIS_EVIDENCE_MAP.md"
+  - "docs/project_targets/CLAIM_TABLE.md"
+  - "docs/project_targets/PAPER_CLAIMS_AND_LIMITATIONS_DRAFT.md"
+
+repo_refs:
+  source_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2"
+  docs_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs"
+  examples_repo: "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2"
+
+paper_state:
+  canonical_source: "docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
+  export_format: "markdown_to_pandoc_docx_pdf"
+  bibliography_managed: false
+  notes: "The current report build is valid for iteration and review, but not yet a full bibliography/template-managed thesis toolchain."
+
+core_contributions:
+  - name: "End-to-end deployment-oriented fall-detection system"
+    description: "A pose-based system spanning preprocessing, temporal window generation, training, operating-point fitting, backend inference, and replay-oriented runtime validation."
+  - name: "Controlled TCN-vs-GCN comparison"
+    description: "A frozen-protocol comparison between a Temporal Convolutional Network and a custom spatio-temporal GCN under matched preprocessing and evaluation rules."
+  - name: "Operating-point-aware alerting evaluation"
+    description: "A deployment-aware evaluation layer that treats validation-side operating-point calibration and alert policy as first-class components rather than post hoc thresholding."
+  - name: "Runtime and limitation analysis"
+    description: "An explicit analysis of cross-dataset asymmetry, replay/runtime boundaries, and the current limits of field-validation evidence."
+
+resources:
+  - name: "Core training and evaluation code"
+    description: "Model, preprocessing, training, fit-ops, and evaluation pipeline."
+    dir: "src/fall_detection"
+  - name: "Backend runtime"
+    description: "FastAPI backend, monitor routes, deploy runtime, and runtime services."
+    dir: "server"
+  - name: "Frontend monitor"
+    description: "React frontend for live and replay monitoring."
+    dir: "apps"
+  - name: "Configuration and deploy profiles"
+    description: "Operating-point profiles, runtime presets, and deployment-aligned configs."
+    dir: "configs"
+  - name: "Evidence and reports"
+    description: "Artifacts, figures, runbooks, evidence maps, and report drafts."
+    dir: "artifacts"
+
+literature_policy:
+  min_references: 30
+  preferred_year_gte: 2020
+  allow_seminal_older_refs: true
+  prefer_top_venues: true
+  required_sources:
+    - "OpenAlex"
+    - "Semantic Scholar"
+    - "arXiv"
+  preserve_identifiers:
+    - "doi"
+    - "arxiv_id"
+    - "cite_key"
+
+experiment_policy:
+  require_real_runs: true
+  require_reproducibility: true
+  require_strong_baselines: true
+  require_ablations: true
+  require_pilot_before_batch: true
+  target_coverage:
+    main_comparison: true
+    ablations_min: 2
+    robustness_or_sensitivity: true
+    efficiency_analysis: "when_relevant"
+  default_seed_policy:
+    normal: 3
+    budget_tight: 1
+  note: "Do not chase run count mechanically; ensure every major claim has enough experimental support."
+
+claim_policy:
+  major_claims:
+    - "C1"
+    - "C2"
+    - "C3"
+    - "C4"
+    - "C5"
+  paper_safe_order:
+    - "system validity"
+    - "controlled offline comparison"
+    - "cross-dataset limitation evidence"
+    - "bounded runtime/deployment evidence"
+    - "alert-policy calibration"
+
+compute_budget:
+  time_budget_hours: 40
+  gpu_budget: "none guaranteed"
+  budget_guard_ratio: 0.8
+  max_large_sweep_conditions: 100
+
+available_tools:
+  llm_api: true
+  kaggle_api: false
+  tavily_api: false
+  github_copilot_cli: false
+  claude_code_cli: false
+  local_python: true
+  shell_access: true
+
+writing_policy:
+  venue_style: "rigorous-thesis-ml"
+  language: "English"
+  intro_word_target: "1200-1800"
+  related_work_word_target: "900-1400"
+  method_word_target: "1800-2600"
+  experiments_word_target: "1200-1800"
+  results_word_target: "1000-1600"
+  discussion_word_target: "700-1100"
+  limitations_word_target: "300-500"
+  conclusion_word_target: "250-450"
+
+gates:
+  literature_gate: true
+  experiment_design_gate: true
+  final_quality_gate: true
+
+auto_approve:
+  enabled: false
