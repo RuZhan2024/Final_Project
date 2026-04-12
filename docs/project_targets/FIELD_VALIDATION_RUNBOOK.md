@@ -16,10 +16,12 @@ Use templates:
 1. Record 20-40 short clips in real target-like environment.
 2. Cover ADL and controlled event-like motions.
 3. Save clips under `data/field/raw/`.
-4. Fill `deployment_field_manifest.csv` from template.
+4. Copy the manifest template to `artifacts/reports/deployment_field_manifest.csv`.
+5. Fill `deployment_field_manifest.csv` from template.
 
 ## Step 2: Label Event Clips
-1. Fill `deployment_field_labels.csv`:
+1. Copy the labels template to `artifacts/reports/deployment_field_labels.csv`.
+2. Fill `deployment_field_labels.csv`:
 - `has_event=1` only for controlled event-like clips.
 - Provide `event_start_s` and `event_end_s` for event clips.
 
@@ -43,7 +45,8 @@ python scripts/benchmark_monitor_e2e.py \
 ```
 
 ## Step 4: Fill Observations CSV
-Use `deployment_field_observations.csv` with one row per clip:
+1. Copy the observations template to `artifacts/reports/deployment_field_observations.csv`.
+2. Use `deployment_field_observations.csv` with one row per clip:
 - `detected_event`
 - `false_alert_count`
 - `first_detect_s`
@@ -51,7 +54,21 @@ Use `deployment_field_observations.csv` with one row per clip:
 - `status`
 - `failure_type`
 
-## Step 5: Build Field Reports
+## Step 5: Build Minimum Field Reports
+This is the minimum paper-safe path and does not require DB access.
+
+```bash
+python tools/summarize_field_validation.py \
+  --obs_csv artifacts/reports/deployment_field_observations.csv \
+  --hours 1.0 \
+  --out_eval_json artifacts/reports/deployment_field_eval.json \
+  --out_failures_json artifacts/reports/deployment_field_failures.json \
+  --out_markdown artifacts/reports/deployment_field_validation_summary.md
+```
+
+## Step 6: Optional DB-Backed Runtime Summary
+Run this only if the DB is available and recent runtime events exist.
+
 ```bash
 python tools/summarize_dual_policy_events.py \
   --resident_id 1 \
@@ -67,7 +84,7 @@ python tools/summarize_field_validation.py \
   --out_markdown artifacts/reports/deployment_field_validation_summary.md
 ```
 
-## Step 6: Acceptance Gates
+## Step 7: Acceptance Gates
 - Clip coverage: >= 20 clips.
 - Required outputs exist:
   - `artifacts/reports/deployment_field_eval.json`
@@ -78,8 +95,9 @@ python tools/summarize_field_validation.py \
   - `fa24h_estimate`
   - `delay_p50_s`, `delay_p95_s`
   - `failure_type_counts`
+- `deployment_dual_policy_events.json` is optional enhancement, not a minimum blocker.
 
-## Step 7: Evidence Map Update
+## Step 8: Evidence Map Update
 Add a new row in `docs/project_targets/THESIS_EVIDENCE_MAP.md` pointing to:
 - command used
 - manifest/labels/observations files
@@ -89,3 +107,4 @@ Add a new row in `docs/project_targets/THESIS_EVIDENCE_MAP.md` pointing to:
 - Do not retrain with field clips.
 - Do not tune thresholds on field test results.
 - Keep this set isolated as deployment validation evidence only.
+- For paper closure, prefer the minimum path first and treat the DB-backed path as an enhancement.

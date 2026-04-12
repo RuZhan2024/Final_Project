@@ -171,6 +171,7 @@ export function usePoseMonitor({
 
   // Skeleton clip saving
   const pendingClipRef = useRef(null);
+  const pendingClipTimerRef = useRef(null);
   const uploadedClipIdsRef = useRef(new Set());
 
   // Session id for server-side state machine
@@ -194,6 +195,14 @@ export function usePoseMonitor({
       Number(replayPredictLatencyMsRef.current) || 0,
       inputSourceRef.current || "camera"
     );
+  }, []);
+
+  const clearPendingClipTimer = useCallback(() => {
+    const timerId = pendingClipTimerRef.current;
+    if (timerId != null) {
+      window.clearTimeout(timerId);
+      pendingClipTimerRef.current = null;
+    }
   }, []);
 
   // Keep isActive in a ref (MediaPipe callback shouldn't rebind each render)
@@ -319,6 +328,7 @@ export function usePoseMonitor({
 
     // Clip upload state
     pendingClipRef.current = null;
+    clearPendingClipTimer();
     uploadedClipIdsRef.current = new Set();
 
     // Reset UI
@@ -341,7 +351,7 @@ export function usePoseMonitor({
     setStartError("");
     setStartInfo("");
     setPredictError("");
-  }, [resetPredictionTransport, resetVideoSource]);
+  }, [clearPendingClipTimer, resetPredictionTransport, resetVideoSource]);
 
   const resetFrontendSessionState = useCallback(() => {
     rawFramesRef.current = [];
@@ -352,6 +362,7 @@ export function usePoseMonitor({
     replayNextWindowEndRef.current = null;
     replayWindowQueueRef.current = [];
     pendingClipRef.current = null;
+    clearPendingClipTimer();
     uploadedClipIdsRef.current = new Set();
     setPFall(null);
     setSigma(null);
@@ -375,7 +386,7 @@ export function usePoseMonitor({
       pFall: null,
       sigma: null,
     };
-  }, []);
+  }, [clearPendingClipTimer]);
 
   const setReplayClip = useCallback((clip) => {
     stopLive();
@@ -442,10 +453,11 @@ export function usePoseMonitor({
     });
   }, []);
 
-  const maybeFinalizeClipUpload = useCallback(async () => {
+  const maybeFinalizeClipUpload = useCallback(async ({ force = false } = {}) => {
     const { storeEventClips } = getClipFlags(settingsPayload);
     if (!storeEventClips) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
@@ -457,19 +469,21 @@ export function usePoseMonitor({
 
     const lastT = raw[raw.length - 1]?.t;
     if (typeof lastT !== "number") return;
-    if (lastT < pending.deadlineTs) return;
+    if (!force && lastT < pending.deadlineTs) return;
 
     const sent = uploadedClipIdsRef.current;
     if (sent && sent.has(String(pending.eventId))) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
     const startTs = pending.triggerEndTs - pending.preMs;
-    const endTs = pending.triggerEndTs + pending.postMs;
+    const endTs = force ? Math.max(pending.triggerEndTs, lastT) : pending.triggerEndTs + pending.postMs;
     const frames = raw.filter((fr) => fr && typeof fr.t === "number" && fr.t >= startTs && fr.t <= endTs);
     if (!frames || frames.length < 2) {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
       return;
     }
 
@@ -508,8 +522,18 @@ export function usePoseMonitor({
       console.error("Failed to upload skeleton clip", err);
     } finally {
       pendingClipRef.current = null;
+      clearPendingClipTimer();
     }
-  }, [apiBase, settingsPayload]);
+  }, [apiBase, clearPendingClipTimer, settingsPayload]);
+
+  const schedulePendingClipFinalize = useCallback((pending) => {
+    clearPendingClipTimer();
+    if (!pending) return;
+    const delayMs = Math.max(500, Math.round(Number(pending.postMs || 0) + 250));
+    pendingClipTimerRef.current = window.setTimeout(() => {
+      void maybeFinalizeClipUpload({ force: true });
+    }, delayMs);
+  }, [clearPendingClipTimer, maybeFinalizeClipUpload]);
 
   const ensurePredictClient = useCallback(() => {
     if (predictClientRef.current) return predictClientRef.current;
@@ -580,7 +604,7 @@ export function usePoseMonitor({
         const already = sent && sent.has(String(evId));
         const pending = pendingClipRef.current;
         if (!already && (!pending || String(pending.eventId) !== String(evId))) {
-          pendingClipRef.current = buildPendingClip({
+          const nextPending = buildPendingClip({
             eventId: evId,
             endTs,
             activeDatasetCode,
@@ -592,6 +616,8 @@ export function usePoseMonitor({
             clipPreS: CLIP_PRE_S,
             clipPostS: CLIP_POST_S,
           });
+          pendingClipRef.current = nextPending;
+          schedulePendingClipFinalize(nextPending);
         }
       }
     } catch {
@@ -620,6 +646,7 @@ export function usePoseMonitor({
     opCode,
     settingsPayload,
     maybeFinalizeClipUpload,
+    schedulePendingClipFinalize,
   ]);
 
   const buildPredictionPayload = useCallback(({ sourceMode, frames, windowEndTs, location }) => {
@@ -994,6 +1021,20 @@ export function usePoseMonitor({
       await poseRef.current.send({ image: videoEl });
     }
   }, [handlePoseResults]);
+
+  useEffect(() => {
+    if (!poseRef.current?.onResults) return;
+    // MediaPipe keeps the original callback until it is explicitly rebound.
+    // Without this, Settings changes (for example store_event_clips) leave the
+    // live monitor running against stale closures from the first mount.
+    poseRef.current.onResults(handlePoseResults);
+  }, [handlePoseResults]);
+
+  useEffect(() => {
+    return () => {
+      clearPendingClipTimer();
+    };
+  }, [clearPendingClipTimer]);
 
   const prepareReplayVideo = useCallback(async (videoEl, clip, clipUrl) => {
     await prepareReplayVideoSource({

@@ -11,13 +11,14 @@ This folder is the canonical documentation root.
   - delivery alignment status: `docs/project_targets/DELIVERY_ALIGNMENT_STATUS.md`
 - Reports, audits, checklists, and runbooks:
   - `docs/reports/`
-- Training-specific technical docs:
-  - `docs/training/`
 
 ## Archive
 
 - Historical/legacy audit documents (kept for reference, not active source of truth):
   - `docs/archive/`
+- Archived report planning/notes and older training docs:
+  - `docs/archive/reports/`
+  - `docs/archive/training/`
 - Archived teaching/tutorial material:
   - `docs/archive/tutorial_materials/`
 

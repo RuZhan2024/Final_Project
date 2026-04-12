@@ -34,7 +34,7 @@ For each direction, run both:
    - in-domain vs cross-domain for `AP`, `F1`, `Recall`, `FA24h`
    - output: `artifacts/reports/cross_dataset_summary.csv`
 5. Generate transfer plot:
-   - `artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png`
+   - `artifacts/figures/report/cross_dataset_transfer_summary.png`
 
 ## Command Templates
 ```bash
@@ -48,12 +48,16 @@ python scripts/eval_metrics.py \
 
 ## Plot Task (`P7`)
 - Status: `DONE`
-- Script: `scripts/plot_cross_dataset_transfer.py`
+- Scripts:
+  - `scripts/build_cross_dataset_summary.py`
+  - `scripts/plot_cross_dataset_transfer.py`
 - Input:
-  - In-domain metrics JSON (4 baseline files)
-  - Cross-domain metrics JSON (4 transfer files)
+  - `artifacts/reports/cross_dataset_manifest.json`
+  - frozen in-domain metrics JSON (4 baseline files)
+  - frozen cross-domain metrics JSON (4 transfer files)
 - Output:
-  - `artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png`
+  - `artifacts/reports/cross_dataset_summary.csv`
+  - `artifacts/figures/report/cross_dataset_transfer_summary.png`
 
 ## Error Taxonomy Section (Required)
 For each direction, report top 3 failure causes:
@@ -71,14 +75,24 @@ Store as:
 - Error taxonomy documented with concrete examples.
 
 ## Current Status
-- Cross-domain evaluation artifacts produced:
-  - `outputs/metrics/cross_tcn_le2i_to_caucafall.json`
-  - `outputs/metrics/cross_tcn_caucafall_to_le2i.json`
-  - `outputs/metrics/cross_gcn_le2i_to_caucafall.json`
-  - `outputs/metrics/cross_gcn_caucafall_to_le2i.json`
+- Frozen candidate roots are defined in [FINAL_CANDIDATES.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/FINAL_CANDIDATES.md):
+  - `outputs/caucafall_tcn_W48S12_r2_train_hneg`
+  - `outputs/caucafall_gcn_W48S12_r2_recallpush_b`
+  - `outputs/le2i_tcn_W48S12_opt33_r2`
+  - `outputs/le2i_gcn_W48S12_opt33_r2`
+- Frozen cross-domain evaluation artifacts produced:
+  - `outputs/metrics/cross_tcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json`
+  - `outputs/metrics/cross_gcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json`
+  - `outputs/metrics/cross_tcn_caucafall_r2_train_hneg_to_le2i_frozen_20260409.json`
+  - `outputs/metrics/cross_gcn_caucafall_r2_recallpush_b_to_le2i_frozen_20260409.json`
 - Manifest and summary produced:
   - `artifacts/reports/cross_dataset_manifest.json`
   - `artifacts/reports/cross_dataset_summary.csv`
+  - `artifacts/reports/cross_dataset_summary_legacy_pre_refreeze_20260409.csv`
   - `artifacts/reports/cross_dataset_error_taxonomy.md`
 - Plot generated:
-  - `artifacts/figures/cross_dataset/cross_dataset_transfer_bars.png`
+  - `artifacts/figures/report/cross_dataset_transfer_summary.png`
+- Current evidence interpretation:
+  - transfer is strongly directional
+  - `TCN CAUCAFall -> LE2i` remains a hard failure under the frozen policy (`cross_f1 = 0.0`)
+  - `GCN CAUCAFall -> LE2i` no longer supports the old "complete collapse" story because its frozen rerun recovers event-level recall but at very poor `AP` and very high `FA24h`

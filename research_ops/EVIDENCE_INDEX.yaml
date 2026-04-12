@@ -1,0 +1,191 @@
+evidence:
+  - id: "E1"
+    title: "Working software artifact exists and can be demonstrated end to end"
+    status: "live"
+    scope: "Locked deployment and replay profile only"
+    supports_claims:
+      - "C1"
+    artifacts:
+      - "docs/project_targets/DEPLOYMENT_LOCK.md"
+      - "artifacts/reports/deployment_lock_validation.md"
+      - "docs/reports/runbooks/USER_GUIDE.md"
+      - "docs/reports/runbooks/DEMO_RUNBOOK.md"
+    code_refs:
+      - "server/routes/monitor.py"
+      - "server/deploy_runtime.py"
+      - "apps"
+    reproduce:
+      command: "bash tools/run_deployment_lock_validation.sh"
+      type: "shell"
+    shows: "The locked demo profile, startup path, and replay validation workflow are wired end to end."
+    limits:
+      - "Does not justify a broad real-world deployment claim."
+
+  - id: "E2"
+    title: "Frozen primary-dataset comparison shows the final CAUCAFall TCN candidate trends stronger than the matched CAUCAFall GCN candidate"
+    status: "live"
+    scope: "CAUCAFall final-candidate comparison under Paper Protocol Freeze v1"
+    supports_claims:
+      - "C2"
+    artifacts:
+      - "docs/project_targets/FINAL_CANDIDATES.md"
+      - "docs/project_targets/STABILITY_REPORT.md"
+      - "artifacts/reports/stability_summary.csv"
+      - "artifacts/reports/stability_summary.json"
+      - "artifacts/figures/report/offline_stability_comparison.png"
+    code_refs:
+      - "src/fall_detection/training/train_tcn.py"
+      - "src/fall_detection/training/train_gcn.py"
+    reproduce:
+      command: "python tools/run_stability_manifest.py --manifest artifacts/registry/stability_manifest.csv --start_status todo --stop_on_fail 1"
+      type: "shell"
+    shows: "Five-seed summary for F1, Recall, Precision, FA24h, and AP on the frozen final candidates, with CAUCAFall as the main result-bearing dataset."
+    limits:
+      - "Directional evidence only; use with the significance note in E3."
+
+  - id: "E3"
+    title: "Statistical comparison remains informative but exploratory under the current seed budget"
+    status: "live"
+    scope: "Frozen TCN-vs-GCN final candidate comparison at n=5"
+    supports_claims:
+      - "C2"
+    artifacts:
+      - "docs/project_targets/SIGNIFICANCE_REPORT.md"
+      - "artifacts/reports/significance_summary.json"
+    code_refs: []
+    reproduce:
+      command: "python - <<'PY'\nimport json\nfrom pathlib import Path\nprint(Path('artifacts/reports/significance_summary.json').read_text())\nPY"
+      type: "python"
+    shows: "Wilcoxon and paired t-test summaries indicate effect direction, while primary non-parametric significance remains unresolved at the current seed count."
+    limits:
+      - "Does not support definitive superiority wording."
+
+  - id: "E4"
+    title: "Cross-dataset transfer is asymmetric"
+    status: "live"
+    scope: "Bidirectional LE2i and CAUCAFall transfer analysis"
+    supports_claims:
+      - "C3"
+    artifacts:
+      - "docs/project_targets/CROSS_DATASET_REPORT.md"
+      - "artifacts/reports/cross_dataset_summary.csv"
+      - "artifacts/figures/report/cross_dataset_transfer_summary.png"
+    code_refs:
+      - "scripts/plot_cross_dataset_transfer.py"
+    reproduce:
+      command: "python3 scripts/generate_report_figures.py"
+      type: "shell"
+    shows: "In-domain versus cross-domain deltas are asymmetric and should be interpreted as limitation evidence."
+    limits:
+      - "Does not support a universal robustness claim."
+
+  - id: "E5"
+    title: "Current live monitor demo profile is CAUCAFall TCN OP-2"
+    status: "live"
+    scope: "Current review/deploy configuration"
+    supports_claims: []
+    artifacts:
+      - "configs/ops/tcn_caucafall.yaml"
+      - "README.md"
+      - "docs/project_targets/THESIS_EVIDENCE_MAP.md"
+    code_refs:
+      - "configs/ops/tcn_caucafall.yaml"
+    reproduce:
+      command: "sed -n '1,220p' configs/ops/tcn_caucafall.yaml"
+      type: "shell"
+    shows: "Active deployable operating-point parameters for the current live demo and review build."
+    limits:
+      - "This is configuration evidence, not a benchmark result."
+
+  - id: "E6"
+    title: "The bounded 24-clip custom replay set serves as a runtime-interpretation matrix"
+    status: "live"
+    scope: "Bounded replay/runtime evidence only"
+    supports_claims:
+      - "C4"
+    artifacts:
+      - "docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md"
+      - "artifacts/reports/online_mc_replay_matrix_20260402.csv"
+      - "artifacts/reports/online_mc_replay_matrix_20260402.json"
+    code_refs:
+      - "scripts/eval_mc_replay_matrix.py"
+      - "server/routes/monitor.py"
+    reproduce:
+      command: "PYTHONPATH=\"$(pwd)/src:$(pwd)\" python3 scripts/eval_mc_replay_matrix.py --windows_dir artifacts/fall_test_eval_20260315/windows/unsplit --out_csv artifacts/reports/online_mc_replay_matrix_20260402.csv --out_json artifacts/reports/online_mc_replay_matrix_20260402.json --mc_M 10 --fall_contains /corridor/ /kitchen/ --nonfall_contains /corridor_adl/ /kitchen_adl/"
+      type: "shell"
+    shows: "Across the bounded replay matrix, the uncertainty-aware MC path does not improve the current deployment-state results."
+    limits:
+      - "Useful for runtime-boundary discussion, not for headline offline model evidence."
+
+  - id: "E7"
+    title: "Additional corridor-only positive check supports delivery recall on a small unseen set"
+    status: "supporting_only"
+    scope: "Supporting delivery-style evidence only"
+    supports_claims:
+      - "C4"
+    artifacts:
+      - "docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md"
+    code_refs:
+      - "configs/delivery/tcn_caucafall_r2_train_hneg_four_video.yaml"
+    reproduce:
+      command: "python3 scripts/eval_delivery_videos.py --config_yaml configs/delivery/tcn_caucafall_r2_train_hneg_four_video.yaml"
+      type: "shell"
+    shows: "Small unseen corridor-only positive check can support a limited delivery recall statement."
+    limits:
+      - "This is supporting evidence only and must not be promoted to a broad deployment claim."
+
+  - id: "E8"
+    title: "Field-validation reporting path exists but final closure is pending"
+    status: "sample_only"
+    scope: "Workflow closure rather than full field-validation closure"
+    supports_claims:
+      - "C4"
+    artifacts:
+      - "docs/project_targets/DEPLOYMENT_FIELD_VALIDATION.md"
+      - "docs/project_targets/FIELD_VALIDATION_MINIMUM_PACK.md"
+      - "artifacts/reports/deployment_field_eval.json"
+      - "artifacts/reports/deployment_field_failures.json"
+      - "artifacts/reports/deployment_field_validation_summary.md"
+    code_refs:
+      - "tools/summarize_field_validation.py"
+    reproduce:
+      command: "python tools/summarize_field_validation.py --obs_csv artifacts/reports/deployment_field_observations.csv --hours 1.0 --out_eval_json artifacts/reports/deployment_field_eval.json --out_failures_json artifacts/reports/deployment_field_failures.json --out_markdown artifacts/reports/deployment_field_validation_summary.md"
+      type: "shell"
+    shows: "The minimum field-validation pipeline is wired end to end, but current artifacts remain sample-level only."
+    limits:
+      - "Do not present this as completed field validation."
+
+  - id: "E9"
+    title: "Validation-side calibration and operating-point fitting are implemented as part of the alerting pipeline"
+    status: "live"
+    scope: "Method, system-design, and bounded quantitative trade-off evidence"
+    supports_claims:
+      - "C5"
+    artifacts:
+      - "docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md"
+      - "docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md"
+      - "configs/ops/tcn_caucafall.yaml"
+      - "configs/ops/gcn_caucafall.yaml"
+      - "artifacts/figures/report/alert_policy_flow.svg"
+      - "docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
+    code_refs:
+      - "src/fall_detection/core/calibration.py"
+      - "src/fall_detection/evaluation/fit_ops.py"
+    reproduce:
+      command: "sed -n '1,240p' src/fall_detection/core/calibration.py && sed -n '1,260p' src/fall_detection/evaluation/fit_ops.py"
+      type: "shell"
+    shows: "Temperature scaling and validation-side operating-point fitting are real implemented components, and the draft now includes a compact current-profile table showing OP-level differences in recall, F1, FA24h, and mean delay."
+    limits:
+      - "The quantitative table is bounded to the current active CAUCAFall TCN profile; it should not be over-read as a universal OP behaviour claim across all datasets and models."
+
+status_values:
+  - live
+  - supporting_only
+  - sample_only
+  - archived
+
+rules:
+  - "Every evidence ID referenced by CLAIMS.yaml must exist here."
+  - "This file is the evidence-side counterpart to CLAIMS.yaml."
+  - "If an artifact path changes, update this file and CLAIMS.yaml in the same pass."
+  - "Evidence can support bounded language only within its stated scope and limits."

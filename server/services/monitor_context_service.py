@@ -85,14 +85,10 @@ def load_monitor_request_context(
 
     if conn is not None:
         ensure_system_settings_schema(conn)
-        variants = detect_variants(conn)
 
         with conn.cursor() as cur:
-            if variants.get("settings") == "v2" and table_exists(conn, "system_settings"):
+            if table_exists(conn, "system_settings"):
                 cur.execute("SELECT * FROM system_settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-                sys_row = cur.fetchone()
-            elif table_exists(conn, "settings"):
-                cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
                 sys_row = cur.fetchone()
 
         if isinstance(sys_row, dict):

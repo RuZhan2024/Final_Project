@@ -33,6 +33,7 @@ def build_stale_monitor_response(
     requested_use_mc: bool,
     effective_mc_M: int,
     stale_reason: Optional[str],
+    window_end_t_ms: Optional[float],
     seq_in: Optional[int],
     seq_prev: Optional[int],
 ) -> Dict[str, Any]:
@@ -78,6 +79,7 @@ def build_stale_monitor_response(
         "mc_M": int(effective_mc_M),
         "event_id": None,
         "notification_dispatch": None,
+        "window_end_t_ms": window_end_t_ms,
         "stale_drop": True,
         "stale_reason": stale_reason,
         "window_seq": seq_in,
@@ -137,6 +139,7 @@ def build_monitor_prediction_response(
     last_persist_ts: float,
     persist_dedup_key: str,
     session_state: Dict[str, Any],
+    window_end_t_ms: Optional[float],
     seq_in: Optional[int],
     seq_prev: Optional[int],
 ) -> Dict[str, Any]:
@@ -186,6 +189,7 @@ def build_monitor_prediction_response(
         "uncertain_promoted": bool(uncertain_promoted),
         "event_id": saved_event_id,
         "notification_dispatch": notification_dispatch,
+        "window_end_t_ms": window_end_t_ms,
         "persist_dedup": {
             "suppressed": persist_suppressed,
             "cooldown_s": float(cooldown_s_for_persist),

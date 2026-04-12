@@ -479,7 +479,7 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help bootstrap-dev up dev compose-up compose-down release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
+.PHONY: help bootstrap-dev up dev stop-dev compose-up compose-down release-check release-manifest serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
         eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
@@ -493,6 +493,22 @@ bootstrap-dev up:
 
 dev:
 	@bash scripts/start_fullstack.sh
+
+stop-dev:
+	@backend_pids="$$(lsof -ti tcp:8000 2>/dev/null || true)"; \
+	frontend_pids="$$(lsof -ti tcp:3000 2>/dev/null || true)"; \
+	if [ -z "$$backend_pids$$frontend_pids" ]; then \
+	  echo "[dev] no local frontend/backend processes found on ports 3000/8000"; \
+	  exit 0; \
+	fi; \
+	if [ -n "$$backend_pids" ]; then \
+	  echo "$$backend_pids" | xargs kill -9; \
+	  echo "[dev] stopped backend on port 8000"; \
+	fi; \
+	if [ -n "$$frontend_pids" ]; then \
+	  echo "$$frontend_pids" | xargs kill -9; \
+	  echo "[dev] stopped frontend on port 3000"; \
+	fi
 
 compose-up:
 	@command -v docker >/dev/null 2>&1 || { \
@@ -570,6 +586,7 @@ help:
 	@echo "  make bootstrap-dev      (install missing deps, then start backend + frontend)"
 	@echo "  make up                 (alias of bootstrap-dev)"
 	@echo "  make dev                (start backend + frontend with one command)"
+	@echo "  make stop-dev           (stop local backend + frontend on ports 8000/3000)"
 	@echo "  make compose-up         (start frontend + backend + MySQL via docker compose)"
 	@echo "  make compose-down       (stop docker compose services)"
 	@echo "  make release-manifest   (print the current delivery release subset)"

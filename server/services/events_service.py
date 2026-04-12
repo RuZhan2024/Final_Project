@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
+
 from ..core import _jsonable
+from ..time_utils import serialize_event_timestamp
 from ..repositories.events_repository import (
     count_events,
     event_exists,
@@ -231,11 +235,75 @@ def persist_event_status(conn: Any, event_id: int, status: str, deps: EventsDeps
     return {"ok": True, "persisted": True, "event_id": int(event_id), "status": status}
 
 
+def build_event_skeleton_clip_response(
+    conn: Any,
+    *,
+    event_id: int,
+    resident_id: int,
+    event_clips_dir: Path,
+) -> Dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, resident_id, meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
+        row = cur.fetchone()
+
+    if not row:
+        raise LookupError(f"Event {event_id} not found")
+    if int(row.get("resident_id") or 0) != int(resident_id):
+        raise PermissionError("Event does not belong to resident")
+
+    meta = parse_raw_meta(row.get("meta"))
+    clip_meta = meta.get("skeleton_clip")
+    if not isinstance(clip_meta, dict):
+        raise FileNotFoundError("No skeleton clip stored for this event")
+
+    rel_path = str(clip_meta.get("path") or "").strip()
+    if not rel_path:
+        raise FileNotFoundError("No skeleton clip stored for this event")
+
+    clips_root = event_clips_dir.resolve()
+    clip_path = (clips_root / Path(rel_path).name).resolve()
+    try:
+        clip_path.relative_to(clips_root)
+    except ValueError as exc:
+        raise FileNotFoundError("clip_not_found") from exc
+
+    if not clip_path.exists() or not clip_path.is_file():
+        raise FileNotFoundError("clip_not_found")
+
+    try:
+        with np.load(clip_path, allow_pickle=False) as data:
+            t_ms = np.asarray(data["t_ms"], dtype=np.float32)
+            xy = np.asarray(data["xy"], dtype=np.float32)
+            conf = np.asarray(data["conf"], dtype=np.float32)
+    except (OSError, KeyError, ValueError) as exc:
+        raise RuntimeError(f"Failed to load skeleton clip: {exc}") from exc
+
+    return {
+        "ok": True,
+        "event_id": int(event_id),
+        "clip": {
+            "path": rel_path,
+            "n_frames": int(xy.shape[0]) if xy.ndim >= 1 else 0,
+            "n_joints": int(xy.shape[1]) if xy.ndim >= 2 else 0,
+            "pre_s": clip_meta.get("pre_s"),
+            "post_s": clip_meta.get("post_s"),
+            "dataset_code": clip_meta.get("dataset_code"),
+            "mode": clip_meta.get("mode"),
+            "op_code": clip_meta.get("op_code"),
+            "anonymized": bool(clip_meta.get("anonymized", True)),
+            "saved_at": clip_meta.get("saved_at"),
+        },
+        "t_ms": t_ms.tolist(),
+        "xy": xy.tolist(),
+        "conf": conf.tolist(),
+    }
+
+
 def map_v2_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
     meta = parse_meta_fields(row)
     source_raw = meta.get("event_source") or meta.get("input_source")
     source = str(source_raw).strip().lower() if source_raw is not None else "realtime"
-    ts = row.get("ts")
+    ts = serialize_event_timestamp(row.get("ts"))
     return {
         "id": row.get("id"),
         "event_time": ts,
@@ -255,7 +323,7 @@ def map_v1_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
     meta = parse_raw_meta(row.get("meta"))
     status_raw = meta.get("status")
     source_raw = meta.get("event_source") or meta.get("input_source")
-    ts = row.get("ts")
+    ts = serialize_event_timestamp(row.get("ts"))
     return {
         "id": row.get("id"),
         "event_time": ts,

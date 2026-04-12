@@ -3,6 +3,17 @@
 Date: 2026-03-02  
 Scope: static repo audit + smoke checks only (no training runs)
 
+## Dry-Run Closure Note (2026-03-22)
+
+Paper/submission closure now expects one explicit external-review dry run recorded in:
+- [CLEAN_DRY_RUN_MINIMUM_PATH.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/docs/project_targets/CLEAN_DRY_RUN_MINIMUM_PATH.md)
+- [clean_dry_run_report.md](/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/artifacts/reports/clean_dry_run_report.md)
+
+Current status:
+- template and minimum path prepared
+- one dry run recorded as `PASS`
+- backend startup, frontend startup, API smoke, `/api/health`, `/api/spec`, headless inference, and browser replay checks all completed
+
 ## Post-Audit Remediation Update (2026-03-02)
 
 Completed since initial audit:
@@ -89,7 +100,7 @@ This repository is structured as a full-stack fall-detection system with a Makef
   - `outputs/le2i_tcn_W48S12/train_config.json`
 - Missing expected eval products:
   - no `outputs/metrics/*.json`
-  - no `outputs/plots/*.png`
+  - no `artifacts/figures/plots/*.png`
 
 ### “0.99 AP” traceability check
 - Traced claim source:

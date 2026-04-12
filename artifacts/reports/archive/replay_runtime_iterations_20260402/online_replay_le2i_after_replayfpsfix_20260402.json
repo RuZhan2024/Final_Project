@@ -1,0 +1,56 @@
+[
+  {
+    "spec_key": "le2i_tcn",
+    "op_code": "OP-1",
+    "tp": 5,
+    "tn": 9,
+    "fp": 3,
+    "fn": 7,
+    "accuracy": 0.5833333333333334
+  },
+  {
+    "spec_key": "le2i_tcn",
+    "op_code": "OP-2",
+    "tp": 3,
+    "tn": 12,
+    "fp": 0,
+    "fn": 9,
+    "accuracy": 0.625
+  },
+  {
+    "spec_key": "le2i_tcn",
+    "op_code": "OP-3",
+    "tp": 5,
+    "tn": 12,
+    "fp": 0,
+    "fn": 7,
+    "accuracy": 0.7083333333333334
+  },
+  {
+    "spec_key": "le2i_gcn",
+    "op_code": "OP-1",
+    "tp": 5,
+    "tn": 9,
+    "fp": 3,
+    "fn": 7,
+    "accuracy": 0.5833333333333334
+  },
+  {
+    "spec_key": "le2i_gcn",
+    "op_code": "OP-2",
+    "tp": 5,
+    "tn": 9,
+    "fp": 3,
+    "fn": 7,
+    "accuracy": 0.5833333333333334
+  },
+  {
+    "spec_key": "le2i_gcn",
+    "op_code": "OP-3",
+    "tp": 5,
+    "tn": 8,
+    "fp": 4,
+    "fn": 7,
+    "accuracy": 0.5416666666666666
+  }
+]

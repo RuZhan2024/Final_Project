@@ -21,41 +21,6 @@ def _updated_at_expr(conn: Any) -> str:
 def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], deploy: Dict[str, Any]) -> None:
     _ensure_system_settings_schema(conn)
 
-    if _table_exists(conn, "settings"):
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-            row = cur.fetchone() or {}
-
-        system.update(
-            {
-                "monitoring_enabled": bool(_safe_get(row, "monitoring_enabled", system.get("monitoring_enabled", 0))),
-                "active_model_code": _safe_get(row, "active_model_code", system.get("active_model_code", "TCN")),
-                "active_operating_point": _safe_get(row, "active_operating_point", system.get("active_operating_point")),
-                "active_op_code": _norm_op_code(_safe_get(row, "active_op_code", system.get("active_op_code", "OP-2"))),
-                "fall_threshold": float(_safe_get(row, "fall_threshold", system.get("fall_threshold", 0.71)) or 0.71),
-                "alert_cooldown_sec": int(_safe_get(row, "alert_cooldown_sec", system.get("alert_cooldown_sec", 3)) or 3),
-                "store_event_clips": bool(_safe_get(row, "store_event_clips", system.get("store_event_clips", 0))),
-                "anonymize_skeleton_data": bool(
-                    _safe_get(row, "anonymize_skeleton_data", system.get("anonymize_skeleton_data", 1))
-                ),
-                "notify_on_every_fall": bool(
-                    _safe_get(row, "notify_on_every_fall", system.get("notify_on_every_fall", 1))
-                ),
-                "notify_sms": bool(_safe_get(row, "notify_sms", system.get("notify_sms", 0))),
-                "notify_phone": bool(_safe_get(row, "notify_phone", system.get("notify_phone", 0))),
-            }
-        )
-        deploy.update(
-            {
-                "fps": int(_safe_get(row, "fps", deploy.get("fps", 30)) or 30),
-                "window": {
-                    "W": int(_safe_get(row, "window_size", deploy.get("window", {}).get("W", 48)) or 48),
-                    "S": int(_safe_get(row, "stride", deploy.get("window", {}).get("S", 12)) or 12),
-                },
-            }
-        )
-        return
-
     if not _table_exists(conn, "system_settings"):
         return
 
@@ -108,76 +73,6 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
 
 def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdatePayload) -> bool:
     _ensure_system_settings_schema(conn)
-
-    if _table_exists(conn, "settings"):
-        sets: List[str] = []
-        vals: List[Any] = []
-        store_anonymized_data = payload.store_anonymized_data
-
-        if payload.monitoring_enabled is not None:
-            sets.append("monitoring_enabled=%s")
-            vals.append(1 if payload.monitoring_enabled else 0)
-
-        if payload.fall_threshold is not None:
-            sets.append("fall_threshold=%s")
-            vals.append(payload.fall_threshold)
-
-        if payload.alert_cooldown_sec is not None:
-            sets.append("alert_cooldown_sec=%s")
-            vals.append(payload.alert_cooldown_sec)
-
-        if store_anonymized_data is not None:
-            sets.append("store_event_clips=%s")
-            vals.append(1 if store_anonymized_data else 0)
-            sets.append("anonymize_skeleton_data=%s")
-            vals.append(1 if store_anonymized_data else 0)
-
-        if payload.store_event_clips is not None:
-            sets.append("store_event_clips=%s")
-            vals.append(1 if payload.store_event_clips else 0)
-
-        if payload.anonymize_skeleton_data is not None:
-            sets.append("anonymize_skeleton_data=%s")
-            vals.append(1 if payload.anonymize_skeleton_data else 0)
-
-        if payload.notify_on_every_fall is not None:
-            sets.append("notify_on_every_fall=%s")
-            vals.append(1 if payload.notify_on_every_fall else 0)
-            if payload.notify_on_every_fall is False:
-                if _col_exists(conn, "settings", "notify_sms"):
-                    sets.append("notify_sms=%s")
-                    vals.append(0)
-                if _col_exists(conn, "settings", "notify_phone"):
-                    sets.append("notify_phone=%s")
-                    vals.append(0)
-
-        if payload.notify_sms is not None and _col_exists(conn, "settings", "notify_sms"):
-            sets.append("notify_sms=%s")
-            vals.append(1 if payload.notify_sms else 0)
-
-        if payload.notify_phone is not None and _col_exists(conn, "settings", "notify_phone"):
-            sets.append("notify_phone=%s")
-            vals.append(1 if payload.notify_phone else 0)
-
-        if payload.active_model_code is not None:
-            sets.append("active_model_code=%s")
-            vals.append(normalize_model_code(payload.active_model_code))
-
-        if payload.active_operating_point is not None:
-            sets.append("active_operating_point=%s")
-            vals.append(payload.active_operating_point)
-
-        if payload.active_op_code is not None and _col_exists(conn, "settings", "active_op_code"):
-            sets.append("active_op_code=%s")
-            vals.append(_norm_op_code(payload.active_op_code))
-
-        if sets:
-            sql = "UPDATE settings SET " + ", ".join(sets) + f", updated_at={_updated_at_expr(conn)} WHERE resident_id=%s"
-            vals.append(resident_id)
-            with conn.cursor() as cur:
-                cur.execute(sql, tuple(vals))
-            conn.commit()
-        return True
 
     sets = []
     vals = []

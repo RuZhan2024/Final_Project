@@ -284,6 +284,9 @@ def _ensure_system_settings_schema(conn) -> None:
             "mc_M_confirm": "INT NOT NULL DEFAULT 25",
             "notify_sms": "TINYINT(1) NOT NULL DEFAULT 0",
             "notify_phone": "TINYINT(1) NOT NULL DEFAULT 0",
+            "fps": "INT NOT NULL DEFAULT 30",
+            "window_size": "INT NOT NULL DEFAULT 48",
+            "stride": "INT NOT NULL DEFAULT 12",
         }
 
         alters: List[str] = []
@@ -327,15 +330,13 @@ def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str
 
 
 def _detect_variants(conn) -> Dict[str, str]:
-    """Return {'settings': 'v1|v2', 'events': 'v1|v2', 'ops': 'v1|v2'}."""
-    settings_cols = _cols(conn, "system_settings")
+    """Return active schema variants for system-backed settings, events, and ops."""
     events_cols = _cols(conn, "events")
     ops_cols = _cols(conn, "operating_points")
 
-    settings_v = "v2" if "active_model_id" in settings_cols else "v1"
     events_v = "v2" if "event_time" in events_cols else "v1"
     ops_v = "v2" if "model_id" in ops_cols else "v1"
-    return {"settings": settings_v, "events": events_v, "ops": ops_v}
+    return {"settings": "v2", "events": events_v, "ops": ops_v}
 
 
 # -----------------------------
@@ -629,18 +630,11 @@ def _read_clip_privacy_flags(conn, resident_id: int) -> Tuple[bool, bool]:
     anonymize = True
     try:
         _ensure_system_settings_schema(conn)
-        variants = _detect_variants(conn)
         row = None
         with conn.cursor() as cur:
-            if variants.get("settings") == "v2" and _table_exists(conn, "system_settings"):
+            if _table_exists(conn, "system_settings"):
                 cur.execute(
                     "SELECT store_event_clips, anonymize_skeleton_data FROM system_settings WHERE resident_id=%s LIMIT 1",
-                    (resident_id,),
-                )
-                row = cur.fetchone()
-            elif _table_exists(conn, "settings"):
-                cur.execute(
-                    "SELECT store_event_clips, anonymize_skeleton_data FROM settings WHERE resident_id=%s LIMIT 1",
                     (resident_id,),
                 )
                 row = cur.fetchone()

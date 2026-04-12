@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from datetime import timezone
 from .models import SafeGuardEvent, SafeGuardTier, TierDecision
+from ..time_utils import format_local_event_timestamp
 
 
 def _fmt_ts(event: SafeGuardEvent) -> str:
-    ts = event.timestamp
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.isoformat()
+    return format_local_event_timestamp(event.timestamp)
 
 
 def build_telegram_message(event: SafeGuardEvent, decision: TierDecision, analysis_report: str) -> str:
@@ -23,6 +20,6 @@ def build_telegram_message(event: SafeGuardEvent, decision: TierDecision, analys
             f"Recommendation: {decision.recommendation}",
             f"Ref: {event.event_id}",
             "",
-            analysis_report.strip() if analysis_report.strip() else "AI analysis unavailable.",
+            analysis_report.strip() if analysis_report.strip() else "Generated summary unavailable.",
         ]
     ).strip()

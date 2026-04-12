@@ -25,7 +25,7 @@ Legend:
 |---|---|---|
 | Claim table (falsifiable) | PASS | `docs/project_targets/CLAIM_TABLE.md` |
 | Reproducibility mapping | PASS | `docs/project_targets/THESIS_EVIDENCE_MAP.md` |
-| Val/test separation + metric definitions | PASS | `docs/project_targets/OPS_POLICY_REPORT.md`, evaluation scripts/docs |
+| Val/test separation + metric definitions | PASS | `docs/project_targets/supporting/OPS_POLICY_REPORT.md`, evaluation scripts/docs |
 | Multi-seed stability evidence | PASS | `docs/project_targets/STABILITY_REPORT.md` + stability artifacts |
 | Significance reporting | PASS | `docs/project_targets/SIGNIFICANCE_REPORT.md` |
 | Negative results and limitations | PASS | round reports + execution plan limitations register |

@@ -76,7 +76,7 @@ def test_load_settings_snapshot_normalizes_active_op_code(monkeypatch) -> None:
     deploy = {}
     conn = _Conn([{"active_op_code": "op3"}])
     monkeypatch.setattr(repo, "_ensure_system_settings_schema", lambda _conn: None)
-    monkeypatch.setattr(repo, "_table_exists", lambda _conn, name: name == "settings")
+    monkeypatch.setattr(repo, "_table_exists", lambda _conn, name: name == "system_settings")
 
     repo.load_settings_snapshot(conn, 1, system, deploy)
 

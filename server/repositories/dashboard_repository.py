@@ -44,14 +44,6 @@ def load_system_snapshot(
                         )
         return snapshot
 
-    if table_exists(conn, "settings") and col_exists(conn, "settings", "monitoring_enabled"):
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM settings WHERE resident_id=%s LIMIT 1", (resident_id,))
-            row = cur.fetchone() or {}
-        if isinstance(row, dict):
-            snapshot["monitoring_enabled"] = bool(row.get("monitoring_enabled", 1))
-            snapshot["model_name"] = row.get("active_model_code") or snapshot["model_name"]
-
     return snapshot
 
 

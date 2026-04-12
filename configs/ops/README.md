@@ -61,6 +61,11 @@ MUVIM configs are still project-related, but they are best treated as a separate
 - `tcn_muvim*.yaml`
 - `gcn_muvim*.yaml`
 
+Current convention:
+
+- keep the base or labels-oriented MUVIM configs that still describe the main MUVIM track at the root of `configs/ops/`
+- move quick-search and later experimental branches such as `*muvim_quick*` and `*muvim_r3*` into `configs/ops/archive/muvim/`
+
 If MUVIM is not part of the final submitted scope, these should stay archived rather than removed.
 
 ## Practical Lookup

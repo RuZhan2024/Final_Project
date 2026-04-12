@@ -1,0 +1,116 @@
+claims:
+  - id: "C1"
+    text: "The project delivers a working end-to-end replayable pose-based fall-detection system under a locked deployment/review profile."
+    type: "main_contribution"
+    status: "supported"
+    support:
+      evidence_ids:
+        - "E1"
+      result_files:
+        - "artifacts/reports/deployment_lock_validation.md"
+      figure_refs: []
+      table_refs: []
+      code_refs:
+        - "server/routes/monitor.py"
+        - "server/deploy_runtime.py"
+      citation_refs:
+        - "docs/project_targets/DEPLOYMENT_LOCK.md"
+        - "docs/project_targets/THESIS_EVIDENCE_MAP.md"
+    notes: "Bound this to the locked deployment/replay profile only; do not upgrade to a broad field-deployment claim."
+
+  - id: "C2"
+    text: "Under the frozen primary-dataset protocol, the final CAUCAFall TCN candidate trends stronger than the matched CAUCAFall GCN candidate, but the result remains directional rather than definitive."
+    type: "main_contribution"
+    status: "supported"
+    support:
+      evidence_ids:
+        - "E2"
+        - "E3"
+      result_files:
+        - "artifacts/reports/stability_summary.csv"
+        - "artifacts/reports/stability_summary.json"
+        - "artifacts/reports/significance_summary.json"
+      figure_refs:
+        - "artifacts/figures/report/offline_stability_comparison.png"
+      table_refs:
+        - "docs/project_targets/FINAL_CANDIDATES.md"
+      code_refs:
+        - "src/fall_detection/training/train_tcn.py"
+        - "src/fall_detection/training/train_gcn.py"
+      citation_refs:
+        - "docs/project_targets/STABILITY_REPORT.md"
+        - "docs/project_targets/SIGNIFICANCE_REPORT.md"
+    notes: "Use cautious wording only; avoid 'significantly outperforms' because the current n=5 significance result is exploratory."
+
+  - id: "C3"
+    text: "Cross-dataset transfer is asymmetric, and the current evidence does not support a universal robustness claim."
+    type: "secondary_claim"
+    status: "supported"
+    support:
+      evidence_ids:
+        - "E4"
+      result_files:
+        - "artifacts/reports/cross_dataset_summary.csv"
+      figure_refs:
+        - "artifacts/figures/report/cross_dataset_transfer_summary.png"
+      table_refs: []
+      code_refs:
+        - "scripts/plot_cross_dataset_transfer.py"
+      citation_refs:
+        - "docs/project_targets/CROSS_DATASET_REPORT.md"
+    notes: "Treat this as limitation evidence, not as a positive generalization contribution."
+
+  - id: "C4"
+    text: "Replay and custom replay results provide bounded deployment-oriented runtime evidence, but they should not be used as a substitute for broad real-world validation."
+    type: "main_contribution"
+    status: "partially_supported"
+    support:
+      evidence_ids:
+        - "E6"
+        - "E7"
+        - "E8"
+      result_files:
+        - "artifacts/reports/online_mc_replay_matrix_20260402.csv"
+        - "artifacts/reports/deployment_field_eval.json"
+      figure_refs: []
+      table_refs: []
+      code_refs:
+        - "server/routes/monitor.py"
+        - "scripts/eval_mc_replay_matrix.py"
+      citation_refs:
+        - "docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md"
+        - "docs/project_targets/DEPLOYMENT_FIELD_VALIDATION.md"
+    notes: "Use bounded language: replay supports runtime interpretation and controlled demonstration, while field closure remains incomplete."
+
+  - id: "C5"
+    text: "Validation-side operating-point calibration is a substantive part of the system because deployable alert behaviour depends on fitted policy profiles rather than raw single-window probabilities alone."
+    type: "main_contribution"
+    status: "supported"
+    support:
+      evidence_ids:
+        - "E9"
+      result_files:
+        - "configs/ops/tcn_caucafall.yaml"
+        - "configs/ops/gcn_caucafall.yaml"
+        - "docs/reports/drafts/PAPER_FINAL_2026-04-11.md"
+      figure_refs:
+        - "artifacts/figures/report/alert_policy_flow.svg"
+      table_refs: []
+      code_refs:
+        - "src/fall_detection/core/calibration.py"
+        - "src/fall_detection/evaluation/fit_ops.py"
+      citation_refs:
+        - "docs/project_targets/RESEARCH_QUESTIONS_MAPPING.md"
+        - "docs/project_targets/supporting/OBJECTIVES_EVIDENCE_OUTCOMES.md"
+    notes: "Supported as a bounded system-design and quantitative trade-off claim through the current CAUCAFall TCN operating-point table in the draft."
+
+status_values:
+  - supported
+  - partially_supported
+  - unsupported
+
+rules:
+  - "Every major paper claim must be registered here."
+  - "Unsupported claims must not appear in the paper as settled facts."
+  - "Partially supported claims must use downgraded wording."
+  - "Update after RESULT_ANALYSIS, PAPER_REVISION, and QUALITY_GATE."
