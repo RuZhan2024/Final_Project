@@ -43,7 +43,6 @@ export interface ReplayClipsState {
   error: string;
   configuredDir: string;
   available: boolean;
-  refresh: () => Promise<void>;
 }
 
 export interface MonitorControllerHandle {
@@ -117,7 +116,7 @@ export interface UseMonitorPredictionLoopOptions {
   settingsPayload: SettingsResponse | null;
   mcEnabled: boolean;
   mcCfg: { M: number | null; M_confirm: number | null };
-  replayPersistEvents: boolean;
+  replayPersistEventsRef: MutableRefObject<boolean>;
   selectedVideoName: string;
   replayClipRef: MutableRefObject<ReplayClip | null>;
   inputSourceRef: MutableRefObject<string>;

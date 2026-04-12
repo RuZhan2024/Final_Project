@@ -9,7 +9,6 @@ interface ControlsCardProps {
   monitoringOn: boolean;
   setMonitoringOn: (next: boolean) => void | Promise<boolean>;
   resetSession: () => void;
-  testFall: () => void;
   inputSource: InputSource;
   selectedVideoName: string;
   hasReplayFile: boolean;
@@ -24,7 +23,6 @@ interface ControlsCardProps {
   captureResolutionPreset: CaptureResolutionPreset | string;
   onChangeCaptureResolution?: (preset: string) => void;
   onSelectReplayClip?: (clipId: string) => void;
-  onRefreshReplayClips?: () => void;
   onClearReplay?: () => void;
   replayCurrentS: number;
   replayDurationS: number;
@@ -37,7 +35,6 @@ export function ControlsCard({
   monitoringOn,
   setMonitoringOn,
   resetSession,
-  testFall,
   inputSource,
   hasReplayFile,
   replayClips,
@@ -51,7 +48,6 @@ export function ControlsCard({
   captureResolutionPreset,
   onChangeCaptureResolution,
   onSelectReplayClip,
-  onRefreshReplayClips,
   onClearReplay,
   replayCurrentS,
   replayDurationS,
@@ -160,11 +156,6 @@ export function ControlsCard({
                 </optgroup>
               ) : null}
             </select>
-            <div className={styles.buttonGroup}>
-              <button className={styles.btnGray} onClick={() => onRefreshReplayClips?.()} disabled={replayClipsLoading}>
-                {replayClipsLoading ? "Refreshing..." : "Refresh Clips"}
-              </button>
-            </div>
           </div>
           <div className={styles.toggleRow}>
             <span>Persist Replay Events</span>
@@ -176,14 +167,6 @@ export function ControlsCard({
               />
               <span className={styles.slider}></span>
             </label>
-          </div>
-          <div className={styles.inlineInfo}>
-            <div className={styles.inlineInfoTitle}>Replay Persistence</div>
-            <div>
-              {replayPersistEvents
-                ? "Replay detections will be written to event history and can trigger notifications."
-                : "Replay detections stay visual-only unless persistence is explicitly enabled."}
-            </div>
           </div>
           <div className={styles.buttonGroup}>
             {!monitoringOn ? (
@@ -229,7 +212,7 @@ export function ControlsCard({
           </div>
         </>
       ) : (
-        <div className={styles.buttonGroup}>
+        <div className={`${styles.buttonGroup} ${styles.fullWidthButtonGroup}`}>
           {!monitoringOn ? (
             <button
               className={styles.btnGray}
@@ -246,9 +229,6 @@ export function ControlsCard({
               Stop Realtime
             </button>
           )}
-          <button className={styles.btnRed} onClick={testFall}>
-            Test Fall
-          </button>
         </div>
       )}
     </div>

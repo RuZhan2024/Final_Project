@@ -3,7 +3,6 @@ import type {
   ReplayClip,
   ReplayClipsResponse,
   SpecModel,
-  TriggerTestFallResponse,
 } from "./types";
 
 function normalizeSpecModel(model: Partial<SpecModel> | null | undefined): SpecModel {
@@ -143,15 +142,5 @@ export async function uploadSkeletonClip(
   return await apiRequest<unknown>(apiBase, `/api/events/${encodeURIComponent(eventId)}/skeleton_clip`, {
     method: "POST",
     body: clipPayload,
-  });
-}
-
-export async function triggerTestFall(
-  apiBase: string,
-  modelCode: string
-): Promise<TriggerTestFallResponse> {
-  return await apiRequest<TriggerTestFallResponse>(apiBase, "/api/events/test_fall", {
-    method: "POST",
-    body: { resident_id: 1, model_code: modelCode },
   });
 }

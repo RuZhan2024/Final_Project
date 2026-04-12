@@ -28,7 +28,7 @@ export function useMonitorPredictionLoop({
   settingsPayload,
   mcEnabled,
   mcCfg,
-  replayPersistEvents,
+  replayPersistEventsRef,
   selectedVideoName,
   replayClipRef,
   inputSourceRef,
@@ -106,7 +106,7 @@ export function useMonitorPredictionLoop({
         mcEnabled,
         mcCfg,
         persist:
-          (sourceMode === "video" ? replayPersistEvents : monitoringOnRef.current) ||
+          (sourceMode === "video" ? replayPersistEventsRef.current : monitoringOnRef.current) ||
           storeEventClips,
         endTs: windowEndTs,
       });
@@ -126,7 +126,7 @@ export function useMonitorPredictionLoop({
       mode,
       monitoringOnRef,
       opCode,
-      replayPersistEvents,
+      replayPersistEventsRef,
       sessionIdRef,
       settingsPayload,
       streamFps,

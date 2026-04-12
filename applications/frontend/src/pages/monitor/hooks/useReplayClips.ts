@@ -40,6 +40,5 @@ export function useReplayClips(apiBase: string, isActive = true): ReplayClipsSta
     error,
     configuredDir,
     available,
-    refresh,
   };
 }

@@ -82,7 +82,6 @@ function Monitor({ isActive = true }: MonitorProps) {
     error: replayClipsError,
     configuredDir: replayClipsDir,
     available: replayClipsAvailable,
-    refresh: refreshReplayClips,
   } = useReplayClips(apiBase, isActive);
 
   const chosen = useMemo<ChosenSpecs>(() => {
@@ -152,7 +151,6 @@ function Monitor({ isActive = true }: MonitorProps) {
     captureFpsText,
     modelFpsText,
     resetSession,
-    testFall,
     inputSource,
     captureResolutionPreset,
     setCaptureResolution,
@@ -250,7 +248,6 @@ function Monitor({ isActive = true }: MonitorProps) {
             monitoringOn={monitoringOn}
             setMonitoringOn={setMonitoringOn}
             resetSession={resetSession}
-            testFall={testFall}
             inputSource={inputSource}
             selectedVideoName={selectedVideoName}
             hasReplayFile={hasReplayFile}
@@ -277,7 +274,6 @@ function Monitor({ isActive = true }: MonitorProps) {
               const nextClip = replayClips.find((clip) => clip.id === clipId) || null;
               setReplayClip(nextClip);
             }}
-            onRefreshReplayClips={refreshReplayClips}
             onClearReplay={() => setReplayClip(null)}
             replayCurrentS={replayCurrentS}
             replayDurationS={replayDurationS}

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchReplayClipBlob,
   resetMonitorSession,
-  triggerTestFall,
 } from "../../../features/monitor/api";
 import {
   resetVideoSource as resetVideoSourceResources,
@@ -20,7 +19,6 @@ import {
   LIVE_DRAW_FPS,
   LIVE_POSE_MODEL_COMPLEXITY,
 } from "../constants";
-import { prettyModelTag } from "../utils";
 import type { ReplayClip, SpecModel } from "../../../features/monitor/types";
 import type { SettingsResponse } from "../../../features/settings/types";
 import type { CaptureResolutionPreset, ChosenSpecs, MonitorControllerHandle, MonitorMode } from "../types";
@@ -113,9 +111,10 @@ export function usePoseMonitor({
   const [replayCurrentS, setReplayCurrentS] = useState(0);
   const [replayDurationS, setReplayDurationS] = useState(0);
   // MediaPipe result callbacks can outlive the render that started monitoring.
-  // Read the latest persisted-monitoring flag from a ref so replay windows do not
-  // keep sending stale `persist: false` after monitoring is toggled on.
+  // Read the latest persisted flags from refs so replay windows do not keep
+  // sending stale values after toggles change.
   const monitoringOnRef = useRef(Boolean(monitoringOn));
+  const replayPersistEventsRef = useRef(Boolean(replayPersistEvents));
 
   // Prediction UI
   // Frame buffer for windowing
@@ -179,7 +178,6 @@ export function usePoseMonitor({
     pText,
     markers,
     timelineStatusText,
-    addTimelineMarker,
     applyPredictionResponse,
     resetSessionUiState,
   } = useMonitorSessionState({
@@ -209,6 +207,10 @@ export function usePoseMonitor({
   useEffect(() => {
     monitoringOnRef.current = Boolean(monitoringOn);
   }, [monitoringOn]);
+
+  useEffect(() => {
+    replayPersistEventsRef.current = Boolean(replayPersistEvents);
+  }, [replayPersistEvents]);
 
   useEffect(() => {
     showLivePreviewRef.current = Boolean(showLivePreview);
@@ -399,7 +401,7 @@ export function usePoseMonitor({
     settingsPayload,
     mcEnabled,
     mcCfg,
-    replayPersistEvents,
+    replayPersistEventsRef,
     selectedVideoName,
     replayClipRef,
     inputSourceRef,
@@ -559,25 +561,6 @@ export function usePoseMonitor({
     };
   }, [stopLive]);
 
-  const testFall = useCallback(async () => {
-    try {
-      const data = await triggerTestFall(
-        apiBase,
-        prettyModelTag(settingsPayload?.system?.active_model_code)
-      );
-      if (data?.ok) {
-        addTimelineMarker("fall", { force: true });
-        setPredictError("");
-        return true;
-      }
-      setPredictError("Test fall request was accepted locally but backend did not confirm success.");
-      return false;
-    } catch (err: any) {
-      setPredictError(String(err?.message || err || "Test fall request failed"));
-      return false;
-    }
-  }, [addTimelineMarker, apiBase, settingsPayload, setPredictError]);
-
   const captureFpsText = useMemo(() => {
     const v = streamFps;
     if (v == null) return "—";
@@ -618,7 +601,6 @@ export function usePoseMonitor({
     modelFpsText,
 
     resetSession,
-    testFall,
     inputSource,
     captureResolutionPreset,
     setCaptureResolution,
