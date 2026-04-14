@@ -1,95 +1,211 @@
-# Fall Detection v2
+# Safe Guard Fall Detection
 
-An end-to-end fall detection project with:
+This repository contains the working software artefact for a pose-based fall
+detection system. It includes a runnable frontend and backend that demonstrate
+the core project idea: detecting fall-related behaviour from pose-window input
+and presenting the result through a monitoring interface.
 
-- pose-based preprocessing and window generation
-- TCN and GCN model training/evaluation
-- a FastAPI backend for online inference
-- a React frontend for live and replay monitoring
+## Overview
 
-The canonical Python package code lives in `ml/src/fall_detection`.
-The repository now uses a normalized top-level structure:
+The system detects fall-related behaviour from pose-window input and shows the
+result through a web interface. Users can run the system locally, play a
+promoted replay clip, and observe prediction output, timeline updates, and
+runtime model information.
 
-- `applications/frontend` for the React client
-- `applications/backend` for the FastAPI service
-- `ml/src/fall_detection` for the ML package
-- `ops/` for operational configs, scripts, and deploy assets
-- `qa/tests` for the maintained test suite
+## Demo Access and Evidence
 
-## Submission Overview
+### Deployed frontend
 
-This repository is prepared to be reviewed in two modes:
+- live monitor page: `https://fall-detection-frontend.onrender.com/monitor`
 
-1. lightweight demo mode
-   - frontend + backend
-   - no MySQL required
-   - lowest setup friction
-2. full persistent-system mode
-   - frontend + backend + MySQL
-   - Docker-backed database persistence
-   - preferred when the database layer also needs to be demonstrated
+If the deployed frontend is unavailable, use the local setup path below.
 
-For the current monitor demo, the recommended review path is:
+### Shared demo assets
 
-- dataset: `caucafall`
-- model: `TCN`
-- operating point: `OP2`
+- SharePoint folder: `https://goldsmithscollege-my.sharepoint.com/:f:/g/personal/gru001_campus_goldsmiths_ac_uk/IgCUcyLaZ3TwTp0WaWv_0KKAAT1UlGpgH_1nLZhxLxTbLMw?e=a0E9Zd`
 
-That is the main delivery profile used in the project's online validation and four-folder custom video verification.
-That is the preferred live demonstration profile because it is the strongest bounded online replay row in the current fixed 24-clip matrix. It should be treated as the runtime demo preset, not as a replacement for the broader evidence pack.
+Recommended evidence files:
 
-## Reviewer Note
+- `realtime/realtime_adl_submission.mp4`
+- `realtime/realtime_fall_submission.mp4`
 
-The default reviewer path for this repository is the runnable system/demo path, not the full ML reproduction path.
+These are the trimmed realtime evidence clips and are the recommended versions
+for quick review. Full-length recordings are also provided in the same folder:
 
-- `make bootstrap-dev`, `make dev`, and `docker compose up` do not require raw training datasets
-- raw datasets, `data/interim`, and `data/processed` are not distributed with this submission
-- dataset-dependent extraction, preprocessing, training, and evaluation commands are retained for research traceability, but they require separately acquired datasets
-- as a result, reviewers are not expected to rerun the full ML pipeline unless dataset access has been arranged separately
+- `realtime/realtime_adl.mov`
+- `realtime/realtime_fall.mov`
+
+The `replay/` folder contains the replay clips used as supporting evidence for
+the authenticity of the demo inputs. Replay behaviour is best viewed through
+the running frontend on the `Monitor` page in `Replay Mode`.
 
 ## Quick Start
 
-Run all commands from the repository root.
+### Fastest way to run
 
-### Option A: One-command local demo
+From the repository root:
 
 ```bash
 make bootstrap-dev
 ```
 
-What it does:
+Then open:
+
+- frontend: `http://localhost:3000`
+- backend health check: `http://127.0.0.1:8000/api/health`
+
+### Fastest way to verify the core feature
+
+1. Open `http://localhost:3000`
+2. Go to `Monitor`
+3. Select `Replay Mode`
+4. Choose a replay clip
+5. Click `Play Replay`
+6. Observe:
+   - current prediction output
+   - prediction timeline updates
+   - runtime model information
+
+### Notes
+
+- no login or test credentials are required
+- no raw dataset download is required for the default demo path
+- no MySQL setup is required for the default demo path
+- the recommended runtime demo preset is:
+  - dataset: `caucafall`
+  - model: `TCN`
+  - operating point: `OP2`
+
+## Release Snapshot
+
+This repository should be associated with the final tagged release snapshot.
+Update this section with the final tag once it has been created.
+
+## Core Features Implemented
+
+- pose-based fall detection demonstrated through a working software system
+- React frontend for monitoring predictions
+- FastAPI backend for online inference
+- replay monitoring for end-to-end demonstration using promoted replay clips
+- realtime monitoring using browser camera input
+- runtime model information panel
+- prediction timeline updates in the frontend
+- optional event history workflow when database-backed mode is enabled
+- configurable runtime profiles for dataset, model, and operating point selection
+
+## Included in This Repository
+
+This repository is focused on the working software artefact and its supporting
+runtime assets, configuration, and validation utilities.
+
+Included:
+
+- runnable frontend
+- runnable backend
+- configuration files
+- promoted runtime assets for demo and review
+- test scripts and release checks
+- source code for the software system
+
+Retained for research traceability, but not required for the default demo path:
+
+- dataset-dependent extraction scripts
+- preprocessing scripts
+- training scripts
+- evaluation scripts
+
+## Runtime Modes
+
+This repository supports two main runtime modes.
+
+### 1. Lightweight demo mode
+
+Recommended for local demonstration and recording.
+
+Includes:
+
+- frontend
+- backend
+- promoted runtime assets
+- no MySQL required
+
+Run with:
+
+```bash
+make bootstrap-dev
+```
+
+### 2. Full persistent-system mode
+
+Use this only if database persistence also needs to be demonstrated.
+
+Includes:
+
+- frontend
+- backend
+- MySQL
+
+Run with:
+
+```bash
+docker compose up
+```
+
+## Requirements
+
+### Local demo mode
+
+- Python `3.10+`
+- Node.js / npm
+- Node `22.22.0` recommended for frontend parity
+
+### Full persistent mode
+
+- Docker Desktop or Docker Engine with `docker compose`
+
+## Setup and Run
+
+Run all commands from the repository root.
+
+### Option A: Recommended local demo
+
+```bash
+make bootstrap-dev
+```
+
+This command:
 
 - creates `.venv` if missing
 - installs Python dependencies if missing
 - installs frontend dependencies if missing
-- starts backend on `127.0.0.1:8000`
-- starts frontend on `127.0.0.1:3000`
+- starts the backend on `127.0.0.1:8000`
+- starts the frontend on `127.0.0.1:3000`
 
 Open:
 
 - frontend: `http://localhost:3000`
 - backend health: `http://127.0.0.1:8000/api/health`
 
-Notes:
-
-- use `make dev` if `.venv` and `applications/frontend/node_modules` already exist
-- this mode does not require MySQL
-- DB-backed features fall back gracefully when DB is unavailable
-- for cloud deployment, the backend now also supports `DB_BACKEND=sqlite`
-- local SQLite demo files are created at runtime and are not part of the tracked submission surface
-
-Stop the local demo:
+To stop:
 
 ```bash
 make stop-dev
 ```
 
+Or, if the current run is attached to your terminal:
+
 ```bash
-# if `make bootstrap-dev` or `make dev` is running in the current terminal
 Ctrl-C
 ```
 
-### Option B: One-command full system with persistent MySQL
+Notes:
+
+- use `make dev` if `.venv` and `applications/frontend/node_modules` already exist
+- this mode does not require MySQL
+- DB-backed features fall back gracefully when DB is unavailable
+- for cloud deployment, the backend also supports `DB_BACKEND=sqlite`
+
+### Option B: Full system with MySQL persistence
 
 ```bash
 docker compose up
@@ -100,17 +216,13 @@ Open:
 - frontend: `http://localhost:3000`
 - backend health: `http://127.0.0.1:8000/api/health`
 
-What it starts:
+This starts:
 
 - `frontend`
 - `backend`
 - `mysql`
 
-Notes:
-
-- MySQL data is persisted in the `mysql_data` Docker volume
-- the database is initialized from `applications/backend/create_db.sql`
-- if host port `3306` is already occupied, move only the exposed MySQL port:
+If port `3306` is already in use:
 
 ```bash
 MYSQL_PORT=3307 docker compose up
@@ -123,17 +235,93 @@ make compose-up
 make compose-down
 ```
 
-## Requirements
+## How to Use the System
 
-### Local dev mode
+### Recommended path: Replay Mode
 
-- Python 3.10+
-- Node.js / npm
-- Node `22.22.0` recommended for parity with the current Render frontend build
+This is the primary end-to-end workflow in the submitted software artefact.
 
-### Full Docker mode
+1. Start the system with `make bootstrap-dev`
+2. Open `http://localhost:3000`
+3. Go to `Monitor`
+4. Switch to `Replay Mode`
+5. Select a replay clip from the dropdown
+6. Click `Play Replay`
+7. Observe:
+   - predicted fall-related output
+   - timeline updates
+   - runtime model panel
 
-- Docker Desktop or Docker Engine with `docker compose`
+### Optional path: Realtime Mode
+
+1. Stay on the `Monitor` page
+2. Switch to `Realtime Mode`
+3. Allow camera access in the browser
+4. Click `Start Realtime`
+5. Observe the live prediction output and timeline updates
+
+### Optional path: Event History
+
+1. Start the full database-backed system with `docker compose up`
+2. Open the `Event History` page
+3. Review stored events and related status data
+
+## Sample Inputs and Access
+
+- no login is required
+- no test account is required
+- the recommended sample inputs are the promoted replay clips available through `Replay Mode`
+- the default review path does not require raw training datasets
+
+## Environment Variables and Configuration
+
+The repository includes:
+
+- `.env.example` as the documented variable template
+- `applications/backend/config.py` as the backend config parser
+
+For the default local demo path, the provided safe defaults are intended to
+minimise setup friction.
+
+Important configuration groups:
+
+### 1. App defaults
+
+- `APP_BASE_URL`
+- `APP_TIMEZONE`
+- `CORS_ALLOWED_ORIGINS`
+- `SESSION_TTL_S`
+- `SESSION_MAX_STATES`
+
+### 2. Runtime paths
+
+- `SQLITE_PATH`
+- `SAFE_GUARD_SQLITE_PATH`
+- `EVENT_CLIPS_DIR`
+
+### 3. Database mode
+
+- `DB_BACKEND`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_USER`
+- `DB_PASS`
+- `DB_NAME`
+
+### 4. Optional integrations
+
+- `TELEGRAM_BOT_TOKEN`
+- `TWILIO_*`
+- `RESEND_API_KEY`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+
+Configuration rules:
+
+- keep real secrets out of git
+- use private local env files or deployment secret stores for real credentials
+- treat `.env.example` as documentation, not as a real secret store
+- the default local demo does not require third-party notification credentials
 
 ## Repository Layout
 
@@ -143,19 +331,19 @@ make compose-down
 │   ├── backend/                 # FastAPI backend
 │   └── frontend/                # React frontend
 ├── ml/
-│   └── src/fall_detection/      # Core package: data, training, eval, deploy runtime
+│   └── src/fall_detection/      # Core ML package
 ├── ops/
 │   ├── configs/                 # labels, splits, ops, delivery profiles
 │   ├── scripts/                 # utility and orchestration scripts
-│   └── deploy_assets/           # promoted runtime-approved checkpoints and replay clips
+│   └── deploy_assets/           # promoted checkpoints and replay clips
 ├── qa/
-│   └── tests/                   # smoke and contract tests
+│   └── tests/                   # maintained test suite
 ├── data/                        # raw/interim/processed datasets
-├── outputs/                     # experimental/local training outputs (not promoted runtime assets)
+├── outputs/                     # local and experimental outputs
 └── Makefile                     # main project entrypoint
 ```
 
-## Common Workflows
+## Common Commands
 
 List available targets:
 
@@ -163,7 +351,7 @@ List available targets:
 make help
 ```
 
-### Start the system
+Start and stop the software:
 
 ```bash
 make bootstrap-dev
@@ -173,20 +361,85 @@ make compose-up
 make compose-down
 ```
 
-### Stop the local dev servers
+## Validation
+
+Run the release checks:
 
 ```bash
-make stop-dev
+make release-check
 ```
 
+This currently verifies:
+
+- git status visibility
+- release boundary script availability
+- Python compileability for maintained backend, ML, and ops code
+- frontend production build
+
+Recommended test subsets:
+
 ```bash
-# if the current local run is attached to your terminal
-Ctrl-C
+./ops/scripts/run_canonical_tests.sh torch-free
+./ops/scripts/run_canonical_tests.sh contract
+./ops/scripts/run_canonical_tests.sh monitor
 ```
+
+## Demo Recording
+
+For a short software demonstration, show the following:
+
+1. start the system
+2. open the frontend
+3. go to `Monitor`
+4. select `Replay Mode`
+5. choose a replay clip
+6. click `Play Replay`
+7. show the input selection
+8. show the prediction output
+9. show the timeline updates
+10. show the runtime model panel
+
+This demonstrates one meaningful feature working end-to-end.
+
+## Scope Notes
+
+The default usage path is the runnable software and demo path, not full ML
+reproduction. In practice:
+
+- `make bootstrap-dev` and `make dev` do not require raw training datasets
+- `docker compose up` is only needed if database persistence must also be shown
+- raw datasets, `data/interim`, and `data/processed` are not distributed with this submission
+- full data extraction, preprocessing, training, and evaluation require separately acquired datasets
+- full ML reproduction is optional and requires separately arranged dataset access
+
+## Runtime Assets
+
+This submission distinguishes between experimental outputs and promoted runtime
+assets.
+
+### Promoted runtime assets
+
+- `ops/deploy_assets/manifest.json`
+  - source of truth for shipped runtime assets
+- `ops/deploy_assets/checkpoints/`
+  - promoted checkpoints approved for runtime loading
+- `ops/deploy_assets/replay_clips/`
+  - promoted replay clips approved for reviewer and demo use
+- `ops/configs/ops/*.yaml`
+  - canonical runtime operating-point profiles
+
+### Experimental outputs
+
+- `outputs/`
+  - local or experimental training and evaluation outputs
+  - not treated as shipped runtime assets unless explicitly promoted
+
+## Optional Research Workflows
+
+These workflows are not part of the default demo path. They are retained for
+research traceability.
 
 ### Prepare data
-
-These commands are optional research-reproduction workflows. They require separately acquired datasets and are not part of the default reviewer/demo path.
 
 ```bash
 make pipeline-data-caucafall
@@ -223,91 +476,19 @@ make pipeline-auto-tcn-caucafall ADAPTER_USE=1
 make pipeline-auto-gcn-caucafall ADAPTER_USE=1
 ```
 
-If raw extraction should be included:
+If extraction should be included:
 
 ```bash
 AUTO_DO_EXTRACT=1 make pipeline-auto-tcn-caucafall ADAPTER_USE=1
 ```
 
-## Validation Before Submission
-
-Run the static release checks:
-
-```bash
-make release-check
-```
-
-This currently verifies:
-
-- git status visibility
-- release boundary script availability
-- Python compileability for `ml/src/fall_detection`, `applications/backend`, and `ops/scripts`
-- frontend production build
-
-Recommended contract/smoke test subset:
-
-```bash
-./ops/scripts/run_canonical_tests.sh torch-free
-```
-
-Server app / contract subset:
-
-```bash
-./ops/scripts/run_canonical_tests.sh contract
-```
-
-Torch-dependent monitor subset:
-
-```bash
-./ops/scripts/run_canonical_tests.sh monitor
-```
-
-## Pre-Deploy Frontend Parity Check
-
-Before pushing a frontend change for Render deployment, run the same clean-install
-path that Render uses:
-
-```bash
-make frontend-render-check
-```
-
-This performs:
-
-- `npm ci`
-- `npm run build`
-
-The repository also includes:
-
-- root `.nvmrc` pinned to `22.22.0`
-- `applications/frontend/package.json` `engines.node = 22.22.x`
-
-If you want `make release-check` to include this heavier frontend parity check,
-run:
-
-```bash
-RELEASE_DOCTOR_RENDER_PARITY=1 make release-check
-```
-
-## Runtime Profiles and Delivery Notes
-
-Current online deployment profiles are loaded from:
-
-- `ops/configs/ops/tcn_caucafall.yaml`
-- `ops/configs/ops/gcn_caucafall.yaml`
-- `ops/configs/ops/tcn_le2i.yaml`
-- `ops/configs/ops/gcn_le2i.yaml`
-
-Important delivery note:
-
-## Render Deployment Notes
+## Deployment Notes
 
 Recommended cloud deployment shape:
 
 - frontend on Render static hosting
 - backend on Render web service
-- app data on SQLite with a persistent disk
-- Telegram caregiver notification
-- optional generated event summary via Gemini API
+- SQLite on a persistent disk
 
 Suggested backend environment variables:
 
@@ -329,63 +510,18 @@ APP_BASE_URL=https://your-frontend-domain.onrender.com
 CORS_ALLOWED_ORIGINS=https://your-frontend-domain.onrender.com
 ```
 
-Operational note:
+Frontend parity check before deployment:
 
-- caregiver `telegram_chat_id` can come from the app database or the env fallback
-- Telegram and summary-provider credentials should be stored only in Render environment variables
-- SMS / phone / email escalation are future-work channels, not the current implemented delivery path
+```bash
+make frontend-render-check
+```
 
-## Configuration and Secrets
+This runs:
 
-Backend runtime configuration is centered on:
+- `npm ci`
+- `npm run build`
 
-- `.env.example` as the documented variable inventory
-- `applications/backend/config.py` as the canonical config parsing layer
-- deployment environment variables as the source for real secrets
-
-Configuration should be read in four groups:
-
-1. safe local defaults
-   - `APP_BASE_URL`
-   - `APP_TIMEZONE`
-   - `CORS_ALLOWED_ORIGINS`
-   - `SESSION_TTL_S`
-   - `SESSION_MAX_STATES`
-2. runtime paths
-   - `SQLITE_PATH`
-   - `SAFE_GUARD_SQLITE_PATH`
-   - `EVENT_CLIPS_DIR`
-3. backend mode selection
-   - `DB_BACKEND`
-   - `DB_HOST`
-   - `DB_PORT`
-   - `DB_USER`
-   - `DB_PASS`
-   - `DB_NAME`
-4. secret-bearing integrations
-   - `TELEGRAM_BOT_TOKEN`
-   - `TWILIO_*`
-   - `RESEND_API_KEY`
-   - `OPENAI_API_KEY`
-   - `GEMINI_API_KEY`
-
-Operational rules:
-
-- keep real secrets out of git and store them only in local private env files or deployment secret stores
-- prefer SQLite for local demo and supervisor review
-- treat `.env.example` as the documented contract, not as a source of real credentials
-- if a deployment requires third-party delivery or AI summaries, configure those values explicitly rather than relying on undeclared defaults
-
-Suggested Render blueprint:
-
-- [render.yaml](render.yaml)
-- backend uses a persistent disk mounted at `/var/data`
-- frontend should set `REACT_APP_API_BASE` to the backend Render URL
-
-- the main reviewed online path is `caucafall + TCN + OP2`
-- demo and replay delivery profiles live under `ops/configs/delivery/`
-
-## Datasets and Data Modes
+## Datasets
 
 Supported dataset codes:
 
@@ -394,81 +530,44 @@ Supported dataset codes:
 - `caucafall`
 - `muvim`
 
-Expected raw roots by default:
+Expected default raw roots:
 
 - `data/raw/LE2i`
 - `data/raw/UR_Fall_clips`
 - `data/raw/CAUCAFall`
 - `data/raw/MUVIM`
 
-Dataset availability:
+Dataset availability summary:
 
 - `CAUCAFall`
   - primary benchmark and deployment-target dataset in this project
-  - publicly available for research use from its original dataset source
-  - source: `https://data.mendeley.com/datasets/7w7fccy7ky/4`
-  - this repository does not redistribute the raw dataset
-- `LE2i`
-  - comparative and transfer-boundary dataset in this project
-  - publicly available for research use from its original dataset source
-  - source: `http://le2i.cnrs.fr/Fall-detection-Dataset?lang=fr`
-  - this repository does not redistribute the raw dataset
-- `URFD`
-  - supported by the codebase as an additional dataset option
-  - publicly available from its original dataset source
-  - source: `http://fenix.univ.rzeszow.pl/~mkepski/ds/uf.html`
-  - this repository does not redistribute the raw dataset
-- `MUVIM`
-  - secondary exploratory dataset in this project
-  - obtained from the Intelligent Assistive Technology and Systems Lab, University of Toronto, under a signed research data agreement
   - not redistributed in this repository
-  - access is restricted and must be arranged directly with the data owner, subject to the provider's terms
+- `LE2i`
+  - comparative dataset
+  - not redistributed in this repository
+- `URFD`
+  - supported by the codebase
+  - not redistributed in this repository
+- `MUVIM`
+  - restricted-access exploratory dataset
+  - not redistributed in this repository
 
-Required acknowledgment for `MUVIM`-based research use:
+## Known Limitations
 
-- citation: S. Denkovski, S. S. Khan, B. Malamis, S. Y. Moon, B. Ye and A. Mihailidis, "Multi Visual Modality Fall Detection Dataset," *IEEE Access*, 2022, doi: `10.1109/ACCESS.2022.3211939`
-- acknowledgment: `The author acknowledges the support of the Intelligent Assistive Technology and Systems Lab (IATSL) at the University of Toronto through the sharing of data related to this research.`
+- this submission is a focused prototype, not a fully productized care platform
+- the default reviewer path demonstrates the runnable monitoring system, not full model retraining from raw datasets
+- raw datasets are not redistributed, so full reproduction requires separately acquired data
+- some features are environment-dependent, including database persistence, Telegram notifications, and generated summaries
+- replay mode is intended for demonstration and interface review, not as a claim of clinically validated deployment
+- the system demonstrates end-to-end feasibility and core project behaviour, but it is not presented as a clinically validated or deployment-ready safety product
 
-Two common usage modes:
+## Project Scope
 
-1. raw mode
-   - extract poses
-   - preprocess poses
-   - generate labels and splits
-   - build train/eval windows
-2. raw-free mode
-   - start from existing `data/interim/...` or `data/processed/...`
-   - useful when processed data already exists
+This repository is intended to provide:
 
-## Notes for Reviewers
-
-- if you only want to see the system working, use `make bootstrap-dev`
-- if you want DB persistence included, use `docker compose up`
-- if local `3306` is already occupied, use `MYSQL_PORT=3307 docker compose up`
-- this branch is intentionally trimmed to runnable code, configuration, tests, and deployment assets
-- runtime-generated artifacts such as datasets, checkpoints produced during training, and local event clips are not part of the tracked submission surface
-
-## Runtime Asset Promotion
-
-The cleaned submission branch distinguishes between experimental ML outputs and
-runtime-approved deploy assets.
-
-- `ops/deploy_assets/manifest.json`
-  - tracked source of truth for promoted runtime assets
-  - lists the shipped checkpoints, canonical runtime operating-point YAMLs, and
-    replay clips intended for reviewer/demo use
-- `ops/deploy_assets/checkpoints/`
-  - promoted checkpoints approved for backend runtime loading on this branch
-- `ops/deploy_assets/replay_clips/`
-  - promoted replay clips approved for reviewer/demo playback
-- `ops/configs/ops/*.yaml`
-  - canonical runtime operating-point profiles; the promoted subset is listed in
-    `ops/deploy_assets/manifest.json`
-- `outputs/`
-  - experimental or locally produced training/evaluation outputs
-  - not treated as shipped runtime assets unless explicitly promoted into
-    `ops/deploy_assets/` and recorded in the manifest
-
-This branch does not rely on private research notes to identify deployable ML
-assets. Reviewers can use `ops/deploy_assets/manifest.json` as the explicit
-runtime promotion contract.
+- a functioning software prototype
+- a clear demonstration of the project's core feature
+- at least one meaningful end-to-end workflow
+- runnable code with setup instructions
+- a user guide explaining how to run and use the system
+- clear acknowledgement of limitations
