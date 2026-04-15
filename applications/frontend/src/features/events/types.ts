@@ -33,6 +33,7 @@ export interface EventRecord {
 
 export interface EventsResponse {
   events: EventRecord[];
+  total?: number;
   [key: string]: unknown;
 }
 

@@ -65,14 +65,6 @@ export default function Events() {
     });
   }, [events, startDate, endDate, eventType, status, model]);
 
-  const stats = useMemo(() => {
-    const total = events.length;
-    const pending = events.filter((e) => (e.status || "").toLowerCase() === "pending_review").length;
-    const confirmed = events.filter((e) => (e.status || "").toLowerCase() === "confirmed_fall").length;
-    const falseAlarms = events.filter((e) => (e.status || "").toLowerCase() === "false_alarm").length;
-    return { total, pending, confirmed, falseAlarms };
-  }, [events]);
-
   function openReview(ev: EventRecord) {
     const current = String(ev?.status || "pending_review").toLowerCase();
     setReviewEvent(ev);
@@ -134,8 +126,8 @@ export default function Events() {
         </div>
 
         <div className={styles.statCard}>
-          <span className={styles.statNumber}>{stats.total}</span>
-          <span className={styles.statLabel}>Events (Total)</span>
+          <span className={styles.statNumber}>{filteredEvents.length}</span>
+          <span className={styles.statLabel}>Events Shown</span>
         </div>
       </div>
 

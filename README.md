@@ -127,6 +127,7 @@ Includes:
 - frontend
 - backend
 - promoted runtime assets
+- SQLite-backed local persistence
 - no MySQL required
 
 Run with:
@@ -137,7 +138,7 @@ make bootstrap-dev
 
 ### 2. Full persistent-system mode
 
-Use this only if database persistence also needs to be demonstrated.
+Use this when MySQL-backed persistence needs to be demonstrated.
 
 Includes:
 
@@ -150,6 +151,12 @@ Run with:
 ```bash
 docker compose up
 ```
+
+Database backend summary:
+
+- local lightweight mode uses SQLite when `DB_BACKEND=sqlite` is configured
+- online Render deployment uses SQLite on a persistent disk
+- Docker Compose mode uses MySQL
 
 ## Requirements
 
@@ -202,8 +209,8 @@ Notes:
 
 - use `make dev` if `.venv` and `applications/frontend/node_modules` already exist
 - this mode does not require MySQL
-- DB-backed features fall back gracefully when DB is unavailable
-- for cloud deployment, the backend also supports `DB_BACKEND=sqlite`
+- the intended local demo database backend is SQLite via `DB_BACKEND=sqlite`
+- for cloud deployment, the backend supports SQLite on a persistent disk
 
 ### Option B: Full system with MySQL persistence
 
@@ -282,6 +289,11 @@ The repository includes:
 
 For the default local demo path, the provided safe defaults are intended to
 minimise setup friction.
+
+Database mode is selected with `DB_BACKEND`:
+
+- `sqlite` is used for the lightweight local demo path and the Render deployment
+- `mysql` is used by the Docker Compose persistent-system path
 
 Important configuration groups:
 
@@ -557,7 +569,9 @@ Dataset availability summary:
 - this submission is a focused prototype, not a fully productized care platform
 - the default reviewer path demonstrates the runnable monitoring system, not full model retraining from raw datasets
 - raw datasets are not redistributed, so full reproduction requires separately acquired data
-- some features are environment-dependent, including database persistence, Telegram notifications, and generated summaries
+- database-backed workflows are implemented, but require SQLite or the Docker/MySQL runtime mode to be configured
+- Telegram notifications and generated summaries require external credentials and deployment configuration
+- SMS and phone-call escalation are not implemented in this prototype and are treated as future work
 - replay mode is intended for demonstration and interface review, not as a claim of clinically validated deployment
 - the system demonstrates end-to-end feasibility and core project behaviour, but it is not presented as a clinically validated or deployment-ready safety product
 

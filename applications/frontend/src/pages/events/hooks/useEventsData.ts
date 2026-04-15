@@ -58,7 +58,8 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
       }
 
       const data = await fetchEvents(apiBase, { residentId, limit: 500, signal: ac.signal });
-      setEvents(Array.isArray(data?.events) ? data.events : []);
+      const nextEvents = Array.isArray(data?.events) ? data.events : [];
+      setEvents(nextEvents);
       if (!silent) setLoading(false);
     } catch (e: unknown) {
       if ((e as Error)?.name === "AbortError") return;
