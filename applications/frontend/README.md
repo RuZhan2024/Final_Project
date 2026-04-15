@@ -1,33 +1,34 @@
-# Frontend (React) Demo App
+# Frontend
 
-This app is the examiner-facing UI for the fall-detection system.
+This directory contains the React frontend for Safe Guard Fall Detection.
 
-## Prerequisites
+For the main project overview, recommended demo path, deployment link, and
+evidence links, see the repository root `README.md`.
 
-- Node.js 18+ and npm
-- Backend API running on `http://localhost:8000` (or another URL)
+## Requirements
 
-## Environment
+- Node.js / npm
+- Node `22.22.x` recommended for parity with the current frontend build
+- backend API running locally or configured through `REACT_APP_API_BASE`
 
-Create `applications/frontend/.env`:
+## Recommended Run Path
 
-```bash
-REACT_APP_API_BASE=http://localhost:8000
-```
-
-`REACT_APP_API_BASE` is read in `applications/frontend/src/lib/config.js`.
-
-## Run (Local Demo)
-
-From repo root, run backend:
+From the repository root:
 
 ```bash
-source .venv/bin/activate
-pip install -r requirements_server.txt
-uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
+make bootstrap-dev
 ```
 
-In a second terminal, run frontend:
+This starts both the backend and frontend for the local demo workflow.
+
+Open:
+
+- frontend: `http://localhost:3000`
+- backend health: `http://127.0.0.1:8000/api/health`
+
+## Frontend-Only Development
+
+Use this path when the backend is already running.
 
 ```bash
 cd applications/frontend
@@ -35,14 +36,52 @@ npm install
 npm start
 ```
 
-Open `http://localhost:3000`.
+By default, the frontend expects the backend at `http://localhost:8000`.
+
+## Environment
+
+To point the frontend at a non-default backend, create
+`applications/frontend/.env`:
+
+```bash
+REACT_APP_API_BASE=http://localhost:8000
+```
+
+`REACT_APP_API_BASE` is read by `applications/frontend/src/lib/config.js`.
+
+## Build and Type Check
+
+```bash
+cd applications/frontend
+npm run typecheck
+npm run build
+```
+
+The repository root also provides a clean-install frontend parity check:
+
+```bash
+make frontend-render-check
+```
+
+This runs:
+
+- `npm ci`
+- `npm run build`
 
 ## Replay Clips
 
-The Monitor replay dropdown is populated by the backend from:
+The `Monitor` replay dropdown is populated by the backend from the configured
+replay clips directory.
 
-- default: `data/replay_clips`
-- override: `REPLAY_CLIPS_DIR=/absolute/path/to/replay_clips`
+Default path:
+
+- `data/replay_clips`
+
+Override:
+
+```bash
+REPLAY_CLIPS_DIR=/absolute/path/to/replay_clips
+```
 
 Supported replay extensions:
 
@@ -57,9 +96,10 @@ Quick check:
 curl -s http://localhost:8000/api/replay/clips
 ```
 
-If this returns an empty `clips` list, the replay selector in the UI will also be empty.
+If this returns an empty `clips` list, the replay selector in the frontend will
+also be empty.
 
-## Quick API Checks
+## Useful API Checks
 
 Health:
 
@@ -67,24 +107,15 @@ Health:
 curl -s http://localhost:8000/api/health
 ```
 
-Deploy specs:
+Runtime specs:
 
 ```bash
 curl -s http://localhost:8000/api/spec
 ```
 
-Live monitor inference endpoint used by UI:
-
-```bash
-curl -s -X POST http://localhost:8000/api/monitor/predict_window \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"demo","dataset_code":"le2i","mode":"tcn","target_T":48,"xy":[[[0,0]]],"conf":[[1.0]]}'
-```
-
 ## Notes
 
-- Default ports:
-  - frontend: `3000`
-  - backend: `8000`
-- If browser CORS issues appear, verify backend CORS settings in `applications/backend/app.py`.
-- The UI supports `/api/*` and `/api/v1/*` compatibility routes exposed by the backend.
+- default frontend port: `3000`
+- default backend port: `8000`
+- the UI supports backend `/api/*` and `/api/v1/*` compatibility routes
+- for CORS changes, use the backend configuration documented in the root README and `.env.example`
