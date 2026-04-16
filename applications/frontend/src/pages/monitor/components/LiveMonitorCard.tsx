@@ -59,7 +59,7 @@ export function LiveMonitorCard({
         </div>
         {inputSource === "camera" ? (
           <label className={styles.previewToggleRow}>
-            <span>Show live video</span>
+            <span>Show live preview</span>
             <button
               type="button"
               role="switch"

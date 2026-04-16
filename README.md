@@ -575,13 +575,4 @@ Dataset availability summary:
 - replay mode is intended for demonstration and interface review, not as a claim of clinically validated deployment
 - the system demonstrates end-to-end feasibility and core project behaviour, but it is not presented as a clinically validated or deployment-ready safety product
 
-## Project Scope
 
-This repository is intended to provide:
-
-- a functioning software prototype
-- a clear demonstration of the project's core feature
-- at least one meaningful end-to-end workflow
-- runnable code with setup instructions
-- a user guide explaining how to run and use the system
-- clear acknowledgement of limitations
