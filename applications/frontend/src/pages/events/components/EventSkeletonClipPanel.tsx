@@ -21,6 +21,25 @@ function hasStoredSkeletonClip(event: EventRecord | null): boolean {
   return Boolean(event?.meta?.skeleton_clip?.path);
 }
 
+function userFacingClipError(error: unknown): string {
+  const raw = String((error as Error)?.message || error || "").trim();
+  let detail = raw;
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown };
+    if (parsed && typeof parsed.detail === "string") detail = parsed.detail;
+  } catch {
+    // Keep the raw message when the backend did not return JSON.
+  }
+
+  if (detail === "clip_not_found") {
+    return "The stored replay file is not available in this environment. The event record exists, but the saved skeleton clip file is missing.";
+  }
+  if (detail.toLowerCase().includes("no skeleton clip")) {
+    return "No stored skeleton replay is attached to this event.";
+  }
+  return detail || "Could not load the stored skeleton replay.";
+}
+
 interface EventSkeletonClipPanelProps {
   apiBase: string;
   event: EventRecord | null;
@@ -58,7 +77,7 @@ export function EventSkeletonClipPanel({
         setClipFrameIdx(0);
       } catch (e: unknown) {
         if (!active || (e as Error)?.name === "AbortError") return;
-        setClipError(String((e as Error)?.message || e));
+        setClipError(userFacingClipError(e));
       } finally {
         if (active) setClipLoading(false);
       }

@@ -56,6 +56,7 @@ def load_today_counts(
 ) -> Dict[str, int]:
     falls = 0
     false_alarms = 0
+    confirmed_falls = 0
 
     with conn.cursor() as cur:
         if table_exists(conn, "events"):
@@ -95,7 +96,23 @@ def load_today_counts(
                 )
                 row = cur.fetchone() or {}
                 false_alarms = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
-                return {"falls_detected": falls, "false_alarms": false_alarms}
+
+                if col_exists(conn, "events", "status"):
+                    cur.execute(
+                        "SELECT COUNT(*) AS c FROM events "
+                        f"WHERE {_today_filter_sql(conn, time_col)} "
+                        "AND LOWER(status)='confirmed_fall'"
+                        + resident_filter,
+                        params,
+                    )
+                    row = cur.fetchone() or {}
+                    confirmed_falls = int(row.get("c", 0)) if isinstance(row, dict) else int(list(row)[0])
+
+                return {
+                    "falls_detected": falls,
+                    "false_alarms": false_alarms,
+                    "confirmed_falls": confirmed_falls,
+                }
 
         if table_exists(conn, "fall_events"):
             has_resident_id = col_exists(conn, "fall_events", "resident_id")
@@ -104,7 +121,8 @@ def load_today_counts(
             cur.execute(
                 "SELECT "
                 "SUM(CASE WHEN event_type='fall_detected' THEN 1 ELSE 0 END) AS falls_detected, "
-                "SUM(CASE WHEN event_type='false_alarm' THEN 1 ELSE 0 END) AS false_alarms "
+                "SUM(CASE WHEN event_type='false_alarm' THEN 1 ELSE 0 END) AS false_alarms, "
+                "SUM(CASE WHEN event_type IN ('confirmed_fall','fall_confirmed') THEN 1 ELSE 0 END) AS confirmed_falls "
                 f"FROM fall_events WHERE {_today_filter_sql(conn, 'created_at')}" + resident_where,
                 params,
             )
@@ -112,8 +130,9 @@ def load_today_counts(
             if isinstance(row, dict):
                 falls = int(row.get("falls_detected") or 0)
                 false_alarms = int(row.get("false_alarms") or 0)
+                confirmed_falls = int(row.get("confirmed_falls") or 0)
 
-    return {"falls_detected": falls, "false_alarms": false_alarms}
+    return {"falls_detected": falls, "false_alarms": false_alarms, "confirmed_falls": confirmed_falls}
 
 
 def load_last_latency_ms(conn: Any, *, table_exists, col_exists) -> int | None:

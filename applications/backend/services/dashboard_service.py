@@ -17,7 +17,7 @@ class DashboardDeps:
 def base_dashboard_summary(last_pred_latency_ms: int) -> Dict[str, Any]:
     return {
         "status": "normal",
-        "today": {"falls_detected": 0, "false_alarms": 0},
+        "today": {"falls_detected": 0, "false_alarms": 0, "confirmed_falls": 0},
         "system": {
             "model_name": "TCN",
             "monitoring_enabled": False,

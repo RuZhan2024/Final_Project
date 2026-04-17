@@ -9,7 +9,7 @@ import { useMonitoring } from "../monitoring/MonitoringContext";
 import styles from "./Events.module.css";
 
 type EventFilterType = "All" | "Fall" | "Uncertain" | "Safe";
-type StatusFilterType = "All" | "Unreviewed" | "Confirmed" | "False Alarm" | "Dismissed";
+type StatusFilterType = "All" | "Unreviewed" | "Confirmed" | "Not a Fall" | "Dismissed";
 type ModelFilterType = "All" | "TCN" | "GCN";
 
 function hasStoredReplay(ev: EventRecord | null): boolean {
@@ -50,7 +50,7 @@ export default function Events() {
             ? "pending_review"
             : status === "Confirmed"
             ? "confirmed_fall"
-            : status === "False Alarm"
+            : status === "Not a Fall"
             ? "false_alarm"
             : "dismissed";
         if ((ev.status || "").toLowerCase() !== want) return false;
@@ -122,7 +122,7 @@ export default function Events() {
 
         <div className={styles.statCard}>
           <span className={styles.statNumber}>{todaySummary.false_alarms}</span>
-          <span className={styles.statLabel}>False Alarms Today</span>
+          <span className={styles.statLabel}>Marked Not Falls Today</span>
         </div>
 
         <div className={styles.statCard}>
@@ -172,7 +172,7 @@ export default function Events() {
             <option>All</option>
             <option>Unreviewed</option>
             <option>Confirmed</option>
-            <option>False Alarm</option>
+            <option>Not a Fall</option>
             <option>Dismissed</option>
           </select>
 
