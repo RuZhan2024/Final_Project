@@ -8,6 +8,24 @@ import { useDashboardSummary } from "./dashboard/hooks/useDashboardSummary";
 
 import styles from "./Dashboard.module.css";
 
+const dashboardHelp = {
+  residentStatus: "Shows whether the resident is currently in a normal state or whether the system has an active fall alert.",
+  fallsDetected: "The number of fall events detected by the system today. These may still need human review.",
+  confirmedFalls: "The number of today's detected fall events that have been reviewed and confirmed as real falls.",
+  model: "The fall-detection model currently selected for monitoring.",
+  monitoring: "Shows whether live monitoring is enabled. Turning it off pauses live fall detection.",
+  latency: "The most recent backend prediction response time. Lower values mean faster system response.",
+  apiHealth: "Shows whether the frontend can currently reach the backend service.",
+};
+
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span className={styles.infoHint} tabIndex={0} title={text} aria-label={text} data-tooltip={text}>
+      i
+    </span>
+  );
+}
+
 function Dashboard() {
   const navigate = useNavigate();
   const [statusMsg, setStatusMsg] = useState("");
@@ -19,7 +37,7 @@ function Dashboard() {
   const summary = (data || {}) as DashboardSummary & Record<string, unknown>;
   const status = summary.status || "normal";
   const fallsDetected = Number(summary.today?.falls_detected ?? 0);
-  const falseAlarms = Number(summary.today?.false_alarms ?? 0);
+  const confirmedFalls = Number(summary.today?.confirmed_falls ?? 0);
   const latencyMs = summary.system?.last_latency_ms == null ? null : Number(summary.system.last_latency_ms);
   const apiOnline = summary.system?.api_online == null ? null : Boolean(summary.system.api_online);
 
@@ -77,7 +95,10 @@ function Dashboard() {
 
       <div className={styles.topRow}>
         <div className={styles.card}>
-          <h3 className={styles.cardTitle}>Resident Status</h3>
+          <h3 className={`${styles.cardTitle} ${styles.titleWithHint}`}>
+            <span>Resident Status</span>
+            <InfoHint text={dashboardHelp.residentStatus} />
+          </h3>
           <div className={styles.residentContent}>
             <span className={styles.statusText}>{statusLabel}</span>
             <button className={styles.actionButton} onClick={() => navigate("/monitor")}>
@@ -91,11 +112,17 @@ function Dashboard() {
           <div className={styles.summaryGrid}>
             <div className={styles.summaryBox}>
               <span className={styles.bigNumber}>{fallsDetected}</span>
-              <span className={styles.label}>Falls Detected</span>
+              <span className={styles.labelWithHint}>
+                <span className={styles.label}>Falls Detected</span>
+                <InfoHint text={dashboardHelp.fallsDetected} />
+              </span>
             </div>
             <div className={styles.summaryBox}>
-              <span className={styles.bigNumber}>{falseAlarms}</span>
-              <span className={styles.label}>Confirmed False Alarms</span>
+              <span className={styles.bigNumber}>{confirmedFalls}</span>
+              <span className={styles.labelWithHint}>
+                <span className={styles.label}>Confirmed Falls</span>
+                <InfoHint text={dashboardHelp.confirmedFalls} />
+              </span>
             </div>
           </div>
         </div>
@@ -109,14 +136,20 @@ function Dashboard() {
 
         <div className={styles.systemGrid}>
           <div className={styles.systemBox}>
-            <span className={styles.boxLabel}>Model</span>
+            <span className={styles.boxLabel}>
+              <span>Model</span>
+              <InfoHint text={dashboardHelp.model} />
+            </span>
             <div className={styles.centerContent}>
               <span className={styles.tag}>{modelLabel}</span>
             </div>
           </div>
 
           <div className={styles.systemBox}>
-            <span className={styles.boxLabel}>Monitoring</span>
+            <span className={styles.boxLabel}>
+              <span>Monitoring</span>
+              <InfoHint text={dashboardHelp.monitoring} />
+            </span>
             <div className={styles.centerContent}>
               <div
                 className={styles.toggleSwitch}
@@ -132,7 +165,10 @@ function Dashboard() {
           </div>
 
           <div className={styles.systemBox}>
-            <span className={styles.boxLabel}>Latency</span>
+            <span className={styles.boxLabel}>
+              <span>Latency</span>
+              <InfoHint text={dashboardHelp.latency} />
+            </span>
             <div className={styles.centerContent}>
               <span className={styles.valueText}>
                 {latencyMs == null ? "—" : `${Math.round(latencyMs)}ms`}
@@ -141,7 +177,10 @@ function Dashboard() {
           </div>
 
           <div className={styles.systemBox}>
-            <span className={styles.boxLabel}>API Health</span>
+            <span className={styles.boxLabel}>
+              <span>API Health</span>
+              <InfoHint text={dashboardHelp.apiHealth} />
+            </span>
             <div className={styles.centerContent}>
               <div className={styles.statusIndicator}>
                 <span className={styles.dot} style={dotStyle} />
@@ -152,6 +191,28 @@ function Dashboard() {
         </div>
 
         {loading && <div className={styles.mutedNotice}>Loading…</div>}
+      </div>
+
+      <div className={styles.infoCard}>
+        <h3 className={styles.infoCardTitle}>How to read this dashboard</h3>
+        <ul className={styles.infoList}>
+          <li>
+            <span className={styles.infoKeyword}>Falls Detected</span>
+            <span>shows fall events found by the system today.</span>
+          </li>
+          <li>
+            <span className={styles.infoKeyword}>Confirmed Falls</span>
+            <span>shows events reviewed and confirmed as real falls.</span>
+          </li>
+          <li>
+            <span className={styles.infoKeyword}>Monitoring</span>
+            <span>shows whether live fall detection is currently running.</span>
+          </li>
+          <li>
+            <span className={styles.infoKeyword}>API Health</span>
+            <span>shows whether the dashboard is connected to the backend service.</span>
+          </li>
+        </ul>
       </div>
     </div>
   );

@@ -10,7 +10,7 @@ export function eventTypeLabel(type: unknown): string {
 export function eventStatusLabel(status: unknown): string {
   const s = String(status || "").toLowerCase();
   if (s === "confirmed_fall") return "Confirmed";
-  if (s === "false_alarm") return "False Alarm";
+  if (s === "false_alarm") return "Not a Fall";
   if (s === "pending_review") return "Pending Review";
   if (s === "dismissed") return "Dismissed";
   const raw = String(status ?? "").trim();

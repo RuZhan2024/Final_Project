@@ -3,6 +3,7 @@ import type { CountSummary } from "../../lib/apiTypes";
 export interface DashboardTodaySummary {
   falls_detected?: number | null;
   false_alarms?: number | null;
+  confirmed_falls?: number | null;
   [key: string]: unknown;
 }
 
