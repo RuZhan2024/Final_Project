@@ -47,7 +47,7 @@ To point the frontend at a non-default backend, create
 REACT_APP_API_BASE=http://localhost:8000
 ```
 
-`REACT_APP_API_BASE` is read by `applications/frontend/src/lib/config.js`.
+`REACT_APP_API_BASE` is read by `applications/frontend/src/lib/config.ts`.
 
 ## Build and Type Check
 
@@ -75,7 +75,7 @@ replay clips directory.
 
 Default path:
 
-- `data/replay_clips`
+- `ops/deploy_assets/replay_clips`
 
 Override:
 

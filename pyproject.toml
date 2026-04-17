@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fall-detection"
 version = "0.1.0"
-description = "Fall detection pipeline (staged refactor scaffold)"
+description = "Safe Guard pose-based fall detection pipeline and runtime package"
 requires-python = ">=3.10"
 
 [project.scripts]
@@ -22,8 +22,8 @@ fd-extract-pose-images = "fall_detection.pose.extract_2d_images:main"
 fd-make-splits = "fall_detection.data.splits.make_splits:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "ml/src"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["ml/src"]
 include = ["fall_detection*"]
