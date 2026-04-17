@@ -90,12 +90,12 @@ The requirements are also linked rather than independent. Live and replay ingest
 
 | ID | Requirement | Primary implementation locus | Verification evidence | Main report anchor |
 | --- | --- | --- | --- | --- |
-| FR-1 | ingest live camera input and replay clips through one monitor surface | `apps/src/pages/Monitor.js`, `apps/src/pages/monitor/hooks/usePoseMonitor.js` | live/replay monitor path, runtime validation chapter | Sections `System Architecture`, `System Validation, Testing, and Audit` |
+| FR-1 | ingest live camera input and replay clips through one monitor surface | `applications/frontend/src/pages/Monitor.tsx`, `applications/frontend/src/pages/monitor/hooks/usePoseMonitor.ts` | live/replay monitor path, runtime validation chapter | Sections `System Architecture`, `System Validation, Testing, and Audit` |
 | FR-2 | convert visual input into pose-derived temporal windows for backend inference | browser-side pose extraction plus frontend window packaging, backend monitor contract | replay/live bounded runtime checks, pipeline contract review | Sections `System Architecture`, `Data and Experimental Protocol` |
-| FR-3 | apply active model and fitted operating-point profile to produce operational monitor states | `server/services/monitor_runtime_service.py`, active ops configs under `configs/ops/*` | canonical tests, replay/runtime validation, code review | Sections `Calibration and Alert Policy`, `System Validation, Testing, and Audit` |
+| FR-3 | apply active model and fitted operating-point profile to produce operational monitor states | `applications/backend/services/monitor_runtime_service.py`, active ops configs under `ops/configs/ops/*` | canonical tests, replay/runtime validation, code review | Sections `Calibration and Alert Policy`, `System Validation, Testing, and Audit` |
 | FR-4 | persist reviewable fall events for dashboard and event history | backend persistence layer, monitor repository, event routes | event-history verification, dashboard/event contract review | Sections `System Architecture`, `Implementation and Refactoring` |
 | FR-5 | deliver caregiver-facing notification on the active runtime path | Telegram notification manager and audit store | live/test notification checks, notification audit path | Sections `Notification Architecture`, `Deployment and Runtime Results` |
-| FR-6 | support replay validation without conflating replay with benchmark evidence | explicit replay controls and replay-event persistence semantics | replay validation chapter, audit/code-review findings | Sections `Research Questions and Scope`, `System Validation, Testing, and Audit` |
+| FR-6 | support replay validation without conflating replay with benchmark evidence | explicit replay controls and realtime-only event persistence semantics | replay validation chapter, audit/code-review findings | Sections `Research Questions and Scope`, `System Validation, Testing, and Audit` |
 
 ## Success Criteria
 
@@ -145,7 +145,7 @@ This positioning also helps explain the structure of the present report. The pro
 
 ## Vision-Based and Pose-Based Detection
 
-Fall detection has been approached through a range of input representations, including raw RGB video, silhouettes, handcrafted motion features, trajectories, and skeleton-based pose sequences. RGB-heavy methods can exploit rich scene context and appearance cues, but they often inherit scene-specific bias and can be sensitive to lighting variation, clothing, camera placement, and background structure. These properties can make them powerful in-domain while also making transfer and deployment interpretation more difficult.
+Fall detection has been approached through a range of input representations, including raw RGB video, silhouettes, handcrafted motion features, trajectories, and skeleton-based pose sequences. Earlier vision-based work such as Charfi et al. (2013) demonstrates the value of spatio-temporal visual descriptors, while more recent fall-detection studies continue to explore real-time video and skeleton-oriented variants. RGB-heavy methods can exploit rich scene context and appearance cues, but they often inherit scene-specific bias and can be sensitive to lighting variation, clothing, camera placement, and background structure. These properties can make them powerful in-domain while also making transfer and deployment interpretation more difficult.
 
 Pose-based methods pursue a different compromise. By reducing the input to body structure and motion over time, they shift attention away from appearance and toward movement dynamics. This can improve interpretability and can make the representation more compatible with privacy-oriented deployment designs. In the present project, that advantage is especially important because the same pose abstraction is used in both offline evaluation and the runtime monitor. This continuity is methodologically valuable: it avoids a hidden gap between the representation used to report performance and the representation used to produce operational behaviour.
 
@@ -153,25 +153,31 @@ At the same time, skeleton-based methods are not inherently robust. They depend 
 
 The project therefore aligns most closely with literature that views pose not merely as an offline research convenience, but as a deployable representation in its own right. That is a stricter and more demanding design choice than using skeletons only inside a benchmark pipeline. It requires tighter control of preprocessing and timing semantics, but it also produces a cleaner systems argument: the representation used for evaluation is materially the same as the representation used in monitoring.
 
+Unlike work that evaluates pose features only as an offline input representation, this project keeps the pose-window contract active across both benchmark evaluation and the runtime monitor.
+
 ## Temporal and Graph Sequence Models
 
 Because falls are structured events that unfold over time, temporal modelling is central to modern fall-detection pipelines. A purely frame-wise view is usually too weak, since the distinction between a fall and an ordinary activity often lies in the temporal pattern of motion rather than in any single pose. This is why temporal architectures remain central in the literature, even when the input representation is already compact.
 
-Temporal Convolutional Networks offer one strong and practical approach. They can model local and medium-range temporal dynamics efficiently, train stably, and fit naturally into fixed-window inference pipelines. Graph-based sequence models pursue a different hypothesis: if the body is represented as an articulated structure, then explicitly modelling joint topology may improve recognition by preserving relational information that a plain temporal encoder may flatten or ignore.
+Temporal Convolutional Networks offer one strong and practical approach, with work such as MS-TCN showing how temporal convolution can model structured time-series behaviour efficiently. They can model local and medium-range temporal dynamics, train stably, and fit naturally into fixed-window inference pipelines. Graph-based sequence models pursue a different hypothesis: if the body is represented as an articulated structure, then explicitly modelling joint topology may improve recognition by preserving relational information that a plain temporal encoder may flatten or ignore. This line connects to ST-GCN and later adaptive graph-convolution work in skeleton action recognition.
 
 The comparison between these families is therefore meaningful, but it also needs to be interpreted carefully. Much of the broader literature compares architectures under changing datasets, preprocessing choices, evaluation rules, and decision policies. Such comparisons may still be informative, but they make it difficult to isolate what the model family itself contributes. The present project narrows that problem deliberately. It compares a strong TCN baseline with a matched custom spatio-temporal GCN under a shared pose-window contract, shared fitting rules, and a shared alert interpretation framework.
 
 This narrower comparison does not claim to resolve the value of graph structure in general. Instead, it asks a more defensible question for a research-led project dissertation: under one controlled operational contract, does a topology-aware alternative improve practical fall-detection behaviour relative to a strong temporal baseline? This framing is academically stronger than a more generic “TCN versus GCN” comparison because it makes clear what has been controlled and what has not. It also aligns with the later system chapters, where model outputs are not interpreted in isolation but under a fixed policy and runtime path.
 
+Unlike broader architecture surveys, the contribution here is not to rank model families in the abstract. It is to compare two concrete families after fixing representation, windowing, fitting, and runtime interpretation.
+
 ## Calibration and Alerting in Monitoring Systems
 
 A second weakness in parts of the fall-detection literature is that deployment behaviour is often reduced to a threshold selected late in the pipeline or described only briefly after the main classification results. That simplification is convenient for compact benchmark papers, but it is inadequate for a monitoring system. A deployed system does not act on threshold-free metrics. It acts on interpreted score streams.
 
-This is where calibration and operating-point selection become methodologically important. In a monitoring context, raw model outputs must be transformed into alert states through a policy layer that may include threshold fitting, smoothing, temporal aggregation, cooldown logic, and persistence rules. These choices affect false-alert burden, latency, event fragmentation, and the distinction between transient suspicion and reviewable incident state. As a result, alert policy should not be treated as a cosmetic post-processing step. It is part of the deployment problem itself.
+This is where calibration and operating-point selection become methodologically important. Calibration work such as Guo et al. (2017) motivates treating probability interpretation as a separate concern from ranking accuracy, while selective-prediction work such as Geifman and El-Yaniv (2019) reinforces the value of handling uncertain cases explicitly. In a monitoring context, raw model outputs must be transformed into alert states through a policy layer that may include threshold fitting, smoothing, temporal aggregation, cooldown logic, and persistence rules. These choices affect false-alert burden, latency, event fragmentation, and the distinction between transient suspicion and reviewable incident state. As a result, alert policy should not be treated as a cosmetic post-processing step. It is part of the deployment problem itself.
 
 The present project takes this view explicitly. Validation-side temperature-informed fitting and tracked operating-point profiles are used so that deployment behaviour can be discussed as a defended and reviewable object rather than as a set of undocumented manual choices. This matters especially in safety-adjacent monitoring, where false positives and false negatives both carry operational cost. A model with attractive ranking metrics may still produce poor monitoring behaviour if its policy surface is unstable. Conversely, relatively small changes in smoothing or persistence rules can materially alter event-level performance without changing the underlying classifier.
 
 By making calibration, operating-point fitting, and runtime semantics explicit, the project aligns with a more systems-aware reading of the literature. It also differentiates itself from narrower studies that report classification performance without closely examining how score sequences become operational decisions. In this report, the alert layer is not peripheral. It is the bridge between model evidence and system behaviour.
+
+This differs from a benchmark-only threshold discussion because the fitted policy is carried into the monitor, event persistence, and notification path.
 
 ## Deployment-Oriented Evaluation
 
@@ -221,15 +227,13 @@ The system is organised as a full-stack pose-based fall-detection platform rathe
 
 The implementation boundary between these subsystems is important to the report because many of the project’s later findings are not caused by one model checkpoint in isolation. Instead, they arise from interactions between frontend pose quality, backend inference timing, and the policy layer that turns window-level outputs into alert states.
 
-The repository structure mirrors this system view. Core data, model, and deploy-time logic live under `src/fall_detection`. The API and persistence path live under `server`. The user-facing monitoring interface lives under `apps`. Configuration artifacts are preserved under `configs`, while experimental and deployment outputs are preserved under `artifacts`. This separation is one reason the project was able to support a substantial later audit and code-review phase without collapsing into an unrecoverable state.
+The final repository structure mirrors this system view. Core data, model, and deploy-time logic live under `ml/src/fall_detection`. The API and persistence path live under `applications/backend`. The user-facing monitoring interface lives under `applications/frontend`. Runtime configuration artifacts are preserved under `ops/configs`, promoted deployment assets under `ops/deploy_assets`, and experimental outputs under `outputs`. This separation is one reason the project was able to support a substantial later audit and code-review phase without collapsing into an unrecoverable state.
 
 Architecturally, the most important design decision is that the system is split by responsibility rather than by development stage. The frontend is not treated as a thin visual shell, and the backend is not treated as a generic prediction box. Instead, the frontend owns input capture and pose-window construction, while the backend owns operating-point selection, temporal policy evaluation, persistence semantics, and downstream delivery. This boundary is analytically useful because it explains where runtime deviations can arise. If a replay result changes, the cause may be frontend pose quality, backend policy interpretation, or the interaction between the two, not simply a different checkpoint.
 
 The architecture also reflects a deliberate separation between benchmark and deployment concerns. Offline data preparation, training, operating-point fitting, and frozen summaries all exist independently of the monitoring application. That makes it possible to defend the benchmark layer even when runtime behaviour is still being refined. At the same time, the deployment path can be studied as a genuine software system because it consumes tracked operating-point artifacts and real model checkpoints rather than placeholder rules.
 
-From a report perspective, this is one of the main reasons the project can sustain both a paper line and a full-report line. The artifact structure is not elegant only in principle; it has practical consequences for traceability. The report can point from a narrative claim to a configuration file, from a configuration file to a fitted policy, and from that policy to runtime behaviour observed in the monitor and event history.
-
-This design also helps solve a common full-stack research problem: how to stop software layers from obscuring methodological layers. If data preparation, runtime state, delivery logic, and report artifacts all live in one undifferentiated surface, then later analysis becomes vulnerable to accidental coupling and undocumented interpretation drift. By contrast, the present architecture gives each layer a more legible place in the repository and in the narrative. That does not guarantee correctness by itself, but it does make correctness easier to inspect and defend.
+This structure has practical consequences for traceability. The report can point from a narrative claim to a configuration file, from a configuration file to a fitted policy, and from that policy to runtime behaviour observed in the monitor and event history.
 
 **Figure 1. System architecture and decision path**
 
@@ -244,19 +248,17 @@ Figure 1 presents the system as a responsibility map. The frontend produces pose
 
 The frontend is implemented in React and acts as the operator-facing control surface for both live and replay monitoring. Its responsibilities go beyond page rendering. It must acquire camera or replay input, run browser-side pose extraction, assemble temporal windows at the required contract, submit those windows to the backend, and present the resulting alert state in a way that remains intelligible to the operator.
 
-The monitoring page is therefore the most important frontend subsystem. It exposes the active dataset/model/operating-point selection, live-versus-replay mode selection, and several runtime controls such as preview visibility and replay-event persistence. These are not cosmetic controls. They directly shape whether the monitoring path is being used as a demonstration path, a bounded replay-validation path, or an event-producing system path.
+The monitoring page is therefore the most important frontend subsystem. It exposes the active dataset/model/operating-point selection, live-versus-replay mode selection, and several runtime controls such as preview visibility, replay playback, and realtime event persistence semantics. These are not cosmetic controls. They directly shape whether the monitoring path is being used as a demonstration path, a bounded replay-validation path, or an event-producing system path.
 
 The frontend also contains dashboard, settings, and events pages. The dashboard summarises persisted outcomes, the settings page controls active runtime preferences and caregiver information, and the events page exposes reviewable event history. Together these interfaces mean that the system is more than a live demo viewer; it is a small but coherent monitoring application.
 
 Architecturally, later refactoring separated feature-level API logic, monitor hooks, and page components. This was necessary because the initial monitor path mixed state management, media handling, API transport, and UI rendering in ways that made runtime behaviour difficult to reason about.
 
-This separation now has a clear methodological value. The monitor page can be explained as a composition of concerns: media capture, pose generation, stateful runtime control, and render-layer presentation. That makes it easier to defend later fixes such as explicit replay-event persistence, live-video preview toggling, and failure-aware runtime toggles. Without that separation, those behaviours would look like UI details. In reality they are part of the system contract, because they change whether a replay session is merely illustrative or capable of producing persisted events and downstream notifications.
+This separation makes the monitor page easier to explain as a composition of concerns: media capture, pose generation, stateful runtime control, and render-layer presentation. It also makes later fixes, such as replay-versus-realtime persistence semantics and live-video preview toggling, easier to locate in the codebase.
 
 The frontend also embodies several trade-offs that are worth stating in the report. Keeping pose extraction in the browser reduces backend responsibility and supports a more privacy-oriented flow, but it also means that frontend performance and pose quality directly affect system behaviour. Exposing replay and live modes through the same monitor improves consistency, but it increases the burden on state handling because the same page must support demonstration, debugging, validation, and event-producing operation without silently changing semantics. The later code review showed that these trade-offs were real and that the final implementation is stronger precisely because they were made explicit.
 
-In this report, the frontend is treated as part of the methodology, not merely as the interface layer. It defines how the runtime evidence is produced and how operator-visible meaning is attached to backend state.
-
-Another reason this matters is that the frontend is where several evidence types diverge. The same monitor surface is used for live demonstration, replay validation, and event-producing operation, but these modes are not semantically identical. A weaker design would allow them to blur together behind the same controls. The current design is better precisely because later refactoring turned these differences into explicit state and explicit controls. That shift is part of the methodological maturation of the project, not only part of UI cleanup.
+The same monitor surface is used for live demonstration, replay validation, and event-producing operation, but these modes are not semantically identical. The final frontend design is stronger because these differences are represented as explicit state and controls rather than hidden UI side effects.
 
 ## Backend Architecture
 
@@ -272,7 +274,7 @@ This is why the service and repository split matters. A route-centric implementa
 
 The backend is also where the project’s distinction between transient evidence and persistent evidence becomes operational. A monitor may briefly enter a fall-like state without creating a persisted event, depending on temporal policy and session mode. That distinction is one of the most important design choices in the system, because it prevents momentary runtime fluctuations from being confused with reviewable incident history.
 
-The backend therefore carries a double burden. It must be computationally functional, but it must also be epistemically legible. A prediction service that emits scores quickly but leaves event meaning ambiguous would be weak as a research artifact. The final architecture is stronger because persistence, dashboard summaries, and delivery logic are all downstream of the same interpreted event path rather than parallel approximations of it. This is one reason the code review placed so much emphasis on shared semantics such as event type, status, operating-point normalization, and notification truth sources.
+The final architecture is stronger because persistence, dashboard summaries, and delivery logic are all downstream of the same interpreted event path rather than parallel approximations of it. This is one reason the code review placed so much emphasis on shared semantics such as event type, status, operating-point normalization, and notification truth sources.
 
 ## Notification Architecture
 
@@ -282,11 +284,7 @@ This notification architecture is intentionally narrower than the earlier multi-
 
 The notification path also has its own audit store, which is important for report credibility. Delivery attempts should be interpreted through the actual notification audit path rather than through any older UI-queue abstractions that may still exist in historical development material.
 
-This architecture should be understood as a credibility choice as much as an implementation choice. Narrowing the active channel to Telegram made it possible to complete and verify one real end-to-end delivery path instead of leaving several partially wired channels in a permanently unfinished state. In a full report, this is the better story: one implemented and auditable channel is stronger evidence than three nominal channels that remain under-specified.
-
-The notification subsystem also illustrates a general principle that appears throughout the project. System-level claims should be backed by the path that actually owns the truth. In this case, that means the audit store attached to the notification manager, not a legacy queue abstraction. Treating the notification path this way keeps the deployment chapter aligned with real delivery state rather than with optimistic UI summaries.
-
-There is also a methodological reason to discuss the notification path explicitly. It marks the point where the project stops being only a model-and-monitor demonstration and becomes a review-support system with an external consequence. That consequence is still bounded and supervisor-safe rather than safety-critical in a formal sense, but it changes what counts as successful behaviour. Once a system claims caregiver-facing delivery, persistence semantics and audit semantics become part of the technical contribution rather than optional extras.
+Narrowing the active channel to Telegram made it possible to complete and verify one real end-to-end delivery path instead of leaving several partially wired channels in an unfinished state. The audit store attached to the notification manager keeps the deployment chapter aligned with real delivery state rather than optimistic UI summaries.
 
 ## Deployment Modes
 
@@ -471,31 +469,17 @@ This perspective also explains why the alert layer belongs at the centre of the 
 
 The frontend implementation centres on a React monitoring application that supports live input, replay input, dashboard review, event browsing, and settings management. The monitoring page is the critical path because it produces the pose-derived windows that the backend later interprets.
 
-Over time, this frontend became complex enough that modularisation was required. Media handling, monitoring state, API transport, replay/live distinctions, and page-level rendering all needed clearer separation. The resulting refactor made the monitor page easier to reason about and, more importantly for the report, made it possible to explain runtime findings in terms of identifiable code paths rather than ad hoc behaviour.
+Over time, this frontend became complex enough that modularisation was required. Media handling, monitoring state, API transport, replay/live distinctions, and page-level rendering all needed clearer separation. The final frontend structure separates page components, feature-level API calls, and monitor hooks under `applications/frontend`.
 
 From the report’s perspective, the frontend matters in two roles. It is the human-visible part of the system, and it is also one of the places where deployment evidence is actually produced. This is especially true for replay validation and live demonstration work.
 
-In implementation terms, the most important frontend outcome is that monitor behaviour is now explainable through explicit state contracts rather than implicit UI side effects. Dataset and operating-point selection, replay persistence, monitoring enablement, caregiver settings, and preview state are all represented as controlled state rather than as loosely coupled widget behaviour. This greatly reduces the chance that the page looks correct while the backend is actually receiving a different operational context.
+The most important implementation outcome is that monitor behaviour is now represented through explicit state contracts rather than implicit UI side effects. Dataset and operating-point selection, replay controls, monitoring enablement, caregiver settings, realtime persistence behaviour, and preview state are all represented as controlled state. This reduces the chance that the page appears correct while the backend receives a different operational context.
 
-That change matters directly to report quality. A mature full report should not simply say that the frontend was "refactored for cleanliness." It should be able to explain what the refactor bought. In this case, it bought a more trustworthy runtime surface: the operator-facing controls now map more clearly onto the backend contracts that determine model selection, policy behaviour, and event persistence.
-
-Three frontend subsystems are especially important. The first is the monitor hook layer, which coordinates capture mode, active profile state, replay controls, and backend interaction. The second is the feature-level API layer, which isolates transport logic and makes API assumptions easier to test. The third is the page/component layer, which keeps presentation concerns separate from runtime-state semantics. This division is not just stylistic. It is what allowed later fixes such as replay persistence control, live-preview toggling, and fallback-profile alignment to be implemented without deepening hidden coupling.
+Three frontend subsystems are especially important. The monitor hook layer coordinates capture mode, active profile state, replay controls, and backend interaction. The feature-level API layer isolates transport logic and makes API assumptions easier to test. The page/component layer keeps presentation concerns separate from runtime-state semantics. This division allowed later fixes such as replay-versus-realtime persistence clarification, live-preview toggling, and fallback-profile alignment to be implemented without deepening hidden coupling.
 
 The settings and dashboard paths also matter more than they might in a smaller project. Settings are where caregiver configuration, active runtime preferences, and fallback semantics become user-visible. Dashboard and events views are where persisted meaning is inspected after the fact. Together they form the interpretive half of the application: without them, the monitor would remain a transient display rather than part of a reviewable system.
 
-From an implementation perspective, the monitor hook layer is the most critical because it sits at the boundary between media reality and system semantics. It must manage camera or replay input, pose timing, active-profile context, request cadence, and feedback rendering without silently shifting the meaning of the session. The feature-level API layer is important for a different reason: it protects the monitor page from transport-shape drift and makes backend contract changes easier to isolate. The page/component layer then turns those two lower layers into operator-visible surfaces whose meaning can still be explained in the report.
-
-This three-part frontend account is useful in the full report because it prevents the implementation chapter from collapsing into a list of React files. Instead, it explains what had to be stabilised for runtime evidence to become trustworthy. In a system where the browser is responsible for pose extraction and window packaging, frontend structure is directly linked to the interpretability of every replay and live screenshot later shown in the report.
-
-Another useful way to understand the frontend is as a contract-preserving adapter. It takes operator actions, local media state, and browser-side pose output, then reshapes them into a runtime context that the backend can interpret consistently. This is why seemingly modest UI controls, such as replay persistence or live preview, deserve space in the implementation chapter. They are not merely presentation options; they affect whether the runtime session remains observational, reviewable, or delivery-capable.
-
-That adapter role becomes clearer when the configuration flow is described explicitly. Active dataset, active model family, operating-point code, monitoring enablement, replay persistence, and caregiver-facing settings all originate as operator-visible or repository-backed configuration choices. The frontend is responsible for exposing those choices in a way that remains synchronized with the backend contract rather than inventing a parallel meaning. Later fixes to default-profile alignment and failure rollback were important because without them the page could have displayed one operational story while the backend executed another. In a research-grade report, this is not a minor interface issue; it is part of the validity of the runtime evidence itself.
-
-The frontend also acts as a temporal coordinator. Browser-side pose extraction and window packaging occur under timing assumptions that must remain compatible with the backend's expectation of dataset-specific frame rates and fixed window geometry. This is why the implementation chapter should not reduce the frontend to a collection of screens. It is part of the methodological pipeline. If the browser emits unstable windows, the backend may still produce a coherent response, but the meaning of that response becomes harder to defend. By making this role explicit, the report can better explain why frontend refactoring improved more than maintainability: it improved the auditability of runtime behaviour.
-
-It is useful to make the frontend control flow explicit as well. Operator input does not go directly from a button press to an isolated request. It passes through selected state, derived runtime context, feature-level request shaping, and only then into backend submission. The return path is equally structured: backend responses are turned into monitor state, event markers, and page-visible summaries under a set of UI contracts. This controlled loop matters because it prevents transient UI effects from being mistaken for persisted system state. The later fixes around replay persistence, monitoring rollback, and caregiver-form synchronization are valuable in the report precisely because they tightened this loop.
-
-The frontend also demonstrates a useful principle for long technical reports: not every implementation detail deserves explanation, but every detail that can alter evidence meaning does. Preview toggles, replay controls, and fallback-profile alignment are worth reporting not because they are visually interesting, but because they influence whether a session is merely demonstrative, reviewable, or capable of creating a delivery-bearing event. That is the correct threshold for deciding what belongs in a research-grade implementation chapter.
+The frontend also acts as a temporal coordinator. Browser-side pose extraction and window packaging must remain compatible with the backend's expectation of dataset-specific frame rates and fixed window geometry. Operator input passes through selected state, derived runtime context, feature-level request shaping, and backend submission. Backend responses are then rendered as monitor state, event markers, and page-visible summaries. This flow is why preview toggles, replay controls, and fallback-profile alignment are treated as evidence-relevant implementation details rather than as cosmetic UI choices.
 
 ## Backend Implementation
 
@@ -505,25 +489,13 @@ Earlier versions of the backend contained more mixed responsibility inside route
 
 The backend also now owns the Telegram notification path and its audit store. This is part of the system narrative, because the final report can show true end-to-end event-to-delivery behaviour without pretending that broader multi-channel delivery has already been completed.
 
-One of the most important backend implementation lessons was that semantic consistency matters as much as raw functionality. A system can appear feature-complete while still being misleading if dashboard summaries, event history, and notification delivery are each derived from slightly different interpretations of the same state. Several late-stage fixes corrected exactly this kind of issue. As a result, the current backend is better understood as a contract-preserving layer than as a collection of endpoints.
+One of the most important backend implementation lessons was that semantic consistency matters as much as raw functionality. Dashboard summaries, event-history rows, and notification delivery must be derived from the same event interpretation, not from loosely related intermediate states. Several late-stage fixes corrected exactly this kind of issue.
 
-This is also where the project’s operational evidence becomes materially stronger. Once persisted event semantics, notification truth sources, and active operating-point resolution were aligned, the report could discuss the runtime path without constantly qualifying whether the UI, the database, and the delivery layer were referring to the same thing. That improvement is easy to underestimate in code terms but significant in report terms.
+The backend can therefore be read as three cooperating layers. The inference-and-policy layer resolves the active profile, loads the relevant model family, and applies runtime interpretation. The persistence-and-summary layer stores events and exposes them through dashboard and event views. The delivery-and-audit layer turns persisted fall events into caregiver-facing notifications and records what actually happened in that path.
 
-The backend can therefore be thought of as three cooperating layers. The first is the inference-and-policy layer, which resolves the active profile, loads the relevant model family, and applies runtime interpretation. The second is the persistence-and-summary layer, which stores events and exposes them through dashboard and event views under stable schema semantics. The third is the delivery-and-audit layer, which turns persisted fall events into caregiver-facing notifications and records what actually happened in that path.
+Runtime requests follow a checkpointed path: active dataset/model/operating-point context, frozen profile and checkpoint resolution, policy interpretation, event-persistence decision, review exposure, and then optional delivery. This flow makes later dashboard and notification evidence interpretable because monitor output, event state, review history, and delivery state are all tied to the same backend semantics.
 
-This layered description helps explain why the repository eventually needed dedicated repositories and services instead of only route handlers. Once monitor execution, event persistence, dashboard counting, and notification delivery all depended on shared meanings such as event type, event status, and active operating-point code, those meanings had to be centralized enough to review. The current implementation is stronger because those semantics are now closer to explicit contracts than to incidental route behaviour.
-
-Seen operationally, the backend now does three different kinds of work that should not be conflated. It interprets model output, it curates state for human review, and it records outward-facing delivery. Each layer has different failure modes and therefore different audit requirements. The inference layer can fail through profile mismatch or policy misapplication; the persistence layer can fail through schema drift or ambiguous status handling; the delivery layer can fail through configuration gaps or wrong truth-source assumptions. Making these distinctions explicit is one of the main reasons the full report can discuss the backend as a technical subsystem rather than as an opaque web service.
-
-There is also an implementation-flow benefit to this layering. Once runtime interpretation and persistence semantics are separated cleanly, the report can explain the system as a path with checkpoints: input formation, policy interpretation, state persistence, review exposure, and downstream delivery. That structure is more than architectural neatness. It is what makes later test coverage, dashboard correctness, and notification auditability intelligible as parts of one system rather than as disconnected utilities.
-
-This checkpoint view is also the right place to describe configuration flow on the backend. Runtime requests do not become decisions immediately. They first resolve an active dataset/model/operating-point context, then map that context to a frozen profile family and checkpoint pair, then apply policy interpretation, then decide whether a persistent event should be written, and only after that can delivery be considered. Each step is an opportunity either to preserve or to distort meaning. The backend implementation is stronger after review precisely because these checkpoints are now easier to identify and test. For a full report, that matters more than raw endpoint count: it shows how operational meaning is conserved through the stack.
-
-That backend flow is also what makes later dashboard and notification evidence interpretable. If summary counts, event-history rows, and caregiver-facing delivery messages were all generated from loosely related intermediate states, the report would be forced to speak only in vague operational terms. By contrast, the current backend design gives the report a clearer claim structure: monitor output is interpreted, interpreted output becomes persistent event state, persistent event state becomes reviewable history, and only then does delivery occur. This chain is not valuable merely because it works; it is valuable because each transition is now explicit enough that it can be reasoned about under audit.
-
-The repository-layer work deserves emphasis for the same reason. Supporting both current and legacy schema variations might look like a practical compatibility patch, but it has a methodological payoff. It reduces the chance that the same event will silently change meaning depending on which table shape or field name is encountered at runtime. In a report that stresses defended evidence and stable interpretation, this kind of compatibility discipline is not incidental. It is part of what turns a flexible codebase into a defensible final artifact.
-
-The same reasoning explains why repository and schema compatibility received so much attention. Dashboard summaries, event-history views, and delivery logs are only useful if they reflect compatible event types, statuses, timestamps, and truth sources. A backend can be fast and still be poor as a defended system if these semantic contracts drift silently. The later repository and route work therefore belongs in the implementation chapter because it turned several hidden compatibility assumptions into explicit behaviour that the report can now discuss without qualification.
+Repository and schema compatibility work supported this same goal. Event-history views, dashboard summaries, and delivery logs are only useful if they reflect compatible event types, statuses, timestamps, and truth sources. The later repository and route work turned several hidden compatibility assumptions into explicit behaviour that could be reviewed and tested.
 
 ## Refactoring Timeline and Rationale
 
@@ -531,15 +503,7 @@ Refactoring became necessary because the project outgrew a small-prototype archi
 
 The refactoring should not be described as an abstract software-quality exercise. It had a direct methodological purpose: reduce hidden coupling, stabilise runtime contracts, and make the relationship between code and report claims easier to trace. In practice, this included clarifying active operating-point defaults, aligning replay and realtime semantics, cleaning up notification-path truth sources, and separating UI concerns from transport and session concerns.
 
-This chapter frames refactoring as part of the project’s technical maturation, not as a side story disconnected from the main scientific contribution.
-
-The timing of this work is also important. Much of it happened after the project already had attractive results and a working monitor. That sequence matters because it shows that the refactor was driven by verification needs rather than by the absence of an initial artifact. In other words, the project first proved that the system could work, and then invested in making that system understandable enough to defend rigorously.
-
-This is part of what raises the full report above the level of a long build diary. A high-quality report should show not only that a system exists, but that the author recognised when the system had become too difficult to reason about and then corrected that problem in a technically disciplined way.
-
-It is also useful to describe what refactoring did not try to do. The project did not use refactoring as an excuse to rewrite every subsystem into a new abstraction style. Instead, the later phases targeted places where semantic drift threatened the final argument: default profile resolution, replay-versus-realtime meaning, event persistence, notification truth sources, and evidence/report boundaries. This selective strategy is worth recording because it shows that the engineering process was governed by evidential need rather than by style preference. That is closer to how mature technical reports justify architectural change.
-
-This selective approach is important because a full report benefits more from principled stabilization than from maximal churn. A complete rewrite near submission would have produced more novelty in the repository but less confidence in the defended artifact. The chosen strategy instead emphasized contract clarification, cross-layer alignment, and bounded cleanup around points where the final narrative could otherwise have broken. That makes refactoring part of the epistemic discipline of the project rather than a separate software-engineering subplot.
+The timing of this work is important. Much of it happened after the project already had attractive results and a working monitor. The project first proved that the system could work, then invested in making that system understandable enough to defend. The later phases therefore targeted points where semantic drift threatened the final argument: default profile resolution, replay-versus-realtime meaning, event persistence, notification truth sources, and evidence/report boundaries.
 
 The resulting implementation story is therefore cumulative rather than cosmetic. Early work established functionality. Mid-stage work added broader experimentation and system integration. Late-stage refactoring and review then reduced the gap between “the system appears to work” and “the system can be described precisely enough to defend.” That final reduction in ambiguity is one of the reasons the full report can sustain stronger conclusions than a loosely integrated prototype ever could.
 
@@ -547,17 +511,15 @@ The resulting implementation story is therefore cumulative rather than cosmetic.
 
 The project later underwent a full-stack audit and a full code-review pass. These reviews were important because by that stage the repository contained enough code, artifacts, and report material that mismatch risk had become a real threat. The audit work focused on evidence drift, freeze-state discipline, configuration and artifact boundaries, and report-to-code consistency. The code review then moved deeper into the implementation itself, including ML contracts, backend runtime semantics, frontend state handling, and reproducibility tooling.
 
-This phase produced substantive changes rather than only documentation. Examples include clarifying replay event-persistence semantics, aligning operating-point defaults across frontend and backend, fixing notification truth sources, and tightening data/evaluation contracts in the ML pipeline. The importance of this phase to the full report is that it improves confidence that the final system description is not merely aspirational, but anchored to reviewed code paths.
+This phase produced substantive changes rather than only documentation. Examples include clarifying replay-versus-realtime persistence semantics, aligning operating-point defaults across frontend and backend, fixing notification truth sources, and tightening data/evaluation contracts in the ML pipeline. The importance of this phase to the full report is that it improves confidence that the final system description is not merely aspirational, but anchored to reviewed code paths.
 
-The full report includes this audit and review work in a measured way. It does not read like a changelog, but it does show that the project underwent real late-stage verification rather than stopping once headline metrics existed.
-
-More broadly, this audit phase functions as a bridge between engineering practice and research reporting. The full report makes many bounded claims about what the system does, what the evidence supports, and where the limits remain. Those claims are stronger because the codebase itself was reviewed against them. That is a meaningful contribution in its own right, especially for a full-stack project where mismatches often arise at boundaries rather than inside isolated algorithms.
-
-The implementation chapter therefore ends in a useful place. It begins with subsystem structure, moves through refactoring rationale, and ends with review-mediated stabilization. That progression is not accidental. It mirrors how the project itself matured: first by becoming functional, then by becoming structurally clearer, and finally by becoming easier to defend under scrutiny. For a long technical report, that arc is more informative than a flatter “here are the modules we wrote” summary.
+The full report includes this audit and review work because it shows that the project underwent real late-stage verification rather than stopping once headline metrics existed. The implementation story is therefore cumulative: first functional, then structurally clearer, and finally easier to defend under scrutiny.
 
 # Experimental Results
 
 This chapter reports the main empirical findings of the project under the defended evidence hierarchy introduced earlier in the report. The results are organised by evidential role rather than by a single flat leaderboard. Frozen offline comparison provides the strongest basis for answering the architecture question. Cross-dataset transfer clarifies limitation boundaries. Operating-point and alert-policy results address how model outputs become deployable behaviour. Replay and runtime evidence then test whether the defended monitoring path remains coherent once it is exercised as software rather than only as an offline benchmark pipeline.
+
+**Headline results.** The strongest defended model line is the `CAUCAFall` TCN under the frozen protocol. Cross-dataset transfer remains asymmetric and does not support broad robustness claims. The preferred runtime preset is `CAUCAFall + TCN + OP-2`, which reaches `23/24 = 0.9583` on the bounded online replay matrix. The uncertainty-aware runtime path is implemented, but it does not improve the fixed replay matrix. Telegram delivery is achieved on the active notification path; SMS and phone-call escalation remain future work.
 
 ## Offline Comparative Results
 
@@ -680,11 +642,22 @@ This layered structure strengthens the report in two ways. First, it keeps valid
 | `contract` | verify environment-sensitive backend/model contracts that require torch-backed import and execution | stable torch environment | deferred/conditional validation layer | monitor contract checks, selected deploy/runtime ML paths |
 | `monitor` | verify runtime monitor-oriented tests that exercise live/replay path assumptions more directly | stable torch environment | bounded runtime verification layer | monitor runtime service, policy application, event-persistence path |
 
+**Table 4. Examiner-facing test summary**
+
+| Test area | What was checked | Result in the defended snapshot | Remaining risk |
+| --- | --- | --- | --- |
+| backend health and API contract | health route, settings defaults, monitor payload shape, and fallback behaviour | passed under the maintained contract checks | full torch-backed paths still depend on local environment stability |
+| frontend monitor behaviour | replay controls, monitor API handling, UI state assumptions, and runtime fallback behaviour | passed on the targeted frontend regression layer | browser performance can still affect realtime demonstration quality |
+| event persistence | realtime fall events, event-history visibility, dashboard/event count semantics, and review status handling | implemented and regression-checked after audit fixes | replay mode is intentionally visual-only and does not create event history records |
+| notification delivery | Telegram-first delivery path, notification audit semantics, and caregiver-facing message generation | implemented and verified on the active delivery path | SMS and phone-call escalation are not part of the final implemented claim |
+| replay/runtime validation | bounded replay matrix and preferred runtime preset behaviour | strongest row is `CAUCAFall + TCN + OP-2` under the fixed replay surface | replay evidence remains controlled system evidence, not broad field validation |
+| release/readiness checks | frontend production build, canonical test entrypoints, and release-boundary scripts | used as final software-artifact readiness checks | raw-dataset reproduction remains outside the default review path |
+
 ## Replay and Runtime Validation
 
 Replay and runtime validation occupy a middle evidential layer between formal offline benchmarking and uncontrolled real-world deployment. Their role is not to strengthen the architecture claim directly, but to show whether the monitored path behaves coherently once the system is run as software rather than only as an offline pipeline.
 
-The replay path is especially valuable because it exposes interactions between frontend window production, backend policy interpretation, persistence semantics, and caregiver-facing delivery. Several of the project’s most important runtime lessons emerged at this layer, including the need to keep replay semantics distinct from realtime semantics and the need to make replay event persistence explicit rather than implicit. These findings are systemically important even though replay evidence remains narrower than benchmark evidence.
+The replay path is especially valuable because it exposes interactions between frontend window production, backend policy interpretation, persistence semantics, and caregiver-facing delivery. Several of the project’s most important runtime lessons emerged at this layer, including the need to keep replay semantics distinct from realtime semantics and to avoid treating replay output as stored event evidence. These findings are systemically important even though replay evidence remains narrower than benchmark evidence.
 
 Live demonstration evidence should be interpreted in the same bounded way. A successful live run is meaningful as operational confirmation that the integrated path can function under the defended demo preset. It is not equivalent to population-level deployment validation. The report is strongest because it keeps these two meanings separate.
 
@@ -706,7 +679,7 @@ Supplementary videos:
 
 Figure 9 provides bounded systems evidence. It shows that the integrated path can detect, persist, and deliver under the defended runtime preset, but it does not add new statistical authority beyond the replay and offline chapters.
 
-**Table 4. Validation-interpretation matrix**
+**Table 5. Validation-interpretation matrix**
 
 | Validation surface | What it can support | What it cannot support on its own |
 | --- | --- | --- |
@@ -724,11 +697,38 @@ The full-stack audit and later code-review pass form a substantive part of the d
 
 The most important findings were cross-layer rather than cosmetic. They included evidence-chain drift, replay/runtime truth-source mismatch, frontend/backend fallback inconsistency, and ambiguity around persisted event semantics. These were significant because the project’s most serious risks often lived between modules and evidence layers rather than inside one isolated function. The remediation work therefore materially strengthened the report’s credibility by aligning code paths more closely with the claims made about them.
 
+**Table 6. Issue-to-fix summary**
+
+| Symptom or risk | Root cause | Fix or control | Evidence of improvement |
+| --- | --- | --- | --- |
+| report claims could drift from the active implementation | old paths and archived artifacts remained close to active material | active code paths, promoted assets, and release boundaries were clarified | final documentation now points to `applications/`, `ml/`, `ops/`, and promoted runtime assets |
+| replay behaviour could be mistaken for stored event evidence | replay and realtime modes shared a monitor surface but had different evidence meanings | replay was kept visual-only, while event history was tied to realtime monitoring events | Event History semantics now distinguish controlled replay input from stored realtime incidents |
+| dashboard/event counts could be misread | backend totals and currently visible rows represented different scopes | UI copy and count semantics were tightened around the displayed event set | event-history display now avoids presenting a global backend total as visible records |
+| notification evidence could be over-claimed | earlier multi-channel concepts were broader than the verified delivery route | final claim was narrowed to Telegram-first delivery | SMS and phone-call escalation are explicitly future work, not completed functionality |
+| runtime behaviour was hard to explain from code alone | monitor logic mixed media, pose, API, state, and rendering responsibilities | monitor logic was refactored into typed hooks, components, and service contracts | frontend/backend structure is easier to map to the report’s runtime workflow |
+| release readiness was vulnerable to environment assumptions | frontend and torch-backed checks have different prerequisites | canonical checks were separated by environment requirement | fast checks remain available while torch-backed validation is recorded as conditional where necessary |
+
 ## Freeze and Handoff State
 
 By the end of the review and cleanup cycle, the repository had reached a stable freeze-core state and later a clean handoff state. This matters because a final report should describe a defended system snapshot rather than a moving target.
 
 Freeze and handoff work clarified which artifacts belong to the active evidence chain and which belong to supporting or archival history. That clarification has direct methodological value. It sharpens the meaning of earlier validation layers by making it easier to identify which figures, fitted profiles, summaries, test entrypoints, and screenshots are authoritative for the final report. In that sense, freeze state is not a packaging afterthought. It is the final wrapper that makes the rest of the evidence chain easier to defend.
+
+## Final Evaluation Summary
+
+The report’s main objectives and requirements can be summarised directly as follows.
+
+**Table 7. Objectives and requirements revisited**
+
+| Objective or requirement | Status | Main evidence | Boundary or limitation |
+| --- | --- | --- | --- |
+| compare TCN and custom GCN under a shared frozen protocol | Achieved | frozen offline comparison, stability figures, locked candidate artifacts | conclusion remains directional rather than universal |
+| fit deployable operating-point profiles using validation-side evidence | Achieved | operating-point YAMLs, policy fitting results, replay/runtime preset selection | profile quality depends on the frozen validation contract |
+| implement a working monitoring system with frontend and backend inference | Achieved | React monitor, FastAPI backend, replay mode, realtime mode, runtime model panel | realtime performance depends on browser and recording load |
+| persist reviewable fall events for later inspection | Achieved | realtime Event History workflow, dashboard/event records, event replay evidence | replay-mode detections are visual-only and are not stored |
+| deliver caregiver-facing notification on the active path | Achieved for Telegram | Telegram delivery evidence and notification audit path | SMS and phone-call escalation are future work |
+| support reproducible review of the software artifact | Achieved for the default demo path | README, local bootstrap path, frontend build check, canonical test entrypoints | raw datasets and full training reproduction require separate dataset access |
+| demonstrate broad field readiness | Not claimed | bounded realtime evidence and replay matrix | current system is a review-support prototype, not a clinically validated safety product |
 
 # Ethics, Privacy, and Operational Constraints
 
@@ -781,7 +781,7 @@ Asset:
 
 Figure 10 is retained not as active evidence for the final result, but as project-process evidence. It illustrates that the system, pipeline, and evaluation workstreams were planned as interacting strands. In the full report this is useful because it shows that later audit and refactor work did not come out of nowhere; they emerged from the increasing complexity of a multi-strand project.
 
-This iterative structure is important because it shaped what kinds of technical risk could be seen early. A strictly sequential process might have postponed runtime and UI semantics until after model work was "finished," which would have made later system-level mismatches much harder to correct. By contrast, the multi-strand structure exposed interactions earlier: window contracts mattered to the monitor, operating-point fitting mattered to dashboard meaning, and repository organization mattered to the report itself. The project therefore benefits in retrospect from having allowed those strands to interact rather than pretending they were separable.
+This iterative structure exposed system interactions early: window contracts mattered to the monitor, operating-point fitting mattered to dashboard meaning, and repository organization mattered to the report itself.
 
 ## Design Evolution
 
@@ -789,24 +789,20 @@ The project also evolved visually and structurally. Early wireframes emphasised 
 
 The key lesson from this design evolution is that frontend design in this project was not only cosmetic. Page layout controlled observability. Dashboard summaries, event lists, settings, monitor controls, and caregiver-notification configuration all contributed to whether the system could be interpreted as a monitoring platform instead of as a raw model demo.
 
-The report is explicit about the status of these visuals. Proposal-stage wireframes and higher-fidelity previews are useful because they expose intended workflow shape, information density, and review semantics. They are not evidence that the final implementation reached the same quality automatically. Their value lies in traceability: they show how early design intent later interacted with refactoring, deployment constraints, and audit findings. This is why they belong in the appendix and in process discussion rather than in the main results chapter.
-
-There is also a methodological lesson in this evolution. Early design material is most valuable when it can later be compared with the implemented system and with the project's revised evidence boundaries. In the present case, wireframes and proposal-stage visuals show that observability, review, and caregiver-facing workflow were already treated as core concerns. Later refactoring then reveals which parts of that early intent survived unchanged and which parts had to be revised once real runtime semantics and audit findings were better understood. That comparison is more useful in a long report than simply presenting polished final screens without historical context.
+The report is explicit about the status of these visuals. Proposal-stage wireframes and higher-fidelity previews are useful because they expose intended workflow shape, information density, and review semantics. They are not evidence that the final implementation reached the same quality automatically. Their value lies in traceability: they show how early design intent later interacted with refactoring, deployment constraints, and audit findings.
 
 ## Risk Control Through Staged Verification
 
 Project management also became a form of technical risk control. As the codebase and artifact set grew, the main danger was no longer simply “the model might underperform.” It became increasingly likely that one part of the system would drift from another: a report could cite an outdated figure, a runtime path could interpret an operating-point code differently from the settings page, or replay behaviour could silently diverge from persisted-event semantics.
 
-This is why the later phases of the project included not just coding and experimentation, but freeze control, code review, audit, artifact allowlists, and canonical test entrypoints. In a weaker report these activities might be hidden as maintenance work. In a stronger report they are recognised as part of the methodological apparatus that made the final submission defensible.
-
-The staged-verification model also created a more realistic project-management logic than a simple milestone checklist would have done. Some project risks could only be controlled once several artifacts existed at once. For example, evidence drift becomes visible only when figures, results text, and active artifacts all coexist. Runtime semantic drift becomes visible only when monitor UI, persistence, and delivery are all active. This means that verification had to be staged not just for convenience, but because some of the most important failure modes were emergent properties of integration. Recording that point strengthens the report because it explains why later review work was a necessary development phase rather than a late administrative add-on.
+This is why the later phases of the project included not just coding and experimentation, but freeze control, code review, audit, artifact allowlists, and canonical test entrypoints. Some risks could only be controlled once several artifacts existed at once: evidence drift becomes visible when figures, results text, and active artifacts coexist, while runtime semantic drift becomes visible when monitor UI, persistence, and delivery are all active.
 
 **Table 5. Project risk-control matrix**
 
 | Risk class | Typical manifestation | Control mechanism | Final status |
 | --- | --- | --- | --- |
 | evidence drift | report text, figures, and active artifacts fall out of alignment | evidence maps, figure-family cleanup, freeze inventory, late-stage audit | materially reduced |
-| runtime semantic drift | transient monitor state diverges from persisted event or delivery state | replay persistence control, repository/service cleanup, notification truth-source alignment | materially reduced |
+| runtime semantic drift | transient monitor state diverges from persisted event or delivery state | replay/realtime semantic split, repository/service cleanup, notification truth-source alignment | materially reduced |
 | configuration drift | frontend, backend, and fallback presets resolve different profiles | unified operating-point normalization and preset alignment across layers | materially reduced |
 | environment-sensitive verification | torch-backed checks fail on some local machines | stratified canonical tests, conditional contract layer, documented environment caveat | reduced but not eliminated |
 | design-to-implementation drift | early UI concepts no longer match final workflow | design-evolution review and appendix traceability | reduced |
@@ -826,19 +822,15 @@ Appendix reference assets:
 - [legacy_system_tier_diagram.jpg](artifacts/figures/report/appendix/legacy_system_tier_diagram.jpg)
 - [system_architecture_diagram.svg](artifacts/figures/report/system_architecture_diagram.svg)
 
-The contrast is meaningful because the final architecture is not merely a prettier redrawing of the original tier diagram. The later version encodes more disciplined boundaries around browser-side pose extraction, backend policy interpretation, event persistence, and delivery audit. In report terms, this means the architectural evolution can be used to explain not only how the system became more modular, but why that modularity mattered for result defensibility. The final architecture supports clearer truth sources; the proposal-stage architecture captured intent but not yet those later semantic refinements.
+The contrast is meaningful because the final architecture is not merely a prettier redrawing of the original tier diagram. The later version encodes clearer boundaries around browser-side pose extraction, backend policy interpretation, event persistence, and delivery audit. The proposal-stage architecture captured intent, but not yet those later semantic refinements.
 
 Figure 11 makes this change visible in a way that prose alone does not. The proposal-stage view grouped concerns into broad tiers that were useful for early planning, but it left important operational meanings implicit. The final architecture is still recognisably related to that earlier concept, yet it exposes a much stronger distinction between browser-side capture, backend interpretation, persisted review state, and downstream delivery audit. This difference matters because late-stage code review showed that the project’s most serious mismatch risks lived exactly at those boundaries.
-
-The evolution is also a useful reminder that architecture diagrams are not static illustrations of code. They are interpretive tools that change as the system's defended meaning changes. Early diagrams were sufficient for communicating intent and major tiers. Later diagrams had to do more: they had to expose truth sources, review boundaries, and operational checkpoints strongly enough that the full report could rely on them as explanatory figures. That progression is one reason the architecture chapter and the project-management chapter support one another in this report rather than standing as separate narratives.
 
 ## Iteration Outcome
 
 The cumulative management outcome is best described as controlled narrowing rather than unchecked expansion. Early in the project it was still plausible to chase multiple datasets, multiple architectures, richer uncertainty handling, several delivery channels, and both compact-paper and long-report outputs simultaneously. Later stages had to reduce that breadth and convert it into a defended core. The final active profile, the Telegram-first delivery path, the bounded replay interpretation, and the freeze-core artifact set are all products of that narrowing process.
 
-This matters because a high-quality full report should not pretend that every explored branch matured equally. It should instead show how breadth was explored, how weaker branches were reclassified as supporting or archived material, and how the defended contribution was progressively sharpened. That is the real management story of the project: not maximal scope retention, but disciplined convergence toward a defendable system and a defendable evidence base.
-
-This outcome is also important because it reframes what counts as successful project management in a research-heavy engineering setting. Success is not identical to preserving every early branch of experimentation. In the present case, success meant recognizing when breadth was threatening clarity, then narrowing the defended core without erasing the exploratory history that made that narrowing intelligible. The report gains maturity by admitting that this convergence was necessary. It shows that the final artifact was not produced by pretending every branch worked equally well, but by deciding which branches genuinely strengthened the final technical argument.
+This matters because a high-quality full report should not pretend that every explored branch matured equally. The project’s management outcome was not maximal scope retention, but disciplined convergence toward a defendable system and evidence base.
 
 # Discussion
 
@@ -896,13 +888,9 @@ Making these categories explicit is one of the report’s strengths. Large mixed
 
 Future work should extend the project in ways that strengthen the current defended claim set rather than simply enlarging the codebase.
 
-The first priority is stronger deployment-oriented evidence. The live and field-validation protocol should be expanded so that bounded deployment claims can rest on a wider and more varied evidence base. The second priority is stronger robustness analysis across datasets, cameras, and pose-quality conditions. The third is a clearer decision on uncertainty handling: the uncertainty-aware runtime path should either be validated under a stronger runtime protocol or simplified further if it continues to show neutral deployment value. The fourth is continued simplification of the runtime architecture so that engineering complexity does not outgrow maintainability. The fifth is broader notification infrastructure, including multi-channel delivery, once stronger operational evidence justifies that expansion.
+The first priority is stronger deployment-oriented evidence. The live and field-validation protocol should be expanded so that bounded deployment claims can rest on a wider and more varied evidence base. The second priority is stronger robustness analysis across datasets, cameras, and pose-quality conditions. The third is a clearer decision on uncertainty handling: the uncertainty-aware runtime path should either be validated under a stronger runtime protocol or simplified further if it continues to show neutral deployment value.
 
-It is useful to separate near-term from longer-term future work. Near-term work should reinforce the current contribution: richer bounded runtime evidence, stronger field-style validation, more stable torch-backed verification, and continued runtime simplification. Longer-term work can broaden scope: multi-channel delivery, larger external deployment studies, and additional architecture families.
-
-It is also useful to separate future work by the layer of evidence it would strengthen. Larger seed budgets, additional transfer runs, and protocol extensions would increase inferential confidence. Better live and field capture would strengthen deployment interpretation. Cleaner environment-independent verification and continued runtime simplification would strengthen engineering reliability. Broader delivery infrastructure would enlarge the system artifact, but it would not automatically strengthen model evidence unless paired with stronger operational validation.
-
-From that perspective, the highest-priority next steps are not necessarily the most ambitious engineering additions. The most valuable next steps are the ones that would most directly tighten the current defended contribution: stronger bounded runtime evidence, stronger field-style validation, and more stable environment-sensitive verification. This ordering matters because it keeps future work aligned with the project’s central methodological lesson: stronger systems claims come from stronger evidence and clearer boundaries, not only from additional features.
+Near-term work should therefore reinforce the current contribution: richer bounded runtime evidence, stronger field-style validation, more stable torch-backed verification, and continued runtime simplification. Longer-term work can broaden scope through multi-channel delivery, larger external deployment studies, and additional architecture families. Broader delivery infrastructure would enlarge the system artifact, but it would not automatically strengthen model evidence unless paired with stronger operational validation.
 
 # Data Availability Statement
 
@@ -912,15 +900,23 @@ The code submission does not redistribute the raw training datasets used in this
 
 Research outputs using `MUVIM` should cite S. Denkovski, S. S. Khan, B. Malamis, S. Y. Moon, B. Ye and A. Mihailidis, "Multi Visual Modality Fall Detection Dataset," *IEEE Access*, 2022, doi: `10.1109/ACCESS.2022.3211939`, and acknowledge the support of the Intelligent Assistive Technology and Systems Lab (IATSL) at the University of Toronto through the sharing of data related to this research.
 
+# Final Evaluation
+
+The project succeeded most clearly as a working research-and-systems artifact. The strongest completed outcome is the integrated monitoring workflow: replay or realtime input can be processed through the frontend and backend, interpreted under an active model/profile, displayed in the monitor, and, for realtime incidents, persisted for later review. This directly satisfies the software-artifact requirement because the system demonstrates a meaningful end-to-end feature rather than only describing one.
+
+The project also succeeded in keeping the model evidence and system evidence separate. The TCN result is defended through the frozen offline protocol and bounded replay evidence, while the deployed monitor is defended as a working prototype with explicit limits. This separation prevents the report from overstating what the demo proves.
+
+The project did not complete every early ambition. SMS and phone-call notification were not implemented as final delivery claims. Broad field validation was also not achieved. The current realtime evidence is useful for demonstrating feasibility, but it is not large enough to support clinical or deployment-readiness claims.
+
+The main lesson is that a fall-detection system cannot be judged only by a classifier score. The final artifact became stronger when the project controlled the whole path from input capture to inference, policy interpretation, event persistence, review, and notification, while also stating which parts remain bounded.
+
 # Conclusion
 
 This report has presented a research-led study of pose-based fall detection as an integrated monitoring problem rather than as a classifier-only benchmark task. The project combined frozen offline comparison, validation-side operating-point fitting, temporal policy design, runtime monitoring, event persistence, and caregiver-facing delivery within one coherent technical pipeline.
 
 At the model-comparison layer, the strongest defended result is a cautious directional advantage for the TCN over the matched custom GCN under the frozen primary-dataset protocol. At the policy layer, the report shows that deployable behaviour depends not only on score ranking quality but also on how validation-fitted operating points, smoothing, cooldown, and persistence semantics shape alert interpretation. At the systems layer, the project demonstrates that a pose-based monitoring pipeline can support bounded end-to-end behaviour in which monitored input can become interpreted runtime state, persisted incident history, and caregiver-facing notification under a reviewed path.
 
-Just as importantly, the report shows where stronger claims cannot yet be made. Cross-dataset transfer remains asymmetric, replay evidence remains narrower than broad field validation, and the current system should be interpreted as a review-support artifact rather than an autonomous safety-critical device. These limits do not weaken the contribution; they define it more precisely.
-
-The central lesson of the project is that technical maturity in this area depends on boundary control as much as on model choice. Better results, more credible runtime behaviour, and more trustworthy reporting all depended on making boundaries explicit: between datasets, between validation and test use, between transient monitor state and persisted event state, between delivery evidence and model evidence, and between active defended artifacts and archived exploratory history.
+Just as importantly, the report shows where stronger claims cannot yet be made. Cross-dataset transfer remains asymmetric, replay evidence remains narrower than broad field validation, and the current system should be interpreted as a review-support artifact rather than an autonomous safety-critical device.
 
 On that basis, the report’s main contribution is not a claim of solved fall detection. It is the demonstration that a final-year research project can produce a serious, bounded, and defensible end-to-end study in which model, policy, runtime, persistence, delivery, and evidence control remain answerable to one another under review.
 
@@ -963,8 +959,8 @@ Appendix A exists because the main chapters rely repeatedly on a relatively smal
 | --- | --- | --- | --- | --- |
 | primary offline candidate | `CAUCAFall` | `TCN` | `outputs/caucafall_tcn_W48S12/*` | main comparative result line |
 | matched offline baseline | `CAUCAFall` | `GCN` | `outputs/caucafall_gcn_W48S12/*` | matched comparison line |
-| preferred replay/runtime preset | `CAUCAFall` | `TCN + OP-2` | `configs/ops/tcn_caucafall*.yaml` | preferred live and replay profile |
-| comparative deployable profile | `LE2i` | `GCN` | `configs/ops/gcn_le2i_opt33_r2.yaml` and linked metrics | comparative runtime/profile evidence |
+| preferred replay/runtime preset | `CAUCAFall` | `TCN + OP-2` | `ops/configs/ops/tcn_caucafall*.yaml` | preferred live and replay profile |
+| comparative deployable profile | `LE2i` | `GCN` | `ops/configs/ops/gcn_le2i_opt33_r2.yaml` and linked metrics | comparative runtime/profile evidence |
 | exploratory/supporting family | `MUVIM` | mixed | supporting and archived config families | methodological breadth only |
 
 This appendix should be used together with the repository evidence map. Its function is to show which artifact families still define the active report and which have been demoted to supporting or archive status.
@@ -999,7 +995,7 @@ This table makes the freeze logic explicit inside the report. It tells the reade
 | Claim layer | Primary source type | Typical traced artifact | Why the lineage matters |
 | --- | --- | --- | --- |
 | model comparison | frozen metrics summaries and seed-comparison artifacts | `artifacts/reports/stability_summary.csv`, `outputs/metrics/*locked.json` | supports comparative claims without runtime conflation |
-| policy interpretation | fitted operating-point files and policy sweeps | `configs/ops/*.yaml`, saved sweep JSON files | links threshold/policy prose to tracked deployable profiles |
+| policy interpretation | fitted operating-point files and policy sweeps | `ops/configs/ops/*.yaml`, saved sweep JSON files | links threshold/policy prose to tracked deployable profiles |
 | runtime interpretation | replay matrices, runtime figures, persisted event path | `artifacts/reports/online_*`, monitor/event route behaviour | supports bounded deployment/system claims |
 | delivery evidence | Telegram delivery audit and event-linked notification path | delivery audit store, runtime screenshots, notification tests | shows that persisted incidents can reach caregiver-facing output |
 | repository defensibility | audit, freeze, and review-control documents | freeze manifests, code-review summaries, audit reports | explains why the final submission state is trustworthy |
@@ -1070,7 +1066,10 @@ Recommended appendix figures and tables include:
 2. [stability_f1_errorbars.png](artifacts/figures/report/stability_f1_errorbars.png)  
    Supporting only. Useful as a compact seed-stability supplement.
 
-3. Diagnostic visuals under `artifacts/figures/report/diagnostic/`  
+3. [final_replay_confusion_matrix_caucafall_tcn_op2.png](artifacts/figures/report/appendix/final_replay_confusion_matrix_caucafall_tcn_op2.png)
+   Supporting only. Useful as a bounded replay diagnostic for the preferred `CAUCAFall + TCN + OP-2` runtime preset. It should not be read as a replacement for the frozen offline benchmark figures.
+
+4. Diagnostic visuals under `artifacts/figures/report/diagnostic/`
    Diagnostic only. These should remain clearly labeled as pre-fix or diagnostic materials if included.
 
 These supporting quantitative figures are useful when the reader wants a more granular view than the main narrative can comfortably carry. They are not weak because they are in the appendix; they are in the appendix because they answer narrower questions than the main report needs to answer first.
@@ -1081,22 +1080,30 @@ These supporting quantitative figures are useful when the reader wants a more gr
 | --- | --- | --- |
 | absolute cross-dataset `F1` bars | quick visual support for transfer asymmetry | replacing the main delta-based transfer interpretation |
 | seed-stability error bars | compact reinforcement of multi-seed behaviour | standalone proof of operational usefulness |
+| bounded replay confusion matrix | quick diagnostic view of the preferred runtime preset | replacement of frozen offline benchmark evidence |
 | diagnostic pre-fix visuals | explaining historical mismatch or debugging context | defended final performance claims |
 
 This table is helpful because appendix figures often create interpretation drift when they are read without context. The report is stronger when it tells the reader what each supporting figure is for instead of assuming that appendix placement alone makes its role self-evident.
 
 ### B.2 Design-Evolution Figures
 
-4. [wireframe_dashboard.png](artifacts/figures/report/appendix/wireframe_dashboard.png) and [wireframe_settings.png](artifacts/figures/report/appendix/wireframe_settings.png)  
-   Design-evolution evidence. Useful for showing early interaction structure and requirement shaping.
+1. Proposal-stage low-fidelity wireframes:
+   [wireframe_dashboard_lowfi.jpg](artifacts/figures/report/appendix/wireframe_dashboard_lowfi.jpg),
+   [wireframe_monitor_lowfi.jpg](artifacts/figures/report/appendix/wireframe_monitor_lowfi.jpg),
+   [wireframe_events_lowfi.jpg](artifacts/figures/report/appendix/wireframe_events_lowfi.jpg), and
+   [wireframe_settings_lowfi.jpg](artifacts/figures/report/appendix/wireframe_settings_lowfi.jpg)
+   Design-evolution evidence. Useful for showing that dashboard, monitor, event-history, and settings were already treated as core workflow surfaces during the proposal stage. These are not final-system screenshots.
 
-5. [hifi_live_monitor.png](artifacts/figures/report/appendix/hifi_live_monitor.png) and [hifi_event_history.png](artifacts/figures/report/appendix/hifi_event_history.png)  
+2. [wireframe_dashboard.png](artifacts/figures/report/appendix/wireframe_dashboard.png) and [wireframe_settings.png](artifacts/figures/report/appendix/wireframe_settings.png)
+   Supporting wireframe exports. Useful for showing early interaction structure and requirement shaping.
+
+3. [hifi_live_monitor.png](artifacts/figures/report/appendix/hifi_live_monitor.png) and [hifi_event_history.png](artifacts/figures/report/appendix/hifi_event_history.png)
    Higher-fidelity design evidence. Useful for discussing interface evolution, but should not be confused with final runtime screenshots.
 
-6. [legacy_op_tradeoff_concept.png](artifacts/figures/report/appendix/legacy_op_tradeoff_concept.png)  
+4. [legacy_op_tradeoff_concept.png](artifacts/figures/report/appendix/legacy_op_tradeoff_concept.png)
    Early conceptual visualization of safety-versus-alarm trade-off. Useful as historical design context, not as final evidence.
 
-7. [legacy_system_tier_diagram.jpg](artifacts/figures/report/appendix/legacy_system_tier_diagram.jpg)  
+5. [legacy_system_tier_diagram.jpg](artifacts/figures/report/appendix/legacy_system_tier_diagram.jpg)
    Proposal-stage architecture reference. Useful when read together with `Figure 11` in the main text to show what later refactoring clarified.
 
 The appendix is also the correct place to preserve a strict distinction between main figures and supporting figures. Diagnostic-only visuals should appear here with explicit explanatory captions rather than being allowed to compete with the main evidence figures in the core results sections.
@@ -1107,7 +1114,8 @@ The design-evolution figures are valuable because they document how the interfac
 
 | Figure family | Stage represented | Contribution to the report |
 | --- | --- | --- |
-| wireframes | early workflow planning | shows that dashboard, monitor, and settings roles were designed intentionally |
+| low-fidelity wireframes | early workflow planning | shows that dashboard, monitor, event-history, and settings roles were designed intentionally |
+| supporting wireframe exports | early workflow planning | preserves additional proposal-stage interface evidence |
 | high-fidelity previews | later interaction refinement | shows how observability and review semantics were made more explicit |
 | legacy architecture visuals | proposal-stage system thinking | provides contrast for later contract-oriented refactoring |
 | early operating-point concept sketch | conceptual policy framing | shows that safety-versus-alert-burden trade-off was recognized before final fitting artifacts existed |
@@ -1126,19 +1134,19 @@ This usage-policy table is valuable because it prevents the appendix from becomi
 
 ## Appendix C: Deployment and Replay Notes
 
-This appendix summarises the practical runtime presets used during replay and live testing, including the preferred `CAUCAFall + TCN + OP-2` demo line, the rationale for explicit replay-event persistence, and the relationship between monitor state, event persistence, and downstream Telegram delivery.
+This appendix summarises the practical runtime presets used during replay and live testing, including the preferred `CAUCAFall + TCN + OP-2` demo line, the rationale for keeping replay visual-only, and the relationship between monitor state, event persistence, and downstream Telegram delivery.
 
 It also preserves the most important bounded-interpretation notes: replay evidence is system evidence, not unseen-test evidence; field-validation clips remain too sparse for broad claims; and the uncertainty-aware path currently shows neutral deployment value on the fixed replay matrix.
 
-Appendix C records the practical runtime semantics that support the defended deployment interpretation, including the preferred preset, replay-persistence meaning, and runtime-evidence capture discipline.
+Appendix C records the practical runtime semantics that support the defended deployment interpretation, including the preferred preset, replay-versus-realtime persistence meaning, and runtime-evidence capture discipline.
 
 ### C.1 Preferred Runtime Preset
 
 The preferred deployment-facing preset in the current project is `CAUCAFall + TCN + OP-2`. This line is preferred not simply because it is the strongest single replay row, but because it is also the line where offline primary-dataset evidence, active operating-point interpretation, and bounded runtime evidence align most cleanly. That alignment makes it the most defensible demo and replay preset in the full report.
 
-### C.2 Replay Persistence Semantics
+### C.2 Replay and Realtime Persistence Semantics
 
-One of the most important late-stage clarifications in the repository was that replay and realtime should not share semantics implicitly. Replay can be used as a visual demonstration, a bounded runtime check, or an event-producing path. Those modes should not collapse into one another accidentally. This is why explicit replay-event persistence matters. It forces the operator to decide whether a replay session is merely observational or whether it should enter the same persistence and notification chain as a live event.
+One of the most important late-stage clarifications in the repository was that replay and realtime should not share semantics implicitly. Replay mode is used as a visual demonstration and bounded runtime check. It does not create Event History records in the final software artifact. Realtime monitoring is the event-producing path: when the backend policy confirms a realtime fall event, that event can be persisted, reviewed, and passed to the notification path. This split prevents controlled replay output from being mistaken for stored incident evidence.
 
 ### C.3 Monitor State, Event State, and Delivery State
 
@@ -1162,7 +1170,7 @@ The runtime evidence panel was captured from the defended demo preset. The same 
 
 ## Appendix D: Audit and Code Review Summaries
 
-This appendix provides condensed summaries of the full-stack audit and full code-review pass. The main body already explains why these reviews mattered; the appendix preserves the operational details, such as the major mismatch classes that were corrected, the freeze and allowlist logic, and the final status of batch-based code review across ML, server, frontend, and scripts/tests.
+This appendix provides condensed summaries of the full-stack audit and full code-review pass. The main body already explains why these reviews mattered; the appendix preserves the operational details, such as the major mismatch classes that were corrected, the freeze and allowlist logic, and the final status of batch-based code review across ML, backend, frontend, and scripts/tests.
 
 The appendix role here is archival and defensive. It lets the report show serious verification work without turning the main narrative into a review log.
 
@@ -1170,7 +1178,7 @@ That archival role is important in a long report because verification evidence c
 
 ### D.1 Review Logic
 
-The review work proceeded in two layers. The first layer was repository and evidence audit, concerned with active versus archive material, figure and artifact authority, freeze state, and report-evidence consistency. The second layer was code review, concerned with line-level logic, cross-module contract consistency, and workflow mismatch risk across ML, server, frontend, and scripts/tests.
+The review work proceeded in two layers. The first layer was repository and evidence audit, concerned with active versus archive material, figure and artifact authority, freeze state, and report-evidence consistency. The second layer was code review, concerned with line-level logic, cross-module contract consistency, and workflow mismatch risk across ML, backend, frontend, and scripts/tests.
 
 This distinction is useful because it clarifies what kind of problem each review pass was meant to catch. The repository/evidence audit focused on whether the project could still defend its claims coherently. The code review focused on whether the implementation actually behaved according to those defended contracts.
 
@@ -1179,7 +1187,7 @@ This distinction is useful because it clarifies what kind of problem each review
 | Review area | Representative issue class | Closure outcome |
 | --- | --- | --- |
 | ML pipeline | dataset-contract and evaluation-contract mismatch | corrected and regression-checked |
-| server runtime | persistence semantics, notification truth source, active profile normalization | corrected and test-covered |
+| backend runtime | persistence semantics, notification truth source, active profile normalization | corrected and test-covered |
 | frontend | replay/live state semantics, fallback contract drift, monitor control meaning | corrected and spot-tested |
 | scripts/tests | canonical test coverage gaps, build invocation friction, freeze verification | corrected with updated script entrypoints |
 | repository/evidence layer | active vs archive confusion, report/evidence drift | corrected through freeze and inventory work |
@@ -1191,7 +1199,7 @@ The purpose of this appendix table is not to replace the audit documents in the 
 The most important corrected mismatch classes include:
 
 1. configuration and fallback drift, where different parts of the stack were previously capable of interpreting the active profile differently
-2. replay-versus-realtime semantic ambiguity, especially around whether replay should persist events by default
+2. replay-versus-realtime semantic ambiguity, especially around preventing replay output from being mistaken for persisted event evidence
 3. notification truth-source drift, where older abstractions could have been mistaken for actual delivery evidence
 4. data and evaluation contract drift, especially around FPS assumptions, window metadata semantics, and recursive artifact discovery
 
@@ -1209,7 +1217,7 @@ The practical implication is that the repository now has a stronger defended cor
 | --- | --- | --- |
 | evidence audit | do claims, figures, and active artifacts still line up? | report/evidence drift reduced through freeze and inventory work |
 | ML code review | do data and evaluation contracts still support the claimed protocol? | FPS, window-metadata, and recursive-discovery mismatches corrected |
-| server code review | do runtime state, persistence, and delivery share one interpretation? | event and notification truth sources aligned |
+| backend code review | do runtime state, persistence, and delivery share one interpretation? | event and notification truth sources aligned |
 | frontend code review | do UI controls and displayed state map cleanly to backend contracts? | replay/live semantics and fallback meanings clarified |
 | scripts/tests review | do build and test entrypoints still reflect the defended repository state? | canonical test entrypoints and report build path cleaned up |
 
@@ -1228,7 +1236,7 @@ Appendix E is important because a report of this scale cannot rely on implicit r
 | Layer | Minimum requirement | Reason |
 | --- | --- | --- |
 | Python/runtime | active project virtual environment with repository `PYTHONPATH` | required for scripts, tests, and pipeline commands |
-| Node/frontend | working Node/npm environment inside `apps/` | required for frontend regression checks |
+| Node/frontend | working Node/npm environment inside `applications/frontend/` | required for frontend regression checks |
 | document build | `pandoc` and `xelatex` available to `build_report.sh` | required for PDF export |
 | torch-backed checks | stable local environment where `import torch` succeeds | required for `contract` and `monitor` validation modes |
 | repository state | active figures and active frozen artifacts present | required so the report rebuild matches the defended snapshot |
@@ -1283,16 +1291,16 @@ The appendix therefore does more than preserve shell snippets. It shows that the
 **Canonical tests**
 
 ```bash
-./scripts/run_canonical_tests.sh torch-free
-./scripts/run_canonical_tests.sh frontend
-./scripts/run_canonical_tests.sh contract
-./scripts/run_canonical_tests.sh monitor
+./ops/scripts/run_canonical_tests.sh torch-free
+./ops/scripts/run_canonical_tests.sh frontend
+./ops/scripts/run_canonical_tests.sh contract
+./ops/scripts/run_canonical_tests.sh monitor
 ```
 
 **Freeze verification**
 
 ```bash
-./scripts/freeze_manifest.sh
+./ops/scripts/release_manifest.sh
 ```
 
 **Primary `CAUCAFall` data/evaluation regression**
@@ -1319,8 +1327,7 @@ make -B repro-best-gcn-le2i-paper
 **Figure regeneration**
 
 ```bash
-python3 scripts/generate_report_figures.py
-python3 scripts/plot_cross_dataset_transfer.py --summary_csv artifacts/reports/cross_dataset_summary.csv --out_fig artifacts/figures/report/cross_dataset_transfer_summary.png
+python3 ops/scripts/plot_cross_dataset_transfer.py --summary_csv artifacts/reports/cross_dataset_summary.csv --out_fig artifacts/figures/report/cross_dataset_transfer_summary.png
 ```
 
 The key value of this appendix is not convenience alone. It demonstrates that the final report remains tied to executable paths in the repository rather than to one-off undocumented manual steps.
