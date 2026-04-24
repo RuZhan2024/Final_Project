@@ -22,11 +22,18 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ConfirmCfg:
+    """Tail-window heuristic settings shared by lying and motion confirmation.
+
+    These controls intentionally stay small because confirmation is a secondary
+    gate on top of model scores, not a learned subsystem with its own training
+    lifecycle.
+    """
     tail_s: float = 1.0  # use last ~1s
     smooth: str = "median"  # median|mean
 
 
 def _safe_fps(fps: float, *, default: float = 30.0) -> float:
+    """Normalize runtime/training FPS inputs to a positive finite value."""
     try:
         f = float(fps)
     except Exception:
@@ -37,12 +44,14 @@ def _safe_fps(fps: float, *, default: float = 30.0) -> float:
 
 
 def _tail_n(T: int, fps: float, tail_s: float) -> int:
+    """Convert tail duration into a bounded frame count for one window."""
     n = int(np.ceil(_safe_fps(fps) * float(tail_s)))
     n = max(1, min(int(T), n))
     return n
 
 
 def _smooth_1d(x: np.ndarray, how: str) -> float:
+    """Aggregate a 1D tail signal with the configured robust smoother."""
     x = np.asarray(x, dtype=np.float32).reshape(-1)
     x = x[np.isfinite(x)]
     if x.size == 0:
@@ -116,6 +125,7 @@ def _bbox_hw(j: np.ndarray, m: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _joint_idx(V: int, idx: int) -> Optional[int]:
+    """Return a valid joint index or None for skeletons with fewer joints."""
     return int(idx) if 0 <= int(idx) < int(V) else None
 
 
@@ -158,7 +168,11 @@ def lying_score_window(
     tail_s: float = 1.0,
     smooth: str = "median",
 ) -> float:
-    """Window-level lying score in [0,1]."""
+    """Window-level lying score in [0,1].
+
+    The score combines torso orientation and person-bbox aspect ratio over the
+    tail of the window. Higher values mean the subject looks more horizontal.
+    """
     j = np.asarray(joints_xy, dtype=np.float32)
     m = np.asarray(mask).astype(bool)
     if j.ndim != 3 or j.shape[-1] != 2:
@@ -171,8 +185,8 @@ def lying_score_window(
     n_tail = _tail_n(T, fps, tail_s)
     sl = slice(T - n_tail, T)
 
-    # MediaPipe Pose (33): shoulders 11,12 hips 23,24
-    # COCO17: shoulders 5,6 hips 11,12
+    # Support both MediaPipe-33 and COCO-like layouts because evaluation data
+    # and runtime exports do not always share the same joint count.
     if V >= 33:
         sh = _mean_of(j, m, [11, 12])
         hip = _mean_of(j, m, [23, 24])
@@ -221,7 +235,8 @@ def motion_score_window(
     n_tail = _tail_n(T, fps, tail_s)
     sl = slice(T - n_tail, T)
 
-    # choose stable joints
+    # Use torso/leg anchors that stay relatively stable under pose jitter;
+    # wrist-dominant motion is too noisy for confirm-stage gating.
     if V >= 33:
         ids = [11, 12, 23, 24, 27, 28]
         sh = _mean_of(j, m, [11, 12])
@@ -283,7 +298,12 @@ def confirm_scores_window(
     tail_s: float = 1.0,
     smooth: str = "median",
 ) -> Tuple[float, float]:
-    """Compute (lying_score, motion_score) for a single window."""
+    """Compute `(lying_score, motion_score)` for one classified window.
+
+    The pair is allowed to contain NaNs when the underlying pose evidence is
+    unavailable. Downstream alert logic relies on that contract so missing
+    heuristic signals remain ignorable rather than becoming accidental vetoes.
+    """
     ls = lying_score_window(joints_xy, mask, fps, tail_s=tail_s, smooth=smooth)
     ms = motion_score_window(joints_xy, mask, fps, tail_s=tail_s, smooth=smooth)
     # Preserve "unavailable" signals as NaN so alert logic can ignore them

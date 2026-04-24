@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Repository helpers for resolving model and operating-point identifiers."""
+
 from typing import Optional
 
 try:
@@ -10,6 +12,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 def resolve_model_id(conn, model_code: str) -> Optional[int]:
+    """Resolve either the stable model code or a legacy family alias to an id."""
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM models WHERE code=%s LIMIT 1", (model_code,))
         row = cur.fetchone()
@@ -21,6 +24,7 @@ def resolve_model_id(conn, model_code: str) -> Optional[int]:
 
 
 def resolve_model_code(conn, model_id: Optional[int]) -> Optional[str]:
+    """Return the public model code, falling back to family for older rows."""
     if model_id is None:
         return None
     with conn.cursor() as cur:
@@ -32,6 +36,7 @@ def resolve_model_code(conn, model_id: Optional[int]) -> Optional[str]:
 
 
 def resolve_op_id(conn, model_id: Optional[int], op_id: Optional[int]) -> Optional[int]:
+    """Validate that an operating point exists and still belongs to the model."""
     if op_id is None:
         return None
     try:
@@ -44,4 +49,5 @@ def resolve_op_id(conn, model_id: Optional[int], op_id: Optional[int]) -> Option
                 return None
             return int(row["id"])
     except (MySQLError, RuntimeError, AttributeError, TypeError, ValueError):
+        # Some contract tests stub this path with lightweight fake connections.
         return op_id

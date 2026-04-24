@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Twilio reply webhook for updating alert review status.
+
+The webhook maps simple SMS reply codes onto the repository's canonical event
+status values and the Safe Guard feedback store. The route keeps parsing and
+status-mapping local so notification infrastructure can stay decoupled from the
+rest of the review UI.
+"""
+
 import json
 import re
 
@@ -27,6 +35,7 @@ _EVENT_REF_RE = re.compile(r"\bref[:#\s-]*([A-Za-z0-9_-]+)\b", re.IGNORECASE)
 
 
 def _map_reply_code(reply_code: str) -> tuple[str, str]:
+    """Translate SMS reply codes into DB status and feedback labels."""
     code = str(reply_code or "").strip()
     if code == "1":
         return "false_alarm", "false_positive"
@@ -38,6 +47,7 @@ def _map_reply_code(reply_code: str) -> tuple[str, str]:
 
 
 def _extract_event_id(body: str, explicit_event_id: Optional[str]) -> Optional[str]:
+    """Prefer explicit event ids, otherwise parse a reference token from the SMS body."""
     if explicit_event_id:
         return str(explicit_event_id).strip() or None
     match = _EVENT_REF_RE.search(str(body or ""))
@@ -47,6 +57,7 @@ def _extract_event_id(body: str, explicit_event_id: Optional[str]) -> Optional[s
 
 
 def _update_canonical_event_status(event_id: str, db_status: str) -> bool:
+    """Persist the mapped review status in either v2 status or legacy meta fields."""
     with get_conn_optional() as conn:
         if conn is None:
             return False
@@ -59,6 +70,8 @@ def _update_canonical_event_status(event_id: str, db_status: str) -> bool:
             if variants.get("events") == "v2" and has_col(conn, "events", "status"):
                 cur.execute("UPDATE events SET status=%s WHERE id=%s", (db_status, event_id))
             elif has_col(conn, "events", "meta"):
+                # Legacy schemas store review state inside `meta`, so the webhook
+                # has to update that JSON blob instead of a first-class column.
                 cur.execute("SELECT meta FROM events WHERE id=%s LIMIT 1", (event_id,))
                 meta_row = cur.fetchone() or {}
                 meta = meta_row.get("meta")
@@ -79,6 +92,7 @@ def _update_canonical_event_status(event_id: str, db_status: str) -> bool:
 
 @router.post("/twilio/webhook")
 async def twilio_webhook(request: Request):
+    """Accept a Twilio form post and apply the corresponding review update."""
     body_bytes = await request.body()
     form = parse_qs(body_bytes.decode("utf-8", errors="replace"), keep_blank_values=True)
     reply_body = str((form.get("Body") or [""])[0]).strip()

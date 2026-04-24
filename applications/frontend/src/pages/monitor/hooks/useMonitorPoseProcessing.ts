@@ -19,6 +19,12 @@ import type { UseMonitorPoseProcessingOptions } from "../types";
 
 const { drawConnectors, drawLandmarks } = drawingUtils;
 
+/**
+ * Converts MediaPipe pose results into monitor-ready frames and preview output.
+ *
+ * The hook owns adaptive degradation, preview drawing, FPS estimation, raw frame
+ * buffering, and the handoff into window prediction / clip finalization logic.
+ */
 export function useMonitorPoseProcessing({
   targetFps,
   canvasRef,
@@ -42,6 +48,13 @@ export function useMonitorPoseProcessing({
   maybeSendWindow,
 }: UseMonitorPoseProcessingOptions) {
   const handlePoseResults = useCallback((results: any) => {
+    /**
+     * Consume one MediaPipe callback and update UI/runtime buffers.
+     *
+     * The handler is intentionally rate-limited because drawing, pose buffering,
+     * and downstream prediction scheduling should reflect the monitor cadence,
+     * not every callback the browser happens to produce.
+     */
     const isReplay = inputSourceRef.current === "video";
     const nowMs = performance.now();
     const procCap = Math.min(MAX_PROC_FPS, Math.max(8, Number(targetFps) + 2));
@@ -53,6 +66,8 @@ export function useMonitorPoseProcessing({
       if (estFps < LOW_FPS_ENTER) {
         if (!lowFpsSinceMsRef.current) lowFpsSinceMsRef.current = nowMs;
         if (nowMs - lowFpsSinceMsRef.current > LOW_FPS_HOLD_MS) {
+          // Degrade only after low FPS persists; brief camera jitter should not
+          // permanently lower model complexity or prediction cadence.
           adaptiveDrawFpsRef.current = DEGRADED_DRAW_FPS;
           adaptiveInferFpsRef.current = DEGRADED_INFER_FPS;
           if (!degradedModeRef.current && poseRef.current?.setOptions) {
@@ -68,6 +83,8 @@ export function useMonitorPoseProcessing({
           }
         }
       } else if (estFps > LOW_FPS_EXIT) {
+        // Recovery uses a higher exit threshold than entry so the UI does not
+        // flap rapidly between normal and degraded mode around the cutoff.
         lowFpsSinceMsRef.current = 0;
         adaptiveDrawFpsRef.current = LIVE_DRAW_FPS;
         adaptiveInferFpsRef.current = 0;
@@ -145,6 +162,7 @@ export function useMonitorPoseProcessing({
 
     const xyFrame = new Array(NUM_JOINTS);
     const confFrame = new Array(NUM_JOINTS);
+    // Always emit a fixed 33-joint frame so downstream windowing stays shape-stable.
     for (let i = 0; i < NUM_JOINTS; i += 1) {
       const lm = hasLandmarks ? landmarks[i] : null;
       if (!lm) {
@@ -164,6 +182,8 @@ export function useMonitorPoseProcessing({
     let tNow =
       isReplay && Number.isFinite(replayVideoTsMs) ? Number(replayVideoTsMs) : performance.now();
     if (isReplay && typeof lastPoseTsRef.current === "number" && tNow <= lastPoseTsRef.current) {
+      // Replay seeks or browser rounding can repeat timestamps. Force monotonic
+      // ordering so downstream windowing never sees time moving backwards.
       tNow = lastPoseTsRef.current + 1;
     }
 
@@ -189,6 +209,8 @@ export function useMonitorPoseProcessing({
     raw.push({ t: tNow, xy: xyFrame, conf: confFrame });
     const maxRaw =
       isReplay ? Math.max(2400, Math.ceil(targetFps * 120)) : Math.max(600, Math.ceil(targetFps * 12));
+    // Replay needs a much deeper buffer because clip export and queued windows
+    // may look far behind the current playback position.
     if (raw.length > maxRaw) raw.splice(0, raw.length - maxRaw);
 
     void maybeFinalizeClipUpload();

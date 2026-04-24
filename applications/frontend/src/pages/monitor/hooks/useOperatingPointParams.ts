@@ -6,6 +6,7 @@ import type { SettingsResponse } from "../../../features/settings/types";
 import type { MonitorOperatingPointParams } from "../types";
 
 function normaliseUiParams(settingsPayload: SettingsResponse | null) {
+  // Settings can come from DB rows or deploy YAML, so read the shared `ui` bag first.
   const sys = settingsPayload?.system || {};
   const ui = sys?.deploy_params?.ui || sys?.deploy_params || {};
 
@@ -36,6 +37,7 @@ async function loadLegacyOperatingPoint(
   datasetCode: string,
   activeOperatingPointId: unknown
 ) {
+  // This path only exists for older APIs that still expose DB-backed operating points.
   const codeRaw = String(modelCode || "TCN").toUpperCase();
   const tryCodes = codeRaw === "GCN" ? ["GCN"] : ["TCN"];
 
@@ -82,7 +84,7 @@ async function loadLegacyOperatingPoint(
         tau_high: high != null && Number.isFinite(high) ? high : null,
       };
     } catch {
-      // ignore and try next code
+      // Ignore one legacy endpoint failure and try the next compatible model code.
     }
   }
 
@@ -121,6 +123,7 @@ export function useOperatingPointParams({
 
     const sys = settingsPayload?.system || {};
     const opId = sys?.active_operating_point;
+    // Older settings payloads may omit dataset code; CAUCAFall stays the backend default.
     const datasetCode = String(sys?.active_dataset_code || "caucafall").toLowerCase();
 
     (async () => {
@@ -135,7 +138,7 @@ export function useOperatingPointParams({
     };
   }, [apiBase, settingsPayload, modelCode, uiParams.hasUi, uiParams.tau_high, uiParams.tau_low]);
 
-  // Final resolved values (prefer UI-derived values, else legacy, else null)
+  // Final resolved values prefer the deploy/UI contract, then the legacy DB fallback.
   return {
     opCode: uiParams.op_code || legacy.op_code || null,
     tauLow: uiParams.tau_low != null ? uiParams.tau_low : legacy.tau_low,

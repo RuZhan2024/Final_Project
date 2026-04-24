@@ -16,6 +16,7 @@ describe("fetchOperatingPoints", () => {
   });
 
   test("includes dataset_code in the request query", async () => {
+    // Older backend behavior defaulted dataset_code, but the frontend now sends it explicitly.
     await fetchOperatingPoints("http://localhost:8000", "GCN", "le2i");
 
     expect(apiRequest).toHaveBeenCalledWith(

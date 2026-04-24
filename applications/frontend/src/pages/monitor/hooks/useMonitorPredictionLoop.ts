@@ -15,6 +15,13 @@ import type { UseMonitorPredictionLoopOptions } from "../types";
 const WS_CONNECT_TIMEOUT_MS = 7000;
 const WS_PREDICT_TIMEOUT_MS = 12000;
 
+/**
+ * Owns how monitor windows are built and sent for live and replay analysis.
+ *
+ * Live camera monitoring favours the persistent WebSocket path, while replay
+ * keeps deterministic HTTP-style request ordering and latency-aware playback
+ * control.
+ */
 export function useMonitorPredictionLoop({
   apiBase,
   activeDatasetCode,
@@ -49,6 +56,7 @@ export function useMonitorPredictionLoop({
 }: UseMonitorPredictionLoopOptions) {
   const ensurePredictClient = useCallback(() => {
     if (predictClientRef.current) return predictClientRef.current;
+    // Live mode reuses one socket so window cadence is not dominated by reconnect cost.
     predictClientRef.current = createMonitorSocketClient({
       apiBase,
       connectTimeoutMs: WS_CONNECT_TIMEOUT_MS,
@@ -66,6 +74,7 @@ export function useMonitorPredictionLoop({
 
   const predictViaHttp = useCallback(
     async (payload: Record<string, unknown>) =>
+      // Replay keeps HTTP request ordering simple and easier to reason about during seeks.
       await apiRequest(apiBase, "/api/monitor/predict_window", {
         method: "POST",
         body: payload,
@@ -88,6 +97,8 @@ export function useMonitorPredictionLoop({
       const nFrames = Array.isArray(frames) ? frames.length : 0;
       if (nFrames < 2) return null;
 
+      // Window sequence numbers are client-owned so the backend can detect stale
+      // or out-of-order windows even when transport latency changes.
       const payload = buildPredictPayload({
         slice: frames,
         sessionId: sessionIdRef.current,
@@ -146,6 +157,8 @@ export function useMonitorPredictionLoop({
     if (!queue.length || !raw || raw.length < 2) return null;
 
     const windowEndTs = Number(queue[0]);
+    // Replay always builds from the queue head and only removes that head after
+    // a matching response, so transient request failures do not skip windows.
     const frames = sliceReplayWindowFrames({
       rawFrames: raw,
       targetFps,
@@ -192,6 +205,8 @@ export function useMonitorPredictionLoop({
       try {
         predictInFlightRef.current = true;
         const t0 = performance.now();
+        // Replay latency feeds playback throttling; live mode optimizes for
+        // lower overhead over the persistent socket connection.
         const data =
           sourceMode === "video" ? await predictViaHttp(payload) : await predictViaWs(payload);
         replayPredictLatencyMsRef.current = Math.max(0, performance.now() - t0);
@@ -200,6 +215,8 @@ export function useMonitorPredictionLoop({
       } finally {
         predictInFlightRef.current = false;
         if (sourceMode === "video") {
+          // Replay speed follows backend throughput so the UI does not race
+          // ahead of queued predictions and hide unprocessed windows.
           syncReplayPlaybackRate(videoEl);
         }
       }
@@ -228,6 +245,8 @@ export function useMonitorPredictionLoop({
       const ok = await runPredictionRequest(payload, "video");
       const front = Number(replayWindowQueueRef.current[0]);
       if (Number.isFinite(front) && front === nextWindowEndTs) {
+        // Confirm the head timestamp still matches the processed request because
+        // queueReplayWindows may have appended newer items in the meantime.
         replayWindowQueueRef.current.shift();
       }
       if (!ok) return;
@@ -250,6 +269,8 @@ export function useMonitorPredictionLoop({
 
     if (predictInFlightRef.current) return;
     const now = performance.now();
+    // Respect the deployment stride rather than sending every available frame;
+    // the backend tracker expects overlapping windows at this cadence.
     const minGapMs = Math.max(250, (deployS / Math.max(1, targetFps)) * 1000);
     const gapRemainMs = minGapMs - (now - lastSentRef.current);
     if (gapRemainMs > 0) return;

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""In-memory fallback state for settings/caregiver flows without a live DB."""
+
 import json
 
 from datetime import datetime, timezone
@@ -38,6 +40,7 @@ _INMEM_CAREGIVERS: Dict[int, List[Dict[str, Any]]] = {}
 
 
 def get_inmem_settings(resident_id: int = 1) -> Dict[str, Any]:
+    """Return a deep-copied settings snapshot for the requested resident."""
     rid = int(resident_id or 1)
     if rid not in _INMEM_SETTINGS:
         _INMEM_SETTINGS[rid] = {
@@ -58,6 +61,7 @@ def apply_settings_update_inmem(
     normalize_dataset_code,
     norm_op_code,
 ) -> None:
+    """Apply a settings patch to the in-memory fallback store."""
     rid = int(resident_id or 1)
     cur = get_inmem_settings(rid)
     system = cur["system"]
@@ -74,6 +78,7 @@ def apply_settings_update_inmem(
 
     if payload.store_anonymized_data is not None:
         v = bool(payload.store_anonymized_data)
+        # Legacy UI toggles still treat this as the combined clip+anonymize switch.
         system["store_event_clips"] = v
         system["anonymize_skeleton_data"] = v
         system["store_anonymized_data"] = v
@@ -131,12 +136,14 @@ def apply_settings_update_inmem(
 
 
 def get_inmem_caregivers(resident_id: int = 1) -> List[Dict[str, Any]]:
+    """Return a copy of caregiver rows from the in-memory fallback store."""
     rid = int(resident_id or 1)
     rows = _INMEM_CAREGIVERS.get(rid, [])
     return [dict(r) for r in rows]
 
 
 def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
+    """Insert or update the fallback caregiver row for one resident."""
     rid = int(payload.resident_id or 1)
     rows = _INMEM_CAREGIVERS.setdefault(rid, [])
     target_id = int(payload.id) if payload.id else (rows[0]["id"] if rows else 1)
@@ -149,6 +156,7 @@ def upsert_inmem_caregiver(payload: CaregiverUpsertPayload) -> Dict[str, Any]:
 
     now = datetime.now(timezone.utc).isoformat()
     if row is None:
+        # Fallback mode still keeps timestamps so responses match DB-backed shape.
         row = {
             "id": target_id,
             "resident_id": rid,

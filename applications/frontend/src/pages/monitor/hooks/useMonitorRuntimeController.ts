@@ -3,6 +3,14 @@ import { useCallback } from "react";
 import { REPLAY_UI_UPDATE_MS } from "../constants";
 import type { UseMonitorRuntimeControllerOptions } from "../types";
 
+/**
+ * Orchestrates start/stop and the main monitor runtime loop.
+ *
+ * This hook owns session resets, source preparation, replay end-of-clip
+ * handling, and the requestAnimationFrame loop that feeds MediaPipe. It does
+ * not build prediction payloads itself; that contract lives in the prediction
+ * hook.
+ */
 export function useMonitorRuntimeController({
   targetFps,
   autoStopMonitoring,
@@ -41,6 +49,13 @@ export function useMonitorRuntimeController({
   setReplayDurationS,
 }: UseMonitorRuntimeControllerOptions) {
   const startLive = useCallback(async () => {
+    /**
+     * Start a fresh monitoring run for either camera or replay input.
+     *
+     * Each invocation increments a run token. Any async step that resolves under
+     * an older token must stop quietly so a restarted session cannot revive a
+     * stale stream or replay pipeline.
+     */
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
@@ -105,6 +120,8 @@ export function useMonitorRuntimeController({
         if ((inputSourceRef.current || "camera") === "video" && videoEl.ended) {
           void buildReplayPayload();
           void drainReplayQueue();
+          // Replay must finish queued prediction windows before stopping;
+          // otherwise the final fall segment can disappear from review history.
           const replayBusy =
             predictInFlightRef.current || replayWindowQueueRef.current.length > 0;
           if (replayBusy) {
@@ -149,6 +166,8 @@ export function useMonitorRuntimeController({
             poseRef.current &&
             !poseSendBusyRef.current
           ) {
+            // Keep only one outstanding MediaPipe send call. Concurrent sends can
+            // race the latest frame and destabilize the capture cadence.
             poseSendBusyRef.current = true;
             poseRef.current
               .send({ image: videoEl })
@@ -215,6 +234,12 @@ export function useMonitorRuntimeController({
   ]);
 
   const seekReplay = useCallback((ratio: number) => {
+    /**
+     * Seek replay video and start a fresh logical monitor session.
+     *
+     * Seeking invalidates previous alert/tracker context, so frontend state and
+     * backend session state are both reset before the new position is analysed.
+     */
     const videoEl = videoRef.current;
     if (!videoEl) return;
     const du = Number(videoEl.duration || 0);

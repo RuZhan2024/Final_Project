@@ -1,9 +1,17 @@
+"""Contract tests for synthetic fall-event insertion paths.
+
+The route under test is a convenience/debug endpoint, but it still must create
+events that enter the same review workflow as real monitor-generated alerts.
+"""
+
 from contextlib import contextmanager
 
 from applications.backend.routes import events as events_route
 
 
 class _FakeCursor:
+    """Minimal cursor stub that replays scripted schema/data responses."""
+
     def __init__(self, conn):
         self.conn = conn
         self.current = None
@@ -32,6 +40,8 @@ class _FakeCursor:
 
 
 class _FakeConn:
+    """Connection stub that records executed SQL for contract assertions."""
+
     def __init__(self, responses=None, lastrowid=1):
         self.responses = list(responses or [])
         self.lastrowid = lastrowid
@@ -46,6 +56,8 @@ class _FakeConn:
 
 
 def _cm_conn(conn):
+    """Wrap a fake connection in the context-manager shape used by the route."""
+
     @contextmanager
     def _cm():
         yield conn
@@ -54,6 +66,8 @@ def _cm_conn(conn):
 
 
 def test_events_test_fall_v2_writes_pending_review(monkeypatch):
+    # Synthetic test-fall rows feed the same review workflow as real alerts, so
+    # new schemas must keep the initial status aligned with the UI inbox.
     fake = _FakeConn(
         responses=[
             {"active_model_id": 2, "active_operating_point_id": 3},

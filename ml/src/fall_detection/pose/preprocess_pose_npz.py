@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""
-preprocess_pose_npz.py
+"""Clean and normalize pose NPZ files before temporal windowing.
 
-Clean + normalize MediaPipe Pose NPZ files BEFORE windowing.
+This module owns sequence-level pose cleanup for extracted MediaPipe-style NPZ
+files. It standardizes missing-value semantics, optionally fills and smooths
+short gaps, applies body-centric normalization, and emits explicit validity
+masks for downstream windowing/training code.
 
 Why this rewrite?
 -----------------
@@ -57,6 +59,8 @@ L_HIP, R_HIP = 23, 24
 # IO helpers
 # -------------------------
 def list_npz(in_dir: str, recursive: bool) -> list[Path]:
+    """List pose NPZ files from one directory tree in deterministic order."""
+
     root = Path(in_dir)
     return sorted(root.rglob("*.npz") if recursive else root.glob("*.npz"))
 
@@ -69,6 +73,9 @@ def standardize_missing(xy: np.ndarray, conf: np.ndarray) -> Tuple[np.ndarray, n
     Make "missing" consistent:
       - non-finite conf -> 0
       - where conf <= 0 OR xy non-finite -> xy becomes NaN
+
+    Downstream fill/smooth/normalize logic relies on NaN in ``xy`` as the single
+    missing-value marker, so this step runs before every other transform.
     """
     xy2 = xy.astype(np.float32, copy=True)
     conf2 = conf.astype(np.float32, copy=True)
@@ -158,6 +165,10 @@ def linear_fill_small_gaps(
     Returns
     -------
     xy_out, conf_out, filled_mask  where filled_mask is (T,J) bool.
+
+    Only interior gaps bounded by valid observations are filled. Leading/trailing
+    missing segments stay missing so the pipeline does not invent motion beyond
+    observed evidence.
     """
     if max_gap <= 0:
         return xy, conf, np.zeros(conf.shape, dtype=bool)
@@ -471,6 +482,9 @@ def normalize_body_centric(
     """
     Translate to pelvis center and scale by torso length or shoulder width.
     Optional: rotate so shoulders are horizontal (sequence-level).
+
+    The transform is sequence-level, not per-frame adaptive scaling. That keeps a
+    window internally consistent for downstream temporal models.
     """
     mode = mode.lower()
     rotate = rotate.lower()
@@ -551,6 +565,9 @@ def compute_masks(xy: np.ndarray, conf: np.ndarray, conf_thr: float) -> Tuple[np
       joint_mask  : (T,J) bool
       frame_mask  : (T,)  bool  (refined by min_valid_ratio in process_one)
       valid_ratio : (T,)  float32
+
+    ``frame_mask`` intentionally starts permissive here; ``process_one`` applies
+    dataset/task-specific frame-quality thresholds later.
     """
     joint_mask = (conf >= conf_thr) & np.isfinite(xy[..., 0]) & np.isfinite(xy[..., 1])
     n_joints = int(joint_mask.shape[1]) if joint_mask.ndim == 2 else 0
@@ -594,6 +611,14 @@ def invalidate_bad_frames(
 # Main per-file processing
 # -------------------------
 def process_one(in_path: Path, out_path: Path, args) -> bool:
+    """Process one pose NPZ and write the normalized output NPZ.
+
+    The processing order is fixed: standardize missing -> optional clipping ->
+    short-gap fill -> optional step clamp -> smoothing -> normalization ->
+    mask/frame-quality derivation -> optional frame invalidation. The function
+    preserves frame count and carries through unrelated metadata keys.
+    """
+
     if args.skip_existing and out_path.exists():
         return True
 
@@ -604,7 +629,8 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
         xy = d["xy"].astype(np.float32)
         conf = d["conf"].astype(np.float32)
 
-        # Carry through everything else (future-proof)
+        # Preserve unrelated extractor metadata so later stages do not lose file
+        # provenance or sequence information when preprocessing is introduced.
         extras = {k: d[k] for k in d.files if k not in ("xy", "conf", "preprocess", "mask", "frame_mask", "valid_ratio")}
 
     if xy.ndim != 3 or xy.shape[-1] != 2:
@@ -645,7 +671,8 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
     # 5) masks / frame quality
     joint_mask, frame_mask, valid_ratio = compute_masks(xy, conf, conf_thr=args.conf_thr)
 
-    # Always reflect min_valid_ratio in frame_mask, even if we do not zero-out frames.
+    # frame_mask carries the quality contract even when we choose not to zero-out
+    # bad frames, so downstream code can decide whether to ignore them.
     if args.min_valid_ratio > 0.0:
         frame_mask = frame_mask & (valid_ratio >= float(args.min_valid_ratio))
 
@@ -660,7 +687,8 @@ def process_one(in_path: Path, out_path: Path, args) -> bool:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Summary for reproducibility
+    # Persist preprocessing choices alongside the cleaned arrays so later runs
+    # can audit exactly which transforms produced this NPZ.
     preprocess_meta = dict(
         conf_thr=float(args.conf_thr),
         smooth_k=int(args.smooth_k),

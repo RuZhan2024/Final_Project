@@ -26,6 +26,9 @@ function InfoHint({ text }: { text: string }) {
   );
 }
 
+/**
+ * Dashboard page showing status cards and a lightweight monitoring toggle.
+ */
 function Dashboard() {
   const navigate = useNavigate();
   const [statusMsg, setStatusMsg] = useState("");
@@ -43,6 +46,7 @@ function Dashboard() {
 
   const modelLabel = useMemo(() => {
     const activeModelCode = settings?.system?.active_model_code;
+    // Prefer the persisted settings selection; summary.model_name is only a fallback for older responses.
     if (activeModelCode) return modelCodeToLabel(activeModelCode);
     return summary.system?.model_name || "—";
   }, [settings?.system?.active_model_code, summary.system?.model_name]);
@@ -70,6 +74,7 @@ function Dashboard() {
     try {
       const next = await toggleMonitoringOn();
       if (next === previous) {
+        // The provider returns the effective runtime state, which may differ if startup/shutdown failed.
         showToast(
           next
             ? "Monitoring remains ON. If you expected OFF, check monitor session state."
@@ -154,6 +159,7 @@ function Dashboard() {
               <div
                 className={styles.toggleSwitch}
                 onClick={() => {
+                  // Dashboard uses the same provider-level toggle as Settings/Monitor to avoid split state.
                   void onToggleMonitoring();
                 }}
                 title="Enable or disable live monitoring"

@@ -19,6 +19,9 @@ interface ModelInfoCardProps {
   sigma: number | null;
 }
 
+/**
+ * Summary card for the active model/runtime parameters shown beside the monitor.
+ */
 export function ModelInfoCard({
   modelTag,
   deployW,
@@ -38,6 +41,7 @@ export function ModelInfoCard({
   const tauHighText = (() => {
     const v = tauHigh;
     if (v == null) return "—";
+    // When available, keep the OP code next to tau_high because settings may override presets.
     const tag = opCode ? ` (${opCode})` : "";
     return `${Number(v).toFixed(2)}${tag}`;
   })();
@@ -76,6 +80,7 @@ export function ModelInfoCard({
         </div>
       </div>
 
+      {/* Keep the compact footer for values that are useful in demos but too noisy for the main table. */}
       <p className={`${styles.subText} ${styles.infoSummary}`}>
         Mode: {mode} • Capture FPS: {captureFpsText} • Model FPS: {modelFpsText} • Live MC: {mcCfg?.M ?? "—"}/{mcCfg?.M_confirm ?? "—"}
         {sigma != null ? ` • σ=${Number(sigma).toFixed(3)}` : ""}

@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""eval/metrics.py
+"""Evaluate checkpoints with deployment-style alert-policy semantics.
 
-Evaluate a trained checkpoint on a windows directory, producing a JSON report.
+This script turns a windows directory into a JSON report covering both
+window-level scores and event-level behavior under the same alert-policy rules
+used by runtime evaluation: EMA, k-of-n, hysteresis, cooldown, and optional
+confirmation heuristics. It also supports OP-1/OP-2/OP-3 YAML inputs.
 
-This version evaluates REAL deployment behavior:
-  - Threshold sweep is under the FULL alert policy (EMA + k-of-n + hysteresis + cooldown)
-  - FA/24h counts FALSE alert events only (alerts not overlapping GT fall events)
-
-Also supports evaluating OP-1/OP-2/OP-3 operating points.
-
-IMPORTANT CONVENTION:
-  - w_end is INCLUSIVE (last frame index of the window).
-  - Any duration computed from window indices MUST use:
-        duration_s = (w_end - w_start + 1) / fps
-  - For timestamps used in alert policy / event merging, we use core.alerting.times_from_windows:
-        center time = (w_start + w_end) / 2 / fps
+Important invariant: ``w_end`` is inclusive. Any duration or timestamp derived
+from window indices must respect that convention or event delay/FA metrics will
+drift from the runtime interpretation.
 """
 
 from __future__ import annotations
@@ -74,7 +68,8 @@ def _event_metrics_to_compat_dict(em: Any) -> Dict[str, Any]:
     else:
         d = dict(getattr(em, "__dict__", {}))
 
-    # aliases (best-effort)
+    # Keep older plotting/report code working while the repo migrates to the
+    # richer EventMetrics field names.
     if "event_recall" in d and "recall" not in d:
         d["recall"] = d.get("event_recall")
     if "false_alerts_per_day" in d:
@@ -211,6 +206,11 @@ def _extract_policy_and_ops(d: dict) -> tuple[dict, dict]:
 # ---------------- dataset ----------------
 
 class LabeledWindows(Dataset):
+    """Evaluation dataset that recreates the deployment feature contract.
+
+    Each sample returns model-ready input plus window metadata so later metric
+    code can evaluate alert policies without reopening the source NPZ.
+    """
     def __init__(self, win_dir: str, *, feat_cfg: FeatCfg, fps_default: float, arch: str, two_stream: bool):
         self.win_dir = win_dir
         self.feat_cfg = feat_cfg
@@ -241,8 +241,8 @@ class LabeledWindows(Dataset):
             feat_cfg=self.feat_cfg,
         )
 
-        # Confirm-stage heuristic signals (used by alert policy when enabled).
-        # WindowMeta is a plain dataclass (no slots), so we can attach attributes.
+        # Compute confirmation heuristics once here so later threshold sweeps use
+        # the exact same window ordering as model inference.
         try:
             ls, ms = confirm_scores_window(joints, mask_used, float(fps))
             setattr(meta, "lying_score", float(ls))
@@ -262,12 +262,14 @@ class LabeledWindows(Dataset):
 
 
 def _collate(batch):
+    """Keep NumPy feature arrays as lists until the arch-specific stack step."""
     Xs, metas = zip(*batch)
     return list(Xs), list(metas)
 
 
 @torch.no_grad()
 def infer_probs(model, loader, device, arch: str, two_stream: bool):
+    """Run inference and preserve the metadata needed for alert-policy metrics."""
     probs = []
     vids, ws, we, fps = [], [], [], []
     y_true = []
@@ -326,7 +328,12 @@ def _aggregate_event_metrics(
     ls_arr: Optional[np.ndarray] = None,
     ms_arr: Optional[np.ndarray] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Aggregate per-video event metrics into totals + rich per-video details."""
+    """Aggregate per-video event metrics into totals + rich per-video details.
+
+    Window scores are grouped by video, then replayed through the alert policy
+    so recall, delay, and false-alert counts reflect event semantics rather
+    than independent thresholded windows.
+    """
     unique_vids = list(dict.fromkeys(list(vids_arr)))
 
     totals = {
@@ -394,7 +401,8 @@ def _aggregate_event_metrics(
         )
         em = _event_metrics_to_compat_dict(em)
 
-        # ✅ FIX: keep state counts consistent with confirm stage (lying/motion).
+        # State occupancy must use the same confirmation inputs as event
+        # metrics; otherwise the report can disagree about when alerts existed.
         st = classify_states(p_v, t_v, alert_cfg, lying_score=ls_v, motion_score=ms_v, video_id=str(v))
 
         # Approximate time occupancy with median dt.
@@ -599,6 +607,7 @@ def _aggregate_event_counts(
 
 
 def main() -> None:
+    """Load a checkpoint, run deployment-style evaluation, and write JSON output."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--win_dir", required=True)
     ap.add_argument("--ckpt", required=True)

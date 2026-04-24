@@ -9,6 +9,13 @@ import type { TimelineEntry, UseMonitorSessionStateOptions } from "../types";
 
 const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 
+/**
+ * Owns monitor-page prediction state derived from backend responses.
+ *
+ * The hook keeps UI-friendly state separate from transport details: stable
+ * triage labels, timeline markers, clip upload queueing, and compact display
+ * values for the current monitor session.
+ */
 export function useMonitorSessionState({
   mode,
   settingsPayload,
@@ -42,6 +49,7 @@ export function useMonitorSessionState({
   const lastFallHistoryTsRef = useRef(0);
 
   const resetSessionUiState = useCallback(() => {
+    /** Clear all frontend session state when a new monitor run starts. */
     setPFall(null);
     setSigma(null);
     setTriageState("not_fall");
@@ -66,6 +74,13 @@ export function useMonitorSessionState({
   }, []);
 
   const addTimelineMarker = useCallback((kind: string, options: { force?: boolean; eventId?: string | number | null; dedupMs?: number } = {}) => {
+    /**
+     * Append a marker to the recent prediction timeline with fall deduping.
+     *
+     * Fall markers are deduplicated by event id when available, then by time
+     * window. This keeps one persisted event from filling the timeline with
+     * repeated markers from overlapping windows.
+     */
     const now = Date.now();
     const { force = false, eventId = null, dedupMs = FALL_HISTORY_DEDUP_MS_DEFAULT } = options || {};
     if (!force && kind === "fall") {
@@ -89,6 +104,13 @@ export function useMonitorSessionState({
   }, []);
 
   const applyPredictionResponse = useCallback((data: Record<string, any>) => {
+    /**
+     * Translate one backend response into stable UI state and side effects.
+     *
+     * This applies triage smoothing, updates visible prediction labels, queues
+     * skeleton clip upload when a new event id appears, and adds timeline
+     * markers without letting overlapping fall windows spam the history.
+     */
     const endTs = Number(data?.window_end_t_ms || data?.window_end_ts || 0);
     if (Number.isFinite(endTs) && endTs > 0) {
       void maybeFinalizeClipUpload();
@@ -131,6 +153,8 @@ export function useMonitorSessionState({
         const already = sent && sent.has(String(evId));
         const pending = pendingClipRef.current;
         if (!already && (!pending || String(pending.eventId) !== String(evId))) {
+          // Queue at most one pending clip per event id so replay/live overlap
+          // does not schedule duplicate uploads for the same backend event.
           queueClipForEvent({
             eventId: evId,
             endTs,

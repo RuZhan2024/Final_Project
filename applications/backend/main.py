@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""ASGI module exporting the default backend application object."""
+
 from .config import get_app_config
 from .application import create_app
 

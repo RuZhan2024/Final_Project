@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Default-resolution helpers for monitor requests.
+
+This module converts request fields plus optional database rows into the runtime
+settings used by inference, alert persistence, and notification dispatch. It is
+written so the same precedence rules apply whether MySQL is available or not.
+"""
+
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -15,6 +22,14 @@ def resolve_mc_runtime(
     sys_row: Optional[Dict[str, Any]],
     is_replay: bool,
 ) -> Tuple[bool, int, bool, int]:
+    """Resolve requested and effective MC-dropout settings.
+
+    Precedence is: explicit request value -> ``system_settings`` value -> local
+    default. The returned requested values preserve the selected policy for
+    diagnostics, while effective values apply runtime constraints such as
+    disabling MC for replay/video requests.
+    """
+
     use_mc = requested_use_mc
     mc_m = requested_mc_m
 
@@ -40,6 +55,13 @@ def resolve_mc_runtime(
 
 @dataclass(frozen=True)
 class MonitorRequestContext:
+    """Resolved monitor settings for one resident request.
+
+    The context carries both alert-policy inputs and notification preferences.
+    It should be safe to construct with ``conn=None``; callers rely on that path
+    when the database is unavailable during local runs or tests.
+    """
+
     resident_id: int
     event_location: str
     dataset_code: str
@@ -70,9 +92,18 @@ def load_monitor_request_context(
     detect_variants,
     table_exists,
 ) -> MonitorRequestContext:
+    """Resolve dataset, operating point, model, MC, and notification defaults.
+
+    Resolution order is: explicit request fields -> ``system_settings`` active
+    fields -> legacy operating-point id lookup -> packaged defaults. Caregiver
+    contact fields are loaded only from the database and default to empty strings
+    when no caregiver row exists.
+    """
+
     sys_row = None
     resolved_dataset_code = normalize_dataset_code(dataset_code)
-    resolved_op_code = norm_op_code(str(op_code or ""))
+    requested_op_code = str(op_code or "").strip()
+    resolved_op_code = norm_op_code(requested_op_code) if requested_op_code else ""
     resolved_active_model = str(active_model_code or mode.upper())
     cooldown_sec = 30
     notify_on_every_fall = True
@@ -92,6 +123,7 @@ def load_monitor_request_context(
                 sys_row = cur.fetchone()
 
         if isinstance(sys_row, dict):
+            # Active dataset/model/op settings override packaged defaults only when present.
             if not resolved_dataset_code and sys_row.get("active_dataset_code"):
                 resolved_dataset_code = normalize_dataset_code(sys_row.get("active_dataset_code"))
             if sys_row.get("alert_cooldown_sec") is not None:
@@ -114,6 +146,8 @@ def load_monitor_request_context(
                     op_id = sys_row.get(key)
                     break
             if (not resolved_op_code) and op_id and table_exists(conn, "operating_points"):
+                # Compatibility lookup is last so older id-only schemas do not
+                # override a code supplied by the request or newer settings row.
                 with conn.cursor() as cur:
                     cur.execute("SELECT code FROM operating_points WHERE id=%s LIMIT 1", (int(op_id),))
                     row = cur.fetchone() or {}
@@ -128,6 +162,7 @@ def load_monitor_request_context(
                 )
                 caregiver_row = cur.fetchone() or {}
             if isinstance(caregiver_row, dict):
+                # Notification delivery still uses the first caregiver row as the resident default.
                 caregiver_name = str(caregiver_row.get("name") or "").strip()
                 caregiver_email = str(caregiver_row.get("email") or "").strip()
                 caregiver_phone = str(caregiver_row.get("phone") or "").strip()
@@ -136,6 +171,7 @@ def load_monitor_request_context(
     if not resolved_dataset_code:
         resolved_dataset_code = "caucafall"
     if not resolved_op_code:
+        # OP-2 remains the stable monitor default across demo and deployed configs.
         resolved_op_code = "OP-2"
 
     requested_use_mc_bool, requested_mc_m_int, effective_use_mc, effective_mc_m = resolve_mc_runtime(

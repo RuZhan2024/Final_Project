@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""FastAPI application factory and route registration."""
+
 import logging
 import time
 
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _configure_logging() -> None:
+    """Install a basic root logger once for local app startup."""
     root = logging.getLogger()
     if root.handlers:
         return
@@ -25,6 +28,7 @@ def _configure_logging() -> None:
 
 
 def _register_routes(app: FastAPI, *, include_runtime_routes: bool = True) -> None:
+    """Register product-surface routes, with monitor routes optionally disabled for tests."""
     from .routes.caregivers import router as caregivers_router
     from .routes.dashboard import router as dashboard_router
     from .routes.events import router as events_router
@@ -51,6 +55,7 @@ def _register_routes(app: FastAPI, *, include_runtime_routes: bool = True) -> No
 
 
 def create_app(config: AppConfig | None = None, *, include_runtime_routes: bool = True) -> FastAPI:
+    """Create the configured FastAPI app instance used by ASGI entrypoints and tests."""
     _configure_logging()
     cfg = config or get_app_config()
 
@@ -79,6 +84,7 @@ def create_app(config: AppConfig | None = None, *, include_runtime_routes: bool 
 
     @app.middleware("http")
     async def _log_requests(request: Request, call_next):
+        # Keep request logging centralized here so route modules stay transport-focused.
         started = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000.0

@@ -16,6 +16,7 @@ const root = ReactDOM.createRoot(rootElement);
 
 root.render(
   <React.StrictMode>
+    {/* Routing is app-wide so page components can assume a browser router exists. */}
     <BrowserRouter>
       <App />
     </BrowserRouter>

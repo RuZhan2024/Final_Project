@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Timezone-aware timestamp helpers shared by backend routes and services."""
+
 import os
 
 from datetime import datetime, timezone
@@ -12,6 +14,7 @@ except ImportError:  # pragma: no cover
 
 
 def get_app_timezone():
+    """Resolve the configured application timezone, falling back safely to local tz."""
     tz_name = str(os.getenv("APP_TIMEZONE", "Europe/London")).strip() or "Europe/London"
     if ZoneInfo is not None:
         try:
@@ -22,6 +25,7 @@ def get_app_timezone():
 
 
 def ensure_utc_datetime(value: Any) -> Optional[datetime]:
+    """Parse common timestamp inputs and normalize them into UTC datetimes."""
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -40,6 +44,7 @@ def ensure_utc_datetime(value: Any) -> Optional[datetime]:
 
 
 def serialize_event_timestamp(value: Any) -> Any:
+    """Serialize a timestamp as ISO-8601 when it can be parsed, else pass it through."""
     dt = ensure_utc_datetime(value)
     if dt is None:
         return value
@@ -47,6 +52,7 @@ def serialize_event_timestamp(value: Any) -> Any:
 
 
 def format_local_event_timestamp(value: Any) -> str:
+    """Render a UTC timestamp in the configured app timezone for human-facing UI strings."""
     dt = ensure_utc_datetime(value)
     if dt is None:
         return str(value)

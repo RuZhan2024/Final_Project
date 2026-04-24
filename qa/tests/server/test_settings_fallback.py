@@ -1,3 +1,9 @@
+"""Regression tests for settings and summary fallback contracts.
+
+These tests stay intentionally small; comments only explain the cross-module
+guarantees that are easy to break when route/service wiring changes.
+"""
+
 from fastapi.testclient import TestClient
 
 from applications.backend.main import app
@@ -5,6 +11,8 @@ from applications.backend.routes import settings as settings_route
 
 
 def test_settings_falls_back_when_db_unavailable(monkeypatch):
+    # The settings page must remain usable during DB outages because the
+    # frontend still depends on defaults and deploy-derived values.
     def _boom():
         raise RuntimeError("db down")
 
@@ -20,6 +28,8 @@ def test_settings_falls_back_when_db_unavailable(monkeypatch):
 
 
 def test_events_summary_includes_today_when_db_unavailable():
+    # The dashboard summary route is used during degraded demos, so it must keep
+    # the `today` envelope even if backing storage is unavailable.
     client = TestClient(app)
     resp = client.get("/api/events/summary")
     assert resp.status_code == 200
@@ -29,6 +39,8 @@ def test_events_summary_includes_today_when_db_unavailable():
 
 
 def test_apply_yaml_override_tolerates_exceptions(monkeypatch):
+    # YAML-derived operating points are a best-effort overlay; a parse/runtime
+    # failure must not erase the repo's stable default OP code.
     monkeypatch.setattr(
         settings_route,
         "_derive_ops_params_from_yaml",

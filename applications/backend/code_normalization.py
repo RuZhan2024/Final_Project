@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Canonical code normalization for datasets, model families, and OP labels."""
+
 from typing import Optional
 
 
@@ -8,6 +10,7 @@ SUPPORTED_MODEL_CODES = {"TCN", "GCN", "HYBRID"}
 
 
 def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafall") -> str:
+    """Return a supported dataset code or the configured default."""
     ds = str(dataset_code or "").lower().strip()
     if ds in SUPPORTED_DATASETS:
         return ds
@@ -15,6 +18,7 @@ def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafal
 
 
 def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str:
+    """Return a supported model-family code or the configured default."""
     mc = str(model_code or "").upper().strip()
     if mc in SUPPORTED_MODEL_CODES:
         return mc
@@ -22,6 +26,7 @@ def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str
 
 
 def norm_op_code(op_code: Optional[str]) -> str:
+    """Collapse legacy operating-point aliases onto the public OP-1/2/3 labels."""
     s = (op_code or "").strip().upper().replace("_", "-")
     if s in {"OP1", "OP-1", "HIGH", "OP-01"}:
         return "OP-1"

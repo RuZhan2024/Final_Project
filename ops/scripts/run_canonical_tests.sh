@@ -17,7 +17,7 @@ mode="${1:-torch-free}"
 require_torch_importable() {
   # Fail fast here so known local torch import issues do not surface later as
   # less actionable pytest collection aborts.
-  if bash -lc 'python3 -c "import torch; print(torch.__version__)" >/dev/null 2>&1'; then
+  if python -c "import torch; print(torch.__version__)" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -67,7 +67,7 @@ case "$mode" in
     (
       cd "$ROOT/applications/frontend"
       CI=1 npm test -- --runInBand --watchAll=false --watchman=false \
-        src/features/monitor/api.test.js
+        src/features/monitor/api.test.ts
     )
     ;;
   all)

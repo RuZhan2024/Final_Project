@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+"""Repository queries backing dashboard summary cards.
+
+These helpers answer a narrow set of dashboard questions: current system
+settings, today's event counts, and the latest recorded latency. Anything about
+fallbacks or response shaping belongs in the service layer.
+"""
+
 from typing import Any, Dict
 
 
 def _today_filter_sql(conn: Any, column: str) -> str:
+    """Return the backend-specific SQL fragment for local-date filtering."""
     if str(getattr(conn, "db_backend", "mysql")).lower() == "sqlite":
         return f"DATE({column}) = DATE('now', 'localtime')"
     return f"DATE({column})=CURDATE()"
@@ -16,6 +24,7 @@ def load_system_snapshot(
     table_exists,
     col_exists,
 ) -> Dict[str, Any]:
+    """Load the subset of system settings surfaced on the dashboard."""
     snapshot: Dict[str, Any] = {
         "model_name": "TCN",
         "monitoring_enabled": False,
@@ -33,6 +42,8 @@ def load_system_snapshot(
 
                 active_model_id = row.get("active_model_id")
                 if active_model_id and table_exists(conn, "models"):
+                    # Prefer the human-friendly model name when the models table
+                    # is present; otherwise fall back to the stored code.
                     cur.execute("SELECT * FROM models WHERE id=%s LIMIT 1", (active_model_id,))
                     model_row = cur.fetchone() or {}
                     if isinstance(model_row, dict):
@@ -54,6 +65,7 @@ def load_today_counts(
     table_exists,
     col_exists,
 ) -> Dict[str, int]:
+    """Load today's fall, false-alarm, and confirmed-fall counters."""
     falls = 0
     false_alarms = 0
     confirmed_falls = 0
@@ -136,6 +148,7 @@ def load_today_counts(
 
 
 def load_last_latency_ms(conn: Any, *, table_exists, col_exists) -> int | None:
+    """Load the latest heartbeat latency when that table/column exists."""
     if not table_exists(conn, "heartbeat") or not col_exists(conn, "heartbeat", "latency_ms"):
         return None
     with conn.cursor() as cur:

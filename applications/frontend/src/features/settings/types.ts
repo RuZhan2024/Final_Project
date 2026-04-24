@@ -1,6 +1,11 @@
+/**
+ * Settings payloads intentionally accept mixed scalar types because the backend
+ * still normalizes values coming from DB rows, YAML, and older test fixtures.
+ */
 export interface CaregiverRecord {
   id?: number | null;
   name?: string | null;
+  // Telegram is the only chat identifier exposed in the current UI/settings flow.
   telegram_chat_id?: string | null;
   [key: string]: unknown;
 }
@@ -23,6 +28,7 @@ export interface SystemSettings {
   alert_cooldown_sec?: number | string | null;
   deploy_params?: {
     ui?: {
+      // The UI reads either snake_case or camelCase cooldown keys, depending on source.
       op_code?: string | null;
       tau_high?: number | string | null;
       tau_low?: number | string | null;
@@ -43,6 +49,7 @@ export interface SystemSettings {
 
 export interface DeploySettings {
   window?: {
+    // Window size and stride come from deploy YAML and may arrive as strings.
     W?: number | string | null;
     S?: number | string | null;
     [key: string]: unknown;
@@ -56,6 +63,7 @@ export interface DeploySettings {
 }
 
 export interface SettingsResponse {
+  // Responses bundle editable system settings with deploy-time read-only config.
   system?: SystemSettings;
   deploy?: DeploySettings;
   caregivers?: CaregiverRecord[];
@@ -63,6 +71,7 @@ export interface SettingsResponse {
 }
 
 export interface SettingsPatch {
+  // Patch requests are narrower than read responses: only editable UI fields belong here.
   monitoring_enabled?: boolean;
   notify_on_every_fall?: boolean;
   notify_sms?: boolean;

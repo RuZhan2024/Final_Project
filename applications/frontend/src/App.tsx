@@ -12,6 +12,9 @@ import styles from "./App.module.css";
 const MonitoringProviderComponent =
   MonitoringProvider as React.ComponentType<React.PropsWithChildren>;
 
+/**
+ * App shell with shared navigation and page routing.
+ */
 function App() {
   const location = useLocation();
   const showMonitor = location.pathname === "/monitor";
@@ -103,11 +106,13 @@ function App() {
         </aside>
 
         <main className={styles.mainContent}>
+          {/* Keep Monitor mounted so its runtime/context can outlive route toggles. */}
           <div style={{ display: showMonitor ? "block" : "none" }}>
             <Monitor isActive={showMonitor} />
           </div>
 
           <Routes>
+            {/* The routed /monitor element stays empty because the live page is rendered above. */}
             <Route path="/" element={<Navigate to="/monitor" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/monitor" element={<></>} />

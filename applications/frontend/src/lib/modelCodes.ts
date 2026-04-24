@@ -1,3 +1,4 @@
+/** Normalize model-family codes used across monitor, dashboard, and settings UI. */
 export function normalizeModelCode(code: unknown): "TCN" | "GCN" | "HYBRID" {
   const v = String(code || "").trim().toUpperCase();
   if (v === "TCN") return "TCN";
@@ -11,6 +12,7 @@ export function modelCodeToLabel(code: unknown): string {
 }
 
 export function modelLabelToCode(label: unknown): "TCN" | "GCN" | "HYBRID" {
+  // Some older UI labels include extra words, so match by substring rather than exact text.
   const v = String(label || "").toLowerCase();
   if (v.includes("hybrid")) return "HYBRID";
   if (v.includes("tcn")) return "TCN";

@@ -25,6 +25,9 @@ interface MonitorProps {
   isActive?: boolean;
 }
 
+/**
+ * Main monitor page wiring together settings, replay assets, and live runtime hooks.
+ */
 function Monitor({ isActive = true }: MonitorProps) {
   const {
     monitoringOn,
@@ -117,6 +120,7 @@ function Monitor({ isActive = true }: MonitorProps) {
       chosenSpec?.dataset ||
       (effectiveMode === "tcn" ? (models.find((m) => m.id === chosen.tcn)?.dataset_code || models.find((m) => m.id === chosen.tcn)?.dataset) : null) ||
       (effectiveMode === "gcn" ? (models.find((m) => m.id === chosen.gcn)?.dataset_code || models.find((m) => m.id === chosen.gcn)?.dataset) : null);
+    // Spec metadata wins when available so replay/live requests stay aligned with the chosen checkpoint.
     return String(fromSpec || activeDatasetCode || "caucafall");
   }, [chosenSpec, effectiveMode, models, chosen, activeDatasetCode]);
 
@@ -242,6 +246,7 @@ function Monitor({ isActive = true }: MonitorProps) {
 
         {/* RIGHT COLUMN (1/3) */}
         <div className={styles.rightColumn}>
+          {/* Controls switch source/runtime state; the monitor hook reacts through shared context and refs. */}
           <ControlsCard
             monitoringOn={monitoringOn}
             setMonitoringOn={setMonitoringOn}
@@ -278,6 +283,7 @@ function Monitor({ isActive = true }: MonitorProps) {
             onSeekReplay={seekReplay}
           />
 
+          {/* Timeline reads the stable marker stream produced by the monitor session hook. */}
           <TimelineCard markers={markers} statusText={timelineStatusText} />
 
           <ModelInfoCard

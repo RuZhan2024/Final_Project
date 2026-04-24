@@ -23,6 +23,7 @@ import torch.nn.functional as F
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
+    """Numerically stable sigmoid used by calibration reporting helpers."""
     x = np.asarray(x, dtype=np.float64)
     # stable sigmoid
     out = np.empty_like(x)
@@ -34,6 +35,7 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 def apply_temperature(logits: np.ndarray, T: float) -> np.ndarray:
+    """Scale binary logits by a validated temperature parameter."""
     T = float(T)
     if not np.isfinite(T) or T <= 0:
         raise ValueError("Temperature T must be finite and >0")
@@ -41,6 +43,7 @@ def apply_temperature(logits: np.ndarray, T: float) -> np.ndarray:
 
 
 def nll_from_logits(logits: np.ndarray, y: np.ndarray) -> float:
+    """Compute binary NLL directly from logits and 0/1 targets."""
     lt = torch.tensor(np.asarray(logits, dtype=np.float32)).view(-1)
     yt = torch.tensor(np.asarray(y, dtype=np.float32)).view(-1)
     loss = F.binary_cross_entropy_with_logits(lt, yt)
@@ -72,6 +75,12 @@ def ece_from_probs(probs: np.ndarray, y: np.ndarray, *, n_bins: int = 15) -> flo
 
 @dataclass
 class TempFitResult:
+    """Temperature-fit summary persisted alongside a calibrated checkpoint.
+
+    The before/after statistics are part of the artifact contract: downstream
+    tooling can report whether calibration helped without having to rerun the
+    optimization step.
+    """
     T: float
     n_val: int
     nll_before: float
@@ -80,6 +89,7 @@ class TempFitResult:
     ece_after: float
 
     def to_yaml_dict(self) -> Dict[str, object]:
+        """Serialize the calibration artifact in the repo's YAML schema."""
         return {
             "calibration": {
                 "method": "temperature",
@@ -101,7 +111,11 @@ def fit_temperature(
     lr: float = 0.05,
     init_T: float = 1.0,
 ) -> TempFitResult:
-    """Fit a scalar temperature T on logits using NLL minimisation."""
+    """Fit a scalar temperature T on validation logits using NLL minimisation.
+
+    Only labels in {0,1} participate in the fit. Invalid labels are discarded
+    so mixed evaluation arrays can still reuse this helper safely.
+    """
     logits = np.asarray(logits, dtype=np.float32).reshape(-1)
     y = np.asarray(y, dtype=np.int32).reshape(-1)
     m = (y == 0) | (y == 1)
@@ -110,11 +124,13 @@ def fit_temperature(
     if logits.size == 0:
         return TempFitResult(T=1.0, n_val=0, nll_before=float("nan"), nll_after=float("nan"), ece_before=float("nan"), ece_after=float("nan"))
 
-    # torch tensors
+    # Convert once to torch because optimization updates only the scalar
+    # temperature parameter, not the stored validation logits/labels.
     lt = torch.tensor(logits, dtype=torch.float32)
     yt = torch.tensor(y.astype(np.float32), dtype=torch.float32)
 
-    # parameterise T via softplus to ensure positivity
+    # Softplus keeps the learned temperature positive without manual clipping,
+    # which would otherwise distort gradients near the boundary.
     t_param = torch.nn.Parameter(torch.tensor(float(init_T), dtype=torch.float32))
     opt = torch.optim.Adam([t_param], lr=float(lr))
 

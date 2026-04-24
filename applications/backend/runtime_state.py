@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""In-memory runtime state shared across backend routes and services."""
+
 from typing import Any, Dict, Optional
 
 from .config import get_app_config
@@ -7,6 +9,7 @@ from .config import get_app_config
 
 SESSION_STATE: Dict[str, Dict[str, Any]] = {}
 
+# Summary/dashboard routes read these snapshots instead of recomputing the last prediction.
 LAST_PRED_LATENCY_MS: Optional[float] = None
 LAST_PRED_P_FALL: Optional[float] = None
 LAST_PRED_DECISION: Optional[str] = None
@@ -27,10 +30,12 @@ def get_last_pred_decision() -> Optional[str]:
 
 
 def get_session_store() -> Dict[str, Dict[str, Any]]:
+    """Expose the mutable in-memory session store used by monitor routes."""
     return SESSION_STATE
 
 
 def touch_session_state(session_id: str, now_s: Optional[float] = None) -> Dict[str, Any]:
+    """Refresh the last-seen timestamp for one logical monitor session."""
     import time
 
     t_s = float(now_s if now_s is not None else time.time())
@@ -45,6 +50,7 @@ def prune_session_state(
     ttl_s: Optional[int] = None,
     max_states: Optional[int] = None,
 ) -> int:
+    """Remove expired sessions and trim the store back to the configured cap."""
     import time
 
     if not SESSION_STATE:
@@ -71,6 +77,7 @@ def prune_session_state(
             removed += 1
 
     if len(SESSION_STATE) > effective_cap:
+        # If the cap is exceeded, drop the oldest sessions even if they are not yet stale.
         ordered = sorted(
             SESSION_STATE.items(),
             key=lambda kv: float((kv[1] or {}).get("last_seen_s", 0.0) or 0.0),
@@ -91,6 +98,7 @@ def set_last_prediction_snapshot(
     model_code: Optional[str],
     ts_iso: Optional[str],
 ) -> None:
+    """Update the lightweight snapshot surfaced by dashboard-style status routes."""
     global LAST_PRED_LATENCY_MS, LAST_PRED_P_FALL, LAST_PRED_DECISION, LAST_PRED_MODEL_CODE, LAST_PRED_TS_ISO
     LAST_PRED_LATENCY_MS = latency_ms
     LAST_PRED_P_FALL = p_fall

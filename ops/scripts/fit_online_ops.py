@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Fit online operating points by simulating the monitor-state tracker.
+
+Unlike offline threshold sweeps over raw probabilities, this script replays the
+same low-motion and structural-quality suppressions that affect the live monitor
+path, then chooses OP candidates from the resulting video-level behavior.
+"""
 from __future__ import annotations
 
 import argparse
@@ -24,12 +30,14 @@ from applications.backend.routes.monitor import (
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
+    """Load a YAML file into a dict-shaped config object."""
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return data if isinstance(data, dict) else {}
 
 
 def _video_id_for(npz_path: Path, dataset_code: str) -> str:
+    """Recover the source-video grouping key used for one window NPZ filename."""
     stem = npz_path.stem
     if "__w" in stem:
         stem = stem.split("__w", 1)[0]
@@ -41,6 +49,7 @@ def _video_id_for(npz_path: Path, dataset_code: str) -> str:
 
 
 def _group_videos(test_dir: Path, dataset_code: str) -> Dict[str, List[Path]]:
+    """Group replay windows by source video so online alerts are simulated per stream."""
     groups: Dict[str, List[Path]] = defaultdict(list)
     for f in sorted(test_dir.glob("*.npz")):
         groups[_video_id_for(f, dataset_code)].append(f)
@@ -48,6 +57,7 @@ def _group_videos(test_dir: Path, dataset_code: str) -> Dict[str, List[Path]]:
 
 
 def _candidate_cfg(base_alert_cfg: Dict[str, Any], tau_high: float, tau_low_ratio: float, ema_alpha: float, k: int, n: int) -> Dict[str, Any]:
+    """Build one candidate alert-policy config from a shared base policy."""
     tau_low = max(0.0, min(tau_high - 1e-6, tau_high * tau_low_ratio))
     cfg = dict(base_alert_cfg)
     cfg["tau_high"] = float(tau_high)
@@ -59,6 +69,7 @@ def _candidate_cfg(base_alert_cfg: Dict[str, Any], tau_high: float, tau_low_rati
 
 
 def _precompute_videos(*, spec_key: str, dataset_code: str, test_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
+    """Precompute per-window diagnostics shared by every candidate alert policy."""
     spec = get_specs()[spec_key]
     groups = _group_videos(test_dir, dataset_code)
     min_motion = float(_DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {}).get("min_motion_for_fall", 0.020))
@@ -115,6 +126,7 @@ def _precompute_videos(*, spec_key: str, dataset_code: str, test_dir: Path) -> D
 
 
 def _simulate_video(rows: List[Dict[str, Any]], cfg: Dict[str, Any], min_motion: float, memory_windows: int) -> int:
+    """Replay one video's window stream through the online alert tracker."""
     tracker = OnlineAlertTracker(cfg)
     motion_hist: List[float] = []
     for row in rows:
@@ -130,6 +142,8 @@ def _simulate_video(rows: List[Dict[str, Any]], cfg: Dict[str, Any], min_motion:
             bool(row["low_motion_block"])
             and not recent_motion_support
         ) or bool(row["structural_quality_block"]):
+            # Force blocked windows below tau_low so the tracker sees the same
+            # downgrade shape as the runtime path instead of a mere annotation.
             p_in = min(float(p_in), float(tau_low) - 0.02)
         res = tracker.step(p=p_in, t_s=float(row["t_s"]))
         if res.triage_state == "fall":
@@ -138,6 +152,7 @@ def _simulate_video(rows: List[Dict[str, Any]], cfg: Dict[str, Any], min_motion:
 
 
 def _score_summary(videos: Dict[str, List[Dict[str, Any]]], cfg: Dict[str, Any], dataset_code: str) -> Dict[str, Any]:
+    """Score one candidate config at the source-video level."""
     min_motion = float(_DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {}).get("min_motion_for_fall", 0.020))
     tp = tn = fp = fn = 0
     rows: List[Dict[str, Any]] = []
@@ -173,6 +188,11 @@ def _score_summary(videos: Dict[str, List[Dict[str, Any]]], cfg: Dict[str, Any],
 
 
 def _pick_ops(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Pick OP1/OP2/OP3 from the simulated search table.
+
+    The three selectors intentionally optimize different tradeoffs rather than
+    returning three nearest thresholds from one scalar metric.
+    """
     def _key_high_tau(r: Dict[str, Any]) -> Tuple[float, float, float, float]:
         return (float(r["recall"]), -float(r["FP"]), float(r["f1"]), float(r["tau_high"]))
 
@@ -194,6 +214,7 @@ def _pick_ops(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 
 def main() -> None:
+    """Search alert-policy candidates and persist the selected operating points."""
     ap = argparse.ArgumentParser(description="Fit online operating points using the monitor-state simulation.")
     ap.add_argument("--spec_key", required=True)
     ap.add_argument("--test_dir", required=True)
@@ -218,6 +239,8 @@ def main() -> None:
 
     results: List[Dict[str, Any]] = []
     tau = float(args.tau_min)
+    # Sweep tau_high plus persistence settings because online operating points
+    # depend on tracker memory, not just a single scalar threshold.
     while tau <= float(args.tau_max) + 1e-9:
         for ema_alpha in args.ema:
             for n in args.n_values:

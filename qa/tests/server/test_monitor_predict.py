@@ -172,7 +172,12 @@ def test_predict_window_raw_path_uses_spec_pose_preprocess_cfg(monkeypatch):
     monkeypatch.setattr(
         monitor_route,
         "_get_pose_preprocess_cfg",
-        lambda _spec_key: {"smooth_k": 7, "normalize": "shoulder", "pelvis_fill": "forward", "rotate": "shoulders"},
+        lambda _spec_key, **_kwargs: {
+            "smooth_k": 7,
+            "normalize": "shoulder",
+            "pelvis_fill": "forward",
+            "rotate": "shoulders",
+        },
     )
     monkeypatch.setattr(monitor_route, "_preprocess_online_raw_window", _capture_preprocess)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
@@ -360,11 +365,6 @@ def test_predict_window_uses_db_settings_and_persists_event(monkeypatch):
     monkeypatch.setattr(monitor_route, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
     monkeypatch.setattr(monitor_route, "_ensure_system_settings_schema", lambda _c: None)
     monkeypatch.setattr(monitor_route, "_table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
-    monkeypatch.setattr(
-        monitor_route.core,
-        "_cols",
-        lambda _c, _t: {"resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta", "ts"},
-    )
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
@@ -411,11 +411,6 @@ def test_predict_window_persists_replay_uncertain_event(monkeypatch):
     monkeypatch.setattr(monitor_route, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
     monkeypatch.setattr(monitor_route, "_ensure_system_settings_schema", lambda _c: None)
     monkeypatch.setattr(monitor_route, "_table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
-    monkeypatch.setattr(
-        monitor_route.core,
-        "_cols",
-        lambda _c, _t: {"resident_id", "type", "severity", "model_code", "operating_point_id", "score", "meta", "ts"},
-    )
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyUncertainTracker)

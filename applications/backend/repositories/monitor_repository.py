@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Repository helpers for monitor runtime defaults and persisted monitor events."""
+
 import json
 
 from dataclasses import dataclass
@@ -8,6 +10,13 @@ from typing import Any, Dict, Optional
 
 @dataclass(frozen=True)
 class MonitorRuntimeDefaults:
+    """Resident defaults loaded from DB rows for monitor runtime use.
+
+    The object intentionally flattens system-settings and first-caregiver data
+    into one repository result so service code can resolve runtime fallbacks
+    without re-querying multiple tables.
+    """
+
     dataset_code: Optional[str] = None
     use_mc: Optional[bool] = None
     mc_M: Optional[int] = None
@@ -30,11 +39,20 @@ def load_monitor_runtime_defaults(
     detect_variants,
     table_exists,
 ) -> MonitorRuntimeDefaults:
+    """Load resident monitor defaults from system settings and caregiver rows.
+
+    System settings are optional; caregiver fields are returned even when no
+    settings row exists so notification-capable callers can still build a full
+    runtime context.
+    """
+
     ensure_system_settings_schema(conn)
 
     sys_row = None
     with conn.cursor() as cur:
         if table_exists(conn, "system_settings"):
+            # Settings rows are optional in some demo/test deployments, so the
+            # repository must tolerate the table existing but containing no row.
             cur.execute("SELECT * FROM system_settings WHERE resident_id=%s LIMIT 1", (resident_id,))
             sys_row = cur.fetchone()
 
@@ -44,6 +62,8 @@ def load_monitor_runtime_defaults(
     caregiver_telegram_chat_id = ""
     if table_exists(conn, "caregivers"):
         with conn.cursor() as cur:
+            # The runtime path only needs one reachable caregiver profile for
+            # default notifications, so it intentionally selects the first row.
             cur.execute(
                 "SELECT * FROM caregivers WHERE resident_id=%s ORDER BY id ASC LIMIT 1",
                 (resident_id,),
@@ -90,6 +110,12 @@ def insert_monitor_event(
     meta: Dict[str, Any],
     table_exists,
 ) -> Optional[int]:
+    """Insert a monitor-created event row into the active events schema.
+
+    The inserted payload targets the common subset shared across deployed
+    schemas. Optional fields such as ``status`` are written only when present.
+    """
+
     if not table_exists(conn, "events"):
         return None
 
@@ -111,9 +137,13 @@ def insert_monitor_event(
 
 
 def _event_columns(conn: Any) -> set[str]:
+    """Return event column names across MySQL and SQLite backends."""
+
     with conn.cursor() as cur:
         backend = str(getattr(conn, "db_backend", "mysql")).lower()
         if backend == "sqlite":
+            # SQLite uses PRAGMA metadata instead of SHOW COLUMNS, so repository
+            # code normalizes the result into one common set-of-names contract.
             cur.execute("PRAGMA table_info(`events`)")
             rows = cur.fetchall() or []
             return {str(r.get("name")) for r in rows if isinstance(r, dict) and r.get("name") is not None}

@@ -9,8 +9,12 @@ interface TimelineCardProps {
   statusText: string;
 }
 
+/**
+ * Compact timeline card showing the most recent monitor window states.
+ */
 export function TimelineCard({ markers, statusText }: TimelineCardProps) {
   const kindToColor = (kind: MarkerEntry["kind"]) => {
+    // Timeline colors match the monitor triage palette used elsewhere on the page.
     if (kind === "fall") return "#d32f2f";
     if (kind === "uncertain") return "#f5f508";
     if (kind === "safe") return "#34dc31";
@@ -29,6 +33,7 @@ export function TimelineCard({ markers, statusText }: TimelineCardProps) {
             className={styles.marker}
             style={
               {
+                // Marker positions are precomputed from the capped 50-window history strip.
                 left: `${m.leftPct}%`,
                 "--marker-color": kindToColor(m.kind),
                 opacity: m.kind === "uncertain" ? 0.85 : 1,

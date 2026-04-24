@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+"""Resident lookup helpers shared by settings and caregiver flows."""
+
 from fastapi import HTTPException
 
 
 def one_resident_id(conn) -> int:
+    """Return the first seeded resident for single-resident demo deployments."""
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM residents ORDER BY id ASC LIMIT 1")
         row = cur.fetchone()
@@ -16,6 +19,7 @@ def one_resident_id(conn) -> int:
 
 
 def resident_exists(conn, resident_id: int) -> bool:
+    """Check whether a resident id exists before writing dependent rows."""
     with conn.cursor() as cur:
         cur.execute("SELECT 1 AS ok FROM residents WHERE id=%s LIMIT 1", (resident_id,))
         return cur.fetchone() is not None

@@ -17,11 +17,13 @@ Key fixes vs older script:
 from __future__ import annotations
 
 def _to_f32(x, device: torch.device) -> torch.Tensor:
+    """Convert NumPy or torch inputs into float32 tensors on the target device."""
     # Works for numpy arrays and torch tensors
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
 # ---- bootstrap: allow running as a script from repo root ----
 def _bootstrap_project_root():
+    """Make the package importable when the trainer is invoked as a script."""
     import sys
     from pathlib import Path
     here = Path(__file__).resolve()
@@ -81,6 +83,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
+    """Compute BCE positive-class weighting from binary training labels."""
     y = np.asarray(labels01).astype(int).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
@@ -88,6 +91,7 @@ def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
 
 
 def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
+    """Build a replacement sampler that equalizes positive/negative sampling mass."""
     y = np.asarray(y01).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
@@ -114,6 +118,7 @@ def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple
 
 
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
+    """Drop random joints/frames while preserving at least one valid pose entry."""
     m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
     if mask_joint_p > 0:
@@ -139,6 +144,7 @@ def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
 
 
 def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    """Persist the minimal data facts later eval code can trust from training."""
     # Persist only facts we can guarantee at train time. The richer pose-preprocess
     # contract is filled only when a run can provide real provenance.
     return {
@@ -244,6 +250,12 @@ def _validate_hard_neg_paths(
 
 
 class WindowDatasetTCN(Dataset):
+    """TCN window dataset that rebuilds canonical features from window NPZ files.
+
+    The dataset intentionally reuses the core feature pipeline rather than
+    cached flattened tensors so training stays aligned with deploy/eval feature
+    contracts and mask semantics.
+    """
     def __init__(
         self,
         root: str,
@@ -290,7 +302,8 @@ class WindowDatasetTCN(Dataset):
             self.files.append(fp)
             self.labels01.append(1 if y == 1 else 0)
 
-        # extra hard negatives (treated as y=0 unless y==1, which is skipped)
+        # Extra hard negatives are appended after normal train files so the
+        # sampler/pos-weight logic sees them as ordinary additional negatives.
         if extra_neg_files:
             mult = max(1, int(extra_neg_mult))
             prefix_mult = max(1, int(extra_neg_prefix_mult))
@@ -339,6 +352,7 @@ class WindowDatasetTCN(Dataset):
         return len(self.files)
 
     def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        """Read one window, probing nearby indices if files disappeared concurrently."""
         n = len(self.files)
         if n <= 0:
             raise RuntimeError("[err] empty dataset")
@@ -361,7 +375,8 @@ class WindowDatasetTCN(Dataset):
     def __getitem__(self, i: int):
         joints, motion, conf, mask, fps, meta = self._read_window_with_fallback(i)
 
-        # Build [T,V,F] first; get mask_used after conf gating.
+        # Build canonical [T,V,F] first so confidence gating and precomputed-mask
+        # precedence stay identical to evaluation/runtime.
         Xg, mask_used = build_canonical_input(
             joints_xy=joints,
             motion_xy=motion,
@@ -371,7 +386,8 @@ class WindowDatasetTCN(Dataset):
             feat_cfg=self.feat_cfg,
         )
 
-        # Random mask augmentation (train only) applied post-feature-build.
+        # Apply mask augmentation after feature building so train-time drops do
+        # not alter the feature-construction contract itself.
         if self.split == "train" and (self.mask_joint_p > 0 or self.mask_frame_p > 0):
             m_aug = augment_mask(mask_used, self.rng, self.mask_joint_p, self.mask_frame_p)
             Xg = Xg * m_aug[..., None]
@@ -387,6 +403,12 @@ class WindowDatasetTCN(Dataset):
 
 @dataclass
 class TrainCfg:
+    """Checkpointed training contract for TCN experiments.
+
+    This dataclass captures the knobs that affect dataset sampling, feature
+    construction, optimization, and model shape so resumed runs and later
+    evaluation can reconstruct the training-time assumptions faithfully.
+    """
     train_dir: str
     val_dir: str
     save_dir: str
@@ -466,6 +488,12 @@ class TrainCfg:
 
 
 def main() -> None:
+    """Train a TCN from pre-windowed NPZ files and emit a checkpoint bundle.
+
+    The script assumes `train_dir` and `val_dir` already contain window NPZs in
+    the repository schema. Feature flags saved into the checkpoint are part of
+    the runtime contract and must stay aligned with later fit/eval scripts.
+    """
     ap = argparse.ArgumentParser(description="Train TCN on window NPZs.")
 
     ap.add_argument("--train_dir", required=True)

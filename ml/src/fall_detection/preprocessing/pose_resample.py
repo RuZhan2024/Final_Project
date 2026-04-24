@@ -1,4 +1,9 @@
-"""Temporal pose resampling helpers for data pipeline compatibility."""
+"""Temporal pose resampling helpers for data pipeline compatibility.
+
+This module converts raw timestamped pose sequences into the fixed-length window
+contract used by training and deployment. It owns time-axis interpolation, not
+pose cleaning or feature construction.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,10 @@ def resample_pose_window(
     prevalidated_raw: bool = False,
 ) -> tuple[list[list[list[float]]], list[list[float]], float, float, float]:
     """Resample one pose segment into a fixed-T window at target FPS.
+
+    ``raw_t_ms`` is treated as the source of truth for capture timing. Output is
+    always a fixed-length window ending at ``window_end_t_ms`` when provided, or
+    the last observed timestamp otherwise.
 
     Returns:
         (xy_out, conf_out, start_t_ms, end_t_ms, fps_est)
@@ -40,6 +49,8 @@ def resample_pose_window(
         if conf.ndim != 2 or conf.shape[:2] != xy.shape[:2]:
             conf = np.ones((xy.shape[0], xy.shape[1]), dtype=np.float32)
 
+    # Enforce monotonic timestamps before interpolation so repeated frame times
+    # do not create negative or zero-width intervals.
     t = np.maximum.accumulate(t)
     dt = np.diff(t)
     dt = dt[dt > 0]
@@ -53,6 +64,8 @@ def resample_pose_window(
     start_t = end_t - (T - 1) * dt_ms
     query_t = start_t + np.arange(T, dtype=np.float64) * dt_ms
 
+    # np.interp clamps outside the observed range, which is preferable here to
+    # returning a short window that would violate the downstream model contract.
     xy_out = np.empty((T, xy.shape[1], 2), dtype=np.float32)
     conf_out = np.empty((T, conf.shape[1]), dtype=np.float32)
     for j in range(xy.shape[1]):
@@ -67,4 +80,3 @@ def resample_pose_window(
         float(end_t),
         float(fps_est),
     )
-

@@ -283,6 +283,7 @@ export function usePoseMonitor({
   }, []);
 
   const resetPredictionTransport = useCallback(() => {
+    // Source changes drop the socket client so the next run starts from a clean session.
     predictClientRef.current?.close?.("WebSocket closed during mode switch");
     predictClientRef.current = null;
   }, []);
@@ -323,6 +324,7 @@ export function usePoseMonitor({
   }, [resetClipCaptureState, resetPredictionTransport, resetSessionUiState, resetVideoSource]);
 
   const resetFrontendSessionState = useCallback(() => {
+    // Seeking or source switches keep the page mounted but must clear all per-session buffers.
     rawFramesRef.current = [];
     lastPoseTsRef.current = null;
     fpsDeltasRef.current = [];
@@ -336,6 +338,7 @@ export function usePoseMonitor({
   }, [resetClipCaptureState, resetSessionUiState]);
 
   const setReplayClip = useCallback((clip: ReplayClip | null) => {
+    // Choosing a new replay clip always starts a new logical backend session.
     stopLive();
     autoStopMonitoring();
     sessionIdRef.current = makeSessionId();
@@ -373,6 +376,7 @@ export function usePoseMonitor({
   }, [makeSessionId, resetFrontendSessionState, stopLive]);
 
   const setCaptureResolution = useCallback((preset: CaptureResolutionPreset | string) => {
+    // Ignore unknown presets so UI experiments cannot push unsupported constraints.
     if (!Object.prototype.hasOwnProperty.call(CAPTURE_RESOLUTIONS, preset)) return;
     setCaptureResolutionPreset(preset as CaptureResolutionPreset);
   }, []);
@@ -478,7 +482,7 @@ export function usePoseMonitor({
     try {
       await resetMonitorSession(apiBase, sessionIdRef.current);
     } catch {
-      // ignore
+      // The frontend can still restart locally even if the backend reset fails.
     }
   }, [apiBase]);
 

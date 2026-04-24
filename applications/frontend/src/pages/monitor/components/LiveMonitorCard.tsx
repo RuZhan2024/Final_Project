@@ -16,6 +16,7 @@ function predictionDisplayText(prediction: string) {
   const raw = String(prediction || "").trim();
   if (!raw) return raw;
   const t = raw.toLowerCase();
+  // The UI says "Normal" where the backend/frontend state contract says "no fall".
   if (t === "no fall") return "Normal";
   return prediction;
 }
@@ -32,6 +33,9 @@ interface LiveMonitorCardProps {
   modelFpsText: string;
 }
 
+/**
+ * Primary monitor card showing the video/canvas stack and current prediction state.
+ */
 export function LiveMonitorCard({
   videoRef,
   canvasRef,
@@ -46,6 +50,7 @@ export function LiveMonitorCard({
   const videoLayerClass =
     inputSource === "video"
       ? styles.videoLayerReplay
+      // Live camera preview can be hidden while keeping pose drawing and inference active.
       : showLivePreview
         ? styles.videoLayerLiveVisible
         : styles.videoLayerHidden;

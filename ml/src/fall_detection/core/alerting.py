@@ -32,6 +32,13 @@ import numpy as np
 
 @dataclass(frozen=True)
 class AlertCfg:
+    """Deployment-time alert policy thresholds and optional confirmation rules.
+
+    These values sit above raw model probabilities: they define when a score
+    sequence becomes a user-visible alert and how quickly another alert may be
+    emitted afterwards. The same structure is reused in evaluation so offline
+    sweeps match live runtime behavior.
+    """
     ema_alpha: float = 0.20
     k: int = 2
     n: int = 3
@@ -131,6 +138,11 @@ class AlertEvent:
 
 @dataclass
 class EventMetrics:
+    """Aggregated alert quality for a set of videos under one alert policy.
+
+    The count fields keep the raw matching outcome, while recall/precision/F1
+    expose the derived rates used for operating-point selection and reporting.
+    """
     # core
     event_recall: float
     false_alerts_per_hour: float
@@ -154,6 +166,7 @@ class EventMetrics:
 # ---------------- helpers ----------------
 
 def ema_smooth(x: np.ndarray, alpha: float) -> np.ndarray:
+    """Apply causal EMA smoothing to one probability trace."""
     x = np.asarray(x, dtype=np.float32).reshape(-1)
     if x.size == 0:
         return x
@@ -198,6 +211,9 @@ def _k_of_n(high01: np.ndarray, k: int, n: int) -> np.ndarray:
 
 def times_from_windows(ws: Sequence[int], we: Sequence[int], fps: float, *, mode: str = "center") -> np.ndarray:
     """Convert window frame indices to timestamps.
+
+    ``w_end`` remains inclusive here; the function only chooses which point of
+    that closed interval becomes the alert-policy timestamp.
 
     mode:
       - "start": w_start / fps
@@ -246,16 +262,27 @@ def detect_alert_events(
       condition is met within cfg.confirm_s seconds after the k-of-n trigger.
       If lying_score/motion_score are provided (both optional), we use them as
       heuristics; otherwise we fall back to a probability-only confirmation.
+
+    Resolution order:
+      1) Smooth raw probabilities with EMA.
+      2) Open a candidate alert only after the k-of-n `tau_high` rule passes.
+      3) Apply optional start guards / confirmation checks.
+      4) Keep the alert active until the lower hysteresis threshold fails.
+      5) Enforce cooldown before another alert may start.
     """
     p = np.asarray(probs, dtype=np.float32).reshape(-1)
     t = np.asarray(times_s, dtype=np.float32).reshape(-1)
     if p.size == 0:
         return np.asarray([], dtype=bool), []
 
-    # smooth
+    # Smoothing happens before persistence so a single noisy spike cannot satisfy
+    # the start rule on its own.
+    # Reuse detect_alert_events on already-smoothed probabilities so the
+    # suspect/alert split matches the real policy without double-smoothing.
     ps = ema_smooth(p, cfg.ema_alpha)
 
-    # persistence trigger uses tau_high
+    # The high threshold is reserved for starts; endings use the lower
+    # hysteresis threshold so brief post-fall score dips do not fragment events.
     high = (ps >= float(cfg.tau_high)).astype(np.int32)
     pers = _k_of_n(high, cfg.k, cfg.n)
 
@@ -515,6 +542,22 @@ def event_metrics_from_windows(
 
     false_alerts_per_{hour,day} counts ONLY alerts that do NOT overlap any GT event.
     (For unlabeled streams where y_true is all -1/0, this equals total alerts.)
+
+    Returns:
+      EventMetrics:
+        Aggregated rates and counts for this one video under `alert_cfg`.
+      detail:
+        Explicit GT and alert event intervals for debugging/reporting.
+
+    Contract:
+      `duration_s` should represent the monitored span for FA/hour and FA/day.
+      When it is omitted, the function falls back to the timestamp range, which
+      is acceptable for ordered windows but less precise than a caller-supplied
+      clip duration.
+
+    Ground truth comes from labeled-positive windows merged into GT events,
+    while predictions come from the full alert policy. That distinction is what
+    lets delay and false-alert metrics match runtime semantics.
     """
     p = np.asarray(probs, dtype=np.float32).reshape(-1)
     y = np.asarray(y_true, dtype=np.int32).reshape(-1)
@@ -659,6 +702,8 @@ def sweep_alert_policy_from_windows(
     Notes:
       - FA is FALSE alerts only (alerts not overlapping GT).
       - GT events are derived from y_true positive windows.
+      - If FA-only windows are supplied, FA/day is measured on that stream
+        instead of the usually shorter labeled validation clips.
     """
     probs = np.asarray(probs, dtype=np.float32).reshape(-1)
     y_true = np.asarray(y_true, dtype=np.int32).reshape(-1)
@@ -677,7 +722,8 @@ def sweep_alert_policy_from_windows(
     if probs.size == 0:
         return {"thr": [], "recall": [], "fa24h": []}, {"n_videos": 0}
 
-    # group by video
+    # Per-video evaluation keeps event merging and duration accounting aligned
+    # with deployment, where alerts are scoped to one stream at a time.
     unique_vids = list(dict.fromkeys(list(vids)))
     per_video = {}
     total_duration_s = 0.0
@@ -700,7 +746,8 @@ def sweep_alert_policy_from_windows(
         ms_v = ms[mv][idx] if ms is not None else None
         per_video[v] = (p_v, y_v, t_v, duration_s, fps_v, ws_v, we_v, ls_v, ms_v)
 
-    # Optional FA-only set (unlabeled/negative stream). All alerts are false by definition.
+    # The optional FA-only stream avoids optimistic FA/day estimates that can
+    # happen when validation positives dominate a short labeled subset.
     per_video_fa = {}
     total_duration_s_fa = 0.0
     if fa_probs is not None and fa_video_ids is not None and fa_w_start is not None and fa_w_end is not None and fa_fps is not None:

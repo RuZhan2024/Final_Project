@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Backend environment/config parsing for app startup and runtime services."""
+
 import os
 
 from dataclasses import dataclass
@@ -18,10 +20,12 @@ _DEFAULT_ALLOWED_ORIGINS = (
 
 
 def _repo_root() -> Path:
+    """Return the repository root used to resolve relative configured paths."""
     return Path(__file__).resolve().parent.parent.parent
 
 
 def _resolve_repo_path(raw: str) -> Path:
+    """Resolve config paths relative to the repo root unless already absolute."""
     path = Path(raw).expanduser()
     if path.is_absolute():
         return path.resolve()
@@ -29,16 +33,19 @@ def _resolve_repo_path(raw: str) -> Path:
 
 
 def _split_csv(raw: str) -> list[str]:
+    """Split comma-separated env config while dropping empty segments."""
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def get_env_str(name: str, default: str = "") -> str:
+    """Read a string env var after ensuring local env files are loaded."""
     load_local_env_files()
     raw = os.getenv(name)
     return str(raw if raw is not None else default).strip()
 
 
 def get_env_bool(name: str, default: bool) -> bool:
+    """Parse a bool-like env var, falling back when the value is missing or invalid."""
     raw = get_env_str(name, "")
     if not raw:
         return default
@@ -51,6 +58,7 @@ def get_env_bool(name: str, default: bool) -> bool:
 
 
 def get_env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Parse an integer env var with an optional lower bound."""
     try:
         value = int(get_env_str(name, str(default)))
     except (TypeError, ValueError):
@@ -61,6 +69,7 @@ def get_env_int(name: str, default: int, *, minimum: int | None = None) -> int:
 
 
 def get_env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    """Parse a float env var with an optional lower bound."""
     try:
         value = float(get_env_str(name, str(default)))
     except (TypeError, ValueError):
@@ -85,12 +94,14 @@ class AppConfig:
 
 @lru_cache(maxsize=1)
 def get_app_config() -> AppConfig:
+    """Build and cache the backend application config from environment variables."""
     load_local_env_files()
 
     raw_origins = get_env_str("CORS_ALLOWED_ORIGINS", "")
     origins = tuple(_split_csv(raw_origins)) if raw_origins else _DEFAULT_ALLOWED_ORIGINS
 
     raw_backend = get_env_str("DB_BACKEND", "mysql").lower()
+    # Only the sqlite branch is special-cased; everything else falls back to MySQL mode.
     db_backend = "sqlite" if raw_backend == "sqlite" else "mysql"
 
     sqlite_path = _resolve_repo_path(get_env_str("SQLITE_PATH", "applications/backend/cloud_demo.sqlite3"))

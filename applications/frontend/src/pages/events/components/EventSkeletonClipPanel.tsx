@@ -46,6 +46,9 @@ interface EventSkeletonClipPanelProps {
   residentId?: number;
 }
 
+/**
+ * Playback panel for the skeleton-only clip attached to an event record.
+ */
 export function EventSkeletonClipPanel({
   apiBase,
   event,
@@ -73,6 +76,7 @@ export function EventSkeletonClipPanel({
           signal: ac.signal,
         });
         if (!active) return;
+        // Reset playback to the start whenever a different event clip is loaded.
         setClipData(data || null);
         setClipFrameIdx(0);
       } catch (e: unknown) {
@@ -110,6 +114,7 @@ export function EventSkeletonClipPanel({
     const currentT = Number(tMs[currentIdx]) || 0;
     const nextT = Number(tMs[currentIdx + 1]) || currentT + 42;
     const speed = Number(playbackRate) > 0 ? Number(playbackRate) : 0.75;
+    // Frame timing comes from the stored clip timestamps rather than a fixed FPS.
     const delayMs = Math.max(16, Math.min(200, (nextT - currentT) / speed));
     const timer = window.setTimeout(() => {
       setClipFrameIdx((prev) => {
@@ -181,6 +186,7 @@ export function EventSkeletonClipPanel({
     const byIdx = new Map<number, { x: number; y: number }>();
     points.forEach((p) => {
       if (useNormalizedCoords) {
+        // Newer clips already store normalized coordinates in [0, 1].
         const pad = 18;
         const drawW = canvas.width - pad * 2;
         const drawH = canvas.height - pad * 2;
@@ -191,6 +197,7 @@ export function EventSkeletonClipPanel({
         return;
       }
 
+      // Older clips may store raw pelvis-relative coordinates and need fitting to canvas bounds.
       const spanX = Math.max(1e-3, maxX - minX);
       const spanY = Math.max(1e-3, maxY - minY);
       const scale = Math.min((canvas.width - 48) / spanX, (canvas.height - 48) / spanY);

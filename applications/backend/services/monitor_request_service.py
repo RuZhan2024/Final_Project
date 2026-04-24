@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Request-normalization stage for the monitor prediction endpoint.
+
+The route accepts two input contracts: preferred raw timestamped pose windows and
+legacy pre-windowed ``xy`` arrays. This service resolves request fields, resident
+defaults, deploy specs, FPS policy, and pose preprocessing before downstream
+code sees the request.
+"""
+
 import logging
 import time
 from dataclasses import dataclass
@@ -19,6 +27,14 @@ from .monitor_session_service import get_monitor_session_state
 
 @dataclass(frozen=True)
 class MonitorPreparedRequest:
+    """Immutable contract passed from request parsing to monitor services.
+
+    The object contains both requested values and effective values. For example,
+    ``requested_use_mc`` records the API/database preference, while
+    ``effective_use_mc`` may be disabled for replay. ``xy`` and ``conf`` are
+    guaranteed to be non-empty by the time this object is returned.
+    """
+
     compact_response: bool
     session_id: str
     input_source: str
@@ -77,6 +93,15 @@ def prepare_monitor_request(
     detect_variants,
     table_exists,
 ) -> MonitorPreparedRequest:
+    """Resolve a payload into the runtime prediction contract.
+
+    Resolution order is: explicit payload values -> database resident/system
+    settings -> packaged defaults. Pose input resolution is: decoded raw_* window
+    when present -> raw_* arrays -> legacy ``xy``/``conf``. Database failures are
+    logged but fall back to deterministic no-DB defaults so local operation and
+    tests do not require MySQL.
+    """
+
     payload_d = payload.model_dump()
     compact_response = coerce_bool(payload_d.get("compact_response"), False)
 
@@ -106,6 +131,8 @@ def prepare_monitor_request(
     raw_t_ms = payload_d.get("raw_t_ms")
     window_end_t_ms = payload_d.get("window_end_t_ms", None)
     window_seq = payload_d.get("window_seq", None)
+    # Decode before computing stats; otherwise the API diagnostics would describe
+    # an empty raw window while inference still runs on decoded pose data.
     if raw_xy is None and raw_xy_q is not None:
         dec_xy, dec_conf = decode_quantized_raw_window(raw_xy_q, raw_conf_q, raw_shape)
         if dec_xy is not None:
@@ -141,7 +168,7 @@ def prepare_monitor_request(
             )
     except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
         logger.warning(
-            "monitor.prepare_request: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
+            "monitor.predict_window: failed to load DB defaults (resident_id=%s, session_id=%s, mode=%s, dataset=%s): %s",
             resident_id,
             session_id,
             mode,
@@ -150,6 +177,7 @@ def prepare_monitor_request(
         )
 
     if request_context is None:
+        # Keep local demo/test flows alive even when DB defaults cannot be read.
         request_context = load_monitor_request_context(
             conn=None,
             resident_id=resident_id,
@@ -195,6 +223,7 @@ def prepare_monitor_request(
         mode=mode,
         payload_d=payload_d,
     )
+    # Spec resolution may rewrite hybrid aliases and pick the concrete guard/primary keys.
     mode = spec_selection["mode"]
     tcn_key = spec_selection["tcn_key"]
     gcn_key = spec_selection["gcn_key"]
@@ -207,9 +236,14 @@ def prepare_monitor_request(
         try:
             raw_preproc_cfg = get_pose_preprocess_cfg(primary_spec_key, enrich_from_checkpoint=False)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            # Online prediction should degrade to raw resampling if checkpoint
+            # metadata is unavailable; rejecting the request here would make the
+            # demo depend on optional ML runtime files.
             raw_preproc_cfg = None
 
     if raw_xy is not None and raw_t_ms is not None:
+        # Preserve capture-time spacing for live/replay drift. The legacy branch
+        # below is only for clients that already send a model-shaped window.
         xy, conf, _, _, cap_fps_est = resample_pose_window(
             raw_t_ms=raw_t_ms,
             raw_xy=raw_xy,
@@ -226,9 +260,12 @@ def prepare_monitor_request(
         conf = payload_d.get("conf") or []
 
     if (raw_xy is None or raw_t_ms is None) and isinstance(xy, list) and len(xy) > 0 and (raw_stats.get("raw_len") or 0) <= 0:
+        # Maintain response diagnostics for legacy clients; downstream code
+        # expects raw_stats keys even when no raw capture stream was supplied.
         raw_stats = direct_window_stats(xy, conf, effective_fps=float(effective_fps))
 
     if not xy:
+        # At this point neither raw_* nor legacy xy/conf produced a usable window.
         raise HTTPException(status_code=400, detail="payload must include raw_* (preferred) or xy")
 
     return MonitorPreparedRequest(

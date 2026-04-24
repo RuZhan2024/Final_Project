@@ -1,6 +1,7 @@
 import type { SpecModel } from "../../features/monitor/types";
 import type { MonitorMode } from "./types";
 
+/** Small monitor-page helpers for clamping, labels, and model selection. */
 export function clamp01(x: unknown): number {
   const n = Number(x);
   if (!Number.isFinite(n)) return 0;
@@ -10,6 +11,7 @@ export function clamp01(x: unknown): number {
 }
 
 export function normModeFromCode(code: unknown): MonitorMode {
+  // Unknown or missing mode still falls back to TCN to match the backend default.
   const c = String(code || "").toUpperCase();
   if (c === "TCN") return "tcn";
   if (c === "GCN") return "gcn";
@@ -33,6 +35,7 @@ export function prettyModelTag(activeModelCode: unknown): string {
 }
 
 export function pickFirstByArch(models: SpecModel[], arch: string, datasetCode: string): string {
+  // Prefer a dataset-specific model when specs expose both LE2I and CaucaFall entries.
   const a = String(arch || "").toLowerCase();
   const d = String(datasetCode || "").toLowerCase();
   const arr = models || [];
@@ -55,6 +58,7 @@ export function pickModelPair(models: SpecModel[], datasetCode: string): { tcn: 
 }
 
 export function targetFpsForDataset(datasetCode: unknown): number {
+  // The replay page uses the same defaults as training/eval configs.
   const ds = String(datasetCode || "").toLowerCase();
   const byDs: Record<string, number> = { le2i: 25, caucafall: 23 };
   const f = byDs[ds];

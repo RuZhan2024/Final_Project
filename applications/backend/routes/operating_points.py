@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Routes exposing model operating-point presets.
+
+The API prefers DB-backed operating-point rows when available, but falls back
+to YAML-derived OP values so monitor setup screens still work without a live
+database. This module keeps that two-source contract in one place.
+"""
+
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query
@@ -35,7 +42,8 @@ def operating_points(
 
     dataset_code = normalize_dataset_code(dataset_code, default="caucafall")
 
-    # Try DB path first
+    # Prefer DB rows when available because they may carry migration-era ids or
+    # metadata that older admin flows still expect.
     try:
         with get_conn() as conn:
             ensure_system_settings_schema(conn)
@@ -87,7 +95,8 @@ def operating_points(
                         "db_available": True,
                     }
 
-                # v1 schema
+                # Fall back to the legacy v1 table shape when the newer schema
+                # is not available for this deployment.
                 cur.execute(
                     """
                     SELECT id, model_code, name, threshold_low, threshold_high, cooldown_seconds, code
@@ -126,7 +135,8 @@ def operating_points(
     except HTTPException:
         raise
     except (MySQLError, RuntimeError, TypeError, ValueError):
-        # YAML fallback
+        # YAML fallback keeps the settings/monitor UI usable even when DB access
+        # is down, but it intentionally does not invent DB ids or estimates.
         ops = []
         for oc in ["OP-1", "OP-2", "OP-3"]:
             dp = derive_ops_params_from_yaml(dataset_code=dataset_code, model_code=model_code, op_code=oc)

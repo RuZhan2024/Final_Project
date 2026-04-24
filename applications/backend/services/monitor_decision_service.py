@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Final policy stage for monitor prediction responses.
+
+Inference has already produced per-model tracker states. This module defines the
+API-level contract: one triage state, safe/recall alert flags, persistence edge
+signals, and diagnostics explaining any gate that downgraded a fall.
+"""
+
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -9,6 +16,14 @@ from ..code_normalization import norm_op_code
 
 @dataclass(frozen=True)
 class MonitorDecisionResult:
+    """Decision payload returned to the route after all alert gates are applied.
+
+    ``triage_state`` is the user-facing state. ``safe_alert`` controls delivery
+    and persistence for conservative paths, while ``recall_alert`` preserves a
+    more sensitive signal for UI comparison. Gate diagnostics must reflect the
+    final decision, not just the raw model tracker output.
+    """
+
     triage_state: str
     p_display: float
     safe_alert: bool
@@ -52,6 +67,18 @@ def resolve_monitor_decision(
     started_gcn: bool,
     low_fps_mode: bool,
 ) -> MonitorDecisionResult:
+    """Combine model states into the final monitor decision.
+
+    Precedence is: model/dual-policy tracker state -> hybrid fusion -> MC
+    uncertainty downgrade -> live quality downgrades -> low-FPS persistence
+    confirmation -> delivery gate -> optional replay-only uncertain promotion.
+    The only intentional mutation is session-state bookkeeping for decisions
+    that depend on consecutive windows.
+    """
+
+    # Dual-policy output is preferred when present because it carries the
+    # calibrated safe/recall contract; single TCN triage remains the fallback for
+    # specs that do not ship dual-policy YAML.
     tcn_safe_alert = (
         bool(dual_policy_alerts.get("safe", {}).get("alert"))
         if "safe" in dual_policy_alerts
@@ -75,6 +102,9 @@ def resolve_monitor_decision(
         safe_alert = gcn_alert
         recall_alert = gcn_alert
     else:
+        # Hybrid deliberately makes delivery stricter than visibility: a fall is
+        # deliverable only when TCN-safe and GCN agree, but a recall-only hit is
+        # still surfaced as uncertain for review.
         safe_alert = bool(tcn_safe_alert and gcn_alert)
         recall_alert = bool(tcn_recall_alert or gcn_alert)
         if safe_alert:
@@ -113,6 +143,8 @@ def resolve_monitor_decision(
         and bool(primary_uncertainty_eval.get("blocked_fall", False))
         and triage_state == "fall"
     ):
+        # Uncertainty downgrades after hybrid fusion so it can veto whichever
+        # model is primary for the response without erasing model diagnostics.
         triage_state = "uncertain"
         safe_alert = False
         recall_alert = False
@@ -125,6 +157,8 @@ def resolve_monitor_decision(
     elif mode == "gcn":
         started_event = bool(started_gcn)
     else:
+        # The combined safe policy is not a tracker object, so persistence needs
+        # its own rising-edge detector to avoid saving every fall window.
         edge_key = f"persist_edge:{resident_id}:{dataset_code}:{mode}:{op_code}"
         prev_safe = bool(st.get(edge_key, False))
         curr_safe = bool(safe_alert)
@@ -165,6 +199,8 @@ def resolve_monitor_decision(
 
     low_fps_need = int(live_guard["low_fps_fall_persist_n"])
     if bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
+        # Low-FPS confirmation protects the persistence edge, not the model
+        # score: slow capture can compress motion enough to mimic an impact.
         safe_gate_ok = bool(safe_alert) if mode in {"tcn", "hybrid"} else True
         motion_gate_ok = not low_motion_block
         structure_gate_ok = not structural_quality_block
@@ -204,6 +240,9 @@ def resolve_monitor_decision(
         if triage_state == "fall":
             gate_state = st.setdefault(gate_state_key, {})
             if started_event or not bool(gate_state.get("active", False)):
+                # Preserve the first lying score separately from the running max;
+                # bedroom false positives often start already horizontal, while
+                # real falls may become horizontal only after impact.
                 gate_state.clear()
                 gate_state["active"] = True
                 gate_state["event_start_t_s"] = float(current_t_s)
@@ -223,6 +262,8 @@ def resolve_monitor_decision(
                 and math.isfinite(float(confirm_motion_score))
                 and float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0)) >= tau_high_live
             ):
+                # Motion confirmation is tied to high-probability windows; using
+                # every window would let quiet pre/post-roll dilute the impact.
                 gate_state["motion_high_sum"] = float(gate_state.get("motion_high_sum", 0.0)) + float(confirm_motion_score)
                 gate_state["motion_high_count"] = int(gate_state.get("motion_high_count", 0)) + 1
 
@@ -265,6 +306,8 @@ def resolve_monitor_decision(
                 gate_reason = "event_start_s"
 
             if gate_reason is not None:
+                # Delivery gating downgrades after model/tracker consensus so the
+                # response still exposes the underlying fall evidence for review.
                 triage_state = "uncertain"
                 started_event = False
                 safe_alert = False
@@ -272,6 +315,7 @@ def resolve_monitor_decision(
                 delivery_gate_diag["blocked"] = True
                 delivery_gate_diag["reason"] = gate_reason
         else:
+            # Once the fall-like episode clears, drop any accumulated delivery-gate state.
             st.pop(gate_state_key, None)
 
     uncertain_promoted = False
@@ -281,6 +325,9 @@ def resolve_monitor_decision(
         and bool(uncertain_promote.get("enabled", False))
         and (not bool(uncertain_promote.get("video_only", True)) or is_replay)
     ):
+        # Promotion is late and usually replay-only because it reverses earlier
+        # conservative gates; live alerts should not become fall unless delivery
+        # evidence is already strong before this point.
         p_alert_live = float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0) or 0.0)
         p_ok = (
             uncertain_promote.get("min_p_alert") is None

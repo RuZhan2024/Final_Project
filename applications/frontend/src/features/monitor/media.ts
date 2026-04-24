@@ -1,10 +1,17 @@
 import type { MutableRefObject } from "react";
 
+/**
+ * Media-source helpers for monitor live camera and replay playback.
+ *
+ * These functions isolate browser media setup and teardown so hooks can treat
+ * camera/replay preparation as one stable contract.
+ */
 export function syncReplayPlaybackRate(
   videoEl: HTMLVideoElement | null,
   latencyMs: number,
   inputSource: string
 ) {
+  /** Adjust replay playback so UI video pace roughly follows backend throughput. */
   if (!videoEl || inputSource !== "video") return;
 
   let nextRate = 1.0;
@@ -27,6 +34,7 @@ export function resetVideoSource({
   videoRef: MutableRefObject<HTMLVideoElement | null>;
   videoObjectUrlRef: MutableRefObject<string | null>;
 }) {
+  /** Release any active camera stream or replay object URL before switching source. */
   if (streamRef.current) {
     streamRef.current.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -57,6 +65,7 @@ export function resetVideoSource({
 }
 
 function getVideoLoadErrorMessage(videoEl: HTMLVideoElement | null, file: File | Blob | { type?: string } | null) {
+  /** Turn browser media errors into a message that is useful for replay troubleshooting. */
   const code = Number(videoEl?.error?.code || 0);
   const byCode: Record<number, string> = {
     1: "Video loading aborted.",
@@ -70,6 +79,12 @@ function getVideoLoadErrorMessage(videoEl: HTMLVideoElement | null, file: File |
 }
 
 export async function awaitVideoReady(videoEl: HTMLVideoElement, clipLabel: File | Blob | { type?: string } | null) {
+  /**
+   * Wait until the video element has enough metadata/data for pose processing.
+   *
+   * The monitor runtime requires readyState >= 2 before MediaPipe can safely
+   * consume frames from the element.
+   */
   await new Promise<void>((resolve, reject) => {
     if (videoEl.readyState >= 2) {
       resolve();
@@ -136,10 +151,13 @@ export async function prepareReplayVideo({
   fetchReplayClipBlob: (clipUrl: string) => Promise<Blob>;
   resetVideoSource: () => void;
 }) {
+  /** Load a replay file/URL into the shared video element and reset playback state. */
   const clipFile = clip?.file instanceof File ? clip.file : null;
 
   resetVideoSource();
   if (clipFile) {
+    // Local files bypass the backend entirely, but still use an object URL so
+    // the rest of the replay pipeline can treat file and fetched clips the same.
     const objectUrl = URL.createObjectURL(clipFile);
     videoObjectUrlRef.current = objectUrl;
     videoEl.src = objectUrl;
@@ -170,8 +188,11 @@ export async function prepareCameraStream({
   targetFps: number;
   streamRef: MutableRefObject<MediaStream | null>;
 }) {
+  /** Start the camera stream with the requested capture resolution and FPS target. */
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
+      // These are ideals/maxima rather than hard constraints so browsers can
+      // still negotiate a workable camera mode on limited devices.
       width: { ideal: captureResolution.w, max: captureResolution.w },
       height: { ideal: captureResolution.h, max: captureResolution.h },
       frameRate: { ideal: targetFps, max: targetFps },

@@ -3,6 +3,11 @@
 """core/metrics.py
 
 Threshold sweeps and window/event-level metrics helpers.
+
+This module owns low-level metric primitives shared by training, evaluation,
+and operating-point fitting. Policy-aware alert logic lives elsewhere; callers
+must supply already-aligned scores, labels, and per-window metadata when they
+need deployment-style reporting.
 """
 
 from __future__ import annotations
@@ -20,6 +25,11 @@ except Exception:  # pragma: no cover
 
 
 def prf_fpr_at_threshold(probs: np.ndarray, y_true: np.ndarray, thr: float) -> Dict[str, float]:
+    """Compute precision/recall/F1/FPR for one binary threshold.
+
+    This helper is strictly window-level: it treats every score independently
+    and does not merge neighboring positives into deployment-style events.
+    """
     if isinstance(probs, np.ndarray) and probs.ndim == 1:
         p = probs
     else:
@@ -46,6 +56,11 @@ def prf_fpr_at_threshold(probs: np.ndarray, y_true: np.ndarray, thr: float) -> D
 
 
 def sweep_thresholds(probs: np.ndarray, y_true: np.ndarray, thr_min: float = 0.05, thr_max: float = 0.95, thr_step: float = 0.01) -> Dict[str, List[float]]:
+    """Evaluate standard window-level metrics across a threshold grid.
+
+    The implementation sorts scores once and reuses cumulative counts so large
+    sweeps stay cheap in memory.
+    """
     if isinstance(probs, np.ndarray) and probs.ndim == 1:
         p = probs
     else:
@@ -99,6 +114,11 @@ def sweep_thresholds(probs: np.ndarray, y_true: np.ndarray, thr_min: float = 0.0
 
 
 def best_threshold_by_f1(probs: np.ndarray, y_true: np.ndarray, thr_min: float = 0.05, thr_max: float = 0.95, thr_step: float = 0.01) -> Dict[str, float]:
+    """Return the threshold with the highest F1 from ``sweep_thresholds``.
+
+    The chosen threshold optimizes window-level F1 only; callers needing event-
+    level operating points must use alert-policy-aware evaluation instead.
+    """
     sweep = sweep_thresholds(probs, y_true, thr_min, thr_max, thr_step)
     f1 = np.asarray(sweep["f1"], dtype=float)
     if f1.size == 0:
@@ -114,6 +134,11 @@ def best_threshold_by_f1(probs: np.ndarray, y_true: np.ndarray, thr_min: float =
 
 
 def ap_auc(probs: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
+    """Compute AP and ROC AUC when the provided labels support each metric.
+
+    Missing classes leave the unsupported metric as ``NaN`` instead of raising,
+    which keeps evaluation/report code stable across small or degenerate slices.
+    """
     if isinstance(probs, np.ndarray) and probs.ndim == 1:
         p = probs
     else:
@@ -142,6 +167,11 @@ def ap_auc(probs: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
 
 @dataclass
 class SweepMeta:
+    """Metadata needed to translate window positives into FA/day estimates.
+
+    ``stride_frames`` matters because FA/day is computed at the false-event
+    level, not by counting every positive window independently.
+    """
     fps_default: float = 30.0
     stride_frames: Optional[int] = None  # if known, used for event merging
     fa24h_method: str = "approx"         # "pose_npz" | "approx"
@@ -230,7 +260,11 @@ def _group_fp_events_for_video_from_scores(
 
 
 def _build_video_groups(vids: np.ndarray, ws: np.ndarray) -> List[Tuple[str, np.ndarray]]:
-    """Precompute per-video sorted indices once."""
+    """Precompute per-video sorted indices once.
+
+    The original first-seen video ordering is preserved so later reports stay
+    stable and comparable to the source dataset traversal order.
+    """
     vids_arr = np.asarray(vids).reshape(-1)
     ws_arr = np.asarray(ws)
     if vids_arr.size < 1:
@@ -278,6 +312,11 @@ def sweep_with_fa24h(
     Duration estimation:
       - if pose_npz_dir is provided, we load each sequence npz and use its true length.
       - otherwise, use (max_end-min_start+1)/fps per video.
+
+    Contract:
+      False alerts are counted at the event level, not the window level. The
+      stride estimate therefore matters because nearby positive windows may
+      represent one deployment alert rather than many independent failures.
     """
     if isinstance(probs, np.ndarray) and probs.ndim == 1:
         p = probs
@@ -312,7 +351,8 @@ def sweep_with_fa24h(
         "fa24h": [],
     }
 
-    # duration per video
+    # Duration must be tracked per video before aggregation; otherwise FA/day is
+    # biased toward videos with more windows rather than longer monitored time.
     groups = _build_video_groups(vids, ws)
     unique_vids = [v for v, _idx in groups]
     duration_sec: Dict[str, float] = {}
@@ -362,7 +402,8 @@ def sweep_with_fa24h(
     total_days = total_sec / 86400.0 if total_sec > 0 else float("nan")
     inv_total_days = (86400.0 / total_sec) if total_sec > 0 else float("nan")
 
-    # stride estimate for event grouping
+    # Event grouping needs an approximate stride so neighboring windows do not
+    # inflate false-alert counts when they would collapse into one alert online.
     stride_frames = int(stride_frames_hint) if (stride_frames_hint and stride_frames_hint > 0) else None
     if stride_frames is None:
         # estimate from median difference of consecutive starts across all windows
@@ -450,7 +491,11 @@ def sweep_with_fa24h(
 
 
 def pareto_frontier(recall: Sequence[float], x: Sequence[float]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return indices of the Pareto frontier (minimise x, maximise recall)."""
+    """Return indices of the Pareto frontier (minimise x, maximise recall).
+
+    This is used for OP tradeoff inspection only; tie handling favors lower
+    ``x`` first because the inputs are sorted by that axis before filtering.
+    """
     r = np.asarray(recall, dtype=float)
     xx = np.asarray(x, dtype=float)
     valid = np.isfinite(r) & np.isfinite(xx)

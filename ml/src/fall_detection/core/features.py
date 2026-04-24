@@ -51,6 +51,13 @@ _FALLBACK_SHOULDERS_IDX = [11, 12]
 
 @dataclass(frozen=True)
 class FeatCfg:
+    """Feature-construction contract shared by training and deployment.
+
+    These options define both which per-joint channels exist and how masking /
+    motion normalization are interpreted. Any model checkpoint or deploy spec
+    using canonical features must agree with this config.
+    """
+
     center: str = "pelvis"  # "pelvis" | "none"
 
     # Core channels
@@ -87,6 +94,8 @@ class FeatCfg:
 
 @dataclass
 class WindowMeta:
+    """Window-level metadata carried alongside canonical feature tensors."""
+
     path: str
     video_id: str
     w_start: int
@@ -378,6 +387,10 @@ def read_window_npz(
 ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], float, WindowMeta]:
     """Read raw arrays from a window NPZ.
 
+    The reader accepts both preferred and older compatibility keys so feature
+    construction remains stable across datasets and historical preprocessing
+    outputs.
+
     Returns:
       joints_xy, motion_xy, conf, mask, fps, meta
     """
@@ -444,7 +457,14 @@ def build_canonical_input(
     assume_finite_xy: bool = False,
     assume_finite_conf: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Build canonical X[T,V,F] and mask[T,V] from raw arrays."""
+    """Build canonical ``X[T,V,F]`` and ``mask[T,V]`` from raw arrays.
+
+    Input precedence is: provided precomputed mask when allowed -> derived mask
+    from finite coordinates and confidence threshold. Output channel order is
+    determined only by ``feat_cfg`` and must match ``channel_layout(feat_cfg)``.
+    The function never changes frame/joint count; invalid joints are zeroed and
+    marked in the returned mask instead.
+    """
     if isinstance(joints_xy, np.ndarray) and joints_xy.dtype == np.float32:
         joints_xy = joints_xy
     else:

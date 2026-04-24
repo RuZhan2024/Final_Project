@@ -1,3 +1,4 @@
+/** Shared monitor-page constants for capture, playback, and degraded-mode policy. */
 export const NUM_JOINTS = 33;
 
 export const CLIP_PRE_S = 3.0;
@@ -7,6 +8,7 @@ export const MAX_PROC_FPS = 30;
 
 export const LIVE_CAPTURE_WIDTH = 640;
 export const LIVE_CAPTURE_HEIGHT = 480;
+// Keep presets explicit so the camera menu matches the actual capture constraints.
 export const CAPTURE_RESOLUTIONS = {
   "480p": { w: 640, h: 480 },
   "540p": { w: 960, h: 540 },
@@ -19,6 +21,7 @@ export const DEGRADED_POSE_MODEL_COMPLEXITY = 0;
 
 export const REPLAY_UI_UPDATE_MS = 200;
 
+// Hysteresis avoids flapping between normal and degraded processing on noisy laptops.
 export const LOW_FPS_ENTER = 14;
 export const LOW_FPS_EXIT = 18;
 export const LOW_FPS_HOLD_MS = 2000;

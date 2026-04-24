@@ -1,6 +1,8 @@
+/** Operating-point label/code helpers shared by settings and monitor UI. */
 export const PRESET_LABELS = ["High Sensitivity", "Balanced", "Low Sensitivity"] as const;
 
 export function normalizeOpCode(opCode: unknown): "OP-1" | "OP-2" | "OP-3" {
+  // Unknown or legacy values collapse to OP-2 because it is the public default.
   const s = String(opCode || "").trim().toUpperCase().replace("_", "-");
   if (s === "OP1" || s === "OP-1") return "OP-1";
   if (s === "OP2" || s === "OP-2") return "OP-2";
@@ -26,6 +28,7 @@ export function pickOperatingPoint<T extends { id?: number | null; op_code?: str
   operatingPoints: T[] | null | undefined,
   presetLabel: unknown
 ) {
+  /** Pick the DB/API operating-point row that best matches the UI preset label. */
   const ops = Array.isArray(operatingPoints) ? operatingPoints : [];
   if (!ops.length) return null;
 
@@ -42,6 +45,7 @@ export function pickOperatingPoint<T extends { id?: number | null; op_code?: str
   });
   if (byName) return byName;
 
+  // Final fallback keeps older unlabeled rows usable by assuming id order tracks sensitivity.
   const sorted = [...ops].sort((a, b) => Number(a.id) - Number(b.id));
   if (want === "op-1") return sorted[0] || null;
   if (want === "op-3") return sorted[sorted.length - 1] || null;

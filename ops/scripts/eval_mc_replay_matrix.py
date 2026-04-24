@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Compare MC-on vs MC-off replay behavior across deployed specs/op points.
+
+Each row in the output matrix is a video-level decision after the full alert
+policy, so the report answers whether MC changes delivered outcomes rather than
+just raw window probabilities.
+"""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +23,7 @@ from applications.backend.deploy_runtime import get_specs, predict_spec
 
 
 def truth_from_src(src: str, fall_contains: list[str], nonfall_contains: list[str]) -> int | None:
+    """Infer a weak binary label from source-path naming conventions."""
     src_l = src.lower()
     for needle in nonfall_contains:
         if needle.lower() in src_l:
@@ -28,6 +35,7 @@ def truth_from_src(src: str, fall_contains: list[str], nonfall_contains: list[st
 
 
 def build_alert_cfg(spec: Any, op_code: str) -> AlertCfg:
+    """Rebuild the alert policy used by one deployed spec/op combination."""
     op = (spec.ops or {}).get(op_code) or {}
     base = dict(spec.alert_cfg or {})
     return AlertCfg(
@@ -48,6 +56,11 @@ def build_alert_cfg(spec: Any, op_code: str) -> AlertCfg:
 
 
 def load_groups(windows_dir: Path, fps_default: float) -> dict[str, list[dict[str, Any]]]:
+    """Load replay windows grouped by source video id.
+
+    Grouping once here keeps the MC-on and MC-off passes aligned on exactly the
+    same replay windows and ordering.
+    """
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for fp in sorted(windows_dir.glob("*.npz")):
         joints, motion, conf, mask, fps, meta = read_window_npz(str(fp), fps_default=fps_default)
@@ -77,6 +90,11 @@ def evaluate_combo(
     fall_contains: list[str],
     nonfall_contains: list[str],
 ) -> dict[str, Any]:
+    """Evaluate one ``(spec, op_code, use_mc)`` configuration over grouped replays.
+
+    The result is intentionally video-level: a row counts as positive only when
+    the full alert policy emits at least one event for that source video.
+    """
     spec = get_specs()[spec_key]
     alert_cfg = build_alert_cfg(spec, op_code)
 
@@ -102,6 +120,8 @@ def evaluate_combo(
                 use_mc=use_mc,
                 mc_M=mc_M,
             )
+            # Compare MC against the deterministic path in the same decision
+            # space the deploy runtime uses: MC mean vs standard probability.
             probs.append(float(out["mu"] if use_mc else out["p_det"]))
             mc_applied_windows += int(bool(out.get("mc_applied", False)))
             total_windows += 1
@@ -160,6 +180,7 @@ def evaluate_combo(
 
 
 def main() -> None:
+    """Write the replay MC comparison matrix as CSV and JSON artifacts."""
     ap = argparse.ArgumentParser(description="Evaluate MC on/off matrix on replay custom clips.")
     ap.add_argument("--windows_dir", required=True)
     ap.add_argument("--out_csv", required=True)

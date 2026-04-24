@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""HTTP and WebSocket monitor prediction routes.
+
+This module owns transport-level behaviour for live/replay monitor inference:
+request validation, response shaping, stale-window handling, and coordination of
+the lower-level request, inference, decision, persistence, and response
+services. Core alert semantics live in those services, not in the routes.
+"""
+
 import logging
 import math
 import time
@@ -164,6 +172,7 @@ def _low_motion_high_conf_bypass(
     return bool(count >= int(min_hits))
 
 def _compact_model_out(model_out: Any) -> Dict[str, Any]:
+    """Trim model output to the fields still consumed by compact monitor clients."""
     src = model_out if isinstance(model_out, dict) else {}
     tri = src.get("triage") if isinstance(src.get("triage"), dict) else {}
     out: Dict[str, Any] = {}
@@ -180,6 +189,7 @@ def _compact_model_out(model_out: Any) -> Dict[str, Any]:
 
 
 def _compact_policy_alerts(policy_alerts: Any) -> Dict[str, Any]:
+    """Return the minimal alert state used by the monitor page status badges."""
     src = policy_alerts if isinstance(policy_alerts, dict) else {}
     out: Dict[str, Any] = {}
     for name in ("safe", "recall"):
@@ -194,6 +204,7 @@ def _compact_policy_alerts(policy_alerts: Any) -> Dict[str, Any]:
 
 
 def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """Collapse the full prediction response for replay and other compact clients."""
     models = resp.get("models") if isinstance(resp.get("models"), dict) else {}
     mode_l = str(mode or "").lower()
     compact_models: Dict[str, Any] = {}
@@ -225,13 +236,20 @@ def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]
 @router.post("/api/monitor/reset_session")
 @router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
+    """Reset per-session tracker state for the supplied monitor session id."""
+
     return reset_monitor_session(get_session_store(), session_id)
 
 
 @router.post("/api/monitor/predict_window")
 @router.post("/api/v1/monitor/predict_window")
 def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
-    """Score one window from the live monitor UI."""
+    """Score one monitor window and return the API prediction contract.
+
+    The route accepts both live and replay payloads, coordinates the full
+    monitor pipeline, and preserves response shape compatibility for compact and
+    non-compact clients.
+    """
     t0 = time.time()
     perf_started = time.perf_counter()
     perf_last = perf_started
@@ -375,7 +393,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     low_motion_high_conf_bypass = False
     _mark_perf("specs_and_guards_ms")
 
-    # Soft stale-drop guard: only drop severely stale windows when current window is low risk.
+    # Stale-drop is deliberately conservative: severely delayed windows are
+    # discarded only when they also look low-risk, so a likely fall is never
+    # hidden purely because transport ordering lagged.
     seq_in: Optional[int] = None
     try:
         if window_seq is not None:
@@ -544,9 +564,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     safe_state_out = decision.safe_state_out
     recall_state_out = decision.recall_state_out
 
-    # Persistence/notification dedup:
-    # - only save on event start (started_event)
-    # - enforce cooldown so one continuous fall segment produces one event/notification.
+    # Persistence is edge-based and cooldown-gated so one continuous fall does
+    # not create a new DB row and notification on every overlapping window.
     if mode == "tcn":
         cooldown_s_for_persist = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
     elif mode == "gcn":
@@ -720,6 +739,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 @router.websocket("/api/monitor/ws")
 @router.websocket("/api/v1/monitor/ws")
 async def monitor_ws(websocket: WebSocket):
+    """Serve monitor predictions over a persistent WebSocket connection.
+
+    The socket mirrors the HTTP prediction contract and returns structured error
+    payloads so the frontend can treat validation failures as model-response
+    events instead of broken transport.
+    """
+
     await websocket.accept()
     try:
         while True:

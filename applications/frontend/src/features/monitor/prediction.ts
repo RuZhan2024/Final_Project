@@ -7,6 +7,13 @@ import type {
   PendingClip,
 } from "../../pages/monitor/types";
 
+/**
+ * Shared monitor prediction helpers used by hooks and API payload builders.
+ *
+ * This module owns the frontend-side prediction contract: compact raw pose
+ * payloads, stable triage smoothing, response parsing, and clip-upload context
+ * derived from persisted events.
+ */
 export const TRIAGE_CONFIRMATION_COUNTS = {
   fall: 2,
   safe: 2,
@@ -16,6 +23,7 @@ export const TRIAGE_CONFIRMATION_COUNTS = {
 export const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 
 export function buildQuantizedWindow(slice: MonitorRawFrame[]) {
+  /** Pack a raw monitor window into the compact integer arrays sent to FastAPI. */
   const nSlice = Array.isArray(slice) ? slice.length : 0;
   const tArr = new Array<number>(nSlice);
   const xyQ = new Array<number>(nSlice * NUM_JOINTS * 2);
@@ -31,6 +39,8 @@ export function buildQuantizedWindow(slice: MonitorRawFrame[]) {
     for (let j = 0; j < NUM_JOINTS; j += 1) {
       const point = pts[j] || [0, 0];
       const visibility = conf[j] == null ? 1 : conf[j];
+      // The backend decodes using the same fixed joint order and scale. Keeping
+      // this quantization contract here avoids large JSON float payloads.
       xyQ[q++] = Math.round((Number.isFinite(Number(point[0])) ? Number(point[0]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
       xyQ[q++] = Math.round((Number.isFinite(Number(point[1])) ? Number(point[1]) : 0) * MONITOR_PAYLOAD_Q_SCALE);
       confQ[c++] = Math.round(clamp01(Number(visibility) || 0) * MONITOR_PAYLOAD_Q_SCALE);
@@ -75,6 +85,7 @@ export function buildPredictPayload({
   persist: boolean;
   endTs: number;
 }) {
+  /** Build the monitor prediction request expected by the backend route. */
   const { nSlice, tArr, xyQ, confQ } = buildQuantizedWindow(slice);
   return {
     window_seq: windowSeq,
@@ -97,6 +108,8 @@ export function buildPredictPayload({
     mc_M: mcCfg?.M,
     persist: Boolean(persist),
     raw_t_ms: tArr,
+    // raw_shape is part of the decode contract: [frames, joints]. The backend
+    // uses it to reconstruct the flattened quantized arrays.
     raw_shape: [nSlice, NUM_JOINTS],
     raw_xy_q: xyQ,
     raw_conf_q: confQ,
@@ -109,6 +122,13 @@ export function resolveStableTriage(
   triageCandidate: string,
   safeAlert: boolean | null
 ) {
+  /**
+   * Smooth short-lived triage flips before they reach the visible monitor UI.
+   *
+   * The backend already debounces alerts, but overlapping windows can still
+   * oscillate between safe/uncertain/fall. Separate counters keep the UI from
+   * reacting to one isolated window.
+   */
   const next = {
     fall: Number(previousStable?.fall || 0),
     uncertain: Number(previousStable?.uncertain || 0),
@@ -150,6 +170,13 @@ export function extractPredictionState({
   previousStable: { fall?: number; uncertain?: number; safe?: number; last?: string };
   settingsPayload: SettingsResponse | null;
 }): MonitorPredictionState {
+  /**
+   * Parse a backend prediction response into frontend monitor state.
+   *
+   * Resolution order prefers current policy-alert fields, then older top-level
+   * fields, so the monitor UI stays compatible with both current and legacy API
+   * responses.
+   */
   const safeObj = data?.policy_alerts?.safe;
   const recallObj = data?.policy_alerts?.recall;
   const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
@@ -173,6 +200,8 @@ export function extractPredictionState({
   if (triageCandidate !== "fall" && triageCandidate !== "uncertain") triageCandidate = "not_fall";
   const { stable, triageState } = resolveStableTriage(previousStable, triageCandidate, safeAlert);
 
+  // Hybrid uses the TCN branch for display because safe/recall policy output is
+  // anchored there; single-model modes read their own branch directly.
   const modelOutput = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
   const pFall = modelOutput
     ? modelOutput?.triage?.ps != null
@@ -236,6 +265,12 @@ export function buildPendingClip({
   clipPreS: number;
   clipPostS: number;
 }): PendingClip {
+  /**
+   * Build the delayed clip-upload plan tied to a backend-created event id.
+   *
+   * The event is persisted first, then the frontend captures the surrounding raw
+   * frames and uploads them once enough post-roll context exists.
+   */
   return {
     eventId,
     triggerEndTs: endTs,
@@ -243,6 +278,7 @@ export function buildPendingClip({
     preMs: clipPreS * 1000,
     postMs: clipPostS * 1000,
     ctx: {
+      // Keep the clip context small and stable so upload retries do not depend on live React state.
       dataset_code: activeDatasetCode,
       mode,
       op_code: opCode || settingsPayload?.system?.active_op_code || "OP-2",

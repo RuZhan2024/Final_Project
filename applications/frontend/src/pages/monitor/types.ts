@@ -2,28 +2,40 @@ import type { ReplayClip, SpecModel } from "../../features/monitor/types";
 import type { SettingsResponse } from "../../features/settings/types";
 import type { MutableRefObject } from "react";
 
+/**
+ * Shared type contracts for the monitor page and its hooks.
+ *
+ * These types define the data exchanged between frontend monitor subsystems:
+ * raw pose frames, prediction state, pending clip uploads, and hook option
+ * bundles. Keeping them here prevents each hook from drifting its own local
+ * contract.
+ */
 export type MonitorMode = "tcn" | "gcn" | "hybrid";
 export type InputSource = "camera" | "video";
 export type CaptureResolutionPreset = "480p" | "540p" | "720p" | "1080p";
 
 export interface ChosenSpecs {
+  /** Deploy spec ids currently selected for each model family in hybrid mode. */
   tcn: string;
   gcn: string;
 }
 
 export interface MarkerEntry {
+  /** Timeline marker rendered against replay progress or live history strips. */
   key?: string | number;
   leftPct: number;
   kind: "fall" | "uncertain" | "safe" | string;
 }
 
 export interface TimelineEntry {
+  /** Deduplicated history entry keyed by monitor sequence/time rather than raw frame count. */
   kind: "fall" | "uncertain" | "safe" | string;
   t: number;
   seq: number;
 }
 
 export interface MonitorOperatingPointParams {
+  /** Operating-point details surfaced from backend specs/settings for the UI. */
   opCode: string | null;
   tauLow: number | null;
   tauHigh: number | null;
@@ -33,11 +45,13 @@ export interface MonitorOperatingPointParams {
 }
 
 export interface ApiSpecState {
+  /** Current deploy-spec catalog fetch state used by monitor setup controls. */
   models: SpecModel[];
   error: string | null;
 }
 
 export interface ReplayClipsState {
+  /** Replay clip catalog plus directory-availability diagnostics from the API. */
   clips: ReplayClip[];
   loading: boolean;
   error: string;
@@ -46,17 +60,20 @@ export interface ReplayClipsState {
 }
 
 export interface MonitorControllerHandle {
+  /** Imperative bridge used by the page-level start/stop controls. */
   start?: () => void | boolean | Promise<boolean | void>;
   stop?: () => void;
 }
 
 export interface MonitorRawFrame {
+  /** One pose frame buffered before frontend windowing/quantization. */
   t: number;
   xy: number[][];
   conf: number[];
 }
 
 export interface PendingClipContext {
+  /** Backend context needed when the delayed clip upload is finally created. */
   dataset_code: string;
   mode: string;
   op_code: string;
@@ -65,6 +82,7 @@ export interface PendingClipContext {
 }
 
 export interface PendingClip {
+  /** Client-side plan for capturing post-roll frames after a persisted event id appears. */
   eventId: number | string;
   triggerEndTs: number;
   deadlineTs: number;
@@ -74,6 +92,7 @@ export interface PendingClip {
 }
 
 export interface MonitorPredictionState {
+  /** Normalized prediction state produced from one backend monitor response. */
   safeAlert: boolean | null;
   recallAlert: boolean | null;
   safeState: string | null;
@@ -99,6 +118,7 @@ export interface UseMonitorClipCaptureOptions {
 }
 
 export interface MonitorClipFlags {
+  /** Effective clip-persistence policy derived from current settings payload. */
   storeEventClips: boolean;
   anonymize: boolean;
 }
@@ -130,7 +150,9 @@ export interface UseMonitorPredictionLoopOptions {
   replayWindowQueueRef: MutableRefObject<number[]>;
   lastSentRef: MutableRefObject<number>;
   predictClientRef: MutableRefObject<any>;
+  /** Applies one backend response to session UI state and clip side effects. */
   applyPredictionResponse: (data: Record<string, any>) => void;
+  /** Replay uses backend latency to slow playback before the queue runs away. */
   syncReplayPlaybackRate: (videoEl: HTMLVideoElement | null) => void;
   maybeFinalizeClipUpload: () => Promise<void> | void;
   clipFlags: MonitorClipFlags;
@@ -196,6 +218,7 @@ export interface UseMonitorRuntimeControllerOptions {
   apiBase: string;
   autoStopMonitoring: () => void;
   buildReplayPayload: () => any;
+  /** Drain queued replay windows in timestamp order until backpressure catches up. */
   drainReplayQueue: () => Promise<void>;
   ensureCanvasMatchesVideo: () => void;
   getActiveReplaySource: () => {

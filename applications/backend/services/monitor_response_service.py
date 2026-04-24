@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Response-shaping helpers for monitor prediction routes."""
+
 import logging
 from typing import Any, Dict, Optional
 
@@ -37,6 +39,7 @@ def build_stale_monitor_response(
     seq_in: Optional[int],
     seq_prev: Optional[int],
 ) -> Dict[str, Any]:
+    """Build the stable response shape returned when a window is dropped as stale."""
     return {
         "triage_state": triage_state,
         "models": {},
@@ -143,6 +146,7 @@ def build_monitor_prediction_response(
     seq_in: Optional[int],
     seq_prev: Optional[int],
 ) -> Dict[str, Any]:
+    """Build the full monitor response contract used by live and replay clients."""
     return {
         "triage_state": triage_state,
         "models": models_out,
@@ -218,6 +222,7 @@ def log_monitor_perf_if_slow(
     perf: Dict[str, int],
     stale_drop: bool = False,
 ) -> None:
+    """Log slow monitor requests with the phase timing breakdown."""
     if latency_ms < 1000:
         return
 

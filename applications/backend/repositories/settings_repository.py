@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Repository helpers for reading and writing settings rows.
+
+This module stays at the SQL-row level. Service code above it decides response
+shape, fallback order, and how DB-backed values combine with deploy defaults.
+"""
+
 from typing import Any, Dict, List
 
 from ..code_normalization import norm_op_code, normalize_dataset_code, normalize_model_code
@@ -13,10 +19,12 @@ _table_exists = table_exists
 
 
 def _updated_at_expr(conn: Any) -> str:
+    """Return the backend-specific SQL expression for the current timestamp."""
     return "CURRENT_TIMESTAMP" if str(getattr(conn, "db_backend", "mysql")).lower() == "sqlite" else "NOW()"
 
 
 def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], deploy: Dict[str, Any]) -> None:
+    """Merge DB-backed settings columns into mutable system/deploy dicts."""
     _ensure_system_settings_schema(conn)
 
     if not _table_exists(conn, "system_settings"):
@@ -58,6 +66,8 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
     ]:
         if isinstance(sys_row, dict) and col in sys_row and sys_row.get(col) is not None:
             try:
+                # Older deployments may keep partially incompatible values in
+                # these columns; skip bad entries rather than breaking reads.
                 setter(sys_row[col])
             except (TypeError, ValueError):
                 pass
@@ -70,6 +80,7 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
 
 
 def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdatePayload) -> bool:
+    """Write a settings patch into `system_settings`, creating the row if needed."""
     _ensure_system_settings_schema(conn)
 
     sets = []
@@ -77,6 +88,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
     store_anonymized_data = payload.store_anonymized_data
 
     def add(col: str, expr: str, value: Any) -> None:
+        """Append an update fragment only when the target column exists."""
         if _col_exists(conn, "system_settings", col):
             sets.append(expr)
             vals.append(value)
@@ -161,6 +173,8 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
             )
             row = cur.fetchone()
             if not row:
+                # Some deployments never wrote settings before; insert the row
+                # lazily so update callers do not need a separate bootstrap step.
                 cur.execute("INSERT INTO system_settings (resident_id) VALUES (%s)", (resident_id,))
                 conn.commit()
 

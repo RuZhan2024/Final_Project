@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.audit_api_contract import collect_backend_routes, collect_frontend_calls
+from ops.scripts.audit_api_contract import collect_backend_routes, collect_frontend_calls
 
 
 def test_api_contract_collectors_normalize_query_and_template_params(tmp_path: Path) -> None:
+    # The audit tools intentionally ignore concrete query values and template
+    # names so route drift is detected by endpoint shape rather than by local
+    # variable spelling in the frontend.
     root = tmp_path
-    routes_dir = root / "server" / "routes"
-    app_dir = root / "apps" / "src"
+    routes_dir = root / "applications" / "backend" / "routes"
+    app_dir = root / "applications" / "frontend" / "src"
     routes_dir.mkdir(parents=True, exist_ok=True)
     app_dir.mkdir(parents=True, exist_ok=True)
 
@@ -44,9 +47,11 @@ def test_api_contract_collectors_normalize_query_and_template_params(tmp_path: P
 
 
 def test_api_contract_collectors_extract_http_methods_from_api_request(tmp_path: Path) -> None:
+    # `apiRequest(...)` is the shared frontend transport. If method extraction
+    # breaks here, the contract audit silently misreports write endpoints as GETs.
     root = tmp_path
-    routes_dir = root / "server" / "routes"
-    app_dir = root / "apps" / "src"
+    routes_dir = root / "applications" / "backend" / "routes"
+    app_dir = root / "applications" / "frontend" / "src"
     routes_dir.mkdir(parents=True, exist_ok=True)
     app_dir.mkdir(parents=True, exist_ok=True)
 

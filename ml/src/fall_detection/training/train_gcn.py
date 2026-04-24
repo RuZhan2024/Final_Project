@@ -21,6 +21,7 @@ from __future__ import annotations
 
 # ---- bootstrap: allow running as a script from repo root ----
 def _bootstrap_project_root():
+    """Make the package importable when the trainer is invoked as a script."""
     import sys
     from pathlib import Path
     here = Path(__file__).resolve()
@@ -59,6 +60,7 @@ from fall_detection.core.models import GCNConfig, build_model, pick_device
 # Utilities
 # -------------------------
 def _to_f32(x, device: torch.device) -> torch.Tensor:
+    """Convert NumPy or torch inputs into float32 tensors on the target device."""
     return torch.as_tensor(x, dtype=torch.float32, device=device)
 
 def set_seed(seed: int, *, deterministic: int = 1) -> None:
@@ -84,6 +86,7 @@ def logits_1d(out: torch.Tensor) -> torch.Tensor:
 
 
 def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
+    """Compute BCE positive-class weighting from binary training labels."""
     y = np.asarray(labels01).astype(int).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
@@ -91,6 +94,7 @@ def compute_pos_weight(labels01: np.ndarray) -> torch.Tensor:
 
 
 def make_balanced_sampler(y01: np.ndarray) -> WeightedRandomSampler:
+    """Build a replacement sampler that equalizes positive/negative sampling mass."""
     y = np.asarray(y01).reshape(-1)
     pos = max(1, int((y == 1).sum()))
     neg = max(1, int((y == 0).sum()))
@@ -117,6 +121,7 @@ def prf_fpr_at_threshold(y_true: np.ndarray, p: np.ndarray, thr: float) -> Tuple
 
 
 def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float, mask_frame_p: float) -> np.ndarray:
+    """Drop random joints/frames while preserving at least one valid pose entry."""
     m = np.asarray(mask).copy().astype(bool)
     T, V = m.shape
     if mask_joint_p > 0:
@@ -215,6 +220,12 @@ def _validate_hard_neg_paths(
 
 
 class WindowDatasetGCN(Dataset):
+    """GCN window dataset that rebuilds canonical or two-stream features from NPZs.
+
+    Keeping feature construction here ensures two-stream splitting, mask
+    precedence, and augmentation all operate on the same canonical tensors used
+    by later evaluation code.
+    """
     def __init__(
         self,
         root: str,
@@ -267,7 +278,8 @@ class WindowDatasetGCN(Dataset):
             self.files.append(fp)
             self.labels01.append(1 if y == 1 else 0)
 
-        # extra hard negatives
+        # Extra hard negatives are appended as ordinary negatives so sampler and
+        # loss weighting logic still operate on one unified dataset view.
         if extra_neg_files:
             mult = max(1, int(extra_neg_mult))
             extra = list(extra_neg_files) * mult
@@ -310,6 +322,7 @@ class WindowDatasetGCN(Dataset):
         return len(self.files)
 
     def _read_window_with_fallback(self, i: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any]:
+        """Read one window, probing nearby indices if files disappeared concurrently."""
         n = len(self.files)
         if n <= 0:
             raise RuntimeError("[err] empty dataset")
@@ -341,11 +354,13 @@ class WindowDatasetGCN(Dataset):
             feat_cfg=self.feat_cfg,
         )
 
-        # Random mask augmentation (train only)
+        # Apply mask augmentation after canonical feature building so training
+        # perturbations do not change the core feature contract itself.
         if self.split == "train" and (self.mask_joint_p > 0 or self.mask_frame_p > 0):
             m_aug = augment_mask(mask_used, self.rng, self.mask_joint_p, self.mask_frame_p)
             X = X * m_aug[..., None]
-        # Optional feature-space robustness augmentation (train only).
+        # Feature-space noise/quantization stays downstream of canonical feature
+        # construction so the saved checkpoint config still reflects real inputs.
         if self.split == "train" and (
             self.x_noise_std > 0 or self.x_quant_step > 0 or self.temporal_dropout_p > 0
         ):
@@ -381,6 +396,7 @@ class WindowDatasetGCN(Dataset):
 def collect_probs(
     model: nn.Module, loader: DataLoader, device: torch.device, two_stream: bool
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """Collect validation probabilities in the same tensor layout used for training."""
     model.eval()
     ps: List[np.ndarray] = []
     ys: List[np.ndarray] = []
@@ -444,6 +460,13 @@ def compute_loss_on_loader(
 
 @dataclass
 class TrainCfg:
+    """Checkpointed training contract for GCN and two-stream GCN runs.
+
+    Several CLI flags remain for backwards-compatible experiment replay even
+    when the current core feature pipeline treats them as no-ops. Keeping them
+    here makes old command lines loadable without silently changing shape or
+    optimization behavior.
+    """
     train_dir: str
     val_dir: str
     save_dir: str
@@ -537,15 +560,11 @@ class TrainCfg:
     deterministic: int = 1
 
 def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
-    """
-    Map train_gcn CLI -> core.features.FeatCfg.
+    """Map trainer CLI flags onto ``core.features.FeatCfg``.
 
-    NOTE: core/features.py currently supports:
-      center, use_motion, use_bone, use_bone_length, use_conf_channel,
-      motion_scale_by_fps, conf_gate, use_precomputed_mask
-
-    Flags like --normalize / --include_abs / --include_vel are currently
-    not consumed by core.features (safe but no-op).
+    Only flags supported by the canonical feature pipeline affect the returned
+    config. Legacy flags that no longer change feature layout remain accepted so
+    historical commands still parse without silently changing tensor shape.
     """
     return FeatCfg(
         center=str(getattr(cfg, "center", "pelvis")),
@@ -560,6 +579,7 @@ def build_feat_cfg(cfg: TrainCfg) -> FeatCfg:
 
 
 def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
+    """Persist the minimal data facts later eval code can trust from training."""
     # Persist only facts we can guarantee at train time. The richer pose-preprocess
     # contract is filled only when a run can provide real provenance.
     return {
@@ -568,6 +588,12 @@ def build_data_cfg_dict(fps_default: float) -> Dict[str, Any]:
 
 
 def main() -> None:
+    """Train a GCN-family model from window NPZs and save a full ckpt bundle.
+
+    The saved bundle is expected to be consumed by runtime/evaluation code that
+    rebuilds model shape from serialized config plus the persisted feature
+    contract.
+    """
     ap = argparse.ArgumentParser(description="Train GCN on window NPZs.")
 
     ap.add_argument("--train_dir", required=True)

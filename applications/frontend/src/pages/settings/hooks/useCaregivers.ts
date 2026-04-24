@@ -1,3 +1,10 @@
+/**
+ * Caregiver settings data hook.
+ *
+ * This hook centralizes caregiver reads/writes for the settings page. It keeps
+ * overlapping reload calls from racing and refreshes after writes so backend
+ * defaults or schema-shaped fields are reflected immediately.
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiRequest } from "../../../lib/apiClient";
@@ -24,6 +31,12 @@ interface UseCaregiversResult {
 }
 
 export function useCaregivers(apiBase: string): UseCaregiversResult {
+  /**
+   * Serializes caregiver fetches so repeated reloads share one request/result.
+   *
+   * The settings page can trigger refreshes from mount and from save handlers;
+   * this guard keeps those paths from racing each other.
+   */
   const [caregivers, setCaregivers] = useState<CaregiverRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +50,8 @@ export function useCaregivers(apiBase: string): UseCaregiversResult {
       if (!inFlightRef.current) {
         inFlightRef.current = apiRequest<CaregiversResponse>(apiBase, "/api/caregivers");
       }
+      // Share one in-flight fetch across repeated reload triggers from mount
+      // and save handlers so the page converges on a single result.
       const data = await inFlightRef.current;
       setCaregivers(Array.isArray(data?.caregivers) ? data.caregivers : []);
       setLoading(false);
@@ -58,6 +73,8 @@ export function useCaregivers(apiBase: string): UseCaregiversResult {
         method: "PUT",
         body: { ...payload },
       });
+      // Re-read after writes so the UI reflects any backend defaults or schema-
+      // dependent fields returned by the current deployment.
       await reload();
       return data;
     },

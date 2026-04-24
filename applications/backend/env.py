@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Lightweight `.env` loader used by backend config startup."""
+
 import os
 
 from pathlib import Path
@@ -9,12 +11,14 @@ _ENV_LOADED = False
 
 
 def load_local_env_files() -> None:
+    """Load local env files once, without overriding already-exported variables."""
     global _ENV_LOADED
     if _ENV_LOADED:
         return
 
     repo_root = Path(__file__).resolve().parents[1]
     for name in (".env.local.private", ".env.local", ".env"):
+        # More specific local files win because earlier loads populate os.environ first.
         path = repo_root / name
         if not path.exists():
             continue

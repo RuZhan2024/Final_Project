@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Routes exposing deploy-time model specs, replay clips, and mode config.
+
+These endpoints are read-only views over deploy assets on disk plus the active
+spec registry. The route layer keeps file-path safety and legacy aliases local
+while leaving spec loading to runtime helpers.
+"""
+
 import os
 from typing import Any, Dict
 from pathlib import Path
@@ -25,6 +32,7 @@ _REPLAY_CLIP_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 
 
 def _replay_clips_root() -> Path:
+    """Resolve the replay clip directory with env override and legacy fallback."""
     raw = os.getenv("REPLAY_CLIPS_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
@@ -35,6 +43,7 @@ def _replay_clips_root() -> Path:
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
+    """Reject path traversal by requiring clip paths to stay under the replay root."""
     try:
         path.relative_to(root)
         return True
@@ -43,6 +52,7 @@ def _is_within_root(path: Path, root: Path) -> bool:
 
 
 def _list_replay_clips() -> list[Dict[str, Any]]:
+    """List replay clips and derive a coarse category from directory/name hints."""
     root = _replay_clips_root()
     if not root.exists() or not root.is_dir():
         return []
@@ -79,6 +89,7 @@ def _list_replay_clips() -> list[Dict[str, Any]]:
 
 
 def _load_deploy_modes_yaml() -> Dict[str, Any]:
+    """Load deploy mode presets from the canonical or legacy config path."""
     root = Path(__file__).resolve().parents[3]
     canonical = root / "ops" / "configs" / "deploy_modes.yaml"
     legacy = root / "configs" / "deploy_modes.yaml"
@@ -133,6 +144,8 @@ def models_summary() -> Dict[str, Any]:
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
+                # DB-backed rows are kept only for older admin/debug clients;
+                # current monitor setup reads the spec-derived `models` array.
                 cur.execute("SELECT * FROM models ORDER BY id ASC")
                 db_rows = cur.fetchall() or []
     except (MySQLError, RuntimeError, ValueError, TypeError):
@@ -191,6 +204,7 @@ def api_spec() -> Dict[str, Any]:
 @router.get("/api/replay/clips")
 @router.get("/api/v1/replay/clips")
 def replay_clips() -> Dict[str, Any]:
+    """Return replay clip metadata plus directory availability diagnostics."""
     root = _replay_clips_root()
     return {
         "clips": _list_replay_clips(),
@@ -202,6 +216,7 @@ def replay_clips() -> Dict[str, Any]:
 @router.get("/api/replay/clips/{clip_path:path}")
 @router.get("/api/v1/replay/clips/{clip_path:path}")
 def replay_clip_file(clip_path: str):
+    """Serve one replay clip file from the configured replay root."""
     root = _replay_clips_root()
     path = (root / clip_path).resolve()
     if not _is_within_root(path, root):

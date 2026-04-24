@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Helpers for event-clip storage and privacy flags at runtime."""
+
 from typing import Tuple
 
 import numpy as np
@@ -20,7 +22,7 @@ def read_clip_privacy_flags(
     ensure_system_settings_schema,
     table_exists,
 ) -> Tuple[bool, bool]:
-    """Return (store_event_clips, anonymize_skeleton_data)."""
+    """Return `(store_event_clips, anonymize_skeleton_data)` for one resident."""
     store_event_clips = False
     anonymize = True
     try:
@@ -46,6 +48,7 @@ def read_clip_privacy_flags(
 
 
 def event_clips_dir():
+    """Return the clip-output directory, creating it when possible."""
     d = get_app_config().event_clips_dir
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -62,6 +65,7 @@ def anonymize_xy_inplace(xy: np.ndarray) -> np.ndarray:
         _t, joints, _ = xy.shape
         if joints < 25:
             return xy
+        # MediaPipe pelvis approximation uses hip joints 23 and 24.
         pelvis = 0.5 * (xy[:, 23, :] + xy[:, 24, :])
         xy = xy - pelvis[:, None, :]
         return xy

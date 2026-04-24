@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Legacy DB-backed notification log helpers."""
+
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +10,7 @@ from .notifications import get_notification_manager
 
 
 def _as_bool(v: Any, default: bool = False) -> bool:
+    """Coerce mixed DB values into booleans for notification settings."""
     if v is None:
         return default
     if isinstance(v, bool):
@@ -96,6 +99,7 @@ def dispatch_fall_notifications(
 
             wrote = 0
             for ch in channels:
+                # This legacy path records queued rows only; actual delivery is handled elsewhere.
                 cols = ["resident_id", "channel", "status", "message"]
                 vals = [int(resident_id), ch, "queued", msg]
                 if col_exists(conn, "notifications_log", "event_id"):

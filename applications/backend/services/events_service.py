@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Service-layer contracts for event listing, review updates, and clip storage.
+
+The routes expose HTTP semantics, repositories expose SQL row access, and this
+module owns the compatibility rules between schema generations plus the event
+payloads returned to the frontend review workflow.
+"""
+
 import json
 import uuid
 from dataclasses import dataclass
@@ -26,6 +33,12 @@ from ..repositories.events_repository import (
 
 @dataclass(frozen=True)
 class EventsDeps:
+    """Repository and schema hooks required by the events service layer.
+
+    The dependency bundle keeps this module testable across SQLite/MySQL and
+    legacy/current schemas without hard-coding route-level imports.
+    """
+
     resident_exists: Callable[[Any, int], bool]
     one_resident_id: Callable[[Any], int]
     detect_variants: Callable[[Any], Dict[str, str]]
@@ -38,6 +51,12 @@ class EventsDeps:
 
 
 def normalize_pagination(page: int, page_size: int, limit: Optional[int]) -> tuple[int, int, int]:
+    """Normalize page inputs and preserve the legacy ``limit`` shortcut.
+
+    ``limit`` is honoured only for the historical first-page call pattern so new
+    paginated clients do not accidentally mix two pagination contracts.
+    """
+
     try:
         page = int(page)
     except (TypeError, ValueError):
@@ -61,6 +80,7 @@ def normalize_pagination(page: int, page_size: int, limit: Optional[int]) -> tup
 
 
 def normalize_filter_value(value: Optional[str]) -> Optional[str]:
+    """Normalize optional UI filters, treating blank and 'All' as unset."""
     if value is None:
         return None
     normalized = str(value).strip()
@@ -70,6 +90,8 @@ def normalize_filter_value(value: Optional[str]) -> Optional[str]:
 
 
 def parse_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Parse inclusive UI date filters into SQL-ready half-open bounds."""
+
     start_dt = None
     end_exclusive = None
     try:
@@ -86,6 +108,12 @@ def parse_date_bounds(start_date: Optional[str], end_date: Optional[str]) -> tup
 
 
 def resolve_resident_id(conn: Any, resident_id: Optional[int], deps: EventsDeps) -> int:
+    """Resolve the resident id for this request.
+
+    Prefer the explicit resident when it exists; otherwise fall back to the
+    single configured resident so older single-resident deployments keep working.
+    """
+
     if resident_id and deps.resident_exists(conn, resident_id):
         return int(resident_id)
     return int(deps.one_resident_id(conn))
@@ -105,6 +133,12 @@ def build_events_list_response(
     limit: Optional[int],
     deps: EventsDeps,
 ) -> Dict[str, Any]:
+    """Build the event-list response consumed by the review UI.
+
+    Resolution order is: normalize filters -> resolve resident -> detect schema
+    variant -> choose v2/v1 query path -> map rows into a stable API shape.
+    """
+
     page, page_size, offset = normalize_pagination(page, page_size, limit)
     start_date = normalize_filter_value(start_date)
     end_date = normalize_filter_value(end_date)
@@ -134,6 +168,8 @@ def build_events_list_response(
     if variants["events"] == "v2":
         has_model_id = deps.has_col(conn, "events", "model_id")
         has_models_table = deps.table_exists(conn, "models")
+        # Join the models table only when the schema can support it; mixed or
+        # partial migrations should still yield a valid events list.
         join_models = bool(has_model_id and has_models_table)
         from_sql = "LEFT JOIN models m ON m.id = e.model_id" if join_models else ""
 
@@ -201,6 +237,8 @@ def build_events_list_response(
 
 
 def build_events_summary_response(conn: Any, resident_id: Optional[int], deps: EventsDeps) -> Dict[str, Any]:
+    """Return dashboard summary counters from the active events schema."""
+
     rid = resolve_resident_id(conn, resident_id, deps)
     time_col = deps.event_time_col(conn)
     has_status = deps.has_col(conn, "events", "status")
@@ -215,6 +253,12 @@ def build_events_summary_response(conn: Any, resident_id: Optional[int], deps: E
 
 
 def persist_event_status(conn: Any, event_id: int, status: str, deps: EventsDeps) -> Dict[str, Any]:
+    """Persist reviewer status across v2 rows or legacy meta-backed rows.
+
+    The UI expects a successful no-op when the event no longer exists, so
+    missing ids return ``persisted=False`` rather than raising a 404 here.
+    """
+
     if not event_exists(conn, event_id):
         return {
             "ok": True,
@@ -228,6 +272,8 @@ def persist_event_status(conn: Any, event_id: int, status: str, deps: EventsDeps
     if variants.get("events") == "v2" and deps.has_col(conn, "events", "status"):
         update_event_status_v2(conn, event_id, status)
     elif deps.has_col(conn, "events", "meta"):
+        # Older schemas stored reviewer state inside meta JSON. Preserve that
+        # contract until every deployment has a first-class status column.
         meta = read_event_meta(conn, event_id)
         meta["status"] = status
         write_event_meta(conn, event_id, meta)
@@ -245,6 +291,13 @@ def build_event_skeleton_clip_response(
     resident_id: int,
     event_clips_dir: Path,
 ) -> Dict[str, Any]:
+    """Load a stored skeleton clip and return arrays safe for frontend replay.
+
+    The clip path is resolved relative to the configured clip root and reduced
+    to its basename so metadata cannot escape the clip directory through a
+    crafted relative path.
+    """
+
     with conn.cursor() as cur:
         cur.execute("SELECT id, resident_id, meta FROM events WHERE id=%s LIMIT 1", (int(event_id),))
         row = cur.fetchone()
@@ -312,6 +365,13 @@ def persist_event_skeleton_clip(
     anonymize_xy_inplace,
     event_clips_dir,
 ) -> Dict[str, Any]:
+    """Persist a skeleton-only clip for an existing event.
+
+    The service enforces resident ownership, respects privacy flags, optionally
+    anonymizes coordinates before disk write, and stores only metadata needed to
+    reload the clip later.
+    """
+
     store_event_clips, anonymize = read_clip_privacy_flags(conn, resident_id)
     if not store_event_clips:
         return {"ok": True, "skipped": True, "reason": "store_event_clips_disabled"}
@@ -349,6 +409,8 @@ def persist_event_skeleton_clip(
             frames = m
 
     if anonymize:
+        # Round anonymized coordinates before saving so replay/debug output stays
+        # stable and does not imply pixel-level recovery that privacy mode avoids.
         xy = anonymize_xy_inplace(xy)
         xy = np.round(xy, 4)
         conf = np.round(conf, 4)
@@ -360,6 +422,8 @@ def persist_event_skeleton_clip(
 
     clip_rel = f"applications/backend/event_clips/{fname}"
     meta = parse_raw_meta(row.get("meta"))
+    # Keep clip metadata inside event meta so existing review APIs can expose the
+    # attachment without a schema migration.
     meta["skeleton_clip"] = {
         "path": clip_rel,
         "n_frames": int(frames),
@@ -403,6 +467,13 @@ def dispatch_safe_guard_from_event(
     p_fall: float = 0.99,
     location: str = "events_test_fall",
 ) -> Dict[str, Any]:
+    """Dispatch a SafeGuard notification from an already-persisted event row.
+
+    This is used by the synthetic test-fall path, so it re-resolves dataset,
+    operating point, and caregiver settings from the database instead of
+    assuming the caller already has monitor-runtime context.
+    """
+
     notify_on_every_fall = True
     caregiver_name = ""
     caregiver_telegram_chat_id = ""
@@ -491,6 +562,8 @@ def create_test_fall_event(
     get_notification_manager,
     coerce_bool,
 ) -> Dict[str, Any]:
+    """Insert a synthetic event row that matches the active schema generation."""
+
     rid = deps.one_resident_id(conn)
     variants = deps.detect_variants(conn)
     now = datetime.utcnow()
@@ -607,6 +680,8 @@ def create_test_fall_event(
 
 
 def map_v2_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a v2 row into the stable events API response shape."""
+
     meta = parse_meta_fields(row)
     source_raw = meta.get("event_source") or meta.get("input_source")
     source = str(source_raw).strip().lower() if source_raw is not None else "realtime"
@@ -627,6 +702,8 @@ def map_v2_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def map_v1_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a legacy v1 row into the same response shape used by v2."""
+
     meta = parse_raw_meta(row.get("meta"))
     status_raw = meta.get("status")
     source_raw = meta.get("event_source") or meta.get("input_source")
@@ -647,6 +724,8 @@ def map_v1_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_meta_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge structured side columns into the legacy/meta event payload shape."""
+
     meta: Dict[str, Any] = parse_raw_meta(row.get("meta"))
     for key in ("notes", "fa24h_snapshot", "payload_json"):
         if row.get(key) is not None:
@@ -655,6 +734,8 @@ def parse_meta_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_raw_meta(meta: Any) -> Dict[str, Any]:
+    """Coerce stored meta payloads into a dictionary for response building."""
+
     if isinstance(meta, str):
         try:
             meta = json.loads(meta)

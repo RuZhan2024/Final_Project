@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Notification audit and manual-trigger routes.
+
+These endpoints expose the Safe Guard audit store and a small manual test hook.
+They are intentionally thin wrappers around the notification manager so the API
+reflects the same dispatch path used by real alert events.
+"""
+
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -19,6 +26,7 @@ def list_notifications(
     resident_id: int = Query(1, description="Resident ID"),
     limit: int = Query(50, ge=1, le=500),
 ) -> Dict[str, Any]:
+    """Return recent notification audit rows for one resident."""
     manager = get_notification_manager()
     try:
         # Expose the Safe Guard audit store directly so the API reflects actual
@@ -68,6 +76,9 @@ def test_notification(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
                     caregiver_name = str(cg.get("name") or "").strip()
                     caregiver_chat_id = str(cg.get("telegram_chat_id") or "").strip()
                 except Exception:
+                    # Test delivery should still exercise the manager path even
+                    # when caregiver lookup fails; the dispatch result will show
+                    # whether contact details were missing.
                     caregiver_name = ""
                     caregiver_chat_id = ""
     # This route intentionally exercises the same manager path used by real

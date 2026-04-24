@@ -25,6 +25,7 @@ interface MonitorController {
 const MonitoringContext = createContext<MonitoringContextValue | null>(null);
 
 function readDesired(data: SettingsResponse | null): boolean {
+  // Older payloads may expose monitoring_enabled at the top level.
   const sys = data?.system || data || {};
   const raw =
     typeof sys.monitoring_enabled !== "undefined"
@@ -34,6 +35,7 @@ function readDesired(data: SettingsResponse | null): boolean {
 }
 
 async function safeStart(ctrl: MonitorController | null): Promise<boolean> {
+  // Missing controllers are allowed so non-monitor pages can still use the provider.
   if (!ctrl?.start) return true;
   try {
     const result = ctrl.start();
@@ -64,6 +66,7 @@ async function fetchSettingsWithRetry(): Promise<SettingsResponse> {
       return await fetchSettings(API_BASE);
     } catch (error) {
       lastError = error;
+      // Settings reads get a short retry window because the provider gates most page state.
       if (attempt >= SETTINGS_RETRY_DELAYS_MS.length) break;
       await sleep(SETTINGS_RETRY_DELAYS_MS[attempt]);
     }
@@ -72,6 +75,9 @@ async function fetchSettingsWithRetry(): Promise<SettingsResponse> {
   throw lastError || new Error("Failed to fetch settings");
 }
 
+/**
+ * Global monitoring/settings state shared across dashboard, monitor, and settings pages.
+ */
 export function MonitoringProvider({ children }: React.PropsWithChildren) {
   const [monitoringOn, setMonitoringOnState] = useState(false);
   const [monitoringDesired, setMonitoringDesired] = useState(false);
@@ -90,6 +96,7 @@ export function MonitoringProvider({ children }: React.PropsWithChildren) {
   }, []);
 
   const registerController = useCallback((controller: unknown) => {
+    // The active Monitor page installs its runtime controller here when mounted.
     controllerRef.current = (controller as MonitorController | null) || null;
   }, []);
 
@@ -104,6 +111,7 @@ export function MonitoringProvider({ children }: React.PropsWithChildren) {
       setMonitoringDesired(desired);
 
       if (!desired && monitoringOnRef.current && !togglingRef.current) {
+        // If persisted settings turn monitoring off elsewhere, stop the live runtime too.
         safeStop(controllerRef.current);
         setRuntimeOn(false);
       }
@@ -134,6 +142,7 @@ export function MonitoringProvider({ children }: React.PropsWithChildren) {
 
         if (nextOn) {
           startedOk = await safeStart(ctrl);
+          // Failed startup rolls runtime state back before settings are persisted.
           if (!startedOk) setRuntimeOn(false);
         } else {
           safeStop(ctrl);
@@ -142,6 +151,7 @@ export function MonitoringProvider({ children }: React.PropsWithChildren) {
         const desired = nextOn && startedOk;
 
         setError(null);
+        // Persist the desired state after runtime start/stop so DB settings mirror real runtime state.
         await persistSettings(API_BASE, { monitoring_enabled: desired });
         setMonitoringDesired(desired);
         await refresh();
@@ -150,6 +160,7 @@ export function MonitoringProvider({ children }: React.PropsWithChildren) {
       } catch (err) {
         const ctrl = controllerRef.current;
         if (previousRuntimeOn) {
+          // Restore the previous runtime when a persistence call fails after a running session existed.
           const restarted = await safeStart(ctrl);
           setRuntimeOn(Boolean(restarted));
         } else {

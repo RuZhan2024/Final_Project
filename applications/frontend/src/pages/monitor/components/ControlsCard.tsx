@@ -29,6 +29,9 @@ interface ControlsCardProps {
   onSeekReplay?: (positionRatio: number) => void;
 }
 
+/**
+ * Source controls for live camera mode and replay mode.
+ */
 export function ControlsCard({
   monitoringOn,
   setMonitoringOn,
@@ -54,6 +57,7 @@ export function ControlsCard({
   const replayPct = replayDurationS > 0 ? Math.max(0, Math.min(100, (replayCurrentS / replayDurationS) * 100)) : 0;
   const groupedReplayClips = (replayClips || []).reduce(
     (acc, clip) => {
+      // Replay picker stays grouped so demo fall clips do not get buried under ADL examples.
       const key = clip?.group === "fall" ? "fall" : clip?.group === "adl" ? "adl" : "other";
       acc[key].push(clip);
       return acc;
@@ -118,6 +122,7 @@ export function ControlsCard({
               value={selectedReplayClipId || ""}
               disabled={replayClipsLoading || !(replayClips || []).length}
               onChange={(e) => {
+                // Switching clips always stops the current run so session state cannot leak across files.
                 if (monitoringOn) void setMonitoringOn(false);
                 onSelectReplayClip?.(e.target.value);
               }}
@@ -159,6 +164,7 @@ export function ControlsCard({
                 className={styles.btnGray}
                 disabled={!hasReplayFile}
                 onClick={() => {
+                  // Replay start always resets backend/frontend session history before the new clip begins.
                   resetSession();
                   void setMonitoringOn(true);
                 }}
@@ -188,6 +194,7 @@ export function ControlsCard({
               min={0}
               max={100}
               value={replayPct}
+              // Seeking uses a normalized ratio because clip duration is resolved at runtime by the video element.
               onChange={(e) => onSeekReplay?.(Number(e.target.value) / 100)}
               disabled={!hasReplayFile || replayDurationS <= 0}
             />
@@ -202,6 +209,7 @@ export function ControlsCard({
             <button
               className={styles.btnGray}
               onClick={() => {
+                // Realtime start also resets session history so stale tracker state is cleared.
                 resetSession();
                 void setMonitoringOn(true);
               }}

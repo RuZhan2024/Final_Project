@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Model-inference stage for the monitor prediction pipeline.
+
+Inputs to this module are already normalized request fields and a fixed-length
+pose window. Outputs must preserve both raw model diagnostics and gated tracker
+state because later services decide separately what to display, persist, and
+deliver as an alert.
+"""
+
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -7,6 +15,14 @@ from typing import Any, Dict, Optional
 
 @dataclass(frozen=True)
 class MonitorInferenceResult:
+    """Contract between inference and decision stages.
+
+    ``models_out`` keeps the raw model response plus added fields such as
+    ``p_alert_in`` and ``triage``. ``started_*`` flags are edge signals from the
+    model-specific trackers; hybrid mode may still recompute its own edge from
+    the combined policy in the decision stage.
+    """
+
     models_out: Dict[str, Any]
     tri_tcn: Optional[str]
     tri_gcn: Optional[str]
@@ -47,6 +63,15 @@ def run_monitor_inference(
     tracker_cls,
     low_motion_high_conf_bypass_fn,
 ) -> MonitorInferenceResult:
+    """Run the requested model family/families and update tracker state.
+
+    Resolution order for each model probability is:
+    model output -> live quality gate cap -> uncertainty gate -> temporal
+    tracker. The function mutates only the supplied tracker dictionaries; it
+    does not persist events, choose final hybrid policy, or change session state
+    outside those tracker objects.
+    """
+
     models_out: Dict[str, Any] = {}
     tri_tcn = None
     tri_gcn = None
@@ -61,6 +86,9 @@ def run_monitor_inference(
     run_gcn = mode in {"gcn", "hybrid"}
 
     if run_tcn:
+        # Keep the original model output intact and feed only the alert input
+        # through quality gates, otherwise the response would lose the evidence
+        # needed to debug why a confident model prediction was suppressed.
         t_inf = time.perf_counter()
         out_tcn = predict_spec(
             spec_key=tcn_key,
@@ -79,6 +107,9 @@ def run_monitor_inference(
         p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
         sigma_tcn = float(out_tcn.get("sigma", 0.0) or 0.0)
         uncertainty_gate_tcn = out_tcn.get("uncertainty_gate") if isinstance(out_tcn.get("uncertainty_gate"), dict) else {}
+        # A bypass requires both a policy opt-in and repeated high-confidence
+        # evidence; this prevents one static high score from defeating the
+        # low-motion false-positive guard.
         bypass_tcn = low_motion_high_conf_bypass_fn(
             st,
             dataset_code=dataset_code,
@@ -100,6 +131,8 @@ def run_monitor_inference(
             )
             or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
         ):
+            # Cap rather than zero the probability so tracker diagnostics still
+            # show whether the suppressed window was borderline or severe.
             p_alert_tcn = float(min(float(p_raw_tcn), float(tau_low_tcn) - 0.02))
         else:
             p_alert_tcn = float(p_raw_tcn)
@@ -117,6 +150,9 @@ def run_monitor_inference(
         out_tcn["confirm_motion_score"] = None if confirm_motion_score is None else float(confirm_motion_score)
         trk = st_trackers.get(tcn_key)
         if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
+            # Tracker state is valid only for the alert config that created it;
+            # reusing EMA/cooldown state after an op switch would bias the next
+            # decision window.
             trk = tracker_cls(cfg_tcn)
             st_trackers[tcn_key] = trk
             st_trackers_cfg[tcn_key] = cfg_tcn
@@ -142,6 +178,9 @@ def run_monitor_inference(
         infer_tcn_ms = int((time.perf_counter() - t_inf) * 1000)
 
         for pol in ("safe", "recall"):
+            # The comparison is policy-only: both trackers see the same model
+            # probability so differences come from thresholds/cooldowns, not a
+            # second inference pass.
             pol_cfg = load_dual_policy_cfg(dataset_code, pol, op_code)
             if not isinstance(pol_cfg, dict):
                 continue
@@ -166,6 +205,8 @@ def run_monitor_inference(
             }
 
     if run_gcn:
+        # GCN cannot share the TCN tracker even in hybrid mode; its thresholds,
+        # smoothing, and cooldown can be calibrated from a different spec.
         t_inf = time.perf_counter()
         out_gcn = predict_spec(
             spec_key=gcn_key,
@@ -221,6 +262,7 @@ def run_monitor_inference(
         out_gcn["p_alert_in"] = float(p_alert_gcn)
         trk = st_trackers.get(gcn_key)
         if trk is None or st_trackers_cfg.get(gcn_key) != cfg_gcn:
+            # Operating-point changes invalidate the old tracker state here too.
             trk = tracker_cls(cfg_gcn)
             st_trackers[gcn_key] = trk
             st_trackers_cfg[gcn_key] = cfg_gcn

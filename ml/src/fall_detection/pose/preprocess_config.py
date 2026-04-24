@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
+"""Validation helpers for pose-preprocess configuration.
+
+These helpers normalize config values read from training/eval/runtime sources
+into one stable preprocessing contract so downstream pose cleaning code can rely
+on explicit defaults instead of partial YAML/data_cfg dictionaries.
+"""
+
 
 DEFAULT_POSE_PREPROCESS_CFG: Dict[str, Any] = {
     "conf_thr": 0.2,
@@ -24,7 +31,12 @@ def normalize_pose_preprocess_cfg(
     *,
     fallback: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Return a validated pose-preprocess config with stable defaults."""
+    """Return a validated pose-preprocess config with stable defaults.
+
+    Precedence is: built-in defaults -> optional fallback mapping -> explicit
+    cfg values. Unknown keys are ignored, and invalid values fall back to the
+    current default rather than raising during runtime preprocessing.
+    """
     base = dict(DEFAULT_POSE_PREPROCESS_CFG)
     if isinstance(fallback, Mapping):
         base.update(dict(fallback))
@@ -73,6 +85,8 @@ def get_pose_preprocess_cfg_from_data_cfg(
     *,
     fallback: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Extract and normalize the nested ``pose_preprocess`` block from data_cfg."""
+
     if not isinstance(data_cfg, Mapping):
         return normalize_pose_preprocess_cfg(None, fallback=fallback)
     return normalize_pose_preprocess_cfg(data_cfg.get("pose_preprocess"), fallback=fallback)

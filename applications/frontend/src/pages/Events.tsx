@@ -16,6 +16,9 @@ function hasStoredReplay(ev: EventRecord | null): boolean {
   return Boolean(ev?.meta?.skeleton_clip?.path);
 }
 
+/**
+ * Event history page with local filtering and review-state updates.
+ */
 export default function Events() {
   const { apiBase } = useMonitoring();
   const [startDate, setStartDate] = useState(toISODateInput(new Date(Date.now() - 7 * 864e5)));
@@ -85,6 +88,7 @@ export default function Events() {
     if (!reviewEvent) return;
     const current = String(reviewEvent.status || "pending_review").toLowerCase();
     const normalizedNext = String(reviewStatus || "").toLowerCase();
+    // Avoid empty or no-op writes so review updates only fire for real state changes.
     if (!normalizedNext || normalizedNext === current) return;
     if (!(EVENT_STATUS_OPTIONS as readonly string[]).includes(normalizedNext)) return;
     try {
@@ -230,6 +234,7 @@ export default function Events() {
               filteredEvents.map((ev) => (
                 <tr key={ev.id}>
                   <td>
+                    {/* Event timestamps may come back as raw strings from legacy fixtures. */}
                     {parseDateSafe(ev.event_time)
                       ? parseDateSafe(ev.event_time).toLocaleString()
                       : String(ev.event_time)}

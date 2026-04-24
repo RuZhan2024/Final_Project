@@ -10,6 +10,9 @@ import { useCaregivers } from "./hooks/useCaregivers";
 
 import styles from "../Settings.module.css";
 
+/**
+ * Settings page for monitoring, alert, model, and caregiver configuration.
+ */
 export default function SettingsPage() {
   const {
     settings,
@@ -98,6 +101,7 @@ export default function SettingsPage() {
     setLocalErr("");
     const desired = Boolean(next);
     const actual = await setMonitoringOn(desired);
+    // The provider reports the effective runtime state after backend/controller work completes.
     if (actual === desired) {
       showToast(
         next
@@ -119,6 +123,7 @@ export default function SettingsPage() {
       const result = await upsert({ id: primary?.id, name: cgName, telegram_chat_id: cgTelegramChatId });
       setEditingCaregiver(false);
       if (result?.db_available === false) {
+        // Fallback mode keeps the UI editable, but the user should re-save once DB returns.
         setLocalErr(
           "Caregiver information was accepted in fallback mode only. Save it again after database connectivity is restored."
         );

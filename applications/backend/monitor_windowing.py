@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Window-level pose utilities used by the live monitor endpoint.
+
+These helpers keep browser/replay pose streams aligned with the fixed-window
+contract used during training: fixed frame count, effective FPS, confidence
+cleanup, and quality diagnostics before model inference.
+"""
+
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +26,13 @@ MONITOR_Q_SCALE = 1000.0
 
 
 def window_motion_score(xy: Any) -> Optional[float]:
+    """Estimate normalized torso motion across a monitor window.
+
+    The score uses shoulder/hip landmarks because they are more stable than
+    wrists or ankles in occluded fall scenes. Distances are normalized by torso
+    scale so the threshold is less sensitive to camera distance.
+    """
+
     if not isinstance(xy, list) or len(xy) < 2:
         return None
 
@@ -89,6 +103,8 @@ def window_motion_score(xy: Any) -> Optional[float]:
 
 
 def raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, Any]:
+    """Summarize raw browser/video capture quality before resampling."""
+
     stats: Dict[str, Any] = {
         "raw_len": 0,
         "raw_fps_est": None,
@@ -139,6 +155,8 @@ def raw_window_stats(raw_t_ms: Any, raw_xy: Any, raw_conf: Any) -> Dict[str, Any
 
 
 def direct_window_stats(xy: Any, conf: Any, *, effective_fps: float) -> Dict[str, Any]:
+    """Build raw-style diagnostics for legacy already-windowed payloads."""
+
     stats: Dict[str, Any] = {
         "raw_len": 0,
         "raw_fps_est": None,
@@ -184,6 +202,8 @@ def decode_quantized_raw_window(
     raw_conf_q: Any,
     raw_shape: Any,
 ) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+    """Decode compact integer pose arrays from the frontend raw_* contract."""
+
     try:
         if not isinstance(raw_shape, (list, tuple)) or len(raw_shape) < 2:
             return None, None
@@ -242,6 +262,12 @@ def window_quality_block(
     min_frames_ratio_override: Optional[float] = None,
     min_coverage_ratio_override: Optional[float] = None,
 ) -> Dict[str, Any]:
+    """Evaluate whether capture quality is too weak for a live fall alert.
+
+    The return value is diagnostic rather than just boolean so the API can show
+    which guardrail fired: FPS ratio, frame count, or temporal coverage.
+    """
+
     need_s = max(1e-6, (max(2, int(target_T)) - 1) / max(1e-6, float(effective_fps)))
     raw_fps = raw_stats.get("raw_fps_est")
     raw_len = int(raw_stats.get("raw_len") or 0)
@@ -281,6 +307,8 @@ def window_quality_block(
 
 
 def effective_target_fps(*, expected_fps: float, raw_fps_est: Optional[float]) -> float:
+    """Clamp live effective FPS between a usable minimum and the dataset FPS."""
+
     exp = float(expected_fps) if expected_fps and float(expected_fps) > 0 else 23.0
     if raw_fps_est is None or not math.isfinite(float(raw_fps_est)) or float(raw_fps_est) <= 0:
         return exp
@@ -297,6 +325,13 @@ def resolve_runtime_fps(
     raw_fps_est: Optional[float],
     is_replay: bool,
 ) -> Tuple[float, float]:
+    """Choose expected and effective FPS for replay and live monitor windows.
+
+    Replay uses measured FPS for deterministic offline evaluation. Live camera
+    input keeps the dataset expected FPS for policy thresholds while resampling
+    to a clamped effective FPS when the capture stream slows down.
+    """
+
     expected_fps = {
         "le2i": 25,
         "caucafall": 23,
@@ -318,6 +353,8 @@ def preprocess_online_raw_window(
     *,
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Any], List[Any]]:
+    """Apply the deployment pose preprocessing steps to one online window."""
+
     if not isinstance(xy, list) or len(xy) <= 0:
         return [], []
 
@@ -366,6 +403,13 @@ def resample_pose_window(
     target_T: int = 48,
     window_end_t_ms: Optional[float] = None,
 ) -> Tuple[List[Any], List[Any], float, float, Optional[float]]:
+    """Interpolate a raw timestamped pose stream to a fixed-length window.
+
+    The backend keeps this implementation list-based because request payloads
+    arrive as JSON. Invalid or non-monotonic timestamps are skipped before
+    interpolation so the model receives frames ordered by capture time.
+    """
+
     if not isinstance(raw_t_ms, list) or not isinstance(raw_xy, list) or len(raw_t_ms) != len(raw_xy) or len(raw_xy) < 1:
         return [], [], 0.0, 0.0, None
 
@@ -385,6 +429,8 @@ def resample_pose_window(
         except (TypeError, ValueError):
             continue
         if last_t is not None and tf <= last_t:
+            # Duplicate/out-of-order timestamps break interpolation intervals;
+            # dropping them preserves the capture-time ordering invariant.
             continue
         if not isinstance(xyi, list):
             continue

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Schema-discovery and lightweight migration helpers for backend tables."""
+
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -14,6 +16,7 @@ _COL_CACHE: Dict[str, Set[str]] = {}
 
 
 def list_tables(conn: Any) -> Set[str]:
+    """List tables once per process and cache the result for repeated schema checks."""
     global _TABLE_CACHE
     if _TABLE_CACHE is not None:
         return _TABLE_CACHE
@@ -47,6 +50,7 @@ def list_tables(conn: Any) -> Set[str]:
 
 
 def cols(conn: Any, table: str) -> Set[str]:
+    """Return the cached set of column names for one table."""
     if table in _COL_CACHE:
         return _COL_CACHE[table]
     try:
@@ -83,6 +87,7 @@ def col_exists(conn: Any, table_name: str, col_name: str) -> bool:
 
 
 def ensure_system_settings_schema(conn: Any) -> None:
+    """Add missing settings columns needed by the current backend/frontend contract."""
     try:
         if not table_exists(conn, "system_settings"):
             return
@@ -110,6 +115,7 @@ def ensure_system_settings_schema(conn: Any) -> None:
                 alters.append(f"ADD COLUMN `{col}` {ddl}")
 
         if alters:
+            # SQLite cannot batch ADD COLUMN statements, so apply them one by one there.
             with conn.cursor() as cur:
                 if backend == "sqlite":
                     for alter in alters:
@@ -123,6 +129,7 @@ def ensure_system_settings_schema(conn: Any) -> None:
 
 
 def ensure_caregivers_table(conn: Any) -> None:
+    """Create the caregivers table or add the Telegram column for older schemas."""
     try:
         with conn.cursor() as cur:
             backend = str(getattr(conn, "db_backend", "mysql")).lower()

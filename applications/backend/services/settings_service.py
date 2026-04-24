@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Settings snapshot and update helpers.
+
+These helpers sit between the FastAPI route layer and storage/runtime state.
+They normalize settings payloads, merge deploy-time operating-point overlays,
+and preserve the frontend contract when persistence falls back to in-memory
+state during DB outages.
+"""
+
 from typing import Any, Dict
 
 from ..code_normalization import norm_op_code, normalize_dataset_code, normalize_model_code
@@ -7,7 +15,12 @@ from ..inmemory_state import get_inmem_settings
 
 
 def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> None:
-    """Override UI thresholds/cooldown using YAML-derived deploy params (best-effort)."""
+    """Overlay deploy-time operating-point UI values onto a settings snapshot.
+
+    The YAML layer is advisory rather than authoritative: failures are swallowed
+    so settings endpoints can still serve DB/in-memory defaults when deploy
+    assets are absent or temporarily inconsistent.
+    """
     try:
         system.setdefault("active_dataset_code", "caucafall")
         system.setdefault("active_model_code", "TCN")
@@ -28,9 +41,16 @@ def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> 
 
 
 def build_settings_response(resident_id: int, system: Dict[str, Any], deploy: Dict[str, Any], *, db_available: bool) -> Dict[str, Any]:
+    """Normalize the mixed DB/deploy snapshot into the frontend settings contract.
+
+    The returned payload intentionally duplicates some top-level fields from the
+    nested ``system`` object because older frontend code reads both shapes.
+    """
     system["active_dataset_code"] = normalize_dataset_code(system.get("active_dataset_code"))
     system["active_model_code"] = normalize_model_code(system.get("active_model_code"))
     system["active_op_code"] = norm_op_code(str(system.get("active_op_code") or "OP-2"))
+    # The privacy toggle exposed in the UI is a derived capability: storing
+    # anonymized data only makes sense when clip persistence itself is enabled.
     system["store_anonymized_data"] = bool(
         system.get("store_event_clips", False) and system.get("anonymize_skeleton_data", True)
     )
@@ -54,11 +74,17 @@ def build_settings_response(resident_id: int, system: Dict[str, Any], deploy: Di
 
 
 def base_settings_snapshot(resident_id: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return mutable baseline settings dictionaries for one resident.
+
+    Callers are expected to enrich these dicts in place with DB and deploy
+    values before serializing them back to the route response.
+    """
     base = get_inmem_settings(resident_id)
     return base["system"], base["deploy"]
 
 
 def normalize_settings_payload_threshold(payload) -> None:
+    """Accept UI thresholds expressed either as probability or percentage."""
     if payload.fall_threshold is None:
         return
     try:
@@ -76,6 +102,12 @@ def build_settings_snapshot_response(
     load_settings_snapshot,
     derive_ops_params_from_yaml,
 ) -> Dict[str, object]:
+    """Load the read-only settings snapshot with DB fallback and deploy overlays.
+
+    Resolution order is: in-memory defaults -> DB snapshot when reachable ->
+    YAML-derived operating-point UI fields. The DB availability flag is kept
+    explicit so the frontend can message degraded persistence honestly.
+    """
     system, deploy = base_settings_snapshot(resident_id)
     system.setdefault("camera_source", "webcam")
     db_available = False
@@ -102,6 +134,11 @@ def persist_settings_update_with_fallback(
     normalize_dataset_code,
     norm_op_code,
 ) -> Dict[str, object]:
+    """Persist settings when possible, otherwise fall back to in-memory state.
+
+    This preserves the route contract during SQLite/MySQL outages: callers still
+    get an `ok` response plus an explicit `persisted` flag describing durability.
+    """
     normalize_settings_payload_threshold(payload)
 
     try:
@@ -109,6 +146,8 @@ def persist_settings_update_with_fallback(
             persist_settings_update(conn, resident_id, payload)
             return {"ok": True, "persisted": True}
     except Exception:
+        # Apply the same normalized payload to the live in-memory store so the
+        # UI reflects the user's intent immediately even without durable storage.
         apply_settings_update_inmem(
             payload,
             resident_id=resident_id,

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.audit_api_v1_parity import collect_api_paths
+from ops.scripts.audit_api_v1_parity import collect_api_paths
 
 
 def test_collect_api_paths(tmp_path: Path) -> None:
+    # The parity audit scans route decorators only, so this test guards the
+    # minimum contract: both `/api/*` and `/api/v1/*` variants stay discoverable.
     routes = tmp_path / "server" / "routes"
     routes.mkdir(parents=True, exist_ok=True)
     (routes / "x.py").write_text(
@@ -26,4 +28,3 @@ def test_collect_api_paths(tmp_path: Path) -> None:
     assert "/api/foo" in paths
     assert "/api/v1/foo" in paths
     assert "/api/bar" in paths
-

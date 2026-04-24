@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+"""Repository helpers for caregiver settings rows."""
+
 from typing import Any, Dict, Optional
 
 
 def caregiver_select_sql(conn: Any, *, col_exists) -> str:
+    """Build a select list that works across old and new caregiver schemas."""
     cols = ["id", "resident_id", "name", "email", "phone"]
     if col_exists(conn, "caregivers", "telegram_chat_id"):
         cols.append("telegram_chat_id")
@@ -15,6 +18,7 @@ def caregiver_select_sql(conn: Any, *, col_exists) -> str:
 
 
 def fetch_caregivers(conn: Any, *, resident_id: int, select_cols: str):
+    """Load caregiver rows in UI order for one resident."""
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT {select_cols} FROM caregivers WHERE resident_id=%s ORDER BY id ASC",
@@ -24,6 +28,7 @@ def fetch_caregivers(conn: Any, *, resident_id: int, select_cols: str):
 
 
 def resolve_target_caregiver_id(conn: Any, *, resident_id: int, payload_id: Optional[int]) -> Optional[int]:
+    """Prefer the explicit id from the patch payload, else reuse the first row."""
     if payload_id is not None:
         return int(payload_id)
     with conn.cursor() as cur:
@@ -46,6 +51,7 @@ def upsert_caregiver_row(
     select_cols: str,
     telegram_supported: bool,
 ) -> Dict[str, Any]:
+    """Update the selected caregiver row or create the first row on demand."""
     with conn.cursor() as cur:
         if target_id is not None:
             if fields:
@@ -57,6 +63,7 @@ def upsert_caregiver_row(
             cur.execute(f"SELECT {select_cols} FROM caregivers WHERE id=%s", (target_id,))
             out = cur.fetchone() or {}
         else:
+            # Older schemas may not have Telegram fields yet, so insert None there.
             cur.execute(
                 "INSERT INTO caregivers (resident_id, name, email, phone, telegram_chat_id) VALUES (%s,%s,%s,%s,%s)",
                 (

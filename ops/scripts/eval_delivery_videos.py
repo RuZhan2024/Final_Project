@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Evaluate video-level delivery behavior from replay window NPZs.
+
+This script is deliberately closer to deployment than to pure model scoring: it
+rebuilds alert events from per-window probabilities, optional confirmation
+signals, and delivery gates, then reports one prediction per source video.
+"""
 from __future__ import annotations
 
 import argparse
@@ -20,6 +26,7 @@ from fall_detection.core.models import build_model, p_fall_from_logits, pick_dev
 
 
 def _npz_scalar_str(path: str, key: str, default: str = "") -> str:
+    """Read a scalar-like NPZ field as string without failing the whole replay row."""
     try:
         with np.load(path, allow_pickle=False) as z:
             if key not in z.files:
@@ -35,6 +42,7 @@ def _npz_scalar_str(path: str, key: str, default: str = "") -> str:
 
 
 def _truth_from_src(src: str, fall_contains: list[str], nonfall_contains: list[str]) -> int | None:
+    """Infer a weak video label from the original source path."""
     src_l = src.lower()
     for needle in nonfall_contains:
         if needle.lower() in src_l:
@@ -46,6 +54,11 @@ def _truth_from_src(src: str, fall_contains: list[str], nonfall_contains: list[s
 
 
 def _build_alert_cfg(ops_obj: dict[str, Any], op_code: str) -> AlertCfg:
+    """Compose one AlertCfg from an ops YAML file.
+
+    The YAML keeps thresholds under the chosen operating point while the shared
+    persistence/cooldown parameters remain in `alert_base`.
+    """
     op = ops_obj["ops"][op_code]
     alert_base = ops_obj["alert_base"]
     return AlertCfg(
@@ -66,6 +79,13 @@ def _build_alert_cfg(ops_obj: dict[str, Any], op_code: str) -> AlertCfg:
 
 
 def main() -> None:
+    """Run delivery-style replay evaluation and write per-video artifacts.
+
+    Outputs:
+      - `<out_prefix>.csv`: per-video predictions and gating diagnostics
+      - `<out_prefix>.json`: the same rows plus summary metadata
+      - `<out_prefix>_metrics.json`: aggregated confusion/accuracy metrics
+    """
     ap = argparse.ArgumentParser(description="Evaluate deliverable video-level metrics on window NPZs.")
     ap.add_argument("--config_yaml", default="", help="Optional delivery config YAML.")
     ap.add_argument("--windows_dir", default="", help="Directory containing window NPZs.")
@@ -129,6 +149,8 @@ def main() -> None:
     if args.gate_max_event_start_s < 0.0 and "max_event_start_s" in delivery_gate:
         args.gate_max_event_start_s = float(delivery_gate["max_event_start_s"])
 
+    # CLI overrides intentionally happen after config/YAML loading so ad-hoc
+    # evaluation can tweak one policy value without editing stored configs.
     if args.override_ema_alpha >= 0.0:
         alert_cfg = AlertCfg(**{**alert_cfg.to_dict(), "ema_alpha": float(args.override_ema_alpha)})
     if args.override_tau_high >= 0.0:
@@ -222,6 +244,8 @@ def main() -> None:
             first_event_start_s = float(events[0].start_time_s) if events else None
 
             if pred == 1:
+                # These gates are applied after alert reconstruction because the
+                # delivery decision is stricter than "model crossed threshold".
                 if args.gate_max_lying >= 0.0 and max_lying > float(args.gate_max_lying):
                     pred = 0
                 if pred == 1 and args.gate_min_mean_motion_high >= 0.0 and mean_motion_high < float(args.gate_min_mean_motion_high):

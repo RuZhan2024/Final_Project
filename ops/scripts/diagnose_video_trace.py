@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Export a per-window trace for one replay video under a chosen alert policy.
+
+The output is meant for diagnosis rather than benchmarking: it records model
+scores, confirmation heuristics, derived triage state, and final alert events
+for one `video_id`.
+"""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +25,7 @@ from fall_detection.core.models import build_model, logits_1d, p_fall_from_logit
 
 
 def _collect_video_windows(win_dir: Path, video_id: str, fps_default: float) -> list[dict[str, Any]]:
+    """Load and order all window NPZ rows belonging to one video id."""
     rows: list[dict[str, Any]] = []
     for fp in sorted(win_dir.glob("*.npz")):
         try:
@@ -51,6 +58,11 @@ def _infer_probs(
     feat_cfg: FeatCfg,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run model inference plus confirmation heuristics on the ordered windows.
+
+    The returned arrays stay aligned with ``rows`` so the later trace export can
+    explain each policy transition window by window.
+    """
     probs: list[float] = []
     lying: list[float] = []
     motion_s: list[float] = []
@@ -96,6 +108,7 @@ def _infer_probs(
 
 
 def main() -> None:
+    """Write JSON/CSV trace artifacts for one video under explicit alert settings."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--win_dir", required=True)
     ap.add_argument("--ckpt", required=True)

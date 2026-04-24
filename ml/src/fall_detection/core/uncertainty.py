@@ -19,6 +19,7 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def _dropout_types():
+    """Resolve supported dropout module types lazily for optional torch imports."""
     try:
         import torch.nn as nn  # type: ignore
     except Exception:
@@ -27,6 +28,7 @@ def _dropout_types():
 
 
 def _dropout_modules(model):
+    """Cache the model's dropout modules for repeated MC sampling passes."""
     cached = getattr(model, "_mc_dropout_modules", None)
     if cached is not None:
         return cached
@@ -67,6 +69,7 @@ def _as_1d(x):
 
 @lru_cache(maxsize=16)
 def _inv_n_table(max_n: int) -> tuple[float, ...]:
+    """Precompute reciprocal counts for the online variance updates."""
     n = int(max_n)
     if n < 1:
         return (0.0,)
@@ -110,6 +113,9 @@ def mc_predict_mu_sigma(
         Minimum samples before early-stop can trigger.
     return_n_used : bool
         If True, also return the number of MC samples actually used.
+    The returned ``mu``/``sigma`` stay in the same output space as
+    ``forward_fn``. In this repo that is usually post-sigmoid probability
+    space, so downstream uncertainty gates must not treat the values as logits.
     """
     import torch  # type: ignore
 
@@ -149,7 +155,8 @@ def mc_predict_mu_sigma(
     was_training = bool(getattr(model, "training", False))
     fwd = forward_fn
     as1d = _as_1d
-    # Start from a clean eval state.
+    # Start from a clean eval state, then selectively re-enable only dropout
+    # layers so BatchNorm statistics remain frozen during MC sampling.
     model.eval()
     dropout_mods = _dropout_modules(model)
     for m in dropout_mods:

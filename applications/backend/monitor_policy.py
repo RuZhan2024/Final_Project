@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Operating-point policy helpers for the live monitor endpoint."""
+
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -45,6 +47,12 @@ def op_live_guard(
     *,
     norm_op_code,
 ) -> Dict[str, Any]:
+    """Resolve live quality-gate thresholds for a deploy spec and op point.
+
+    Dataset defaults provide the baseline, then YAML operating-point overrides
+    can tune the guard. Numeric values are clamped before callers trust them.
+    """
+
     ds_defaults = DEFAULT_LIVE_GUARD_BY_DATASET.get(dataset_code, {})
     out = {
         "min_motion_for_fall": float(ds_defaults.get("min_motion_for_fall", 0.020)),
@@ -94,6 +102,7 @@ def op_live_guard(
     except (TypeError, ValueError, AttributeError):
         pass
 
+    # Treat deployment YAML as configuration, not trusted input.
     out["min_motion_for_fall"] = float(max(0.0, out["min_motion_for_fall"]))
     out["low_fps_mode_threshold"] = float(max(5.0, out["low_fps_mode_threshold"]))
     out["low_fps_fall_persist_n"] = int(max(1, out["low_fps_fall_persist_n"]))
@@ -107,6 +116,8 @@ def op_live_guard(
 
 
 def op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str, *, norm_op_code) -> Dict[str, Any]:
+    """Read optional fall-delivery confirmation rules for one operating point."""
+
     out = {
         "enabled": False,
         "max_lying": None,
@@ -135,6 +146,8 @@ def op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str, *, norm
 
 
 def op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str, *, norm_op_code) -> Dict[str, Any]:
+    """Read optional replay-only rules for promoting uncertain windows."""
+
     out = {
         "enabled": False,
         "video_only": True,
@@ -162,6 +175,12 @@ def op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str, *, 
 
 
 def load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str, *, norm_op_code) -> Optional[Dict[str, Any]]:
+    """Load TCN safe/recall tracker settings for a dataset and op point.
+
+    Dual policy is optional: missing or invalid YAML falls back to the primary
+    tracker instead of failing monitor prediction.
+    """
+
     key = (f"{dataset_code}:{policy_name}", norm_op_code(op_code))
     if key in DUAL_POLICY_CFG_CACHE:
         return DUAL_POLICY_CFG_CACHE[key]
@@ -192,6 +211,8 @@ def load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str, *, n
     ops = data.get("ops") if isinstance(data.get("ops"), dict) else {}
     op_entry = None
     want = norm_op_code(op_code)
+    # Historical configs use both OP2 and OP-2 spellings; accept both so old
+    # experiment YAMLs remain deployable.
     for key_name, value in (ops or {}).items():
         if not isinstance(value, dict):
             continue
@@ -226,7 +247,11 @@ def resolve_monitor_specs(
     mode: str,
     payload_d: Dict[str, Any],
 ) -> Dict[str, str]:
+    """Select deploy specs for requested dataset/mode and resolve hybrid fallback."""
+
     def resolve_spec_key(arch: str, preferred: str) -> str:
+        """Use explicit spec keys when present, otherwise pick a dataset match."""
+
         if preferred in specs:
             return preferred
         ds_prefix = f"{dataset_code}_"

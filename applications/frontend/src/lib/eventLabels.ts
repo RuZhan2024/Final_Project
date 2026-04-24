@@ -1,3 +1,4 @@
+/** Label helpers for event table/status UI. */
 export function eventTypeLabel(type: unknown): string {
   const t = String(type || "").toLowerCase();
   if (t === "fall") return "Fall";
@@ -18,6 +19,7 @@ export function eventStatusLabel(status: unknown): string {
 }
 
 export const EVENT_STATUS_OPTIONS = [
+  // Keep these normalized values aligned with backend review-status contracts.
   "pending_review",
   "confirmed_fall",
   "false_alarm",

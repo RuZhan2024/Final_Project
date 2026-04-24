@@ -1,3 +1,10 @@
+/**
+ * Events page data hook.
+ *
+ * This hook coordinates list loading, summary refresh, and reviewer status
+ * updates. The event list stays authoritative even when the lighter summary
+ * endpoint fails or lags.
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -12,6 +19,7 @@ import type {
 } from "../../../features/events/types";
 
 function isTodayLocal(isoLike: string | null | undefined): boolean {
+  /** Compare against browser-local time because the page groups by local "today". */
   const d = new Date(isoLike);
   if (Number.isNaN(d.getTime())) return false;
   const now = new Date();
@@ -34,6 +42,12 @@ interface UseEventsDataResult {
 const EMPTY_SUMMARY: EventsTodaySummary = { falls: 0, pending: 0, false_alarms: 0 };
 
 export function useEventsData(apiBase: string, residentId = 1): UseEventsDataResult {
+  /**
+   * Owns the Events page read/update flow.
+   *
+   * Summary polling is best-effort, but the event list remains authoritative so
+   * the page still works when only the summary endpoint fails.
+   */
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [todaySummary, setTodaySummary] = useState<EventsTodaySummary>(EMPTY_SUMMARY);
   const [loading, setLoading] = useState(true);
@@ -49,7 +63,7 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
       const ac = new AbortController();
       abortRef.current = ac;
 
-      // Summary (best-effort)
+      // Keep the list usable even if the lightweight summary endpoint is down.
       try {
         const s = await fetchEventsSummary(apiBase, { residentId, signal: ac.signal });
         if (s?.today) setTodaySummary(s.today);
@@ -60,6 +74,8 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
       const data = await fetchEvents(apiBase, { residentId, limit: 500, signal: ac.signal });
       const nextEvents = Array.isArray(data?.events) ? data.events : [];
       setEvents(nextEvents);
+      // Even if summary polling failed, the list fetch still provides a usable
+      // reviewer view, so only the list is required for a successful reload.
       if (!silent) setLoading(false);
     } catch (e: unknown) {
       if ((e as Error)?.name === "AbortError") return;
@@ -85,6 +101,8 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
 
     const pollId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      // Hidden tabs do not need background event polling; visibility/focus
+      // hooks refresh again when the reviewer returns to the page.
       void reload({ silent: true });
     }, 10000);
 
@@ -112,6 +130,8 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
       );
 
       if (isTodayLocal(eventTime)) {
+        // Mirror the expected status transition locally so the counters do not
+        // visibly lag behind the reviewer action while the refetch is in flight.
         setTodaySummary((prev) => {
           const next = {
             falls: Number(prev?.falls || 0),

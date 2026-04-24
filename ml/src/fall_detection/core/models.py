@@ -57,6 +57,7 @@ def _cfg_to_dict(cfg: Any) -> Dict[str, Any]:
 # ---------------------------
 
 def pick_device() -> torch.device:
+    """Choose the best available torch device with a stable repo preference order."""
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.cuda.is_available():
@@ -75,6 +76,7 @@ def logits_1d(logits: torch.Tensor) -> torch.Tensor:
 
 
 def p_fall_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Convert model logits to fall probabilities using the repo's 1D convention."""
     return torch.sigmoid(logits_1d(logits))
 
 
@@ -165,7 +167,8 @@ class TCN(nn.Module):
         self.head = nn.Linear(hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,C] -> [B,C,T]
+        # TCN expects flattened-per-frame features; the transpose converts from
+        # the repo-standard [B,T,C] feature layout to Conv1d's [B,C,T].
         x = x.transpose(1, 2)
         x = self.conv_in(x)
         for blk in self.blocks:
@@ -176,6 +179,12 @@ class TCN(nn.Module):
 
 @dataclass
 class TCNConfig:
+    """Training/runtime knobs for the flattened-joint TCN classifier.
+
+    This config owns architecture shape only. Input dimensionality stays outside
+    the dataclass because it must match the saved feature contract exactly and
+    may be injected explicitly by older checkpoints/evaluation entry points.
+    """
     hidden: int = 128
     dropout: float = 0.30
     num_blocks: int = 4
@@ -205,6 +214,7 @@ class TCNConfig:
 # ---------------------------
 
 def build_mediapipe_adjacency(num_joints: int = 33) -> np.ndarray:
+    """Return the fixed undirected skeleton graph used by the GCN encoders."""
     # Undirected edges (reasonable subset) for MediaPipe Pose 33.
     edges = [
         (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
@@ -226,6 +236,7 @@ def build_mediapipe_adjacency(num_joints: int = 33) -> np.ndarray:
 
 
 def normalize_adjacency(A: np.ndarray) -> np.ndarray:
+    """Apply GCN-style symmetric normalization after adding self-loops."""
     A = A.astype(np.float32)
     I = np.eye(A.shape[0], dtype=np.float32)
     A_hat = A + I
@@ -253,6 +264,7 @@ class SEBlock(nn.Module):
 
 
 class GCNLayer(nn.Module):
+    """One spatial graph-convolution layer with optional adjacency refinement."""
     def __init__(
         self,
         in_feats: int,
@@ -326,6 +338,7 @@ class GCNLayer(nn.Module):
 
 
 class TemporalConv(nn.Module):
+    """Temporal encoder applied after spatial joint aggregation in the GCN path."""
     def __init__(self, ch: int, hidden: int, dropout: float = 0.30, num_blocks: int = 3):
         super().__init__()
         self.proj = nn.Linear(ch, hidden)
@@ -356,6 +369,7 @@ class TemporalConv(nn.Module):
 
 
 class GCNEncoder(nn.Module):
+    """Shared GCN feature extractor used by single-stream and two-stream heads."""
     def __init__(
         self,
         num_joints: int,
@@ -397,7 +411,8 @@ class GCNEncoder(nn.Module):
         self.temporal = TemporalConv(gcn_hidden, tcn_hidden, dropout=dropout, num_blocks=3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,V,F]
+        # Mean over joints happens only after the graph layers; collapsing
+        # earlier would destroy the spatial relations the GCN is modeling.
         A_hat = self.A_hat
         x = self.g1(x, A_hat)
         x = self.g2(x, A_hat)
@@ -407,6 +422,7 @@ class GCNEncoder(nn.Module):
 
 
 class GCN(nn.Module):
+    """Single-stream GCN classifier over canonical ``[B,T,V,F]`` features."""
     def __init__(
         self,
         num_joints: int,
@@ -441,6 +457,7 @@ class GCN(nn.Module):
 
 
 class TwoStreamGCN(nn.Module):
+    """Two-stream GCN that fuses joint and motion encoders at the head."""
     def __init__(
         self,
         num_joints: int,
@@ -497,6 +514,8 @@ class TwoStreamGCN(nn.Module):
             kj = (torch.rand(b, device=zj.device) >= self.stream_drop_joint_p).to(zj.dtype).view(b, 1)
             km = (torch.rand(b, device=zm.device) >= self.stream_drop_motion_p).to(zm.dtype).view(b, 1)
             both_off = (kj <= 0.0) & (km <= 0.0)
+            # Keep at least one stream active per sample; dropping both would
+            # train the head on a degenerate all-zero representation.
             if both_off.any():
                 kj[both_off] = 1.0
             zj = zj * kj
@@ -514,6 +533,13 @@ class TwoStreamGCN(nn.Module):
 
 @dataclass
 class GCNConfig:
+    """Architecture contract for single-stream and two-stream GCN variants.
+
+    `two_stream` switches the caller-visible input contract from one tensor
+    `[B,T,V,F]` to a `(joint_stream, motion_stream)` pair. The builder keeps
+    that distinction here so training, evaluation, and deployment can all
+    reconstruct the same checkpoint interface from serialized config alone.
+    """
     num_joints: int = 33
     gcn_hidden: int = 96
     tcn_hidden: int = 192
@@ -557,6 +583,7 @@ class GCNConfig:
 # ---------------------------
 
 def _bool(d: Dict[str, Any], key: str, default: bool = False) -> bool:
+    """Parse permissive bool-like config values from YAML/checkpoint dicts."""
     v = d.get(key, default)
     # tolerate "0"/"1" and ints
     if isinstance(v, str):
@@ -580,6 +607,10 @@ def infer_input_dims(
     Preference order:
     1) Explicit dims stored in model_cfg (best, because it matches training exactly).
     2) Infer from feat_cfg (reasonable default for this project).
+
+    The returned dimensions must be treated as part of the checkpoint contract:
+    once a model is trained, later evaluation code should prefer serialized
+    dimensions over recomputing them from today's feature defaults.
     """
     arch = str(arch).lower()
     model_cfg = _cfg_to_dict(model_cfg)
@@ -678,14 +709,19 @@ def build_model(
         build_model(arch, model_cfg, in_ch=..., in_feats=..., ...)
 
     Notes:
-    - fps_default is accepted for compatibility; architectures here don't require it directly.
-      (fps_default belongs to feature scaling and time conversion logic elsewhere.)
+    - ``fps_default`` is accepted for compatibility; architectures here do not
+      consume it directly.
+    - Dimension resolution prefers explicit caller args, then serialized
+      checkpoint fields, then feature-config inference. That order preserves old
+      checkpoints whose runtime feature defaults may no longer match current code.
     """
     arch = str(arch).lower()
     model_cfg = _cfg_to_dict(model_cfg)
     feat_cfg = _cfg_to_dict(feat_cfg)
 
-    # If caller didn't provide explicit dims, infer them from cfgs.
+    # Only infer dimensions when the caller did not supply them explicitly.
+    # This preserves historical checkpoints whose stored feature contract should
+    # override today's inferred defaults.
     if arch in ("tcn", "gcn"):
         inferred = infer_input_dims(arch, model_cfg, feat_cfg, num_joints_default=num_joints)
         num_joints = int(inferred.get("num_joints", num_joints))
