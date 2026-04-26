@@ -27,6 +27,8 @@
     "@types/react-dom": "^19.2.2"
   },
   "scripts": {
+    "sync-mediapipe-assets": "node scripts/sync-mediapipe-assets.mjs",
+    "postinstall": "npm run sync-mediapipe-assets",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",

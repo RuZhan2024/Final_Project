@@ -100,7 +100,7 @@ def get_app_config() -> AppConfig:
     raw_origins = get_env_str("CORS_ALLOWED_ORIGINS", "")
     origins = tuple(_split_csv(raw_origins)) if raw_origins else _DEFAULT_ALLOWED_ORIGINS
 
-    raw_backend = get_env_str("DB_BACKEND", "mysql").lower()
+    raw_backend = get_env_str("DB_BACKEND", "sqlite").lower()
     # Only the sqlite branch is special-cased; everything else falls back to MySQL mode.
     db_backend = "sqlite" if raw_backend == "sqlite" else "mysql"
 

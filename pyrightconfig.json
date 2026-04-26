@@ -1,0 +1,16 @@
+{
+  "include": [
+    "applications",
+    "ml/src",
+    "ops",
+    "qa"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "ml/src"
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { DashboardSummary } from "../features/dashboard/types";
@@ -13,7 +13,7 @@ const dashboardHelp = {
   fallsDetected: "The number of fall events detected by the system today. These may still need human review.",
   confirmedFalls: "The number of today's detected fall events that have been reviewed and confirmed as real falls.",
   model: "The fall-detection model currently selected for monitoring.",
-  monitoring: "Shows whether live monitoring is enabled. Turning it off pauses live fall detection.",
+  monitoring: "Shows whether live monitoring is currently enabled or disabled.",
   latency: "The most recent backend prediction response time. Lower values mean faster system response.",
   apiHealth: "Shows whether the frontend can currently reach the backend service.",
 };
@@ -31,10 +31,8 @@ function InfoHint({ text }: { text: string }) {
  */
 function Dashboard() {
   const navigate = useNavigate();
-  const [statusMsg, setStatusMsg] = useState("");
-  const [localErr, setLocalErr] = useState("");
 
-  const { monitoringOn, toggleMonitoringOn, error: monitoringErr, settings, apiBase } = useMonitoring();
+  const { monitoringOn, error: monitoringErr, settings, apiBase } = useMonitoring();
   const { data, loading, error } = useDashboardSummary(apiBase);
 
   const summary = (data || {}) as DashboardSummary & Record<string, unknown>;
@@ -63,40 +61,9 @@ function Dashboard() {
         ? {}
         : { backgroundColor: "#EF4444", boxShadow: "0 0 0 4px #FEE2E2" };
 
-  const showToast = (message: string) => {
-    setStatusMsg(message);
-    window.setTimeout(() => setStatusMsg(""), 2800);
-  };
-
-  const onToggleMonitoring = async (): Promise<void> => {
-    setLocalErr("");
-    const previous = Boolean(monitoringOn);
-    try {
-      const next = await toggleMonitoringOn();
-      if (next === previous) {
-        // The provider returns the effective runtime state, which may differ if startup/shutdown failed.
-        showToast(
-          next
-            ? "Monitoring remains ON. If you expected OFF, check monitor session state."
-            : "Monitoring remains OFF. If you expected ON, check camera permission and API status."
-        );
-        return;
-      }
-      showToast(
-        next
-          ? "Monitoring enabled from Dashboard. Live detection is now active."
-          : "Monitoring disabled from Dashboard. Live detection is now paused."
-      );
-    } catch (err) {
-      setLocalErr(`Could not change monitoring state. ${String((err as Error)?.message || err)}`);
-    }
-  };
-
   return (
     <div className={styles.container}>
       <h2 className={styles.pageTitle}>Dashboard</h2>
-      {statusMsg && <div className={`${styles.toast} ${styles.toastSuccess}`}>{statusMsg}</div>}
-      {localErr && <div className={`${styles.toast} ${styles.toastError}`}>{localErr}</div>}
 
       <div className={styles.topRow}>
         <div className={styles.card}>
@@ -157,13 +124,11 @@ function Dashboard() {
             </span>
             <div className={styles.centerContent}>
               <div
-                className={styles.toggleSwitch}
-                onClick={() => {
-                  // Dashboard uses the same provider-level toggle as Settings/Monitor to avoid split state.
-                  void onToggleMonitoring();
-                }}
-                title="Enable or disable live monitoring"
+                className={`${styles.toggleSwitch} ${styles.toggleSwitchReadOnly}`}
+                title="Shows whether live monitoring is currently enabled"
                 style={{ backgroundColor: toggleBg }}
+                aria-label={monitoringOn ? "Monitoring is enabled" : "Monitoring is disabled"}
+                aria-readonly="true"
               >
                 <div className={styles.toggleKnob} style={knobStyle} />
               </div>

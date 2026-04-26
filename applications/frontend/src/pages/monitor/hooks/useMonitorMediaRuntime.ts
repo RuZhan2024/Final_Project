@@ -17,6 +17,7 @@ import type { UseMonitorMediaRuntimeOptions } from "../types";
 const REPLAY_POSE_MODEL_COMPLEXITY = 1;
 const REPLAY_MIN_DETECTION_CONFIDENCE = 0.35;
 const REPLAY_MIN_TRACKING_CONFIDENCE = 0.35;
+const MEDIAPIPE_POSE_ASSET_ROOT = `${process.env.PUBLIC_URL || ""}/mediapipe/pose`;
 
 /**
  * Prepares camera/replay media sources and configures the MediaPipe pose runtime.
@@ -50,7 +51,7 @@ export function useMonitorMediaRuntime({
     const isReplay = inputSourceRef.current === "video";
     if (!poseRef.current) {
       const pose = new mpPose.Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+        locateFile: (file) => `${MEDIAPIPE_POSE_ASSET_ROOT}/${file}`,
       });
 
       pose.setOptions({
