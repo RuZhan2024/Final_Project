@@ -5,43 +5,43 @@ Evidence control: this draft is constrained by [PAPER_WRITING_MASTER_PLAN_2026-0
 
 # Abstract
 
-Fall detection is often framed as a classification problem, but practical monitoring depends on more than classifier accuracy alone. This paper studies an end-to-end pose-based fall-detection and monitoring stack in which offline comparison, alert-policy fitting, runtime interpretation, and caregiver-facing delivery are treated as one connected technical artifact. The system combines browser-side pose extraction, temporal window inference, validation-fitted operating points, replay-oriented monitoring, persistent event history, and Telegram-first alert delivery. Under a locked offline protocol, the Temporal Convolutional Network (TCN) trends stronger than the matched custom spatio-temporal Graph Convolutional Network (GCN) on the primary `CAUCAFall` dataset, while cross-dataset transfer remains asymmetric and bounded. The most defensible contribution is therefore not a claim of solved real-world fall detection, but a deployment-oriented systems study showing that pose-based monitoring can be made operationally coherent under explicit evidence boundaries.
+Fall detection is often reported as a classification task, but practical monitoring depends on more than classifier accuracy alone. This paper studies an end-to-end pose-based fall-detection stack in which offline comparison, operating-point fitting, runtime interpretation, and caregiver-facing delivery are treated as one connected artifact. The system combines browser-side pose extraction, temporal window inference, validation-fitted alert profiles, replay-oriented monitoring, persistent event history, and Telegram-first alert delivery. Under a locked offline protocol, the Temporal Convolutional Network (TCN) trends stronger than the matched custom spatio-temporal Graph Convolutional Network (GCN) on the primary `CAUCAFall` dataset, while cross-dataset transfer remains asymmetric and bounded. Later bounded retraining improves the defended custom replay surfaces modestly, but not enough to support a solved deployment claim. The most defensible contribution is therefore a deployment-oriented systems study showing how pose-based monitoring can be made operationally coherent under explicit evidence boundaries.
 
 # Introduction
 
 ## Background and Motivation
 
-Falls are a clinically and socially significant event, especially in older-adult and assisted-living settings, because delayed detection can increase both injury severity and time to intervention. For that reason, automated fall detection has been studied across wearable, ambient, and vision-based paradigms. Yet the practical value of a fall-detection system does not depend on recognition accuracy alone. In a monitoring setting, a usable system must also control false alarms, maintain tractable runtime behaviour, and expose decisions that remain meaningful under deployment constraints.
+Falls are clinically and socially significant because delayed detection can increase both injury severity and time to intervention. Automated fall detection has therefore been studied across wearable, ambient, and vision-based paradigms. Yet practical usefulness depends on more than recognition accuracy alone. A monitoring system must also control false alarms, remain tractable at runtime, and expose decisions that stay meaningful under deployment constraints.
 
-This paper treats fall detection as a deployment-oriented sequence-modelling problem rather than as a narrow benchmark exercise. Instead of predicting falls from isolated frames, the system models short pose sequences and converts window-level outputs into operational alerts through an explicit policy layer. The central question is therefore not only which model scores highest offline, but whether a pose-based monitoring stack can remain coherent once model inference, alert policy, persistence, and runtime behaviour are treated as one integrated path.
+This paper therefore treats fall detection as a deployment-oriented sequence-modelling problem rather than as a narrow benchmark exercise. Instead of predicting falls from isolated frames, the system models short pose sequences and converts window-level outputs into operational alerts through an explicit policy layer. The central question is not only which model scores highest offline, but whether a pose-based monitoring stack remains coherent once inference, alert policy, persistence, and runtime behaviour are treated as one integrated path.
 
 ## Why Pose-Based Detection
 
-The project focuses on pose-based vision rather than raw RGB classification or wearable-only sensing for three reasons. First, skeletal pose representations provide a compact and relatively interpretable motion signal, which is well suited to temporal modelling and downstream alert logic. Second, pose-based processing reduces dependence on scene appearance and background texture compared with direct RGB modelling, while still preserving body-configuration and motion cues relevant to falls. Third, a pose-based frontend fits the project’s local/on-device monitoring framing, because browser-side processing can extract landmarks locally and send structured temporal windows to a backend inference path.
+The project focuses on pose-based vision rather than raw RGB classification or wearable-only sensing for three reasons. First, skeletal pose provides a compact and relatively interpretable motion signal suited to temporal modelling and downstream alert logic. Second, pose-based processing reduces dependence on scene appearance compared with direct RGB modelling while preserving body-configuration and motion cues relevant to falls. Third, a pose-based frontend fits the project’s local/on-device monitoring framing, because browser-side processing can extract landmarks locally and send structured temporal windows to a backend inference path.
 
-This design does not remove deployment difficulty. Pose quality is still sensitive to occlusion, camera placement, motion blur, and frontend runtime behaviour. These limitations are central rather than incidental, because downstream inference can only be as reliable as the skeleton sequence presented to the backend. For that reason, pose quality and runtime stability are treated later in the paper as explicit parts of the system analysis rather than hidden behind aggregate benchmark scores.
+This design does not remove deployment difficulty. Pose quality remains sensitive to occlusion, camera placement, motion blur, and frontend runtime behaviour. These limitations are central rather than incidental because downstream inference can only be as reliable as the skeleton sequence presented to the backend. For that reason, pose quality and runtime stability are treated later as explicit parts of the system analysis rather than hidden behind aggregate benchmark scores.
 
 ## Project Framing
 
-The paper is best understood as a fall-detection systems study with three tightly connected layers:
+The paper is best understood as a fall-detection systems study with three linked layers:
 
 1. A controlled model-comparison layer, focused on temporal and graph-based sequence models.
 2. An alert-policy layer, focused on converting window-level model outputs into practical fall alerts through operating-point calibration and temporal decision rules.
 3. A deployment/runtime layer, focused on replay validation, latency behaviour, frontend pose quality, and bounded realtime feasibility.
 
-Keeping these layers separate is essential. Offline model evidence cannot be replaced by demo behaviour, and replay/deployment results cannot be treated as equivalent to unseen-test generalisation. A central aim of the manuscript is therefore methodological discipline: each claim is tied to the specific evidence layer that actually supports it.
+Keeping these layers separate is essential. Offline model evidence cannot be replaced by demo behaviour, and replay/deployment results cannot be treated as equivalent to unseen-test generalisation. A central aim of the manuscript is therefore methodological discipline: each claim is tied to the evidence layer that actually supports it.
 
 ## Problem Statement
 
-The core problem addressed in this work is not simply whether a classifier can separate fall windows from non-fall windows. The stronger practical question is whether a pose-based temporal system can support credible alerting under controlled evaluation and bounded deployment conditions. This requires offline comparison, calibration-aware alerting, and deployment analysis to be integrated into one coherent study without allowing one evidence layer to illegitimately stand in for another.
+The core problem addressed here is not simply whether a classifier can separate fall windows from non-fall windows. The stronger practical question is whether a pose-based temporal system can support credible alerting under controlled evaluation and bounded deployment conditions. This requires offline comparison, calibration-aware alerting, and deployment analysis to be integrated into one coherent study without allowing one evidence layer to stand in for another.
 
 ## Contributions of This Project
 
-The most defensible contributions of the manuscript are:
+The manuscript makes three bounded contributions:
 
-1. A deployment-oriented pose-based monitoring system that links preprocessing, temporal inference, operating-point fitting, replay/live monitoring, persistent event handling, and caregiver-facing delivery within one audited pipeline.
-2. A controlled TCN-versus-custom-GCN comparison under a locked primary-dataset protocol, interpreted cautiously rather than as a universal architectural ranking.
-3. An explicit treatment of alerting as a fitted policy layer, together with bounded replay/runtime analysis that clarifies where the system is operationally coherent and where broader deployment claims still fail.
+1. It presents a deployment-oriented pose-based monitoring system that links preprocessing, temporal inference, operating-point fitting, replay/live monitoring, persistent event handling, and caregiver-facing delivery within one audited pipeline.
+2. It reports a controlled TCN-versus-custom-GCN comparison under a locked primary-dataset protocol, interpreted cautiously rather than as a universal architectural ranking.
+3. It shows that alerting must be treated as a fitted policy layer, and that bounded replay/runtime analysis is necessary to distinguish operational coherence from broader deployment success.
 
 ## Paper Structure
 
