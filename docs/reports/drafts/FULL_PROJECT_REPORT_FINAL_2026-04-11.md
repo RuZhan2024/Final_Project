@@ -4,7 +4,7 @@ Status: final submission version
 
 # Abstract
 
-This report presents a research-led, full-stack study of pose-based fall detection under a bounded and explicitly controlled evidence framework. The project investigates fall detection not only as a window-level classification task, but as a monitoring problem that also requires alert-policy design, runtime interpretation, event persistence, and caregiver-facing delivery.
+This report presents a research-led, full-stack study of pose-based fall detection under a bounded and explicitly controlled evidence framework. This project is an end-to-end pose-based fall-detection and monitoring system study, supported by controlled model comparison and deployment-oriented evaluation. It investigates fall detection not only as a window-level classification task, but as a monitoring problem that also requires alert-policy design, runtime interpretation, event persistence, and caregiver-facing delivery.
 
 The study compares a Temporal Convolutional Network (TCN) with a matched custom spatio-temporal Graph Convolutional Network (GCN) under a shared pose-window protocol, frozen data splits, and validation-side operating-point fitting. `CAUCAFall` is used as the primary benchmark and deployment-target dataset, `LE2i` provides comparative and transfer-boundary evidence, and `MUVIM` is retained as a secondary exploratory track. Beyond offline comparison, the report evaluates how model outputs are transformed into reviewable alert behaviour through temperature-informed fitting, temporal policy, and bounded replay/runtime validation.
 
@@ -24,7 +24,7 @@ A pose-based approach is attractive in this setting because it offers a compact 
 
 ## Problem Framing
 
-The project is organised around one central question: can a pose-based temporal monitoring stack produce credible fall alerts under a controlled and reviewable protocol without overstating what the available evidence can support? This question is narrower than asking whether fall detection in general is solved, but broader than asking which architecture attains the best offline score.
+The project is organised around one central question: can a pose-based temporal monitoring stack produce credible fall alerts under a controlled and reviewable protocol without overstating what the available evidence can support? This project is an end-to-end pose-based fall-detection and monitoring system study, supported by controlled model comparison and deployment-oriented evaluation. This question is narrower than asking whether fall detection in general is solved, but broader than asking which architecture attains the best offline score.
 
 In practice, the work sits at the intersection of three linked problems. The first is a model-comparison problem: compare a strong temporal baseline with a matched graph-based alternative under one frozen data and fitting protocol. The second is an alert-policy problem: determine how validation-fitted operating points and temporal rules convert score streams into operational states. The third is a system-integration problem: make monitoring, persistence, review, and caregiver-facing delivery function coherently enough to support bounded deployment claims.
 
@@ -519,13 +519,26 @@ The full report includes this audit and review work because it shows that the pr
 
 This chapter reports the main empirical findings of the project under the defended evidence hierarchy introduced earlier in the report. The results are organised by evidential role rather than by a single flat leaderboard. Frozen offline comparison provides the strongest basis for answering the architecture question. Cross-dataset transfer clarifies limitation boundaries. Operating-point and alert-policy results address how model outputs become deployable behaviour. Replay and runtime evidence then test whether the defended monitoring path remains coherent once it is exercised as software rather than only as an offline benchmark pipeline.
 
-**Headline results.** The strongest defended model line is the `CAUCAFall` TCN under the frozen protocol. Cross-dataset transfer remains asymmetric and does not support broad robustness claims. The preferred runtime preset is `CAUCAFall + TCN + OP-2`, which reaches `23/24 = 0.9583` on the bounded online replay matrix. The uncertainty-aware runtime path is implemented, but it does not improve the fixed replay matrix. Telegram delivery is achieved on the active notification path; SMS and phone-call escalation remain future work.
+**Headline results.** The strongest defended model line is the `CAUCAFall` TCN under the frozen protocol. Cross-dataset transfer remains asymmetric and does not support broad robustness claims. The preferred runtime preset is `CAUCAFall + TCN + OP-2`, but the current bounded replay artifacts show profile-sensitive runtime behaviour rather than one uniformly strongest replay row. The uncertainty-aware runtime path is implemented, but it does not improve the fixed replay matrix. Telegram delivery is achieved on the active notification path; SMS and phone-call escalation remain future work.
 
 ## Offline Comparative Results
 
 The strongest model-comparison evidence in the project comes from the frozen multi-seed offline protocol. This is the correct starting point for the results chapter because it is the least contaminated by deployment-side interpretation and the most directly aligned with the architecture-comparison question posed in `RQ1`.
 
-Under the primary `CAUCAFall` protocol, the TCN shows higher mean `F1`, `Recall`, and `AP` than the matched custom GCN, while both models retain `FA24h = 0.0` under the frozen reporting contract. This is an important result because it shows that the TCN advantage is not obtained simply by exchanging recall for alert noise on the primary deployment-target dataset. It indicates a cleaner in-domain operating region for the TCN under the locked protocol.
+Under the primary `CAUCAFall` protocol, the TCN shows higher mean `F1`, `Recall`, and `AP` than the matched custom GCN, while both models retain `FA24h = 0.0` under the frozen reporting contract. On the current branch, the five preserved `OP2` summaries yield mean `F1=0.8611`, mean recall `0.7600`, and mean `AP=0.9819` for the TCN, versus mean `F1=0.5873`, mean recall `0.4400`, and mean `AP=0.9706` for the matched GCN. This matters because it shows that the TCN advantage is not bought by accepting extra false-alert burden on the primary deployment-target dataset.
+
+**Table 2. Main defended results synthesis**
+
+| Dataset / setting | Model / profile | Main defended finding | Interpretation | Artifact anchor |
+| --- | --- | --- | --- | --- |
+| `CAUCAFall`, five-seed frozen stability summary | `TCN`, `OP2` across `s1337, s17, s2025, s33724876, s42` | mean `F1=0.8611`, mean recall `0.7600`, mean `AP=0.9819`, `FA24h=0.0` in all five locked summaries | strongest current offline model line on the primary dataset | `outputs/metrics/tcn_caucafall_stb_s*.json` |
+| `CAUCAFall`, five-seed frozen stability summary | `GCN`, `OP2` across `s1337, s17, s2025, s33724876, s42` | mean `F1=0.5873`, mean recall `0.4400`, mean `AP=0.9706`, `FA24h=0.0` in all five locked summaries | supports a cautious directional TCN advantage on the primary dataset | `outputs/metrics/gcn_caucafall_stb_s*.json` |
+| `LE2i`, five-seed frozen stability summary | `TCN`, `OP2` | `F1=0.8235`, recall `0.7778`, `FA24h=581.5843`, mean `AP=0.8389` | stronger in-domain `LE2i` result than matched GCN | `outputs/metrics/tcn_le2i_stb_s*.json` |
+| `LE2i`, five-seed frozen stability summary | `GCN`, `OP2` | `F1=0.7500`, recall `0.6667`, `FA24h=581.5843`, mean `AP=0.7471` | confirms the TCN remains directionally stronger in the secondary in-domain comparison | `outputs/metrics/gcn_le2i_stb_s*.json` |
+| Cross-dataset, `CAUCAFall -> LE2i` | `TCN`, frozen `OP2` | `F1=0.0`, recall `0.0`, `FA24h=1163.1686` | severe transfer collapse when the primary-dataset TCN profile is moved onto `LE2i` | `outputs/metrics/cross_tcn_caucafall_r2_train_hneg_to_le2i_frozen_20260409.json` |
+| Cross-dataset, `CAUCAFall -> LE2i` | `GCN`, frozen `OP2` | `F1=0.7778`, recall `0.7778`, `FA24h=1163.1686` | transfer degradation is not uniform across models; cross-dataset interpretation must stay bounded and specific | `outputs/metrics/cross_gcn_caucafall_r2_recallpush_b_to_le2i_frozen_20260409.json` |
+| Cross-dataset, `LE2i -> CAUCAFall` | `TCN`, frozen `OP2` | `F1=1.0`, recall `1.0`, `FA24h=0.0` | reverse transfer is materially less damaging than the `CAUCAFall -> LE2i` direction | `outputs/metrics/cross_tcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json` |
+| Cross-dataset, `LE2i -> CAUCAFall` | `GCN`, frozen `OP2` | `F1=1.0`, recall `1.0`, `FA24h=0.0` | further supports an asymmetric transfer boundary rather than a single generalisation story | `outputs/metrics/cross_gcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json` |
 
 **Figure 5. Offline stability comparison across frozen candidates**
 
@@ -538,7 +551,7 @@ Figure 5 is useful because it makes three points visible at once. First, the TCN
 
 The `LE2i` in-domain comparison remains important, but it functions as comparative evidence rather than as the anchor of the main defended system claim. Under the frozen protocol, the TCN still trends stronger than the GCN on `LE2i`, although both models show substantially higher alert-rate burden than on `CAUCAFall`. This supports the report’s broader argument that `LE2i` is essential as boundary evidence even though it is not the main deployment-facing benchmark.
 
-The significance analysis should also constrain the language used in this chapter. The current seed budget supports a cautious directional claim rather than a definitive universal claim of architectural superiority. The strongest defensible conclusion is therefore that the TCN trends stronger than the matched GCN under the frozen protocol, especially on `CAUCAFall`, not that graph-based alternatives are categorically inferior in all settings.
+The inferential interpretation should also constrain the language used in this chapter. The current branch preserves the five-seed frozen summaries but not the older standalone significance bundle, so the strongest defensible conclusion is directional rather than definitive: the TCN trends stronger than the matched GCN under the frozen protocol, especially on `CAUCAFall`, but this should not be phrased as a conclusive universal superiority result.
 
 Taken together, the offline results support three main conclusions. First, the cleanest comparative story is on `CAUCAFall`. Second, the TCN advantage survives frozen multi-seed comparison rather than depending on one convenient run. Third, the appropriate interpretation remains directional and bounded. This gives the chapter a disciplined empirical base before the argument moves into transfer, policy, and runtime behaviour.
 
@@ -547,6 +560,8 @@ Taken together, the offline results support three main conclusions. First, the c
 Cross-dataset evaluation provides some of the strongest limitation evidence in the project. Rather than demonstrating broad robustness, these results show where transfer breaks and how metric behaviour changes when training and evaluation domains no longer match.
 
 The most important finding is that transfer is asymmetric. The `CAUCAFall -> LE2i` direction remains a strong limitation boundary. For the TCN, event-level `F1` and `Recall` collapse to `0.0` even while `AP` remains non-zero. This is methodologically important because it shows that score ranking quality and final event behaviour can diverge sharply under domain shift. The GCN produces a different but not stronger pattern: event-level recall and `F1` partially recover in the transfer direction, but this recovery is accompanied by a poor false-alert profile, so the result does not translate into a clean operational success story.
+
+The new targeted failure analysis makes this boundary more specific rather than merely more emphatic. On the frozen `CAUCAFall -> LE2i` transfer surface, the TCN failure mode is dominated by missed-fall collapse (`TP=2`, `FP=0`, `FN=7`, `TN=4`), whereas the matched GCN recovers more event hits only by becoming far less selective (`TP=7`, `FP=2`, `FN=2`, `TN=2`) and by producing extremely large false-alert rates on the negative clips. This means the cross-dataset limitation is not a generic “performance drop.” It is a trade-off shift in which one family collapses into false negatives while the other recovers recall only by inflating alert noise. That is a stronger limitation claim than a single aggregate `F1` delta because it identifies the actual failure structure. The derived note and figures are preserved in [TARGETED_FAILURE_ANALYSIS_2026-04-27.md](docs/reports/notes/TARGETED_FAILURE_ANALYSIS_2026-04-27.md), [cross_tcn_caucafall_to_le2i_failure_box.png](artifacts/figures/report/cross_tcn_caucafall_to_le2i_failure_box.png), and [cross_gcn_caucafall_to_le2i_failure_box.png](artifacts/figures/report/cross_gcn_caucafall_to_le2i_failure_box.png).
 
 **Figure 6. Cross-dataset transfer summary**
 
@@ -583,19 +598,27 @@ More broadly, these findings show that alert-policy behaviour is not just a down
 
 Deployment evidence in this project is strongest in bounded replay and delivery-style validation. This layer is valuable, but it remains distinct from the formal offline benchmark layer. Its purpose is to test whether the defended monitoring path remains coherent when exercised as software.
 
-The most important runtime result is the bounded `24`-clip online replay matrix. This matrix evaluates the fixed raw online replay path across dataset-model-operating-point combinations under one runtime surface. The strongest row is `CAUCAFall + TCN + OP-2` at `23/24 = 0.9583`, which is why this combination is used as the preferred live demo preset. This is a strong bounded runtime result because it shows that one fitted profile remains effective after the transition from offline evaluation to the integrated replay path.
+The most important runtime result is not a single triumphant replay number, but the fact that the bounded replay surface exposes meaningful profile-sensitive behaviour. The canonical replay summary preserved under `artifacts/ops_delivery_verify_20260315/online_replay_summary.json` shows that `caucafall_tcn OP-1` reaches `accuracy=1.0`, `recall=1.0`, and `specificity=1.0` on a bounded 10-video replay check, while `caucafall_tcn OP-2` drops to `accuracy=0.5`, `recall=0.0`, and `specificity=1.0` on that same surface. The aligned 24-clip custom replay trace is also bounded rather than uniformly strong: the defended baseline `tcn_caucafall_locked_op2` path yields `15/24` correct video-level outcomes (`TP=5`, `TN=10`, `FP=2`, `FN=7`), while `gcn_caucafall_locked_op2` yields `12/24` (`TP=12`, `TN=0`, `FP=12`, `FN=0`). The safe report-level interpretation is therefore not “one row wins everywhere,” but “runtime behaviour is real, bounded, and policy-shaped.”
 
-**Table 2. Results synthesis by evidence layer**
+The newer custom replay breakdown clarifies the trade-off structure inside those totals. `TCN + OP-2` is comparatively selective on the ADL folders, but it misses a substantial subset of fall clips, especially in the `kitchen` and part of the `corridor` set. `TCN + OP-1` recovers more fall hits on the same custom surface, but does so by sharply increasing ADL false alarms. The matched `GCN + OP-2` profile is more extreme still: it captures all positive folders while also collapsing both ADL folders into false alarms. In other words, the preferred `TCN + OP-2` preset is best understood as a bounded selectivity-versus-miss trade-off, not as a universally strongest replay line. This runtime-side error analysis is preserved in [CUSTOM_REPLAY_RUNTIME_ANALYSIS_2026-04-27.md](docs/reports/notes/CUSTOM_REPLAY_RUNTIME_ANALYSIS_2026-04-27.md) and [custom_replay_profile_breakdown_2026-04-27.csv](docs/reports/notes/custom_replay_profile_breakdown_2026-04-27.csv).
 
-| Evidence layer | Strongest defended conclusion | Main boundary |
-| --- | --- | --- |
-| frozen offline comparison | TCN trends stronger than the matched GCN under the primary locked protocol | current seed budget supports cautious directional language rather than maximal significance claims |
-| cross-dataset transfer | transfer is asymmetric and `CAUCAFall -> LE2i` remains a strong limitation boundary | no basis for broad cross-domain robustness claims |
-| operating-point fitting | deployable behaviour is materially shaped by fitted policy profiles rather than raw score ranking alone | fitted policy quality depends on validation-side contract discipline |
-| bounded replay runtime | `CAUCAFall + TCN + OP-2` provides the strongest defended runtime row | replay remains system evidence, not field validation |
-| delivery path | persisted incidents can reach caregiver-facing Telegram delivery under the defended path | delivery success is not a substitute for stronger detection evidence |
+The project-strengthening retraining track slightly improves this runtime picture without changing its bounded interpretation. A recall-oriented continuation of the `CAUCAFall + TCN` line (`Candidate A`) improves the canonical four-folder replay check from `13/24` to `16/24` and the historical locked 24-clip surface from `15/24` to `16/24`, both without increasing ADL false positives. A second continuation run (`Candidate D`) reaches the same bounded runtime outcome. These are useful gains because they show that retraining can reduce false negatives on the defended custom surfaces, but they remain modest rather than decisive, and both candidates still required a confirm-disabled fallback during `fit_ops`. The strengthening artifacts are preserved in [CANDIDATE_A_RUNTIME_EVAL_2026-04-27.md](docs/reports/notes/CANDIDATE_A_RUNTIME_EVAL_2026-04-27.md), [CANDIDATE_A_LOCKED_SURFACE_EVAL_2026-04-27.md](docs/reports/notes/CANDIDATE_A_LOCKED_SURFACE_EVAL_2026-04-27.md), [CANDIDATE_D_RUNTIME_EVAL_2026-04-27.md](docs/reports/notes/CANDIDATE_D_RUNTIME_EVAL_2026-04-27.md), and [candidate_ad_runtime_surface_compare_2026-04-27.csv](docs/reports/notes/candidate_ad_runtime_surface_compare_2026-04-27.csv).
 
-This synthesis table is useful because the results chapter combines several different kinds of evidence. Presenting them together without distinction would make the chapter easier to read but weaker to defend. The table therefore acts as a compact reminder that each evidence type answers a different question.
+**Table 3. Deployment and runtime evidence synthesis**
+
+| Scenario | Evidence type | Defended finding | Main limitation | Artifact anchor |
+| --- | --- | --- | --- | --- |
+| Canonical replay summary on `ops_delivery_verify_20260315` | replay/runtime summary | `caucafall_tcn OP-1` achieved `accuracy=1.0`, `recall=1.0`, `specificity=1.0` on the bounded `10`-video check | bounded replay evidence, not formal unseen-test evidence | `artifacts/ops_delivery_verify_20260315/online_replay_summary.json` |
+| Same canonical replay summary | replay/runtime summary | `caucafall_tcn OP-2` fell to `accuracy=0.5`, `recall=0.0`, `specificity=1.0` on that same replay surface | shows replay/runtime behaviour is highly profile-sensitive | `artifacts/ops_delivery_verify_20260315/online_replay_summary.json` |
+| Same canonical replay summary | replay/runtime summary | `caucafall_gcn` remained weak across `OP-1` to `OP-3` with `accuracy=0.5`, `recall=0.0`, `specificity=1.0` | runtime replay evidence does not rescue the weaker model line | `artifacts/ops_delivery_verify_20260315/online_replay_summary.json` |
+| Bounded 24-clip custom replay matrix | per-video runtime trace | `tcn_caucafall_locked_op2` produced `15/24` correct video-level outcomes with `TP=5`, `TN=10`, `FP=2`, `FN=7` | more selective than the looser `OP-1` preset, but miss-prone on several fall clips | `artifacts/fall_test_eval_20260315/summary_tcn_caucafall_locked_op2.csv` |
+| Same custom replay surface | per-video runtime trace | `tcn_caucafall_locked_op1` produced `11/24` correct video-level outcomes with `TP=9`, `TN=2`, `FP=10`, `FN=3` | recovers falls by substantially increasing ADL false alarms | `artifacts/fall_test_eval_20260315/summary_tcn_caucafall_locked_op1.csv` |
+| Bounded 24-clip custom replay matrix | per-video runtime trace | `gcn_caucafall_locked_op2` produced `12/24` correct video-level outcomes with `TP=12`, `TN=0`, `FP=12`, `FN=0` | fall capture can coexist with unusable non-fall control on the same replay surface | `artifacts/fall_test_eval_20260315/summary_gcn_caucafall_locked_op2.csv` |
+| Four-folder custom replay runbook | narrative boundary control | the current canonical four-folder profile is bounded and no longer supports any earlier perfect-profile reading | workflow evidence only | `docs/reports/runbooks/FOUR_VIDEO_DELIVERY_PROFILE.md` |
+| Retraining strengthening track | bounded replay improvement evidence | `Candidate A` and `Candidate D` both improve the canonical four-folder replay check to `16/24`; `Candidate A` also improves the defended `15/24` locked-surface line to `16/24` | improvement is modest and both candidates require confirm-disabled `fit_ops` fallback | `docs/reports/notes/CANDIDATE_A_RUNTIME_EVAL_2026-04-27.md`, `docs/reports/notes/CANDIDATE_D_RUNTIME_EVAL_2026-04-27.md` |
+| Realtime evidence pack | live demonstration evidence | the repository contains live-run evidence showing monitor execution and event-history style behaviour under a bounded live path | demonstration evidence only; not broad field validation | `artifacts/evidence/realtime/realtime_fall_submission.mp4`, `artifacts/evidence/realtime/realtime_adl_submission.mp4` |
+
+This deployment synthesis table is useful because it forces the runtime story into a defensible shape. Instead of flattening all system evidence into one “works/does not work” claim, it keeps replay summaries, replay traces, workflow runbooks, and live demos in their proper interpretive roles.
 
 **Figure 7. Online replay accuracy across dataset, model, and operating point**
 
@@ -604,7 +627,7 @@ Asset:
 
 ![Figure 7. Online replay accuracy across dataset, model, and operating point](artifacts/figures/report/online_replay_accuracy_heatmap.png){ width=90% }
 
-Figure 7 makes the runtime story concrete. It shows not only that one profile is strongest, but also that bounded runtime behaviour varies systematically across datasets and operating points. This reinforces one of the main methodological points of the report: runtime evidence is policy-shaped behaviour, not a portable substitute for frozen offline ranking metrics.
+Figure 7 makes the runtime story concrete. It shows not only that runtime behaviour varies systematically across datasets and operating points, but also that the runtime layer should be read as policy-shaped behaviour rather than as a portable substitute for frozen offline ranking metrics.
 
 At the same time, the replay matrix makes the limits of the deployment story visible. `LE2i` remains materially weaker than `CAUCAFall` on the same runtime surface, even after replay/runtime corrections. The uncertainty-aware MC path also fails to improve any of the `12` evaluated combinations at video level, which turns uncertainty handling into a meaningful but currently neutral result rather than a demonstrated deployment gain.
 
@@ -617,7 +640,7 @@ Asset:
 
 Figure 8 is worth retaining because negative deployment results are easy to omit in a shorter manuscript. Here, however, the absence of improvement is itself informative. It shows that the project tested whether a more sophisticated runtime option produced material bounded deployment gain and reported the answer honestly when it did not.
 
-The field-validation sample is weaker still. It is useful as a sign that the system moved beyond purely synthetic or replay-only inputs, but it remains far too small to support broad field-readiness claims. That limitation should remain explicit.
+The field-validation layer is weaker still. On the current branch, there is no stable field-summary artifact strong enough to anchor a field-readiness paragraph. The safe interpretation is only that the system moved beyond purely synthetic inputs into bounded live demonstration evidence.
 
 Finally, the deployment chapter is strongest when read as a coherence chapter rather than as a pure performance chapter. The central question is not only how many clips were handled correctly, but whether the chosen profile survived the full path from monitored input to interpreted state, persisted event, and downstream caregiver-facing delivery. That is the level at which the present project makes its bounded systems contribution.
 
@@ -633,7 +656,7 @@ The current test workflow separates torch-free regression checks, frontend regre
 
 This layered structure strengthens the report in two ways. First, it keeps validation informative even when a particular machine cannot run every torch-backed path reliably. Second, it makes explicit that different parts of the system fail differently and therefore should not be validated as though they carry identical risk.
 
-**Table 3. Canonical test matrix**
+**Table 4. Canonical test matrix**
 
 | Test mode | Purpose | Environment requirement | Current role in validation | Key covered paths |
 | --- | --- | --- | --- | --- |
@@ -642,7 +665,7 @@ This layered structure strengthens the report in two ways. First, it keeps valid
 | `contract` | verify environment-sensitive backend/model contracts that require torch-backed import and execution | stable torch environment | deferred/conditional validation layer | monitor contract checks, selected deploy/runtime ML paths |
 | `monitor` | verify runtime monitor-oriented tests that exercise live/replay path assumptions more directly | stable torch environment | bounded runtime verification layer | monitor runtime service, policy application, event-persistence path |
 
-**Table 4. Examiner-facing test summary**
+**Table 5. Examiner-facing test summary**
 
 | Test area | What was checked | Result in the defended snapshot | Remaining risk |
 | --- | --- | --- | --- |
@@ -650,7 +673,7 @@ This layered structure strengthens the report in two ways. First, it keeps valid
 | frontend monitor behaviour | replay controls, monitor API handling, UI state assumptions, and runtime fallback behaviour | passed on the targeted frontend regression layer | browser performance can still affect realtime demonstration quality |
 | event persistence | realtime fall events, event-history visibility, dashboard/event count semantics, and review status handling | implemented and regression-checked after audit fixes | replay mode is intentionally visual-only and does not create event history records |
 | notification delivery | Telegram-first delivery path, notification audit semantics, and caregiver-facing message generation | implemented and verified on the active delivery path | SMS and phone-call escalation are not part of the final implemented claim |
-| replay/runtime validation | bounded replay matrix and preferred runtime preset behaviour | strongest row is `CAUCAFall + TCN + OP-2` under the fixed replay surface | replay evidence remains controlled system evidence, not broad field validation |
+| replay/runtime validation | bounded replay matrix, preferred runtime preset behaviour, and retraining improvement checks | baseline bounded replay remained mixed, while the strengthening track improved the defended TCN custom surfaces modestly without worsening ADL false positives | replay evidence remains controlled system evidence, not broad field validation |
 | release/readiness checks | frontend production build, canonical test entrypoints, and release-boundary scripts | used as final software-artifact readiness checks | raw-dataset reproduction remains outside the default review path |
 
 ## Replay and Runtime Validation
@@ -663,23 +686,23 @@ Live demonstration evidence should be interpreted in the same bounded way. A suc
 
 **Figure 9. Runtime evidence panel**
 
-The active runtime-evidence panel is captured under the defended demo preset `CAUCAFall + TCN + OP-2`. The live monitor state and caregiver-facing Telegram delivery are shown together because both were visible on the same display during realtime recording. The persisted Event History record is shown separately for the same incident chain.
+The active runtime-evidence panel is illustrated here with representative interface captures drawn from the defended monitor path. The monitor screenshot shows the live runtime surface used to inspect prediction state, timeline behaviour, and active model/profile metadata. The Event History screenshot shows the review surface used to inspect persisted event records separately from the live monitor.
 
 Active evidence assets:
-- [fall_monitor.png](artifacts/evidence/realtime/fall_monitor.png)
-- [fall_history.png](artifacts/evidence/realtime/fall_history.png)
+- [hifi_live_monitor.png](artifacts/figures/report/appendix/hifi_live_monitor.png)
+- [hifi_event_history.png](artifacts/figures/report/appendix/hifi_event_history.png)
 
-![Figure 9a. Live monitor and Telegram delivery for the defended demo preset](artifacts/evidence/realtime/fall_monitor.png){ width=92% }
+![Figure 9a. Representative live monitor capture for the defended runtime path](artifacts/figures/report/appendix/hifi_live_monitor.png){ width=92% }
 
-![Figure 9b. Event History record for the same runtime incident](artifacts/evidence/realtime/fall_history.png){ width=92% }
+![Figure 9b. Representative Event History capture for the defended review path](artifacts/figures/report/appendix/hifi_event_history.png){ width=92% }
 
 Supplementary videos:
 - `Supplementary Video S1`: [realtime_fall_submission.mp4](artifacts/evidence/realtime/realtime_fall_submission.mp4)
 - `Supplementary Video S2`: [realtime_adl_submission.mp4](artifacts/evidence/realtime/realtime_adl_submission.mp4)
 
-Figure 9 provides bounded systems evidence. It shows that the integrated path can detect, persist, and deliver under the defended runtime preset, but it does not add new statistical authority beyond the replay and offline chapters.
+Figure 9 provides bounded interface-level systems evidence. It shows that the defended artifact includes a monitor surface for runtime interpretation and a review surface for persisted events, but it does not add new statistical authority beyond the replay and offline chapters.
 
-**Table 5. Validation-interpretation matrix**
+**Table 6. Validation-interpretation matrix**
 
 | Validation surface | What it can support | What it cannot support on its own |
 | --- | --- | --- |
@@ -697,7 +720,7 @@ The full-stack audit and later code-review pass form a substantive part of the d
 
 The most important findings were cross-layer rather than cosmetic. They included evidence-chain drift, replay/runtime truth-source mismatch, frontend/backend fallback inconsistency, and ambiguity around persisted event semantics. These were significant because the project’s most serious risks often lived between modules and evidence layers rather than inside one isolated function. The remediation work therefore materially strengthened the report’s credibility by aligning code paths more closely with the claims made about them.
 
-**Table 6. Issue-to-fix summary**
+**Table 7. Issue-to-fix summary**
 
 | Symptom or risk | Root cause | Fix or control | Evidence of improvement |
 | --- | --- | --- | --- |
@@ -718,7 +741,7 @@ Freeze and handoff work clarified which artifacts belong to the active evidence 
 
 The report’s main objectives and requirements can be summarised directly as follows.
 
-**Table 7. Objectives and requirements revisited**
+**Table 8. Objectives and requirements revisited**
 
 | Objective or requirement | Status | Main evidence | Boundary or limitation |
 | --- | --- | --- | --- |
@@ -797,7 +820,7 @@ Project management also became a form of technical risk control. As the codebase
 
 This is why the later phases of the project included not just coding and experimentation, but freeze control, code review, audit, artifact allowlists, and canonical test entrypoints. Some risks could only be controlled once several artifacts existed at once: evidence drift becomes visible when figures, results text, and active artifacts coexist, while runtime semantic drift becomes visible when monitor UI, persistence, and delivery are all active.
 
-**Table 5. Project risk-control matrix**
+**Table 9. Project risk-control matrix**
 
 | Risk class | Typical manifestation | Control mechanism | Final status |
 | --- | --- | --- | --- |
@@ -854,7 +877,7 @@ The deeper lesson is that policy fitting changes the unit of success. Once the p
 
 ## Answer to RQ3
 
-`RQ3` asked what replay deployment evidence and limited realtime validation reveal about practical feasibility and runtime limits. The answer is mixed but meaningful. The system is strong enough to support a bounded practical deployment claim under replay-oriented conditions, especially for `CAUCAFall + TCN + OP-2`. At the same time, the runtime evidence shows that deployment behaviour is not uniform across datasets, that field evidence remains sparse, and that the current uncertainty-aware path does not improve the bounded replay matrix.
+`RQ3` asked what replay deployment evidence and limited realtime validation reveal about practical feasibility and runtime limits. The answer is mixed but meaningful. The system is strong enough to support a bounded practical deployment claim under replay-oriented and live-demo conditions, but the current branch evidence also shows that runtime behaviour is highly profile-sensitive. The canonical replay summary, the 24-clip custom replay trace, and the live evidence pack collectively show that the monitor path is real and reviewable, while also showing that runtime success is not uniform across operating points or datasets and that the current uncertainty-aware path does not improve the bounded replay matrix.
 
 The correct interpretation is therefore practical feasibility in controlled settings rather than broad deployment closure. This is a valuable answer because it captures the actual maturity level of the artifact. The project is neither a pure benchmark script nor a field-validated product. It occupies the middle ground of a research-led monitoring system whose strongest claims concern coherence, traceability, and bounded operational credibility.
 
@@ -874,7 +897,7 @@ The second limitation is generalisation. Cross-dataset transfer remains asymmetr
 
 The third limitation is systems-dependent measurement quality. Because the monitoring path depends on browser-side pose extraction, degradation in skeleton quality can propagate directly into backend behaviour. Some runtime failure modes are therefore caused by system interactions rather than by model weights alone.
 
-The fourth limitation is deployment closure. Replay evidence is materially stronger than field evidence, and the current field-validation pack remains too small to support broad real-world deployment claims. This is why the report repeatedly frames deployment support as bounded.
+The fourth limitation is deployment closure. Replay evidence is materially stronger than field evidence, and the current branch no longer carries a stable field-summary pack strong enough to support broad real-world deployment claims. This is why the report repeatedly frames deployment support as bounded.
 
 The fifth limitation is uncertainty interpretation. The uncertainty-aware runtime path is implemented and methodologically meaningful, but the current bounded replay matrix does not show a deployment gain from enabling it.
 
@@ -994,9 +1017,9 @@ This table makes the freeze logic explicit inside the report. It tells the reade
 
 | Claim layer | Primary source type | Typical traced artifact | Why the lineage matters |
 | --- | --- | --- | --- |
-| model comparison | frozen metrics summaries and seed-comparison artifacts | `artifacts/reports/stability_summary.csv`, `outputs/metrics/*locked.json` | supports comparative claims without runtime conflation |
+| model comparison | frozen metrics summaries and seed-comparison artifacts | `outputs/metrics/*stb_*.json`, `outputs/metrics/*locked.json` | supports comparative claims without runtime conflation |
 | policy interpretation | fitted operating-point files and policy sweeps | `ops/configs/ops/*.yaml`, saved sweep JSON files | links threshold/policy prose to tracked deployable profiles |
-| runtime interpretation | replay matrices, runtime figures, persisted event path | `artifacts/reports/online_*`, monitor/event route behaviour | supports bounded deployment/system claims |
+| runtime interpretation | replay matrices, runtime figures, persisted event path | `artifacts/ops_delivery_verify_20260315/online_replay_summary.json`, `artifacts/fall_test_eval_20260315/summary_*.csv`, monitor/event route behaviour | supports bounded deployment/system claims |
 | delivery evidence | Telegram delivery audit and event-linked notification path | delivery audit store, runtime screenshots, notification tests | shows that persisted incidents can reach caregiver-facing output |
 | repository defensibility | audit, freeze, and review-control documents | freeze manifests, code-review summaries, audit reports | explains why the final submission state is trustworthy |
 
@@ -1327,7 +1350,9 @@ make -B repro-best-gcn-le2i-paper
 **Figure regeneration**
 
 ```bash
-python3 ops/scripts/plot_cross_dataset_transfer.py --summary_csv artifacts/reports/cross_dataset_summary.csv --out_fig artifacts/figures/report/cross_dataset_transfer_summary.png
+# regenerate the branch-local cross-dataset summary CSV from the frozen eval JSON files
+python3 ops/scripts/build_cross_dataset_summary.py --manifest docs/reports/notes/cross_dataset_manifest_2026-04-27.json --out_csv docs/reports/notes/cross_dataset_summary_2026-04-27.csv
+python3 ops/scripts/plot_cross_dataset_transfer.py --summary_csv docs/reports/notes/cross_dataset_summary_2026-04-27.csv --out_fig artifacts/figures/report/cross_dataset_transfer_summary.png
 ```
 
 The key value of this appendix is not convenience alone. It demonstrates that the final report remains tied to executable paths in the repository rather than to one-off undocumented manual steps.

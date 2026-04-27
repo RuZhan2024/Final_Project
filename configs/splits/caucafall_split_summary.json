@@ -1,0 +1,49 @@
+{
+  "labels_json": "configs/labels/caucafall.json",
+  "prefix": "caucafall",
+  "seed": 33724876,
+  "fractions": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+  },
+  "grouping": {
+    "mode": "caucafall_subject",
+    "regex": null,
+    "group_json": null,
+    "balance_by": "groups"
+  },
+  "counts": {
+    "total": 100,
+    "train": 80,
+    "val": 10,
+    "test": 10
+  },
+  "class_counts_total": {
+    "0": 50,
+    "1": 50
+  },
+  "class_counts_train": {
+    "0": 40,
+    "1": 40
+  },
+  "class_counts_val": {
+    "0": 5,
+    "1": 5
+  },
+  "class_counts_test": {
+    "0": 5,
+    "1": 5
+  },
+  "groups": {
+    "total_groups": 10,
+    "groups_by_class": {
+      "1": 10
+    }
+  },
+  "files": {
+    "train": "configs/splits/caucafall_train.txt",
+    "val": "configs/splits/caucafall_val.txt",
+    "test": "configs/splits/caucafall_test.txt"
+  }
+}

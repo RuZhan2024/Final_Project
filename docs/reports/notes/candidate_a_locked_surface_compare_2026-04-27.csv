@@ -1,0 +1,3 @@
+profile,tp,tn,fp,fn,correct,total,notes
+baseline_tcn_caucafall_locked_op2,5,10,2,7,15,24,existing bounded 24-clip custom replay artifact
+candidate_a_tcn_caucafall_locked_surface_op2,6,10,2,6,16,24,same windows_dir with Candidate A checkpoint and refit ops

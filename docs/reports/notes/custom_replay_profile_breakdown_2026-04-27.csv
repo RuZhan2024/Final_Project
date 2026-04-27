@@ -1,0 +1,13 @@
+profile,folder,TP,FP,FN,TN
+tcn_caucafall_op2,corridor,3,0,3,0
+tcn_caucafall_op2,corridor_adl,0,0,0,6
+tcn_caucafall_op2,kitchen,2,0,4,0
+tcn_caucafall_op2,kitchen_adl,0,2,0,4
+tcn_caucafall_op1,corridor,6,0,0,0
+tcn_caucafall_op1,corridor_adl,0,5,0,1
+tcn_caucafall_op1,kitchen,3,0,3,0
+tcn_caucafall_op1,kitchen_adl,0,5,0,1
+gcn_caucafall_op2,corridor,6,0,0,0
+gcn_caucafall_op2,corridor_adl,0,6,0,0
+gcn_caucafall_op2,kitchen,6,0,0,0
+gcn_caucafall_op2,kitchen_adl,0,6,0,0
