@@ -22,6 +22,8 @@ applications/backend/event_clips/
 *.pt
 outputs/
 data/
+!ml/src/fall_detection/data/
+!ml/src/fall_detection/data/**/*.py
 .mplcache/
 /tmp/fall_detection_backend.log
 apps/build/
