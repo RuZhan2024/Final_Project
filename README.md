@@ -7,6 +7,9 @@ and presenting the result through a monitoring interface.
 
 ## Quick Links
 
+- GitHub repository: project source repository for record-keeping and marking
+  [Open GitHub repository](https://github.com/RuZhan2024/Final_Project)
+- Final tagged snapshot: `assignment3-final`
 - Live project: deployed web app for interactive evaluation
   [Open live project](https://fall-detection-frontend.onrender.com/)
 - Recorded demo: short walkthrough video of the deployed system
