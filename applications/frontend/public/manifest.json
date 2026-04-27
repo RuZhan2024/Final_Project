@@ -1,0 +1,20 @@
+{
+  "short_name": "Safe Guard",
+  "name": "Safe Guard Fall Detection",
+  "icons": [
+    {
+      "src": "logo_dark.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo_dark.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}

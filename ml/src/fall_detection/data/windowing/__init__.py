@@ -1,0 +1,1 @@
+"""Windowing namespace scaffold."""

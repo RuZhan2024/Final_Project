@@ -6,10 +6,14 @@ __pycache__/
 .coverage
 coverage.xml
 apps/node_modules/
+applications/frontend/node_modules/
 .make/
 .mypy_cache/
 .pytest_cache/
 server/*.sqlite3
+server/event_clips/
+applications/backend/*.sqlite3
+applications/backend/event_clips/
 *.mp4
 *.avi
 *.mov
@@ -18,9 +22,12 @@ server/*.sqlite3
 *.pt
 outputs/
 data/
+!ml/src/fall_detection/data/
+!ml/src/fall_detection/data/**/*.py
 .mplcache/
 /tmp/fall_detection_backend.log
 apps/build/
+applications/frontend/build/
 artifacts/figures/plots/
 artifacts/fall_side_corridor_eval_20260315/
 artifacts/fall_test_eval_20260315/
