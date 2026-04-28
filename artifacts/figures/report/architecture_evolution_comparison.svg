@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="720" viewBox="0 0 1400 720" role="img" aria-labelledby="title desc">
+  <title id="title">Architecture Evolution Comparison</title>
+  <desc id="desc">Comparison between the proposal-stage tiered architecture and the final contract-oriented architecture.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f4ed; }
+      .panel { fill: #fffdf8; stroke: #493b2a; stroke-width: 2.5; rx: 18; ry: 18; }
+      .boxA { fill: #efe4c9; stroke: #6f5b3e; stroke-width: 2; rx: 12; ry: 12; }
+      .boxB { fill: #d8eadf; stroke: #45624f; stroke-width: 2; rx: 12; ry: 12; }
+      .boxC { fill: #dbe8f3; stroke: #47627d; stroke-width: 2; rx: 12; ry: 12; }
+      .head { font: 700 28px Georgia, 'Times New Roman', serif; fill: #241d14; }
+      .sub { font: 600 18px Georgia, 'Times New Roman', serif; fill: #3f3326; }
+      .txt { font: 16px Georgia, 'Times New Roman', serif; fill: #2e261b; }
+      .small { font: 14px Georgia, 'Times New Roman', serif; fill: #4a3d2f; }
+      .arrow { stroke: #5a4b38; stroke-width: 3; fill: none; marker-end: url(#m); }
+    </style>
+    <marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a4b38"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="720"/>
+
+  <text class="head" x="700" y="52" text-anchor="middle">From Proposal-Tiered Design to Final Contract-Oriented Architecture</text>
+
+  <rect class="panel" x="50" y="90" width="610" height="580"/>
+  <rect class="panel" x="740" y="90" width="610" height="580"/>
+
+  <text class="head" x="355" y="130" text-anchor="middle">Proposal-Stage View</text>
+  <text class="sub" x="355" y="158" text-anchor="middle">broad tiers, early intent, weaker operational semantics</text>
+
+  <rect class="boxA" x="180" y="200" width="350" height="78"/>
+  <text class="sub" x="355" y="232" text-anchor="middle">Presentation / Interface Tier</text>
+  <text class="small" x="355" y="258" text-anchor="middle">dashboard, monitor, history, settings as one visible surface</text>
+
+  <rect class="boxA" x="180" y="326" width="350" height="86"/>
+  <text class="sub" x="355" y="358" text-anchor="middle">Application Logic Tier</text>
+  <text class="small" x="355" y="384" text-anchor="middle">pose processing, detection, policy, data flow grouped together</text>
+
+  <rect class="boxA" x="180" y="462" width="350" height="86"/>
+  <text class="sub" x="355" y="494" text-anchor="middle">Storage / Communication Tier</text>
+  <text class="small" x="355" y="520" text-anchor="middle">history, notification, records, and persistence still loosely coupled</text>
+
+  <path class="arrow" d="M355 278 L355 326"/>
+  <path class="arrow" d="M355 412 L355 462"/>
+
+  <text class="txt" x="355" y="610" text-anchor="middle">Useful for initial planning, but weak at distinguishing</text>
+  <text class="txt" x="355" y="634" text-anchor="middle">transient monitor state, persisted event state, and delivery truth.</text>
+
+  <text class="head" x="1045" y="130" text-anchor="middle">Final Architecture</text>
+  <text class="sub" x="1045" y="158" text-anchor="middle">explicit contracts, clearer truth sources, reviewable state transitions</text>
+
+  <rect class="boxC" x="815" y="192" width="460" height="74"/>
+  <text class="sub" x="1045" y="222" text-anchor="middle">Browser-side pose extraction and window production</text>
+  <text class="small" x="1045" y="246" text-anchor="middle">live preview, replay control, dataset-aware timing, explicit persistence choice</text>
+
+  <rect class="boxB" x="815" y="300" width="460" height="74"/>
+  <text class="sub" x="1045" y="330" text-anchor="middle">Backend inference and policy interpretation</text>
+  <text class="small" x="1045" y="354" text-anchor="middle">active profile resolution, operating-point policy, monitor-state interpretation</text>
+
+  <rect class="boxC" x="815" y="408" width="460" height="74"/>
+  <text class="sub" x="1045" y="438" text-anchor="middle">Persistence, dashboard, and event-history layer</text>
+  <text class="small" x="1045" y="462" text-anchor="middle">stable event type/status semantics, reviewable incident records, summary counts</text>
+
+  <rect class="boxB" x="815" y="516" width="460" height="74"/>
+  <text class="sub" x="1045" y="546" text-anchor="middle">Delivery and audit layer</text>
+  <text class="small" x="1045" y="570" text-anchor="middle">Telegram delivery, delivery audit store, defended notification truth source</text>
+
+  <path class="arrow" d="M1045 266 L1045 300"/>
+  <path class="arrow" d="M1045 374 L1045 408"/>
+  <path class="arrow" d="M1045 482 L1045 516"/>
+
+  <text class="txt" x="1045" y="628" text-anchor="middle">The final system is not merely more modular; it is more defensible.</text>
+  <text class="txt" x="1045" y="652" text-anchor="middle">Each layer now maps more cleanly onto evidence, review, and runtime claims.</text>
+</svg>

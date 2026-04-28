@@ -1,0 +1,24 @@
+{
+  "pairs": [
+    {
+      "label": "LE2i -> CAUCAFall (TCN)",
+      "in_domain": "outputs/metrics/tcn_le2i_stb_s17.json",
+      "cross": "outputs/metrics/cross_tcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json"
+    },
+    {
+      "label": "CAUCAFall -> LE2i (TCN)",
+      "in_domain": "outputs/metrics/tcn_caucafall_stb_s17.json",
+      "cross": "outputs/metrics/cross_tcn_caucafall_r2_train_hneg_to_le2i_frozen_20260409.json"
+    },
+    {
+      "label": "LE2i -> CAUCAFall (GCN)",
+      "in_domain": "outputs/metrics/gcn_le2i_stb_s17.json",
+      "cross": "outputs/metrics/cross_gcn_le2i_opt33_r2_to_caucafall_frozen_20260409.json"
+    },
+    {
+      "label": "CAUCAFall -> LE2i (GCN)",
+      "in_domain": "outputs/metrics/gcn_caucafall_stb_s17.json",
+      "cross": "outputs/metrics/cross_gcn_caucafall_r2_recallpush_b_to_le2i_frozen_20260409.json"
+    }
+  ]
+}

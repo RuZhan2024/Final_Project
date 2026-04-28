@@ -1,0 +1,3 @@
+profile,tp,tn,fp,fn,correct,total,notes
+baseline_tcn_caucafall_op2,3,10,2,9,13,24,current canonical four-folder profile using ops/configs/ops/tcn_caucafall.yaml
+candidate_a_tcn_caucafall_op2,6,10,2,6,16,24,refit ops on outputs/caucafall_tcn_W48S12_rtA_hneg_union_recall/best.pt

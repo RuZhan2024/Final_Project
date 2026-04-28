@@ -1,0 +1,33 @@
+{
+  "n_videos": 24,
+  "n_true_fall": 12,
+  "n_true_nonfall": 12,
+  "tp": 6,
+  "tn": 10,
+  "fp": 2,
+  "fn": 6,
+  "alert_cfg": {
+    "ema_alpha": 0.2,
+    "k": 2,
+    "n": 3,
+    "tau_high": 0.8199999928474426,
+    "tau_low": 0.6395999789237976,
+    "cooldown_s": 30.0,
+    "confirm": false,
+    "confirm_s": 2.0,
+    "confirm_min_lying": 0.65,
+    "confirm_max_motion": 0.08,
+    "confirm_require_low": true,
+    "start_guard_max_lying": null,
+    "start_guard_prefixes": null
+  },
+  "delivery_gate": {
+    "gate_max_lying": -1.0,
+    "gate_min_mean_motion_high": -1.0,
+    "gate_max_event_start_s": -1.0
+  },
+  "config_yaml": "",
+  "ops_yaml": "configs/ops/tcn_caucafall_rtD_hneg_plus_continue.yaml",
+  "op_code": "OP2",
+  "checkpoint": "/Users/ruzhan/computer_science/Goldsmiths/Final_Project/fall_detection_v2/outputs/caucafall_tcn_W48S12_rtD_hneg_plus_continue/best.pt"
+}

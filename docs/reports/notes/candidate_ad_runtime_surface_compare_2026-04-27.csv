@@ -1,0 +1,7 @@
+surface,profile,tp,tn,fp,fn,correct,total
+locked_24clip,baseline_tcn_locked_op2,5,10,2,7,15,24
+locked_24clip,candidateA_rtA_op2,6,10,2,6,16,24
+locked_24clip,candidateD_rtD_op2,6,10,2,6,16,24
+canonical_four_folder,baseline_tcn_op2,3,10,2,9,13,24
+canonical_four_folder,candidateA_rtA_op2,6,10,2,6,16,24
+canonical_four_folder,candidateD_rtD_op2,6,10,2,6,16,24
