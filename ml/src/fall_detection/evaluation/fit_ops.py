@@ -447,7 +447,7 @@ class WindowDirDataset(Dataset):
             motion_score=float(ms),
         )
 
-        if self.arch == "gcn":
+        if self.arch in {"gcn", "ctr_gcn"}:
             if self.two_stream:
                 xj, xm = split_gcn_two_stream(X, self.feat_cfg)
                 return (
@@ -495,7 +495,7 @@ def infer_logits(
     metas_all: List[MetaRow] = []
 
     for batch in tqdm(loader, desc="infer", leave=False):
-        if arch == "gcn" and two_stream:
+        if arch in {"gcn", "ctr_gcn"} and two_stream:
             xj, xm, yb, meta = batch
             xj = xj.to(device).float()
             xm = xm.to(device).float()
@@ -603,7 +603,7 @@ def _override_feat_cfg(base: FeatCfg, args: argparse.Namespace) -> FeatCfg:
 def main() -> None:
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--arch", type=str, required=True, choices=["tcn", "gcn"])
+    ap.add_argument("--arch", type=str, required=True, choices=["tcn", "gcn", "ctr_gcn"])
     ap.add_argument("--val_dir", type=str, required=True)
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--out", type=str, required=True)

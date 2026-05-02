@@ -24,6 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from .ctr_gcn import CTRGCN, CTRGCNConfig
+
 # ---------------------------
 # Config normalisation
 # ---------------------------
@@ -633,6 +635,8 @@ def infer_input_dims(
         return out
     if arch == "gcn" and (("in_feats" in out) or ("in_feats_j" in out and "in_feats_m" in out)):
         return out
+    if arch == "ctr_gcn" and "in_feats" in out:
+        return out
 
     # Otherwise infer from feature flags (project defaults).
     use_motion = _bool(feat_cfg, "use_motion", default=False)
@@ -676,6 +680,10 @@ def infer_input_dims(
             out["in_feats_m"] = int(in_feats_m)
         else:
             out["in_feats"] = int(per_joint)
+        return out
+
+    if arch == "ctr_gcn":
+        out["in_feats"] = int(per_joint)
         return out
 
     raise ValueError(f"Unknown arch: {arch}")
@@ -722,7 +730,7 @@ def build_model(
     # Only infer dimensions when the caller did not supply them explicitly.
     # This preserves historical checkpoints whose stored feature contract should
     # override today's inferred defaults.
-    if arch in ("tcn", "gcn"):
+    if arch in ("tcn", "gcn", "ctr_gcn"):
         inferred = infer_input_dims(arch, model_cfg, feat_cfg, num_joints_default=num_joints)
         num_joints = int(inferred.get("num_joints", num_joints))
         if arch == "tcn":
@@ -794,6 +802,23 @@ def build_model(
             adaptive_adj_embed=cfg.adaptive_adj_embed,
             use_ctr_gcn_lite=cfg.use_ctr_gcn_lite,
             ctr_rank=cfg.ctr_rank,
+        )
+
+    if arch == "ctr_gcn":
+        if not in_feats or in_feats <= 0:
+            raise ValueError(
+                "CTR-GCN requires in_feats > 0. "
+                "Store in_feats in model_cfg when saving checkpoints, or provide a valid feat_cfg."
+            )
+        cfg = CTRGCNConfig.from_dict(model_cfg)
+        return CTRGCN(
+            num_joints=int(num_joints),
+            in_feats=int(in_feats),
+            channels=tuple(cfg.channels),
+            rel_channels=cfg.rel_channels,
+            ctr_rank=cfg.ctr_rank,
+            temporal_kernel=cfg.temporal_kernel,
+            dropout=cfg.dropout,
         )
 
     raise ValueError(f"Unknown arch: {arch}")

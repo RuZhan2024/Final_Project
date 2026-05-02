@@ -96,7 +96,7 @@ def build_input_from_raw(raw: WindowRaw, feat_cfg: FeatCfg, arch: str, *, two_st
         x = build_tcn_input(X_can, feat_cfg)
         return x, m
 
-    if arch == "gcn":
+    if arch in {"gcn", "ctr_gcn"}:
         X = X_can
         if two_stream:
             X = split_gcn_two_stream(X_can, feat_cfg)
@@ -115,7 +115,7 @@ def predict_prob(model: torch.nn.Module, arch: str, X, device: torch.device, two
     if arch == "tcn":
         xb = _to_tensor(X, device)
         logits = logits_1d(model(xb))
-    elif arch == "gcn":
+    elif arch in {"gcn", "ctr_gcn"}:
         if two_stream:
             xj = _to_tensor(X[0], device)
             xm = _to_tensor(X[1], device)
@@ -145,7 +145,7 @@ def predict_mu_sigma(
         if arch == "tcn":
             xb = _to_tensor(X, device)
             logits = logits_1d(model(xb))
-        elif arch == "gcn":
+        elif arch in {"gcn", "ctr_gcn"}:
             if two_stream:
                 xj = _to_tensor(X[0], device)
                 xm = _to_tensor(X[1], device)
