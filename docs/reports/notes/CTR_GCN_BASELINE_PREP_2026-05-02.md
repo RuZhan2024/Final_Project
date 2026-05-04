@@ -69,6 +69,21 @@ These should be run on the NVIDIA machine:
 
 This is the first intended `CAUCAFall` baseline command for the NVIDIA machine.
 
+Baseline assumptions:
+
+- the first official baseline should optimise for a stable first result rather than a maximal batch size
+- the initial batch target should therefore be conservative on an 8 GB GPU
+- this first-pass `CTR-GCN` line intentionally uses:
+  - `use_motion = 1`
+  - `use_conf_channel = 1`
+  - `use_bone = 0`
+  - `use_bone_length = 0`
+
+Reason:
+
+- the first baseline should isolate the graph-model upgrade itself before expanding the feature family
+- if this line proves competitive, later controlled follow-ups can test whether adding bone-derived channels helps or only complicates fairness and optimisation
+
 ```bash
 source .venv/bin/activate
 PYTHONPATH="$(pwd)/ml/src:$(pwd)" \
@@ -78,7 +93,7 @@ python3 ml/src/fall_detection/training/train_ctr_gcn.py \
   --save_dir outputs/caucafall_ctr_gcn_W48S12_baseline \
   --epochs 180 \
   --min_epochs 20 \
-  --batch 64 \
+  --batch 32 \
   --lr 1e-3 \
   --weight_decay 1e-4 \
   --seed 33724876 \
@@ -120,7 +135,7 @@ python3 ml/src/fall_detection/evaluation/fit_ops.py \
   --arch ctr_gcn \
   --val_dir data/processed/caucafall/windows_eval_W48_S12/val \
   --ckpt outputs/caucafall_ctr_gcn_W48S12_baseline/best.pt \
-  --out configs/ops/ctr_gcn_caucafall_baseline.yaml \
+  --out ops/configs/ops/ctr_gcn_caucafall_baseline.yaml \
   --fps_default 23 \
   --center pelvis \
   --use_motion 1 \
@@ -177,8 +192,8 @@ The first official baseline should not be treated as complete unless it leaves:
 - `outputs/caucafall_ctr_gcn_W48S12_baseline/best.pt`
 - `outputs/caucafall_ctr_gcn_W48S12_baseline/last.pt`
 - `outputs/caucafall_ctr_gcn_W48S12_baseline/train_config.json`
-- `configs/ops/ctr_gcn_caucafall_baseline.yaml`
-- `configs/ops/ctr_gcn_caucafall_baseline.sweep.json`
+- `ops/configs/ops/ctr_gcn_caucafall_baseline.yaml`
+- `ops/configs/ops/ctr_gcn_caucafall_baseline.sweep.json`
 - `outputs/caucafall_ctr_gcn_W48S12_baseline/alert_policy_val.json`
 
 ## 8. Promotion Rule
