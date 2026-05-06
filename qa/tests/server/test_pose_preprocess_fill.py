@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.preprocess_pose_npz import linear_fill_small_gaps
+from fall_detection.pose.preprocess_pose_npz import linear_fill_small_gaps
 
 
 def test_linear_fill_small_gaps_fast_path_when_fully_valid():

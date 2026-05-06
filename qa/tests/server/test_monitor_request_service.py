@@ -35,10 +35,8 @@ def test_prepare_monitor_request_falls_back_when_db_defaults_fail():
         resolve_monitor_specs=lambda **_k: {
             "mode": "tcn",
             "tcn_key": "tcn:caucafall",
-            "gcn_key": "gcn:caucafall",
             "guard_spec_key": "tcn:caucafall",
             "primary_spec_key": "tcn:caucafall",
-            "primary_model_key": "tcn",
         },
         get_pose_preprocess_cfg=lambda *_a, **_k: None,
         resample_pose_window=lambda **_k: ([], [], None, None, None),

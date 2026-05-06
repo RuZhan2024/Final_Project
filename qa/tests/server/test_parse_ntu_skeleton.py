@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.parse_ntu_skeleton import read_ntu_skeleton
+from fall_detection.pose.parse_ntu_skeleton import read_ntu_skeleton
 
 
 def _write_tmp(tmp_path, name, text):

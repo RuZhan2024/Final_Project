@@ -18,7 +18,7 @@ def _event(event_id: str) -> SafeGuardEvent:
         triage_state="fall",
         safe_alert=True,
         recall_alert=True,
-        model_code="GCN",
+        model_code="CTR_GCN",
         dataset_code="caucafall",
         op_code="OP-2",
         timestamp=datetime.now(timezone.utc),

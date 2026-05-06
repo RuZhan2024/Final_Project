@@ -42,7 +42,7 @@ class _DummyUncertainTracker:
 
 
 def _mock_predict_spec(*, spec_key, **_kwargs):
-    mu = 0.91 if spec_key.endswith("_tcn") else 0.88
+    mu = 0.91
     return {
         "mu": mu,
         "p_det": mu,
@@ -55,10 +55,10 @@ def _mock_predict_spec(*, spec_key, **_kwargs):
 
 
 def _specs():
-    return {"caucafall_tcn": object(), "caucafall_gcn": object()}
+    return {"caucafall_tcn": object()}
 
 
-def test_predict_window_dual_happy_path(monkeypatch):
+def test_predict_window_rejects_retired_dual_mode(monkeypatch):
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
@@ -77,12 +77,9 @@ def test_predict_window_dual_happy_path(monkeypatch):
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     body = resp.json()
-    assert body["triage_state"] in {"fall", "uncertain"}
-    assert body["dataset_code"] == "caucafall"
-    assert "tcn" in body["models"]
-    assert "gcn" in body["models"]
+    assert "mode='tcn'" in body["detail"]
 
 
 def test_predict_window_falls_back_to_defaults_when_db_unavailable(monkeypatch):
@@ -205,7 +202,7 @@ def test_predict_window_raw_path_uses_spec_pose_preprocess_cfg(monkeypatch):
     assert seen["cfg"]["rotate"] == "shoulders"
 
 
-def test_predict_window_replay_raw_path_uses_measured_fps(monkeypatch):
+def test_predict_window_replay_raw_path_uses_dataset_fps(monkeypatch):
     seen = {"fps": None}
 
     def _capture_predict(*, fps=None, spec_key=None, **_kwargs):
@@ -213,7 +210,7 @@ def test_predict_window_replay_raw_path_uses_measured_fps(monkeypatch):
         return _mock_predict_spec(spec_key=spec_key or "caucafall_tcn")
 
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", lambda: {"le2i_tcn": object()})
-    monkeypatch.setattr(monitor_route, "_get_pose_preprocess_cfg", lambda _spec_key: {"smooth_k": 5})
+    monkeypatch.setattr(monitor_route, "_get_pose_preprocess_cfg", lambda _spec_key, **_kwargs: {"smooth_k": 5})
     monkeypatch.setattr(monitor_route, "_predict_spec", _capture_predict)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
 
@@ -234,7 +231,38 @@ def test_predict_window_replay_raw_path_uses_measured_fps(monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert math.isclose(float(seen["fps"]), 15.0, rel_tol=1e-6, abs_tol=1e-6)
+    assert math.isclose(float(seen["fps"]), 25.0, rel_tol=1e-6, abs_tol=1e-6)
+
+
+def test_predict_window_replay_disables_live_quality_gates(monkeypatch):
+    monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
+    monkeypatch.setattr(monitor_route, "_get_pose_preprocess_cfg", lambda _spec_key, **_kwargs: {"smooth_k": 5})
+    monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
+    monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/monitor/predict_window",
+        json={
+            "session_id": "s-replay-quality-gates",
+            "mode": "tcn",
+            "dataset_code": "caucafall",
+            "target_T": 48,
+            "input_source": "video",
+            "window_end_t_ms": 2043.4782608695652,
+            "raw_t_ms": [0.0, 2043.4782608695652],
+            "raw_xy": [[[0.0, 0.0]], [[0.1, 0.1]]],
+            "raw_conf": [[1.0], [1.0]],
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["triage_state"] == "fall"
+    assert body["effective_fps"] == 23.0
+    assert body["quality"]["low_frames"] is True
+    assert body["live_guard"]["enable_structural_gate"] is False
+    assert body["live_guard"]["enable_low_fps_persist_gate"] is False
 
 
 def test_predict_window_forwards_mc_tolerances(monkeypatch):
@@ -253,7 +281,7 @@ def test_predict_window_forwards_mc_tolerances(monkeypatch):
         "/api/monitor/predict_window",
         json={
             "session_id": "s-mc-tol",
-            "mode": "dual",
+            "mode": "tcn",
             "dataset_code": "caucafall",
             "mc_sigma_tol": 0.03,
             "mc_se_tol": 0.01,
@@ -263,7 +291,7 @@ def test_predict_window_forwards_mc_tolerances(monkeypatch):
         },
     )
     assert resp.status_code == 200
-    assert len(seen["vals"]) == 2
+    assert len(seen["vals"]) == 1
 
 
 def test_predict_window_sanitizes_direct_xy_conf_before_predict(monkeypatch):
@@ -362,9 +390,9 @@ def test_predict_window_uses_db_settings_and_persists_event(monkeypatch):
     conns = [cfg_conn, ins_conn]
 
     monkeypatch.setattr(monitor_route, "get_conn", lambda: _conn_cm(conns.pop(0)))
-    monkeypatch.setattr(monitor_route, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
-    monkeypatch.setattr(monitor_route, "_ensure_system_settings_schema", lambda _c: None)
-    monkeypatch.setattr(monitor_route, "_table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
+    monkeypatch.setattr(monitor_route, "detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
+    monkeypatch.setattr(monitor_route, "ensure_system_settings_schema", lambda _c: None)
+    monkeypatch.setattr(monitor_route, "table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyTracker)
@@ -408,9 +436,9 @@ def test_predict_window_persists_replay_uncertain_event(monkeypatch):
     conns = [cfg_conn, ins_conn]
 
     monkeypatch.setattr(monitor_route, "get_conn", lambda: _conn_cm(conns.pop(0)))
-    monkeypatch.setattr(monitor_route, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
-    monkeypatch.setattr(monitor_route, "_ensure_system_settings_schema", lambda _c: None)
-    monkeypatch.setattr(monitor_route, "_table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
+    monkeypatch.setattr(monitor_route, "detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
+    monkeypatch.setattr(monitor_route, "ensure_system_settings_schema", lambda _c: None)
+    monkeypatch.setattr(monitor_route, "table_exists", lambda _c, t: t in {"system_settings", "operating_points", "events"})
     monkeypatch.setattr(monitor_route, "_get_deploy_specs", _specs)
     monkeypatch.setattr(monitor_route, "_predict_spec", _mock_predict_spec)
     monkeypatch.setattr(monitor_route, "OnlineAlertTracker", _DummyUncertainTracker)

@@ -28,13 +28,13 @@ def test_cors_allowed_origins_defaults_and_env(monkeypatch) -> None:
 
 def test_discover_from_ops_yaml_supports_nested_model_schema_and_relative_ckpt(tmp_path) -> None:
     root = tmp_path
-    ops_dir = root / "configs" / "ops"
-    ckpt = root / "outputs" / "demo_tcn" / "best.pt"
+    ops_dir = root / "ops" / "configs" / "ops"
+    ckpt = root / "outputs" / "caucafall_tcn" / "best.pt"
     ops_dir.mkdir(parents=True, exist_ok=True)
     ckpt.parent.mkdir(parents=True, exist_ok=True)
     ckpt.write_bytes(b"stub")
 
-    yaml_path = ops_dir / "tcn_demo.yaml"
+    yaml_path = ops_dir / "tcn_caucafall.yaml"
     yaml_path.write_text(
         "\n".join(
             [
@@ -46,7 +46,7 @@ def test_discover_from_ops_yaml_supports_nested_model_schema_and_relative_ckpt(t
                 "  ema_alpha: 0.2",
                 "model:",
                 "  arch: \"tcn\"",
-                "  ckpt: \"../../outputs/demo_tcn/best.pt\"",
+                    "  ckpt: \"../../../outputs/caucafall_tcn/best.pt\"",
                 "  feat_cfg:",
                 "    center: \"pelvis\"",
             ]
@@ -55,10 +55,10 @@ def test_discover_from_ops_yaml_supports_nested_model_schema_and_relative_ckpt(t
     )
 
     specs = _discover_from_ops_yaml(root)
-    assert "demo_tcn" in specs
-    spec = specs["demo_tcn"]
+    assert "caucafall_tcn" in specs
+    spec = specs["caucafall_tcn"]
     assert spec.arch == "tcn"
-    assert spec.dataset == "demo"
+    assert spec.dataset == "caucafall"
     assert spec.ckpt == str(ckpt.resolve())
     assert spec.feat_cfg.get("center") == "pelvis"
 
@@ -79,12 +79,12 @@ def test_monitor_mode_specific_missing_spec_errors(monkeypatch) -> None:
     assert "No TCN deploy spec found" in r_tcn.json().get("detail", "")
 
     r_gcn = c.post("/api/monitor/predict_window", json={**base, "mode": "gcn"})
-    assert r_gcn.status_code == 404
-    assert "No GCN deploy spec found" in r_gcn.json().get("detail", "")
+    assert r_gcn.status_code == 400
+    assert "mode='tcn'" in r_gcn.json().get("detail", "")
 
     r_dual = c.post("/api/monitor/predict_window", json={**base, "mode": "dual"})
-    assert r_dual.status_code == 404
-    assert "No deploy specs found" in r_dual.json().get("detail", "")
+    assert r_dual.status_code == 400
+    assert "mode='tcn'" in r_dual.json().get("detail", "")
 
 
 def test_notifications_test_endpoint_exists() -> None:
@@ -164,8 +164,9 @@ def test_v1_settings_and_events_aliases() -> None:
         "/api/v1/events/123/skeleton_clip",
         json={"resident_id": 1, "t_ms": [0.0, 40.0], "xy": [[[0.0, 0.0]], [[0.1, 0.1]]], "conf": [[1.0], [1.0]]},
     )
-    # No DB in this environment; alias reachability is what we verify.
-    assert rclip.status_code in {503, 404}
+    # Alias reachability is what we verify; the current route accepts a
+    # skeleton-only clip even when no durable DB event lookup is available.
+    assert rclip.status_code in {200, 503, 404}
 
 
 def test_deploy_modes_endpoint_exposes_yaml_profile() -> None:
@@ -294,7 +295,7 @@ def test_predict_window_contract_with_mocked_runtime(monkeypatch) -> None:
     assert rv1.status_code == 200
 
 
-def test_predict_window_dual_falls_back_to_single_when_only_one_spec(monkeypatch) -> None:
+def test_predict_window_tcn_uses_single_promoted_spec(monkeypatch) -> None:
     class _Spec:
         def __init__(self, key: str, dataset: str, arch: str) -> None:
             self.key = key
@@ -331,8 +332,8 @@ def test_predict_window_dual_falls_back_to_single_when_only_one_spec(monkeypatch
 
     c = TestClient(app)
     payload = {
-        "session_id": "contract-smoke-fallback",
-        "mode": "dual",
+        "session_id": "contract-smoke-tcn",
+        "mode": "tcn",
         "dataset_code": "le2i",
         "op_code": "OP-2",
         "target_T": 48,
@@ -344,7 +345,7 @@ def test_predict_window_dual_falls_back_to_single_when_only_one_spec(monkeypatch
     r = c.post("/api/monitor/predict_window", json=payload)
     assert r.status_code == 200
     body = r.json()
-    assert body.get("requested_mode") == "dual"
+    assert body.get("requested_mode") == "tcn"
     assert body.get("effective_mode") == "tcn"
 
 

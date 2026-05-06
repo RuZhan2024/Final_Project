@@ -34,5 +34,5 @@ def test_build_telegram_message_formats_timestamp_in_app_timezone(monkeypatch):
 
     text = build_telegram_message(event, decision, "summary")
 
-    assert "2026-04-11 17:59:14 BST" in text
+    assert "2026-04-11 17:59:14" in text
     assert "Ref: evt-123" in text

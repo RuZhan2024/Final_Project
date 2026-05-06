@@ -63,7 +63,7 @@ def test_list_events_pagination_contract_v1(monkeypatch):
                     "ts": "2026-02-26T10:00:00",
                     "type": "fall",
                     "severity": "high",
-                    "model_code": "GCN",
+                    "model_code": "CTR_GCN",
                     "score": 0.92,
                     "meta": "{\"source\":\"test\"}",
                 }
@@ -140,8 +140,8 @@ def test_list_events_filter_contract_v2(monkeypatch):
                     "status": "pending_review",
                     "score": 0.87,
                     "operating_point_id": 3,
-                    "model_code": "GCN",
-                    "model_family": "GCN",
+                    "model_code": "CTR_GCN",
+                    "model_family": "CTR_GCN",
                     "notes": "n1",
                     "fa24h_snapshot": None,
                     "payload_json": None,
@@ -165,7 +165,7 @@ def test_list_events_filter_contract_v2(monkeypatch):
         "&end_date=2026-02-27"
         "&event_type=Fall"
         "&status=pending_review"
-        "&model=GCN"
+        "&model=CTR_GCN"
         "&page=1&page_size=10"
     )
     assert resp.status_code == 200
@@ -173,7 +173,7 @@ def test_list_events_filter_contract_v2(monkeypatch):
     body = resp.json()
     assert body["total"] == 1
     assert body["events"][0]["status"] == "pending_review"
-    assert body["events"][0]["model_code"] == "GCN"
+    assert body["events"][0]["model_code"] == "CTR_GCN"
 
     _sql1, params1 = fake.executed[0]
     assert params1[0] == 1
@@ -181,5 +181,5 @@ def test_list_events_filter_contract_v2(monkeypatch):
     assert isinstance(params1[2], datetime)
     assert params1[3] == "fall"
     assert params1[4] == "pending_review"
-    assert params1[5] == "GCN"
-    assert params1[6] == "GCN"
+    assert params1[5] == "CTR_GCN"
+    assert params1[6] == "CTR_GCN"

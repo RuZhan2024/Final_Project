@@ -14,7 +14,7 @@ def _load_script_module(path: Path, name: str):
 
 
 def test_reproduce_claim_manifest_schema(tmp_path) -> None:
-    script = Path("scripts/reproduce_claim.py").resolve()
+    script = Path("ops/scripts/reproduce_claim.py").resolve()
     mod = _load_script_module(script, "reproduce_claim_mod")
 
     repo_root = tmp_path
@@ -57,4 +57,3 @@ def test_reproduce_claim_manifest_schema(tmp_path) -> None:
     assert isinstance(manifest["checkpoint"]["sha256"], str)
     assert isinstance(manifest["metrics"], list)
     assert manifest["metrics"][0]["op"] == "op2"
-

@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.preprocess_pose_npz import compute_masks, normalize_body_centric
+from fall_detection.pose.preprocess_pose_npz import compute_masks, normalize_body_centric
 
 
 def test_compute_masks_zero_joint_dimension_no_nan():

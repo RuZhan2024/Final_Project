@@ -11,3 +11,9 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 os.environ.setdefault("KMP_AFFINITY", "disabled")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+if os.name == "nt":
+    try:
+        import torch  # noqa: F401
+    except (ImportError, OSError):
+        pass

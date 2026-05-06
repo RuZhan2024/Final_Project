@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.alerting import _build_video_groups
+from fall_detection.core.metrics import _build_video_groups
 
 
 def test_build_video_groups_preserves_first_seen_video_order_and_sorts_windows():

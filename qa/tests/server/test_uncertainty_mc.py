@@ -120,8 +120,8 @@ def _install_fake_torch(monkeypatch):
 
 def _import_uncertainty(monkeypatch):
     _install_fake_torch(monkeypatch)
-    sys.modules.pop("core.uncertainty", None)
-    return importlib.import_module("core.uncertainty")
+    sys.modules.pop("fall_detection.core.uncertainty", None)
+    return importlib.import_module("fall_detection.core.uncertainty")
 
 
 def test_mc_predict_returns_n_used_with_early_stop(monkeypatch):

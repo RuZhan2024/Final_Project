@@ -26,16 +26,20 @@ def test_deploy_assets_manifest_contract() -> None:
     assets = manifest["promoted_runtime_assets"]
 
     checkpoints = assets["checkpoints"]
-    assert len(checkpoints) == 4
+    assert len(checkpoints) == 1
     for entry in checkpoints:
+        assert entry["dataset"] == "caucafall"
+        assert entry["arch"] == "tcn"
         path = repo_root / entry["path"]
         assert path.exists(), entry["path"]
         assert path.stat().st_size == entry["size_bytes"]
         assert _sha256(path) == entry["sha256"]
 
     op_profiles = assets["op_profiles"]
-    assert len(op_profiles) == 4
+    assert len(op_profiles) == 1
     for entry in op_profiles:
+        assert entry["dataset"] == "caucafall"
+        assert entry["arch"] == "tcn"
         path = repo_root / entry["path"]
         assert path.exists(), entry["path"]
 
