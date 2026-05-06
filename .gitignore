@@ -1,4 +1,5 @@
 .venv/
+.venv-win/
 .env
 .env.local.private
 __pycache__/
@@ -22,12 +23,16 @@ applications/backend/event_clips/
 *.pt
 outputs/
 data/
+/configs/
 !ml/src/fall_detection/data/
 !ml/src/fall_detection/data/**/*.py
 .mplcache/
 /tmp/fall_detection_backend.log
 apps/build/
 applications/frontend/build/
+artifacts/archive/
+artifacts/logs/
+artifacts/fall_test_eval_20260506*/
 artifacts/figures/plots/
 artifacts/fall_side_corridor_eval_20260315/
 artifacts/fall_test_eval_20260315/
@@ -42,6 +47,9 @@ artifacts/ops_reverify_20260315_after_gatefix/
 artifacts/ops_reverify_20260315_after_motionfix/
 artifacts/report_build/
 artifacts/replay_eval/
+ops/configs/ops/*.sweep.json
+ops/configs/ops/*W[0-9]*.yaml
+ops/configs/ops/*_s[0-9]*.yaml
 !deploy_assets/
 !deploy_assets/checkpoints/
 !deploy_assets/checkpoints/*.pt
