@@ -351,7 +351,7 @@ def expand_groups(groups: Dict[str, List[str]], gids: List[str]) -> List[str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--labels_json", required=True, help="Path to labels JSON {stem: label}")
-    ap.add_argument("--out_dir", default="configs/splits", help="Output directory for split txt files")
+    ap.add_argument("--out_dir", default="ops/configs/splits", help="Output directory for split txt files")
     ap.add_argument("--prefix", default="dataset", help="Prefix for output files (e.g., muvim)")
     ap.add_argument("--seed", type=int, default=33724876)
 

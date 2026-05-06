@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """core/models.py
 
-Model builders (TCN + GCN) used by both training and evaluation.
+Model builders (TCN + CTR-GCN) used by both training and evaluation.
 
 Key goals for this project:
 - Training / fit_ops / metrics must rebuild *exactly* the same model from a checkpoint bundle.
@@ -24,7 +24,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .ctr_gcn import CTRGCN, CTRGCNConfig
+from .ctr_gcn import CTRGCN, CTRGCNConfig, TwoStreamCTRGCN
 
 # ---------------------------
 # Config normalisation
@@ -276,8 +276,6 @@ class GCNLayer(nn.Module):
         num_joints: int,
         use_adaptive_adj: bool = False,
         adaptive_embed: int = 16,
-        use_ctr_gcn_lite: bool = False,
-        ctr_rank: int = 4,
     ):
         super().__init__()
         self.lin = nn.Linear(in_feats, out_feats)
@@ -286,8 +284,6 @@ class GCNLayer(nn.Module):
         self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
         self.use_adaptive_adj = bool(use_adaptive_adj)
         self.adaptive_embed = max(4, int(adaptive_embed))
-        self.use_ctr_gcn_lite = bool(use_ctr_gcn_lite)
-        self.ctr_rank = max(1, int(ctr_rank))
         if self.use_adaptive_adj:
             # 2s-AGCN style decomposition: A (fixed) + B (learnable) + C (data-dependent)
             self.A_res = nn.Parameter(torch.zeros((int(num_joints), int(num_joints)), dtype=torch.float32))
@@ -297,21 +293,6 @@ class GCNLayer(nn.Module):
             self.register_parameter("A_res", None)
             self.theta = None
             self.phi = None
-        if self.use_ctr_gcn_lite:
-            # Lightweight channel-wise topology refinement:
-            # per-channel adjacency is low-rank (C x V x r, C x r x V).
-            c = int(out_feats)
-            v = int(num_joints)
-            r = int(self.ctr_rank)
-            self.ctr_u = nn.Parameter(torch.zeros((c, v, r), dtype=torch.float32))
-            self.ctr_v = nn.Parameter(torch.zeros((c, r, v), dtype=torch.float32))
-            self.ctr_alpha = nn.Parameter(torch.zeros((c,), dtype=torch.float32))
-            nn.init.xavier_uniform_(self.ctr_u)
-            nn.init.xavier_uniform_(self.ctr_v)
-        else:
-            self.register_parameter("ctr_u", None)
-            self.register_parameter("ctr_v", None)
-            self.register_parameter("ctr_alpha", None)
 
     def forward(self, x: torch.Tensor, A_hat: torch.Tensor) -> torch.Tensor:
         # x: [B,T,V,C]
@@ -330,11 +311,6 @@ class GCNLayer(nn.Module):
         x = torch.matmul(x, A_use.t())         # [B,T,C,V]
         x = x.permute(0, 1, 3, 2)              # [B,T,V,C]
         x = self.lin(x)
-        if self.use_ctr_gcn_lite:
-            A_ctr = torch.matmul(self.ctr_u, self.ctr_v)           # [C,V,V]
-            A_ctr = torch.softmax(A_ctr, dim=-1)
-            x_ctr = torch.einsum("btvc,cvw->btwc", x, A_ctr)
-            x = x + self.ctr_alpha.view(1, 1, 1, -1) * x_ctr
         x = self.drop(self.act(self.ln(x)))
         return x
 
@@ -382,8 +358,6 @@ class GCNEncoder(nn.Module):
         use_se: bool,
         use_adaptive_adj: bool = False,
         adaptive_adj_embed: int = 16,
-        use_ctr_gcn_lite: bool = False,
-        ctr_rank: int = 4,
     ):
         super().__init__()
         A_hat = normalize_adjacency(build_mediapipe_adjacency(num_joints))
@@ -396,8 +370,6 @@ class GCNEncoder(nn.Module):
             num_joints=num_joints,
             use_adaptive_adj=use_adaptive_adj,
             adaptive_embed=adaptive_adj_embed,
-            use_ctr_gcn_lite=use_ctr_gcn_lite,
-            ctr_rank=ctr_rank,
         )
         self.g2 = GCNLayer(
             gcn_hidden,
@@ -406,8 +378,6 @@ class GCNEncoder(nn.Module):
             num_joints=num_joints,
             use_adaptive_adj=use_adaptive_adj,
             adaptive_embed=adaptive_adj_embed,
-            use_ctr_gcn_lite=use_ctr_gcn_lite,
-            ctr_rank=ctr_rank,
         )
         self.se = SEBlock(gcn_hidden) if use_se else nn.Identity()
         self.temporal = TemporalConv(gcn_hidden, tcn_hidden, dropout=dropout, num_blocks=3)
@@ -435,8 +405,6 @@ class GCN(nn.Module):
         use_se: bool = True,
         use_adaptive_adj: bool = False,
         adaptive_adj_embed: int = 16,
-        use_ctr_gcn_lite: bool = False,
-        ctr_rank: int = 4,
     ):
         super().__init__()
         self.encoder = GCNEncoder(
@@ -448,8 +416,6 @@ class GCN(nn.Module):
             use_se,
             use_adaptive_adj=use_adaptive_adj,
             adaptive_adj_embed=adaptive_adj_embed,
-            use_ctr_gcn_lite=use_ctr_gcn_lite,
-            ctr_rank=ctr_rank,
         )
         self.head = nn.Linear(tcn_hidden, 1)
 
@@ -471,8 +437,6 @@ class TwoStreamGCN(nn.Module):
         use_se: bool = True,
         use_adaptive_adj: bool = False,
         adaptive_adj_embed: int = 16,
-        use_ctr_gcn_lite: bool = False,
-        ctr_rank: int = 4,
         fuse: str = "concat",   # "concat" | "sum" | "joint_only" | "motion_only"
         stream_drop_joint_p: float = 0.0,
         stream_drop_motion_p: float = 0.0,
@@ -487,8 +451,6 @@ class TwoStreamGCN(nn.Module):
             use_se,
             use_adaptive_adj=use_adaptive_adj,
             adaptive_adj_embed=adaptive_adj_embed,
-            use_ctr_gcn_lite=use_ctr_gcn_lite,
-            ctr_rank=ctr_rank,
         )
         self.m_enc = GCNEncoder(
             num_joints,
@@ -499,8 +461,6 @@ class TwoStreamGCN(nn.Module):
             use_se,
             use_adaptive_adj=use_adaptive_adj,
             adaptive_adj_embed=adaptive_adj_embed,
-            use_ctr_gcn_lite=use_ctr_gcn_lite,
-            ctr_rank=ctr_rank,
         )
         self.fuse = str(fuse).lower()
         self.stream_drop_joint_p = float(stream_drop_joint_p)
@@ -549,8 +509,6 @@ class GCNConfig:
     use_se: bool = True
     use_adaptive_adj: bool = False
     adaptive_adj_embed: int = 16
-    use_ctr_gcn_lite: bool = False
-    ctr_rank: int = 4
     two_stream: bool = False
     fuse: str = "concat"  # concat|sum
     stream_drop_joint_p: float = 0.0
@@ -571,8 +529,6 @@ class GCNConfig:
             use_se=bool(d.get("use_se", True)),
             use_adaptive_adj=bool(d.get("use_adaptive_adj", False)),
             adaptive_adj_embed=int(d.get("adaptive_adj_embed", 16)),
-            use_ctr_gcn_lite=bool(d.get("use_ctr_gcn_lite", False)),
-            ctr_rank=int(d.get("ctr_rank", 4)),
             two_stream=bool(d.get("two_stream", False)),
             fuse=str(d.get("fuse", "concat")),
             stream_drop_joint_p=float(d.get("stream_drop_joint_p", 0.0)),
@@ -630,13 +586,19 @@ def infer_input_dims(
         out["in_feats_j"] = int(model_cfg["in_feats_j"])
     if "in_feats_m" in model_cfg:
         out["in_feats_m"] = int(model_cfg["in_feats_m"])
+    if "in_feats_b" in model_cfg:
+        out["in_feats_b"] = int(model_cfg["in_feats_b"])
 
     if arch == "tcn" and "in_ch" in out:
         return out
     if arch == "gcn" and (("in_feats" in out) or ("in_feats_j" in out and "in_feats_m" in out)):
         return out
-    if arch == "ctr_gcn" and "in_feats" in out:
-        return out
+    if arch == "ctr_gcn":
+        cfg = CTRGCNConfig.from_dict(model_cfg)
+        if cfg.two_stream and "in_feats_j" in out and "in_feats_b" in out:
+            return out
+        if (not cfg.two_stream) and "in_feats" in out:
+            return out
 
     # Otherwise infer from feature flags (project defaults).
     use_motion = _bool(feat_cfg, "use_motion", default=False)
@@ -667,7 +629,7 @@ def infer_input_dims(
             # Two-stream default in *this project*:
             # - joints stream uses (x,y[,bone][,bone_len][,conf])
             # - motion stream uses (dx,dy)  (NO conf channel)
-            # This must match models/train_gcn.py and all eval scripts.
+            # This must match the graph training helpers and all eval scripts.
             in_feats_j = 2
             if use_bone:
                 in_feats_j += 2
@@ -683,7 +645,22 @@ def infer_input_dims(
         return out
 
     if arch == "ctr_gcn":
-        out["in_feats"] = int(per_joint)
+        cfg = CTRGCNConfig.from_dict(model_cfg)
+        if cfg.two_stream:
+            in_feats_j = 2
+            if use_motion:
+                in_feats_j += 2
+            if use_conf:
+                in_feats_j += 1
+            in_feats_b = 2
+            if use_bone_len:
+                in_feats_b += 1
+            if use_conf:
+                in_feats_b += 1
+            out["in_feats_j"] = int(in_feats_j)
+            out["in_feats_b"] = int(in_feats_b)
+        else:
+            out["in_feats"] = int(per_joint)
         return out
 
     raise ValueError(f"Unknown arch: {arch}")
@@ -704,6 +681,7 @@ def build_model(
     in_feats: int = 0,
     in_feats_j: int = 0,
     in_feats_m: int = 0,
+    in_feats_b: int = 0,
     **kwargs: Any,
 ) -> nn.Module:
     """Build a model for training/evaluation.
@@ -743,6 +721,8 @@ def build_model(
                 in_feats_j = int(inferred.get("in_feats_j", 0))
             if not in_feats_m:
                 in_feats_m = int(inferred.get("in_feats_m", 0))
+            if not in_feats_b:
+                in_feats_b = int(inferred.get("in_feats_b", 0))
 
     if arch == "tcn":
         if not in_ch or in_ch <= 0:
@@ -779,8 +759,6 @@ def build_model(
                 use_se=cfg.use_se,
                 use_adaptive_adj=cfg.use_adaptive_adj,
                 adaptive_adj_embed=cfg.adaptive_adj_embed,
-                use_ctr_gcn_lite=cfg.use_ctr_gcn_lite,
-                ctr_rank=cfg.ctr_rank,
                 fuse=cfg.fuse,
                 stream_drop_joint_p=cfg.stream_drop_joint_p,
                 stream_drop_motion_p=cfg.stream_drop_motion_p,
@@ -800,17 +778,34 @@ def build_model(
             use_se=cfg.use_se,
             use_adaptive_adj=cfg.use_adaptive_adj,
             adaptive_adj_embed=cfg.adaptive_adj_embed,
-            use_ctr_gcn_lite=cfg.use_ctr_gcn_lite,
-            ctr_rank=cfg.ctr_rank,
         )
 
     if arch == "ctr_gcn":
+        cfg = CTRGCNConfig.from_dict(model_cfg)
+        if cfg.two_stream:
+            if not in_feats_j or not in_feats_b:
+                raise ValueError(
+                    "Two-stream CTR-GCN requires in_feats_j and in_feats_b. "
+                    "Store them in model_cfg when saving checkpoints, or provide a valid feat_cfg."
+                )
+            return TwoStreamCTRGCN(
+                num_joints=int(num_joints),
+                in_feats_j=int(in_feats_j),
+                in_feats_b=int(in_feats_b),
+                channels=tuple(cfg.channels),
+                rel_channels=cfg.rel_channels,
+                ctr_rank=cfg.ctr_rank,
+                temporal_kernel=cfg.temporal_kernel,
+                dropout=cfg.dropout,
+                fuse=cfg.fuse,
+                stream_drop_joint_p=cfg.stream_drop_joint_p,
+                stream_drop_bone_p=cfg.stream_drop_bone_p,
+            )
         if not in_feats or in_feats <= 0:
             raise ValueError(
                 "CTR-GCN requires in_feats > 0. "
                 "Store in_feats in model_cfg when saving checkpoints, or provide a valid feat_cfg."
             )
-        cfg = CTRGCNConfig.from_dict(model_cfg)
         return CTRGCN(
             num_joints=int(num_joints),
             in_feats=int(in_feats),

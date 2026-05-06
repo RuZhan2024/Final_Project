@@ -79,8 +79,8 @@ def parse_args():
     ap.add_argument("--videos_glob", nargs="+", required=True,
                     help="One or more quoted glob patterns. Example: '.../*.mp4' '.../*.avi'")
     ap.add_argument("--out_dir", required=True, help="Directory to write NPZ files.")
-    ap.add_argument("--model_complexity", type=int, default=1, choices=[0, 1, 2],
-                    help="0=lite, 1=full (default), 2=heavy")
+    ap.add_argument("--model_complexity", type=int, default=2, choices=[0, 1, 2],
+                    help="0=lite, 1=full, 2=heavy (default)")
     ap.add_argument("--min_det_conf", type=float, default=0.5, help="Min detection confidence.")
     ap.add_argument("--min_track_conf", type=float, default=0.5, help="Min tracking confidence.")
     ap.add_argument("--static_image_mode", action="store_true",

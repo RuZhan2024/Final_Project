@@ -1,5 +1,5 @@
 {
-  "labels_json": "configs/labels/muvim.json",
+  "labels_json": "ops/configs/labels/muvim.json",
   "prefix": "muvim",
   "seed": 33724876,
   "fractions": {
@@ -43,8 +43,8 @@
     }
   },
   "files": {
-    "train": "configs/splits/muvim_train.txt",
-    "val": "configs/splits/muvim_val.txt",
-    "test": "configs/splits/muvim_test.txt"
+    "train": "ops/configs/splits/muvim_train.txt",
+    "val": "ops/configs/splits/muvim_val.txt",
+    "test": "ops/configs/splits/muvim_test.txt"
   }
 }

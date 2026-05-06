@@ -6,7 +6,7 @@ Example
 -------
 python labels/make_unlabeled_test_list.py \
   --npz_dir data/interim/le2i/pose_npz \
-  --out configs/splits/le2i_unlabeled.txt \
+  --out ops/configs/splits/le2i_unlabeled.txt \
   --scenes Office "Lecture room"
 
 Notes

@@ -234,7 +234,7 @@ def extract_pose_sequences(
     *,
     sources: Sequence[Path],
     out_dir: Path,
-    model_complexity: int = 1,
+    model_complexity: int = 2,
     min_detection_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5,
     overwrite: bool = False,

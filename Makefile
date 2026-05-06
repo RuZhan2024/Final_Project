@@ -1,6 +1,6 @@
 # Fall detection v2 — refactored Makefile (DRY, DAG-correct, -j friendly)
 # Datasets: le2i, urfd, caucafall, muvim
-# Models:   tcn, gcn
+# Models:   tcn, ctr-gcn
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -37,7 +37,7 @@ INTERIM    ?= data/interim
 PROCESSED  ?= data/processed
 
 OUT_DIR    ?= outputs
-CFG_DIR    ?= configs
+CFG_DIR    ?= ops/configs
 LABELS_DIR ?= $(CFG_DIR)/labels
 SPLITS_DIR ?= $(CFG_DIR)/splits
 OPS_DIR    ?= $(CFG_DIR)/ops
@@ -52,32 +52,15 @@ STAMP_DIR  ?= .make
 # Locked reproducibility profiles (caucafall)
 # -------------------------
 LOCK_TCN_CAUC_TRAIN_DIR ?= $(OUT_DIR)/repro/caucafall_tcn_r1_augreg
-LOCK_GCN_CAUC_TRAIN_DIR ?= $(OUT_DIR)/repro/caucafall_gcn_r2_recallpush_b
-LOCK_GCN_CAUC_RESUME    ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)/best.pt
-LOCK_GCN_CAUC_HNEG_LIST ?= $(OUT_DIR)/hardneg/gcn_caucafall_train_p50.txt
 
 LOCK_TCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_tcn_W$(WIN_W)S$(WIN_S)_r1_ctrl/best.pt
-LOCK_GCN_CAUC_CKPT ?= $(OUT_DIR)/caucafall_gcn_W$(WIN_W)S$(WIN_S)_r2_recallpush_b/best.pt
 LOCK_TCN_CAUC_OPS  ?= $(OPS_DIR)/tcn_caucafall_r1_ctrl.yaml
-LOCK_GCN_CAUC_OPS  ?= $(OPS_DIR)/gcn_caucafall_locked.yaml
 LOCK_TCN_CAUC_MET  ?= $(MET_DIR)/tcn_caucafall_locked.json
-LOCK_GCN_CAUC_MET  ?= $(MET_DIR)/gcn_caucafall_locked.json
-
-# Optional LE2i paper-comparison profile (scene-scoped start-guard diagnostic)
-LOCK_GCN_LE2I_TRAIN_DIR   ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r8_dataside_noise
-LOCK_GCN_LE2I_TRAIN_RESUME ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r4_recallpush_promoted/best.pt
-LOCK_GCN_LE2I_PAPER_CKPT ?= $(OUT_DIR)/le2i_gcn_W$(WIN_W)S$(WIN_S)_opt33_r8_dataside_noise/best.pt
-LOCK_GCN_LE2I_PAPER_OPS  ?= $(OPS_DIR)/gcn_le2i_paper_profile.yaml
-LOCK_GCN_LE2I_PAPER_MET  ?= $(MET_DIR)/gcn_le2i_opt33_r8_dataside_noise_paperops.json
-LOCK_GCN_LE2I_DEPLOY_MET ?= $(MET_DIR)/gcn_le2i_deploy_locked.json
 
 # Optional MUVIM quick locked profile (best-known quick baseline)
 LOCK_TCN_MUVIM_CKPT ?= $(OUT_DIR)/muvim_tcn_W$(WIN_W)S$(WIN_S)_quick/best.pt
-LOCK_GCN_MUVIM_CKPT ?= $(OUT_DIR)/muvim_gcn_W$(WIN_W)S$(WIN_S)_quick/best.pt
 LOCK_TCN_MUVIM_OPS  ?= $(OPS_DIR)/tcn_muvim_quick.yaml
-LOCK_GCN_MUVIM_OPS  ?= $(OPS_DIR)/gcn_muvim_quick.yaml
 LOCK_TCN_MUVIM_MET  ?= $(MET_DIR)/tcn_muvim_locked.json
-LOCK_GCN_MUVIM_MET  ?= $(MET_DIR)/gcn_muvim_locked.json
 
 # Standard per-dataset layout (functions)
 pose_raw_dir = $(INTERIM)/$(1)/pose_npz_raw
@@ -250,6 +233,9 @@ FEAT_FLAGS_GCN = \
   --use_conf "$(FEAT_USE_CONF_CHANNEL)" \
   --use_bone "$(FEAT_USE_BONE)" \
   --use_bonelen "$(FEAT_USE_BONE_LEN)" \
+  --motion_scale_by_fps "$(FEAT_MOTION_SCALE_BY_FPS)" \
+  --conf_gate "$(FEAT_CONF_GATE)" \
+  --use_precomputed_mask "$(FEAT_USE_PRECOMPUTED_MASK)" \
   --use_angles "$(FEAT_USE_ANGLES)" \
   --normalize "$(NORM_MODE)" \
   --include_centered "$(FEAT_INCLUDE_CENTERED)" \
@@ -332,6 +318,9 @@ GCN_HIDDEN ?= 96
 GCN_NUM_BLOCKS ?= 6
 GCN_TEMPORAL_KERNEL ?= 9
 GCN_BASE_CHANNELS ?= 48
+CTR_CHANNELS ?= 64,64,64,128
+CTR_REL_CHANNELS ?= 8
+CTR_RANK ?= 8
 
 GCN_DROPOUT ?= 0.35
 GCN_DROPOUT_muvim ?= 0.20
@@ -479,8 +468,8 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # -------------------------
 # Phonies
 # -------------------------
-.PHONY: help bootstrap-dev up dev stop-dev compose-up compose-down release-check release-manifest frontend-render-check serve-dev check-windows pipeline-all pipeline-all-gcn pipeline-all-noextract pipeline-all-gcn-noextract \
-        eval-all plot-all eval-all-gcn plot-all-gcn clean clean-stamps
+.PHONY: help bootstrap-dev up dev stop-dev compose-up compose-down release-check release-manifest frontend-render-check serve-dev check-windows pipeline-all pipeline-all-ctr-gcn pipeline-all-noextract pipeline-all-ctr-gcn-noextract \
+        eval-all plot-all eval-all-ctr-gcn plot-all-ctr-gcn clean clean-stamps
 
 # debug targets (pattern targets should not be declared .PHONY; mark concrete dataset aliases instead)
 .PHONY: $(addprefix debug-,$(DATASETS))
@@ -602,9 +591,8 @@ help:
 	@echo "  make pipeline-<ds>-noextract  (preprocess→labels→splits→windows; assumes pose_npz_raw exists)"
 	@echo ""
 	@echo "Training:"
-	@echo "  make train-tcn-<ds> | train-gcn-<ds>"
-	@echo "  make train-best-tcn-caucafall | train-best-gcn-caucafall | train-best-caucafall"
-	@echo "  make train-best-gcn-le2i-paper"
+	@echo "  make train-tcn-<ds> | train-ctr-gcn-<ds>"
+	@echo "  make train-best-tcn-caucafall"
 	@echo ""
 	@echo "Eval windows + FA windows:"
 	@echo "  make windows-eval-<ds>"
@@ -615,19 +603,15 @@ help:
 	@echo "  make windows-unlabeled-<ds>"
 	@echo ""
 	@echo "OP fitting / evaluation:"
-	@echo "  make fit-ops-<ds> | fit-ops-gcn-<ds> [FITOPS_USE_FA=1]"
-	@echo "  make fit-ops-gcn-caucafall-force-ckpt (explicit ckpt-only recalibration alias)"
-	@echo "  make repro-best-tcn-caucafall | repro-best-gcn-caucafall | repro-best-caucafall"
-	@echo "  make repro-best-tcn-muvim | repro-best-gcn-muvim | repro-best-muvim"
-	@echo "  make repro-deploy-gcn-le2i (locked LE2i GCN deploy profile)"
-	@echo "  make apply-deploy-ops-le2i-gcn (promote LE2i GCN paper-profile ops to canonical)"
+	@echo "  make fit-ops-<ds> | fit-ops-ctr-gcn-<ds> [FITOPS_USE_FA=1]"
+	@echo "  make repro-best-tcn-caucafall"
 	@echo "  make apply-locked-ops-caucafall (promote locked ops to canonical deploy files)"
 	@echo "  knobs: FITOPS_ALLOW_DEGENERATE=0|1 FITOPS_EMIT_ABSOLUTE_PATHS=0|1"
-	@echo "  make eval-<ds>    | eval-gcn-<ds>"
-	@echo "  make eval-unlabeled-<ds> | eval-unlabeled-gcn-<ds>"
-	@echo "  make plot-<ds>    | plot-gcn-<ds>"
-	@echo "  make plot-confmat-<ds> | plot-confmat-gcn-<ds>"
-	@echo "  make plot-failure-<ds> | plot-failure-gcn-<ds>"
+	@echo "  make eval-<ds> | eval-ctr-gcn-<ds>"
+	@echo "  make eval-unlabeled-<ds>"
+	@echo "  make plot-<ds>"
+	@echo "  make plot-confmat-<ds>"
+	@echo "  make plot-failure-<ds>"
 	@echo "  make plot-balance-<ds>"
 	@echo ""
 	@echo "Adapter windows mode (optional):"
@@ -644,13 +628,11 @@ help:
 	@echo ""
 	@echo "Full pipelines (from raw by default):"
 	@echo "  make pipeline-<ds>        (TCN: train+fit_ops+eval+plot)"
-	@echo "  make pipeline-gcn-<ds>    (GCN: train+fit_ops+eval+plot)"
 	@echo ""
 	@echo "Single-command auto pipelines (adapter enforced):"
 	@echo "  make pipeline-auto-tcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
-	@echo "  make pipeline-auto-gcn-<ds>  (windows -> windows-eval -> [fa-windows if FITOPS_USE_FA=1] -> train -> fit-ops/eval -> plot)"
 	@echo "  knob: AUTO_DO_EXTRACT=0|1 (default 0; set 1 to force raw extraction)"
-	@echo "  make pipeline-all | pipeline-all-gcn"
+	@echo "  make pipeline-all"
 	@echo ""
 	@echo "Audit gates:"
 	@echo "  make audit-smoke"
@@ -666,10 +648,10 @@ help:
 	@echo "  make audit-promoted-profiles"
 	@echo "  make audit-numeric [DATASETS='le2i,caucafall']"
 	@echo "  make audit-temporal [DATASETS='le2i,caucafall']"
-	@echo "  make audit-parity-le2i MODEL=tcn|gcn"
-	@echo "  make audit-parity-le2i-strict MODEL=tcn|gcn  (requires performance targets)"
-	@echo "  make baseline-capture-le2i MODEL=tcn|gcn     (populate performance baseline from metrics)"
-	@echo "  make audit-all MODEL=tcn|gcn                 (runs smoke+static+runtime-imports+numeric+temporal+strict parity)"
+	@echo "  make audit-parity-le2i MODEL=tcn|ctr_gcn"
+	@echo "  make audit-parity-le2i-strict MODEL=tcn|ctr_gcn  (requires performance targets)"
+	@echo "  make baseline-capture-le2i MODEL=tcn|ctr_gcn     (populate performance baseline from metrics)"
+	@echo "  make audit-all MODEL=tcn|ctr_gcn                 (runs smoke+static+runtime-imports+numeric+temporal+strict parity)"
 	@echo "  make profile-infer PROFILE=cpu_local DS=le2i MODEL=tcn"
 	@echo ""
 
@@ -927,19 +909,13 @@ $(STAMP_DIR)/fa_windows/%.stamp: $(STAMP_DIR)/windows_eval/%.stamp
 # ============================================================
 # Train artifacts
 # ============================================================
-.PHONY: train-best-tcn-caucafall train-best-gcn-caucafall train-best-caucafall train-best-gcn-le2i-paper
+.PHONY: train-best-tcn-caucafall train-best-caucafall
 
 train-best-tcn-caucafall: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt
 	@echo "[ok] locked TCN training finished: $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt"
 
-train-best-gcn-caucafall: $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt
-	@echo "[ok] locked GCN training finished: $(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt"
-
-train-best-caucafall: train-best-tcn-caucafall train-best-gcn-caucafall
-	@echo "[ok] locked TCN+GCN training finished for caucafall."
-
-train-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt
-	@echo "[ok] locked LE2i GCN training finished: $(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt"
+train-best-caucafall: train-best-tcn-caucafall
+	@echo "[ok] locked TCN training finished for caucafall."
 
 $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	@mkdir -p "$(@D)"
@@ -960,55 +936,9 @@ $(LOCK_TCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
 	  --save_dir "$(LOCK_TCN_CAUC_TRAIN_DIR)"
 	@test -f "$@"
 
-$(LOCK_GCN_CAUC_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/caucafall.stamp
-	@mkdir -p "$(@D)"
-	@test -f "$(LOCK_GCN_CAUC_RESUME)" || (echo "[ERR] missing locked GCN resume ckpt: $(LOCK_GCN_CAUC_RESUME)" && exit 1)
-	@test -f "$(LOCK_GCN_CAUC_HNEG_LIST)" || (echo "[ERR] missing locked GCN hard-neg list: $(LOCK_GCN_CAUC_HNEG_LIST)" && exit 1)
-	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,caucafall)/train" --val_dir "$(call win_dir,caucafall)/val" \
-	  --epochs "80" --batch "128" --lr "0.0003" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_caucafall)" \
-	  --center "pelvis" \
-	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" --motion_scale_by_fps "1" --conf_gate "0.20" --use_precomputed_mask "1" \
-	  --loss "bce" --focal_alpha "0.25" --focal_gamma "2.0" \
-	  --hidden "96" --dropout "0.22" \
-	  --num_blocks "6" --temporal_kernel "9" --base_channels "48" \
-	  --two_stream "1" --fuse "concat" --use_adaptive_adj "0" --adaptive_adj_embed "16" \
-	  --grad_clip "1.0" --patience "18" --min_epochs "10" \
-	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.05" \
-	  --monitor "ap" \
-	  --mask_joint_p "0.05" --mask_frame_p "0.03" \
-	  --weight_decay "2e-4" --label_smoothing "0.0" \
-	  --pos_weight "auto" \
-	  --resume "$(LOCK_GCN_CAUC_RESUME)" \
-	  --hard_neg_list "$(LOCK_GCN_CAUC_HNEG_LIST)" --hard_neg_mult "1" \
-	  --num_workers "0" --prefetch_factor "2" --persistent_workers "1" --deterministic "1" \
-	  --save_dir "$(LOCK_GCN_CAUC_TRAIN_DIR)"
-	@test -f "$@"
-
-$(LOCK_GCN_LE2I_TRAIN_DIR)/best.pt: $(STAMP_DIR)/windows/le2i.stamp
-	@mkdir -p "$(@D)"
-	@test -f "$(LOCK_GCN_LE2I_TRAIN_RESUME)" || (echo "[ERR] missing locked LE2i GCN resume ckpt: $(LOCK_GCN_LE2I_TRAIN_RESUME)" && exit 1)
-	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,le2i)/train" --val_dir "$(call win_dir,le2i)/val" \
-	  --epochs "45" --min_epochs "8" --batch "128" --lr "3e-4" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_le2i)" \
-	  --center "pelvis" \
-	  --use_motion "1" --use_conf "1" --use_bone "1" --use_bonelen "1" \
-	  --loss "bce" --monitor "ap" --balanced_sampler --pos_weight "none" \
-	  --dropout "0.18" \
-	  --num_blocks "6" --temporal_kernel "9" --base_channels "48" \
-	  --two_stream "1" --fuse "concat" --use_adaptive_adj "0" --adaptive_adj_embed "16" \
-	  --mask_joint_p "0.00" --mask_frame_p "0.00" \
-	  --x_noise_std "0.01" --x_quant_step "0.002" --temporal_dropout_p "0.00" \
-	  --grad_clip "1.0" --patience "8" \
-	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.05" \
-	  --resume "$(LOCK_GCN_LE2I_TRAIN_RESUME)" \
-	  --use_ema "1" --ema_decay "0.999" \
-	  --hidden "96" \
-	  --num_workers "0" --prefetch_factor "2" --persistent_workers "1" --deterministic "1" \
-	  --save_dir "$(LOCK_GCN_LE2I_TRAIN_DIR)"
-	@test -f "$@"
-
 train-tcn-%: $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
 	@:
-train-gcn-%: $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
+train-ctr-gcn-%: $(OUT_DIR)/%_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt
 	@:
 
 # NOTE: fixed evaluation-order bug by inlining $(call get,...) inside Make (no bash vars for flags)
@@ -1035,115 +965,57 @@ $(OUT_DIR)/%_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.st
 	  --save_dir "$(OUT_DIR)/$*_tcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)"
 	@test -f "$@"
 
-$(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.stamp
+$(OUT_DIR)/%_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt: $(STAMP_DIR)/windows/%.stamp
 	@mkdir -p "$(@D)"
-	$(RUN) ops/scripts/train_gcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
+	$(RUN) ml/src/fall_detection/training/train_ctr_gcn.py --train_dir "$(call win_dir,$*)/train" --val_dir "$(call win_dir,$*)/val" \
 	  --epochs "$(EPOCHS_GCN)" --batch "$(BATCH_GCN)" --lr "$(call get,LR_GCN,$*)" --seed "$(SPLIT_SEED)" --fps_default "$(FPS_$*)" \
-	  $(FEAT_FLAGS_GCN) \
-	  $(if $(strip $(GCN_RESUME)),--resume "$(strip $(GCN_RESUME))",) \
-	  $(if $(strip $(GCN_HARD_NEG_LIST)),--hard_neg_list "$(strip $(GCN_HARD_NEG_LIST))",) \
-	  --hard_neg_mult "$(GCN_HARD_NEG_MULT)" \
 	  --loss "$(GCN_LOSS)" --focal_alpha "$(GCN_FOCAL_ALPHA)" --focal_gamma "$(GCN_FOCAL_GAMMA)" \
-	  --hidden "$(GCN_HIDDEN)" \
-	  --num_blocks "$(GCN_NUM_BLOCKS)" --temporal_kernel "$(GCN_TEMPORAL_KERNEL)" --base_channels "$(GCN_BASE_CHANNELS)" \
-	  --two_stream "$(GCN_TWO_STREAM)" --fuse "$(GCN_FUSE)" \
-	  --use_adaptive_adj "$(GCN_USE_ADAPTIVE_ADJ)" --adaptive_adj_embed "$(GCN_ADAPTIVE_ADJ_EMBED)" \
+	  --channel_schedule "$(CTR_CHANNELS)" --rel_channels "$(CTR_REL_CHANNELS)" --ctr_rank "$(CTR_RANK)" --temporal_kernel "$(GCN_TEMPORAL_KERNEL)" \
 	  --grad_clip "$(GCN_GRAD_CLIP)" --patience "$(GCN_PATIENCE)" --min_epochs "$(GCN_MIN_EPOCHS)" \
 	  --monitor "$(call get,GCN_MONITOR,$*)" \
 	  --mask_joint_p "$(call get,MASK_JOINT_P,$*)" --mask_frame_p "$(call get,MASK_FRAME_P,$*)" \
 	  --thr_min "$(GCN_THR_MIN)" --thr_max "$(GCN_THR_MAX)" --thr_step "$(call get,GCN_THR_STEP,$*)" \
 	  --dropout "$(call get,GCN_DROPOUT,$*)" \
+	  --center "$(CENTER)" \
+	  --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
+	  --motion_scale_by_fps "$(FEAT_MOTION_SCALE_BY_FPS)" --conf_gate "$(FEAT_CONF_GATE)" --use_precomputed_mask "$(FEAT_USE_PRECOMPUTED_MASK)" \
 	  --pos_weight "$(call get,GCN_POS_WEIGHT,$*)" $(if $(filter 1,$(call get,GCN_BALANCED_SAMPLER,$*)),--balanced_sampler,) \
-	  --save_dir "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)"
+	  --save_dir "$(OUT_DIR)/$*_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)"
 	@test -f "$@"
 
 # ============================================================
 
 
-# Dataset-scoped front-door targets (avoid pattern collisions like treating 'gcn-le2i' as a dataset).
-.PHONY: $(addprefix fit-ops-,$(DATASETS)) $(addprefix fit-ops-gcn-,$(DATASETS))
+# Dataset-scoped front-door targets (avoid pattern collisions like treating 'ctr-gcn-le2i' as a dataset).
+.PHONY: $(addprefix fit-ops-,$(DATASETS)) $(addprefix fit-ops-ctr-gcn-,$(DATASETS))
 
 $(addprefix fit-ops-,$(DATASETS)): fit-ops-%: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml
 	@:
 
-$(addprefix fit-ops-gcn-,$(DATASETS)): fit-ops-gcn-%: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml
+$(addprefix fit-ops-ctr-gcn-,$(DATASETS)): fit-ops-ctr-gcn-%: $(OPS_DIR)/ctr_gcn_%$(OUT_TAG).yaml
 	@:
 
-# Explicit alias: recalibrate CAUCAFall GCN using existing checkpoint only.
-.PHONY: fit-ops-gcn-caucafall-force-ckpt
-fit-ops-gcn-caucafall-force-ckpt:
-	@$(MAKE) -B fit-ops-gcn-caucafall ADAPTER_USE="$(ADAPTER_USE)" OUT_TAG="$(OUT_TAG)"
-
-.PHONY: repro-best-tcn-caucafall repro-best-gcn-caucafall repro-best-caucafall apply-locked-ops-caucafall repro-best-gcn-le2i-paper repro-deploy-gcn-le2i apply-deploy-ops-le2i-gcn repro-best-tcn-muvim repro-best-gcn-muvim repro-best-muvim
+.PHONY: repro-best-tcn-caucafall repro-best-caucafall apply-locked-ops-caucafall repro-best-tcn-muvim repro-best-muvim
 repro-best-tcn-caucafall: $(LOCK_TCN_CAUC_OPS) $(LOCK_TCN_CAUC_MET)
 	@echo "[ok] tcn locked profile reproduced:"
 	@echo "     ops=$(LOCK_TCN_CAUC_OPS)"
 	@echo "     metrics=$(LOCK_TCN_CAUC_MET)"
 
-repro-best-gcn-caucafall: $(LOCK_GCN_CAUC_OPS) $(LOCK_GCN_CAUC_MET)
-	@echo "[ok] gcn locked profile reproduced:"
-	@echo "     ops=$(LOCK_GCN_CAUC_OPS)"
-	@echo "     metrics=$(LOCK_GCN_CAUC_MET)"
-
-repro-best-caucafall: repro-best-tcn-caucafall repro-best-gcn-caucafall
-	@echo "[ok] caucafall locked TCN+GCN profiles reproduced."
+repro-best-caucafall: repro-best-tcn-caucafall
+	@echo "[ok] caucafall locked TCN profile reproduced."
 
 repro-best-tcn-muvim: $(LOCK_TCN_MUVIM_MET)
 	@echo "[ok] muvim locked TCN profile reproduced:"
 	@echo "     ops=$(LOCK_TCN_MUVIM_OPS)"
 	@echo "     metrics=$(LOCK_TCN_MUVIM_MET)"
 
-repro-best-gcn-muvim: $(LOCK_GCN_MUVIM_MET)
-	@echo "[ok] muvim locked GCN profile reproduced:"
-	@echo "     ops=$(LOCK_GCN_MUVIM_OPS)"
-	@echo "     metrics=$(LOCK_GCN_MUVIM_MET)"
-
-repro-best-muvim: repro-best-tcn-muvim repro-best-gcn-muvim
-	@echo "[ok] muvim locked TCN+GCN profiles reproduced."
-
-repro-best-gcn-le2i-paper: $(LOCK_GCN_LE2I_PAPER_MET)
-	@echo "[ok] le2i gcn paper profile reproduced:"
-	@echo "     ops=$(LOCK_GCN_LE2I_PAPER_OPS)"
-	@echo "     metrics=$(LOCK_GCN_LE2I_PAPER_MET)"
-
-repro-deploy-gcn-le2i: repro-best-gcn-le2i-paper
-	@echo "[ok] LE2i GCN deployment profile is locked to paper_profile."
-
-apply-deploy-ops-le2i-gcn: repro-best-gcn-le2i-paper $(LOCK_GCN_LE2I_DEPLOY_MET)
-	@cp "$(LOCK_GCN_LE2I_PAPER_OPS)" "$(OPS_DIR)/gcn_le2i.yaml"
-	@echo "[ok] canonical LE2i GCN deploy ops updated:"
-	@echo "     $(OPS_DIR)/gcn_le2i.yaml"
-	@echo "     $(LOCK_GCN_LE2I_DEPLOY_MET)"
+repro-best-muvim: repro-best-tcn-muvim
+	@echo "[ok] muvim locked TCN profile reproduced."
 
 apply-locked-ops-caucafall: repro-best-caucafall
 	@cp "$(LOCK_TCN_CAUC_OPS)" "$(OPS_DIR)/tcn_caucafall.yaml"
-	@cp "$(LOCK_GCN_CAUC_OPS)" "$(OPS_DIR)/gcn_caucafall.yaml"
 	@echo "[ok] canonical ops updated:"
 	@echo "     $(OPS_DIR)/tcn_caucafall.yaml"
-	@echo "     $(OPS_DIR)/gcn_caucafall.yaml"
-
-$(LOCK_GCN_LE2I_PAPER_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
-	@mkdir -p "$(@D)"
-	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i paper-profile ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
-	@test -f "$(LOCK_GCN_LE2I_PAPER_OPS)" || (echo "[ERR] missing LE2i paper-profile ops: $(LOCK_GCN_LE2I_PAPER_OPS)" && exit 1)
-	$(RUN) ops/scripts/eval_metrics.py \
-	  --win_dir "$(call win_eval_dir,le2i)/test" \
-	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
-	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
-	  --out_json "$@" \
-	  --fps_default "$(FPS_le2i)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-$(LOCK_GCN_LE2I_DEPLOY_MET): $(LOCK_GCN_LE2I_PAPER_OPS)
-	@mkdir -p "$(@D)"
-	@test -f "$(LOCK_GCN_LE2I_PAPER_CKPT)" || (echo "[ERR] missing LE2i deploy ckpt: $(LOCK_GCN_LE2I_PAPER_CKPT)" && exit 1)
-	$(RUN) ops/scripts/eval_metrics.py \
-	  --win_dir "$(call win_eval_dir,le2i)/test" \
-	  --ckpt "$(LOCK_GCN_LE2I_PAPER_CKPT)" \
-	  --ops_yaml "$(LOCK_GCN_LE2I_PAPER_OPS)" \
-	  --out_json "$@" \
-	  --fps_default "$(FPS_le2i)" \
-	  $(METRICS_SWEEP_FLAGS)
 
 $(LOCK_TCN_MUVIM_MET): $(LOCK_TCN_MUVIM_OPS)
 	@mkdir -p "$(@D)"
@@ -1153,18 +1025,6 @@ $(LOCK_TCN_MUVIM_MET): $(LOCK_TCN_MUVIM_OPS)
 	  --win_dir "$(call win_eval_dir,muvim)/test" \
 	  --ckpt "$(LOCK_TCN_MUVIM_CKPT)" \
 	  --ops_yaml "$(LOCK_TCN_MUVIM_OPS)" \
-	  --out_json "$@" \
-	  --fps_default "$(FPS_muvim)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-$(LOCK_GCN_MUVIM_MET): $(LOCK_GCN_MUVIM_OPS)
-	@mkdir -p "$(@D)"
-	@test -f "$(LOCK_GCN_MUVIM_CKPT)" || (echo "[ERR] missing MUVIM locked GCN ckpt: $(LOCK_GCN_MUVIM_CKPT)" && exit 1)
-	@test -f "$(LOCK_GCN_MUVIM_OPS)" || (echo "[ERR] missing MUVIM locked GCN ops: $(LOCK_GCN_MUVIM_OPS)" && exit 1)
-	$(RUN) ops/scripts/eval_metrics.py \
-	  --win_dir "$(call win_eval_dir,muvim)/test" \
-	  --ckpt "$(LOCK_GCN_MUVIM_CKPT)" \
-	  --ops_yaml "$(LOCK_GCN_MUVIM_OPS)" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_muvim)" \
 	  $(METRICS_SWEEP_FLAGS)
@@ -1189,37 +1049,12 @@ $(LOCK_TCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
 	    --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.20"; \
 	fi
 
-$(LOCK_GCN_CAUC_OPS): $(STAMP_DIR)/windows_eval/caucafall.stamp
-	@mkdir -p "$(@D)" "$(MET_DIR)"
-	@test -f "$(LOCK_GCN_CAUC_CKPT)" || (echo "[ERR] missing locked GCN ckpt: $(LOCK_GCN_CAUC_CKPT)" && exit 1)
-	$(RUN) ops/scripts/fit_ops.py --arch gcn \
-	  --val_dir "$(call win_eval_dir,caucafall)/val" \
-	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
-	  --out "$@" \
-	  --fps_default "$(FPS_caucafall)" \
-	  --center "$(CENTER)" --use_motion "$(FEAT_USE_MOTION)" --use_conf_channel "$(FEAT_USE_CONF_CHANNEL)" --use_bone "$(FEAT_USE_BONE)" --use_bone_length "$(FEAT_USE_BONE_LEN)" \
-	  --ema_alpha "0.20" --k "2" --n "3" --cooldown_s "30" --tau_low_ratio "0.78" --confirm "0" --confirm_s "2.0" --confirm_min_lying "0.65" --confirm_max_motion "0.08" --confirm_require_low "1" \
-	  --thr_min "0.01" --thr_max "0.95" --thr_step "0.01" --time_mode "center" --merge_gap_s "1.0" --overlap_slack_s "0.5" \
-	  --op1_recall "0.95" --op3_fa24h "1.0" --op2_objective "cost_sensitive" --cost_fn "5.0" --cost_fp "10" \
-	  --ops_picker "conservative" --op_tie_break "max_thr" --tie_eps "1e-3" \
-	  --save_sweep_json "1" --allow_degenerate_sweep "0" --emit_absolute_paths "0" --min_tau_high "0.30"
-
 $(LOCK_TCN_CAUC_MET): $(LOCK_TCN_CAUC_OPS)
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,caucafall)/test" \
 	  --ckpt "$(LOCK_TCN_CAUC_CKPT)" \
 	  --ops_yaml "$(LOCK_TCN_CAUC_OPS)" \
-	  --out_json "$@" \
-	  --fps_default "$(FPS_caucafall)" \
-	  $(METRICS_SWEEP_FLAGS)
-
-$(LOCK_GCN_CAUC_MET): $(LOCK_GCN_CAUC_OPS)
-	@mkdir -p "$(@D)"
-	$(RUN) ops/scripts/eval_metrics.py \
-	  --win_dir "$(call win_eval_dir,caucafall)/test" \
-	  --ckpt "$(LOCK_GCN_CAUC_CKPT)" \
-	  --ops_yaml "$(LOCK_GCN_CAUC_OPS)" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_caucafall)" \
 	  $(METRICS_SWEEP_FLAGS)
@@ -1240,12 +1075,12 @@ $(OPS_DIR)/tcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filt
 	  --min_tau_high "$(call get,FITOPS_MIN_TAU_HIGH,$*)" \
 	  $(FITOPS_FA_ARG)
 
-$(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
+$(OPS_DIR)/ctr_gcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filter 1,$$(FITOPS_USE_FA)),$(STAMP_DIR)/fa_windows/$$*.stamp,)
 	@mkdir -p "$(@D)" "$(CAL_DIR)"
-	@test -f "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-gcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
-	$(RUN) ops/scripts/fit_ops.py --arch gcn \
+	@test -f "$(OUT_DIR)/$*_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" || (echo "[ERR] missing checkpoint: $(OUT_DIR)/$*_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt. Run train-ctr-gcn-$* first (or set OUT_TAG to an existing run)." && exit 1)
+	$(RUN) ops/scripts/fit_ops.py --arch ctr_gcn \
 	  --val_dir "$(call win_eval_dir,$*)/val" \
-	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
+	  --ckpt "$(OUT_DIR)/$*_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
 	  --out "$@" \
 	  --fps_default "$(FPS_$*)" \
 	  $(FITOPS_FEAT_FLAGS) \
@@ -1255,20 +1090,17 @@ $(OPS_DIR)/gcn_%$(OUT_TAG).yaml: $(STAMP_DIR)/windows_eval/%.stamp $$(if $$(filt
 
 # ============================================================
 # Eval → metrics JSON
-# Dataset-scoped eval targets (avoid pattern collisions like 'eval-gcn-le2i' matching 'eval-%').
-.PHONY: $(addprefix eval-,$(DATASETS)) $(addprefix eval-gcn-,$(DATASETS)) \
-        $(addprefix eval-unlabeled-,$(DATASETS)) $(addprefix eval-unlabeled-gcn-,$(DATASETS))
+# Dataset-scoped eval targets (avoid pattern collisions like 'eval-ctr-gcn-le2i' matching 'eval-%').
+.PHONY: $(addprefix eval-,$(DATASETS)) $(addprefix eval-ctr-gcn-,$(DATASETS)) \
+        $(addprefix eval-unlabeled-,$(DATASETS))
 
 $(addprefix eval-,$(DATASETS)): eval-%: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@:
 
-$(addprefix eval-gcn-,$(DATASETS)): eval-gcn-%: $(MET_DIR)/gcn_%$(OUT_TAG).json
+$(addprefix eval-ctr-gcn-,$(DATASETS)): eval-ctr-gcn-%: $(MET_DIR)/ctr_gcn_%$(OUT_TAG).json
 	@:
 
 $(addprefix eval-unlabeled-,$(DATASETS)): eval-unlabeled-%: $(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json
-	@:
-
-$(addprefix eval-unlabeled-gcn-,$(DATASETS)): eval-unlabeled-gcn-%: $(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json
 	@:
 
 # ============================================================
@@ -1283,12 +1115,12 @@ $(MET_DIR)/tcn_%$(OUT_TAG).json: $(OPS_DIR)/tcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_tc
 	  --fps_default "$(FPS_$*)" \
 	  $(METRICS_SWEEP_FLAGS)
 
-$(MET_DIR)/gcn_%$(OUT_TAG).json: $(OPS_DIR)/gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
+$(MET_DIR)/ctr_gcn_%$(OUT_TAG).json: $(OPS_DIR)/ctr_gcn_%$(OUT_TAG).yaml $(OUT_DIR)/%_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt $(STAMP_DIR)/windows_eval/%.stamp
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/eval_metrics.py \
 	  --win_dir "$(call win_eval_dir,$*)/test" \
-	  --ckpt "$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
-	  --ops_yaml "$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml" \
+	  --ckpt "$(OUT_DIR)/$*_ctr_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt" \
+	  --ops_yaml "$(OPS_DIR)/ctr_gcn_$*$(OUT_TAG).yaml" \
 	  --out_json "$@" \
 	  --fps_default "$(FPS_$*)" \
 	  $(METRICS_SWEEP_FLAGS)
@@ -1303,45 +1135,35 @@ $(UNLABELED_MET_DIR)/tcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unl
 	  --fps_default "$(FPS_$*)" \
 	  $(METRICS_SWEEP_FLAGS)
 
-$(UNLABELED_MET_DIR)/gcn_%$(OUT_TAG)_unlabeled_fa.json: $(STAMP_DIR)/windows_unlabeled/%.stamp
-	@mkdir -p "$(@D)"
-	$(RUN) ops/scripts/eval_metrics.py \
-	  --win_dir "$(call win_unlabeled_dir,$*)/$(UNLABELED_SUBSET_EVAL)" \
-	  --ckpt "$(if $(strip $(UNLABELED_CKPT)),$(UNLABELED_CKPT),$(OUT_DIR)/$*_gcn_W$(WIN_W)S$(WIN_S)$(OUT_TAG)/best.pt)" \
-	  --ops_yaml "$(if $(strip $(UNLABELED_OPS_YAML)),$(UNLABELED_OPS_YAML),$(OPS_DIR)/gcn_$*$(OUT_TAG).yaml)" \
-	  --out_json "$@" \
-	  --fps_default "$(FPS_$*)" \
-	  $(METRICS_SWEEP_FLAGS)
-
 # ============================================================
 # Plot
-# Dataset-scoped plot targets (avoid pattern collisions like 'plot-gcn-le2i' matching 'plot-%').
-.PHONY: $(addprefix plot-,$(DATASETS)) $(addprefix plot-gcn-,$(DATASETS)) $(addprefix plot-confmat-,$(DATASETS)) $(addprefix plot-confmat-gcn-,$(DATASETS)) $(addprefix plot-failure-,$(DATASETS)) $(addprefix plot-failure-gcn-,$(DATASETS)) $(addprefix plot-balance-,$(DATASETS))
+# Dataset-scoped plot targets (avoid pattern collisions like 'plot-ctr-gcn-le2i' matching 'plot-%').
+.PHONY: $(addprefix plot-,$(DATASETS)) $(addprefix plot-ctr-gcn-,$(DATASETS)) $(addprefix plot-confmat-,$(DATASETS)) $(addprefix plot-confmat-ctr-gcn-,$(DATASETS)) $(addprefix plot-failure-,$(DATASETS)) $(addprefix plot-failure-ctr-gcn-,$(DATASETS)) $(addprefix plot-balance-,$(DATASETS))
 
 $(addprefix plot-,$(DATASETS)): plot-%: \
   $(PLOT_DIR)/tcn_%$(OUT_TAG)_recall_vs_fa.png \
   $(PLOT_DIR)/tcn_%$(OUT_TAG)_f1_vs_tau.png
 	@:
 
-$(addprefix plot-gcn-,$(DATASETS)): plot-gcn-%: \
-  $(PLOT_DIR)/gcn_%$(OUT_TAG)_recall_vs_fa.png \
-  $(PLOT_DIR)/gcn_%$(OUT_TAG)_f1_vs_tau.png
+$(addprefix plot-ctr-gcn-,$(DATASETS)): plot-ctr-gcn-%: \
+  $(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_recall_vs_fa.png \
+  $(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_f1_vs_tau.png
 	@:
 
 $(addprefix plot-confmat-,$(DATASETS)): plot-confmat-%: \
   $(PLOT_DIR)/tcn_%$(OUT_TAG)_confusion_matrix.png
 	@:
 
-$(addprefix plot-confmat-gcn-,$(DATASETS)): plot-confmat-gcn-%: \
-  $(PLOT_DIR)/gcn_%$(OUT_TAG)_confusion_matrix.png
+$(addprefix plot-confmat-ctr-gcn-,$(DATASETS)): plot-confmat-ctr-gcn-%: \
+  $(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_confusion_matrix.png
 	@:
 
 $(addprefix plot-failure-,$(DATASETS)): plot-failure-%: \
   $(PLOT_DIR)/tcn_%$(OUT_TAG)_failure_scatter.png
 	@:
 
-$(addprefix plot-failure-gcn-,$(DATASETS)): plot-failure-gcn-%: \
-  $(PLOT_DIR)/gcn_%$(OUT_TAG)_failure_scatter.png
+$(addprefix plot-failure-ctr-gcn-,$(DATASETS)): plot-failure-ctr-gcn-%: \
+  $(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_failure_scatter.png
 	@:
 
 $(addprefix plot-balance-,$(DATASETS)): plot-balance-%: \
@@ -1358,11 +1180,11 @@ $(PLOT_DIR)/tcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
 
-$(PLOT_DIR)/gcn_%$(OUT_TAG)_recall_vs_fa.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+$(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_recall_vs_fa.png: $(MET_DIR)/ctr_gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_fa_recall.py --reports "$<" --out_fig "$@"
 
-$(PLOT_DIR)/gcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+$(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_f1_vs_tau.png: $(MET_DIR)/ctr_gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_f1_vs_tau.py --reports "$<" --out_fig "$@"
 
@@ -1370,7 +1192,7 @@ $(PLOT_DIR)/tcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/tcn_%$(OUT_TAG).jso
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
 
-$(PLOT_DIR)/gcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+$(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_confusion_matrix.png: $(MET_DIR)/ctr_gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_confusion_matrix.py --metrics_json "$<" --out_fig "$@" --normalize 1
 
@@ -1378,7 +1200,7 @@ $(PLOT_DIR)/tcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/tcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
 
-$(PLOT_DIR)/gcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/gcn_%$(OUT_TAG).json
+$(PLOT_DIR)/ctr_gcn_%$(OUT_TAG)_failure_scatter.png: $(MET_DIR)/ctr_gcn_%$(OUT_TAG).json
 	@mkdir -p "$(@D)"
 	$(RUN) ops/scripts/plot_failure_scatter.py --metrics_json "$<" --out_fig "$@" --fa_log 1 --style box
 
@@ -1441,7 +1263,6 @@ audit-promoted-profiles:
 	$(RUN) ops/scripts/audit_promoted_profiles.py \
 	  --check "le2i_tcn|outputs/metrics/tcn_le2i_hneg_pack_tsm_promoted.json|artifacts/reports/hneg_cycle/tcn_le2i_hneg_pack_tsm_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
 	  --check "caucafall_tcn|outputs/metrics/tcn_caucafall_promoted.json|artifacts/reports/hneg_cycle/caucafall_tcn_promoted_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
-	  --check "caucafall_gcn|outputs/metrics/gcn_caucafall_promoted2.json|artifacts/reports/hneg_cycle/gcn_caucafall_promoted2_unlabeled_fa.json|1.0|0|0.0|0.0|0" \
 	  --out_json "artifacts/reports/promoted_profiles_$(shell date +%Y%m%d).json"
 
 audit-numeric:
@@ -1518,20 +1339,20 @@ pipeline-%: DO_EXTRACT=1
 pipeline-%: plot-%
 	@:
 
-pipeline-gcn-%: DO_EXTRACT=1
-pipeline-gcn-%: plot-gcn-%
+pipeline-ctr-gcn-%: DO_EXTRACT=1
+pipeline-ctr-gcn-%: plot-ctr-gcn-%
 	@:
 
 pipeline-all: $(addprefix pipeline-,$(DATASETS))
-pipeline-all-gcn: $(addprefix pipeline-gcn-,$(DATASETS))
+pipeline-all-ctr-gcn: $(addprefix pipeline-ctr-gcn-,$(DATASETS))
 pipeline-all-noextract: $(addsuffix -noextract,$(addprefix pipeline-,$(DATASETS)))
-pipeline-all-gcn-noextract: $(addsuffix -noextract,$(addprefix pipeline-gcn-,$(DATASETS)))
+pipeline-all-ctr-gcn-noextract: $(addsuffix -noextract,$(addprefix pipeline-ctr-gcn-,$(DATASETS)))
 
 # ============================================================
 # Auto pipeline orchestration (single-command, model-specific)
 # Enforces adapter-mode window generation for sampling parity.
 # ============================================================
-.PHONY: $(addprefix pipeline-auto-tcn-,$(DATASETS)) $(addprefix pipeline-auto-gcn-,$(DATASETS))
+.PHONY: $(addprefix pipeline-auto-tcn-,$(DATASETS)) $(addprefix pipeline-auto-ctr-gcn-,$(DATASETS))
 AUTO_DO_EXTRACT ?= 0
 AUTO_FORCE_REBUILD ?= 0
 AUTO_WIN_EVAL_CLEAN ?= 0
@@ -1549,23 +1370,23 @@ $(addprefix pipeline-auto-tcn-,$(DATASETS)): pipeline-auto-tcn-%:
 	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-tcn-$*
 	@$(MAKE) ADAPTER_USE=1 plot-$*
 
-$(addprefix pipeline-auto-gcn-,$(DATASETS)): pipeline-auto-gcn-%:
+$(addprefix pipeline-auto-ctr-gcn-,$(DATASETS)): pipeline-auto-ctr-gcn-%:
 	@mkdir -p ".make/locks"
 	@while ! mkdir ".make/locks/windows-$*.lock" 2>/dev/null; do echo "[wait] windows lock busy for $*"; sleep 1; done; \
 	trap 'rmdir ".make/locks/windows-$*.lock"' EXIT INT TERM; \
 	$(MAKE) $(if $(filter 1,$(AUTO_FORCE_REBUILD)),-B,) DO_EXTRACT="$(AUTO_DO_EXTRACT)" ADAPTER_USE=1 WIN_EVAL_CLEAN="$(AUTO_WIN_EVAL_CLEAN)" windows-$* windows-eval-$*
 	@$(if $(filter 1,$(FITOPS_USE_FA)),$(MAKE) ADAPTER_USE=1 fa-windows-$*,:)
-	@$(MAKE) ADAPTER_USE=1 train-gcn-$*
-	@$(MAKE) ADAPTER_USE=1 fit-ops-gcn-$*
-	@$(MAKE) ADAPTER_USE=1 eval-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 train-ctr-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 fit-ops-ctr-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 eval-ctr-gcn-$*
 	# Optional future step (when standardized):
-	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-gcn-$*
-	@$(MAKE) ADAPTER_USE=1 plot-gcn-$*
+	# $(MAKE) ADAPTER_USE=1 mine-hard-negatives-ctr-gcn-$*
+	@$(MAKE) ADAPTER_USE=1 plot-ctr-gcn-$*
 
 eval-all: $(addprefix eval-,$(DATASETS))
 plot-all: $(addprefix plot-,$(DATASETS))
-eval-all-gcn: $(addprefix eval-gcn-,$(DATASETS))
-plot-all-gcn: $(addprefix plot-gcn-,$(DATASETS))
+eval-all-ctr-gcn: $(addprefix eval-ctr-gcn-,$(DATASETS))
+plot-all-ctr-gcn: $(addprefix plot-ctr-gcn-,$(DATASETS))
 
 # Offline
 # make fit-ops-caucafall ALERT_CONFIRM=0 ALERT_EMA_ALPHA=0.5

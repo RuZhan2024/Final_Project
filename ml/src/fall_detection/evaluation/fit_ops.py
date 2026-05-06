@@ -42,7 +42,14 @@ from fall_detection.core.alerting import AlertCfg, pick_ops_from_sweep, sweep_al
 from fall_detection.core.calibration import fit_temperature, sigmoid
 from fall_detection.core.ckpt import load_ckpt
 from fall_detection.core.confirm import confirm_scores_window
-from fall_detection.core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_gcn_two_stream
+from fall_detection.core.features import (
+    FeatCfg,
+    build_canonical_input,
+    build_tcn_input,
+    read_window_npz,
+    split_ctr_gcn_two_stream,
+    split_gcn_two_stream,
+)
 from fall_detection.core.models import build_model
 from fall_detection.core.yamlio import yaml_dump_simple, yaml_load_simple
 
@@ -340,7 +347,7 @@ def pick_ops_from_sweep_conservative(
             if region.size > 0:
                 best = float(np.nanmax(f1[region]))
                 cand2 = region[np.where(f1[region] >= best - eps)[0]]
-                i2 = _pick_index_by_thr(cand2, thr, tie_break="max_thr")
+                i2 = _pick_index_by_thr(cand2, thr, tie_break=tie_break)
             else:
                 mid = 0.5 * (thr[i1] + thr[i3])
                 i2 = int(valid[np.argmin(np.abs(thr[valid] - mid))])
@@ -449,7 +456,10 @@ class WindowDirDataset(Dataset):
 
         if self.arch in {"gcn", "ctr_gcn"}:
             if self.two_stream:
-                xj, xm = split_gcn_two_stream(X, self.feat_cfg)
+                if self.arch == "ctr_gcn":
+                    xj, xm = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
+                else:
+                    xj, xm = split_gcn_two_stream(X, self.feat_cfg)
                 return (
                     torch.from_numpy(xj).to(torch.float32),
                     torch.from_numpy(xm).to(torch.float32),
@@ -541,21 +551,29 @@ def _preflight_input_contract(
             )
         return
 
-    if kind == "gcn":
+    if kind in {"gcn", "ctr_gcn"}:
         if two_stream:
             xj, xm = sample[0], sample[1]
             got_j = int(xj.shape[1])
             got_fj = int(xj.shape[-1])
             got_fm = int(xm.shape[-1])
             exp_j = int(model_cfg.get("num_joints", got_j))
-            exp_fj = int(model_cfg.get("in_feats_joint", model_cfg.get("in_feats", got_fj)))
-            exp_fm = int(model_cfg.get("in_feats_motion", model_cfg.get("in_feats", got_fm)))
+            if kind == "ctr_gcn":
+                exp_fj = int(model_cfg.get("in_feats_j", got_fj))
+                exp_fm = int(model_cfg.get("in_feats_b", got_fm))
+                stream_name = "CTR-GCN two-stream"
+                right_name = "in_feats_bone"
+            else:
+                exp_fj = int(model_cfg.get("in_feats_j", model_cfg.get("in_feats_joint", got_fj)))
+                exp_fm = int(model_cfg.get("in_feats_m", model_cfg.get("in_feats_motion", got_fm)))
+                stream_name = "GCN two-stream"
+                right_name = "in_feats_motion"
             if got_j != exp_j or got_fj != exp_fj or got_fm != exp_fm:
                 raise RuntimeError(
-                    "Input feature mismatch for fit_ops (GCN two-stream): "
-                    f"ckpt expects num_joints={exp_j}, in_feats_joint={exp_fj}, in_feats_motion={exp_fm}; "
+                    f"Input feature mismatch for fit_ops ({stream_name}): "
+                    f"ckpt expects num_joints={exp_j}, in_feats_joint={exp_fj}, {right_name}={exp_fm}; "
                     f"windows from '{source_dir}' produced num_joints={got_j}, "
-                    f"in_feats_joint={got_fj}, in_feats_motion={got_fm}. "
+                    f"in_feats_joint={got_fj}, {right_name}={got_fm}. "
                     "Rebuild windows and retrain with a consistent feature contract."
                 )
         else:

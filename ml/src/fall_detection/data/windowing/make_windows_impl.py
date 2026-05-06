@@ -6,8 +6,8 @@ Goal
 ----
 Turn cleaned pose sequences into fixed-length windows for training/eval, using:
 
-- video-level labels: configs/labels/<ds>.json  {stem: "fall"/"adl" or 1/0}
-- optional fall spans: configs/labels/<ds>_spans.json {stem: [[start, stop), ...]}
+- video-level labels: ops/configs/labels/<ds>.json  {stem: "fall"/"adl" or 1/0}
+- optional fall spans: ops/configs/labels/<ds>_spans.json {stem: [[start, stop), ...]}
 
 New pipeline concepts implemented
 ---------------------------------

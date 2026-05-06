@@ -18,7 +18,7 @@ Typical:
 Notes
 - If --neg_only=1, only windows with y==0 OR y<0 are considered.
 - Clip id is taken from window meta.video_id (fallback: filename). This works even when windows are stored flat.
-- Output format (one NPZ path per line) matches models/train_tcn.py and models/train_gcn.py hard_neg_list loaders.
+- Output format (one NPZ path per line) matches the TCN and CTR-GCN hard-negative loaders.
 """
 
 from __future__ import annotations

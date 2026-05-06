@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 
 [project.scripts]
 fd-train-tcn = "fall_detection.training.train_tcn:main"
-fd-train-gcn = "fall_detection.training.train_gcn:main"
+fd-train-ctr-gcn = "fall_detection.training.train_ctr_gcn:main"
 fd-make-windows = "fall_detection.data.windowing.make_windows_impl:main"
 fd-make-unlabeled-windows = "fall_detection.data.windowing.make_unlabeled_windows_impl:main"
 fd-make-fa-windows = "fall_detection.data.windowing.make_fa_windows_impl:main"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Standalone project-adapted CTR-GCN models for pose-based fall detection.
+"""Project-adapted CTR-GCN for pose-based fall detection.
 
 This module intentionally defines a separate graph-model family instead of
 mutating the existing custom-GCN line.
@@ -8,11 +8,14 @@ mutating the existing custom-GCN line.
 Project contract:
 - external input: ``[B, T, V, F]``
 - internal layout: ``[B, F, T, V]``
-- single-stream only in the first pass
-- fixed skeleton adjacency as the shared prior
+- single-stream and joint/bone two-stream variants
+- fixed MediaPipe skeleton adjacency as the shared prior
 - topology refinement through:
   1) a shared input-conditioned relation term
   2) a channel-wise low-rank refinement term
+
+This is a project-adapted CTR-GCN line, not a faithful reproduction of the full
+official CTR-GCN training stack.
 """
 
 from __future__ import annotations
@@ -142,6 +145,55 @@ class CTRGCNBlock(nn.Module):
         return self.act(y + self.residual(x))
 
 
+class CTRGCNEncoder(nn.Module):
+    """CTR-GCN encoder used by late-fusion wrappers.
+
+    This intentionally lives beside ``CTRGCN`` instead of replacing it, so
+    historical single-stream checkpoints keep their original state-dict keys.
+    """
+
+    def __init__(
+        self,
+        num_joints: int,
+        in_feats: int,
+        *,
+        channels: tuple[int, ...] = (64, 64, 64, 128),
+        rel_channels: int = 8,
+        ctr_rank: int = 8,
+        temporal_kernel: int = 9,
+        dropout: float = 0.30,
+    ) -> None:
+        super().__init__()
+        A_hat = normalize_adjacency(build_mediapipe_adjacency(num_joints))
+        self.register_buffer("A_hat", torch.from_numpy(A_hat.astype(np.float32)))
+
+        widths = tuple(int(ch) for ch in channels) or (64, 64, 64, 128)
+        blocks = []
+        in_ch = int(in_feats)
+        for out_ch in widths:
+            blocks.append(
+                CTRGCNBlock(
+                    in_ch,
+                    out_ch,
+                    num_joints=num_joints,
+                    rel_channels=rel_channels,
+                    ctr_rank=ctr_rank,
+                    temporal_kernel=temporal_kernel,
+                    dropout=dropout,
+                )
+            )
+            in_ch = out_ch
+        self.blocks = nn.ModuleList(blocks)
+        self.out_dim = int(in_ch)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 3, 1, 2).contiguous()  # [B,F,T,V]
+        A_hat = self.A_hat
+        for blk in self.blocks:
+            x = blk(x, A_hat)
+        return x.mean(dim=(2, 3))
+
+
 class CTRGCN(nn.Module):
     """Single-stream CTR-GCN over canonical ``[B,T,V,F]`` skeleton features."""
 
@@ -188,6 +240,72 @@ class CTRGCN(nn.Module):
         return self.head(x).squeeze(-1)
 
 
+class TwoStreamCTRGCN(nn.Module):
+    """Joint/bone CTR-GCN with late fusion at the classifier head."""
+
+    def __init__(
+        self,
+        num_joints: int,
+        in_feats_j: int,
+        in_feats_b: int,
+        *,
+        channels: tuple[int, ...] = (64, 64, 64, 128),
+        rel_channels: int = 8,
+        ctr_rank: int = 8,
+        temporal_kernel: int = 9,
+        dropout: float = 0.30,
+        fuse: str = "concat",
+        stream_drop_joint_p: float = 0.0,
+        stream_drop_bone_p: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.j_enc = CTRGCNEncoder(
+            num_joints,
+            in_feats_j,
+            channels=channels,
+            rel_channels=rel_channels,
+            ctr_rank=ctr_rank,
+            temporal_kernel=temporal_kernel,
+            dropout=dropout,
+        )
+        self.b_enc = CTRGCNEncoder(
+            num_joints,
+            in_feats_b,
+            channels=channels,
+            rel_channels=rel_channels,
+            ctr_rank=ctr_rank,
+            temporal_kernel=temporal_kernel,
+            dropout=dropout,
+        )
+        self.fuse = str(fuse).lower()
+        self.stream_drop_joint_p = float(stream_drop_joint_p)
+        self.stream_drop_bone_p = float(stream_drop_bone_p)
+        out_dim = (2 * self.j_enc.out_dim) if self.fuse == "concat" else self.j_enc.out_dim
+        self.head = nn.Linear(out_dim, 1)
+
+    def forward(self, xj: torch.Tensor, xb: torch.Tensor) -> torch.Tensor:
+        zj = self.j_enc(xj)
+        zb = self.b_enc(xb)
+        if self.training and (self.stream_drop_joint_p > 0.0 or self.stream_drop_bone_p > 0.0):
+            bsz = int(zj.shape[0])
+            keep_j = (torch.rand(bsz, device=zj.device) >= self.stream_drop_joint_p).to(zj.dtype).view(bsz, 1)
+            keep_b = (torch.rand(bsz, device=zb.device) >= self.stream_drop_bone_p).to(zb.dtype).view(bsz, 1)
+            both_off = (keep_j <= 0.0) & (keep_b <= 0.0)
+            if both_off.any():
+                keep_j[both_off] = 1.0
+            zj = zj * keep_j
+            zb = zb * keep_b
+        if self.fuse == "sum":
+            z = zj + zb
+        elif self.fuse == "joint_only":
+            z = zj
+        elif self.fuse in {"bone_only", "motion_only"}:
+            z = zb
+        else:
+            z = torch.cat([zj, zb], dim=-1)
+        return self.head(z).squeeze(-1)
+
+
 @dataclass
 class CTRGCNConfig:
     num_joints: int = 33
@@ -196,6 +314,11 @@ class CTRGCNConfig:
     ctr_rank: int = 8
     temporal_kernel: int = 9
     dropout: float = 0.30
+    two_stream: bool = False
+    stream_mode: str = "joint_bone"
+    fuse: str = "concat"
+    stream_drop_joint_p: float = 0.0
+    stream_drop_bone_p: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -210,6 +333,8 @@ class CTRGCNConfig:
             num_blocks = int(d.get("num_blocks", 4))
             channels = [base_channels] * max(1, num_blocks)
             channels[-1] = max(channels[-1], int(base_channels * 2))
+        elif isinstance(channels_raw, str):
+            channels = [int(x.strip()) for x in channels_raw.split(",") if x.strip()]
         else:
             channels = [int(x) for x in channels_raw]
         return CTRGCNConfig(
@@ -219,4 +344,9 @@ class CTRGCNConfig:
             ctr_rank=int(d.get("ctr_rank", 8)),
             temporal_kernel=int(d.get("temporal_kernel", 9)),
             dropout=float(d.get("dropout", 0.30)),
+            two_stream=bool(d.get("two_stream", False)),
+            stream_mode=str(d.get("stream_mode", "joint_bone")),
+            fuse=str(d.get("fuse", "concat")),
+            stream_drop_joint_p=float(d.get("stream_drop_joint_p", 0.0)),
+            stream_drop_bone_p=float(d.get("stream_drop_bone_p", 0.0)),
         )
