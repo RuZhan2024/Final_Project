@@ -68,10 +68,21 @@ replay monitoring modes.
 
 Use this path for the fastest local run.
 
-1. From the repository root, run:
+1. From the repository root, run the command for your platform:
 
    ```bash
+   # macOS / Linux
    make bootstrap-dev
+   ```
+
+   ```powershell
+   # Windows PowerShell
+   .\ops\scripts\dev.ps1 bootstrap
+   ```
+
+   ```bash
+   # Universal fallback on any platform with Python 3.10+
+   python ops/scripts/dev.py bootstrap
    ```
 
    The bootstrap script automatically looks for a compatible Python `3.10+`
@@ -113,6 +124,12 @@ To stop the local run:
 
 ```bash
 make stop-dev
+```
+
+On Windows PowerShell:
+
+```powershell
+.\ops\scripts\dev.ps1 stop
 ```
 
 ## Setup And Run

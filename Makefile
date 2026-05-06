@@ -478,26 +478,13 @@ CLEAN_OUT ?= 0   # set to 1 to also remove outputs/
 # Utility targets
 # -------------------------
 bootstrap-dev up:
-	@bash ops/scripts/bootstrap_dev.sh
+	@python3 ops/scripts/dev.py bootstrap
 
 dev:
-	@bash ops/scripts/start_fullstack.sh
+	@python3 ops/scripts/dev.py start
 
 stop-dev:
-	@backend_pids="$$(lsof -ti tcp:8000 2>/dev/null || true)"; \
-	frontend_pids="$$(lsof -ti tcp:3000 2>/dev/null || true)"; \
-	if [ -z "$$backend_pids$$frontend_pids" ]; then \
-	  echo "[dev] no local frontend/backend processes found on ports 3000/8000"; \
-	  exit 0; \
-	fi; \
-	if [ -n "$$backend_pids" ]; then \
-	  echo "$$backend_pids" | xargs kill -9; \
-	  echo "[dev] stopped backend on port 8000"; \
-	fi; \
-	if [ -n "$$frontend_pids" ]; then \
-	  echo "$$frontend_pids" | xargs kill -9; \
-	  echo "[dev] stopped frontend on port 3000"; \
-	fi
+	@python3 ops/scripts/dev.py stop
 
 compose-up:
 	@command -v docker >/dev/null 2>&1 || { \
