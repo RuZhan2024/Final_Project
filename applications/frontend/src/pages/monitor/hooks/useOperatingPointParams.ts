@@ -33,13 +33,11 @@ function normaliseUiParams(settingsPayload: SettingsResponse | null) {
 
 async function loadLegacyOperatingPoint(
   apiBase: string,
-  modelCode: string,
   datasetCode: string,
   activeOperatingPointId: unknown
 ) {
   // This path only exists for older APIs that still expose DB-backed operating points.
-  const codeRaw = String(modelCode || "TCN").toUpperCase();
-  const tryCodes = codeRaw === "GCN" ? ["GCN"] : ["TCN"];
+  const tryCodes = ["TCN"];
 
   for (const code of tryCodes) {
     try {
@@ -127,7 +125,7 @@ export function useOperatingPointParams({
     const datasetCode = String(sys?.active_dataset_code || "caucafall").toLowerCase();
 
     (async () => {
-      const r = await loadLegacyOperatingPoint(apiBase, modelCode, datasetCode, opId);
+      const r = await loadLegacyOperatingPoint(apiBase, datasetCode, opId);
       if (!cancelled) {
         setLegacy(r || { tau_low: null, tau_high: null, op_code: null });
       }

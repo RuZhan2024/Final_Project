@@ -13,6 +13,10 @@ from typing import Any, Dict
 from ..code_normalization import norm_op_code, normalize_dataset_code, normalize_model_code
 from ..inmemory_state import get_inmem_settings
 
+LOCKED_DATASET_CODE = "caucafall"
+LOCKED_MODEL_CODE = "TCN"
+LOCKED_OP_CODE = "OP-2"
+
 
 def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> None:
     """Overlay deploy-time operating-point UI values onto a settings snapshot.
@@ -22,19 +26,19 @@ def apply_yaml_override(system: Dict[str, Any], derive_ops_params_from_yaml) -> 
     assets are absent or temporarily inconsistent.
     """
     try:
-        system.setdefault("active_dataset_code", "caucafall")
-        system.setdefault("active_model_code", "TCN")
-        system.setdefault("active_op_code", "OP-2")
+        system["active_dataset_code"] = LOCKED_DATASET_CODE
+        system["active_model_code"] = LOCKED_MODEL_CODE
+        system["active_op_code"] = LOCKED_OP_CODE
         dp = derive_ops_params_from_yaml(
-            dataset_code=normalize_dataset_code(str(system.get("active_dataset_code") or "caucafall")),
-            model_code=str(system.get("active_model_code") or "TCN"),
-            op_code=str(system.get("active_op_code") or "OP-2"),
+            dataset_code=LOCKED_DATASET_CODE,
+            model_code=LOCKED_MODEL_CODE,
+            op_code=LOCKED_OP_CODE,
         )
         system["deploy_params"] = dp
         ui = dp.get("ui") or {}
         system["fall_threshold"] = float(ui.get("tau_high", system.get("fall_threshold", 0.71)))
         system["tau_low"] = float(ui.get("tau_low", system.get("tau_low", 0.0)))
-        system["active_op_code"] = norm_op_code(str(ui.get("op_code", system.get("active_op_code", "OP-2"))))
+        system["active_op_code"] = norm_op_code(str(ui.get("op_code", LOCKED_OP_CODE)))
         system["alert_cooldown_sec"] = int(round(float(ui.get("cooldown_s", system.get("alert_cooldown_sec", 3)))))
     except (RuntimeError, OSError, TypeError, ValueError, KeyError):
         return

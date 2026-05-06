@@ -14,7 +14,8 @@
     "notes": [
       "Assets listed in this manifest are the tracked runtime-approved subset for the cleaned supervisor-facing branch.",
       "Training outputs under outputs/ remain experimental or local unless explicitly promoted into ops/deploy_assets and referenced here.",
-      "Runtime profile YAMLs listed here are the canonical operating-point configs expected by the backend deploy path."
+      "Runtime profile YAMLs listed here are the only operating-point configs expected by the backend deploy path.",
+      "Historical GCN, LE2i, and sweep artifacts are retained under archive directories for report traceability, but they are not deployable runtime assets."
     ]
   },
   "promoted_runtime_assets": {
@@ -24,32 +25,8 @@
         "dataset": "caucafall",
         "arch": "tcn",
         "path": "ops/deploy_assets/checkpoints/caucafall_tcn_best.pt",
-        "sha256": "eea9ea52eb8d0bdc1c98cd435ac6161fca918d2b5f285285fa4233b48848f2ee",
-        "size_bytes": 1219073
-      },
-      {
-        "id": "caucafall_gcn_runtime",
-        "dataset": "caucafall",
-        "arch": "gcn",
-        "path": "ops/deploy_assets/checkpoints/caucafall_gcn_best.pt",
-        "sha256": "838b706988221256a7cb46be1599d60c77e4a3ed99a36138b5d0338c19641d1a",
-        "size_bytes": 5926906
-      },
-      {
-        "id": "le2i_tcn_runtime",
-        "dataset": "le2i",
-        "arch": "tcn",
-        "path": "ops/deploy_assets/checkpoints/le2i_tcn_best.pt",
-        "sha256": "943d602660137826916b95dd84379a2a543bb587f0859fe61ad6ff523dc392a7",
-        "size_bytes": 1219073
-      },
-      {
-        "id": "le2i_gcn_runtime",
-        "dataset": "le2i",
-        "arch": "gcn",
-        "path": "ops/deploy_assets/checkpoints/le2i_gcn_best.pt",
-        "sha256": "2ad61e0042dfae31ce202300ccf1cc933ef51b873be391c8d5ae0d23efd8a98e",
-        "size_bytes": 2966660
+        "sha256": "b335f206ec5fbd411285338db6a2798ccce30db885a160b095f9fd32bbd700b3",
+        "size_bytes": 1067938
       }
     ],
     "op_profiles": [
@@ -58,24 +35,6 @@
         "dataset": "caucafall",
         "arch": "tcn",
         "path": "ops/configs/ops/tcn_caucafall.yaml"
-      },
-      {
-        "id": "caucafall_gcn_runtime_profile",
-        "dataset": "caucafall",
-        "arch": "gcn",
-        "path": "ops/configs/ops/gcn_caucafall.yaml"
-      },
-      {
-        "id": "le2i_tcn_runtime_profile",
-        "dataset": "le2i",
-        "arch": "tcn",
-        "path": "ops/configs/ops/tcn_le2i.yaml"
-      },
-      {
-        "id": "le2i_gcn_runtime_profile",
-        "dataset": "le2i",
-        "arch": "gcn",
-        "path": "ops/configs/ops/gcn_le2i.yaml"
       }
     ],
     "replay_sets": [

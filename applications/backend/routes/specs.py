@@ -32,14 +32,12 @@ _REPLAY_CLIP_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 
 
 def _replay_clips_root() -> Path:
-    """Resolve the replay clip directory with env override and legacy fallback."""
+    """Resolve the promoted replay clip directory with an optional env override."""
     raw = os.getenv("REPLAY_CLIPS_DIR", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
     root = Path(__file__).resolve().parents[3]
-    canonical = (root / "ops" / "deploy_assets" / "replay_clips").resolve()
-    legacy = (root / "data" / "replay_clips").resolve()
-    return canonical if canonical.exists() else legacy
+    return (root / "ops" / "deploy_assets" / "replay_clips").resolve()
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -89,11 +87,9 @@ def _list_replay_clips() -> list[Dict[str, Any]]:
 
 
 def _load_deploy_modes_yaml() -> Dict[str, Any]:
-    """Load deploy mode presets from the canonical or legacy config path."""
+    """Load deploy mode presets from the canonical config path."""
     root = Path(__file__).resolve().parents[3]
-    canonical = root / "ops" / "configs" / "deploy_modes.yaml"
-    legacy = root / "configs" / "deploy_modes.yaml"
-    path = canonical if canonical.exists() else legacy
+    path = root / "ops" / "configs" / "deploy_modes.yaml"
     if not path.exists():
         return {}
     try:
@@ -157,7 +153,7 @@ def models_summary() -> Dict[str, Any]:
 @router.get("/api/deploy/specs")
 @router.get("/api/v1/deploy/specs")
 def deploy_specs() -> Dict[str, Any]:
-    """Return dataset-specific specs discovered from ops/configs/ops/*.yaml."""
+    """Return runtime specs promoted by ops/deploy_assets/manifest.json."""
     specs = _get_deploy_specs()
     out = []
     datasets = set()

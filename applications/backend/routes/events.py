@@ -20,14 +20,18 @@ except (ImportError, ModuleNotFoundError):
     class MySQLError(Exception):
         pass
 
-from ..core import _anonymize_xy_inplace, _event_clips_dir, _read_clip_privacy_flags
 from ..db import get_conn_optional
-from ..db_schema import col_exists, cols, has_col, table_exists
+from ..db_schema import col_exists, cols, ensure_system_settings_schema, has_col, table_exists
 from ..deploy_ops import detect_variants
 from ..event_schema import event_prob_col, event_time_col
 from ..json_utils import jsonable as _jsonable
 from ..notifications import get_notification_manager
 from ..repositories.residents_repository import one_resident_id, resident_exists
+from ..runtime_assets import (
+    anonymize_xy_inplace as _anonymize_xy_inplace,
+    event_clips_dir as _event_clips_dir,
+    read_clip_privacy_flags,
+)
 from ..schemas import SkeletonClipPayload
 from ..services.events_service import (
     EventsDeps,
@@ -53,6 +57,15 @@ _resident_exists = resident_exists
 _event_time_col = event_time_col
 _event_prob_col = event_prob_col
 _dispatch_safe_guard_from_event = dispatch_safe_guard_from_event
+
+
+def _read_clip_privacy_flags(conn: Any, resident_id: int) -> tuple[bool, bool]:
+    return read_clip_privacy_flags(
+        conn,
+        resident_id,
+        ensure_system_settings_schema=ensure_system_settings_schema,
+        table_exists=table_exists,
+    )
 
 
 def _is_fake_conn(conn: Any) -> bool:
@@ -111,7 +124,7 @@ def list_events(
     end_date: Optional[str] = None,    # YYYY-MM-DD (local UI date, inclusive)
     event_type: Optional[str] = None,  # exact type (e.g., "fall", "uncertain"), or None/"All"
     status: Optional[str] = None,      # pending_review/confirmed_fall/false_alarm/dismissed, or None/"All"
-    model: Optional[str] = None,       # GCN/TCN, or None/"All"
+    model: Optional[str] = None,       # TCN/CTR_GCN, or None/"All"
     limit: Optional[int] = None,       # legacy: /api/events?limit=500
 ) -> Dict[str, Any]:
     """Return paginated resident events for the review UI.
@@ -120,6 +133,18 @@ def list_events(
     shape with ``db_available=False`` so the frontend can render an empty state
     instead of treating the condition as a transport failure.
     """
+
+    if model is not None and str(model).strip().lower() != "all":
+        model_norm = str(model).strip().upper()
+        if model_norm not in {"TCN", "CTR_GCN"}:
+            raise HTTPException(status_code=400, detail="model must be one of: TCN, CTR_GCN")
+    if status is not None and str(status).strip().lower() != "all":
+        status_norm = str(status).strip().lower()
+        if status_norm not in {"pending_review", "confirmed_fall", "false_alarm", "dismissed"}:
+            raise HTTPException(
+                status_code=400,
+                detail="status must be one of: pending_review, confirmed_fall, false_alarm, dismissed",
+            )
 
     with get_conn_optional() as conn:
         if conn is None:

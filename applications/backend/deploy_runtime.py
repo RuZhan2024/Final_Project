@@ -9,8 +9,9 @@ inference for the live monitor endpoint.
 
 Source of truth
 ---------------
-For deployment behaviour, we treat **ops/configs/ops/*.yaml** as the source of
-truth (not DB rows and not heuristics). These YAML files contain:
+For deployment behaviour, we treat **ops/deploy_assets/manifest.json** as the
+source of truth (not DB rows, broad directory scans, or heuristics). Manifest
+profiles point to the small runtime-approved YAML set containing:
 - feat_cfg (how windows were built during training/eval)
 - alert_cfg (EMA smoothing, k-of-n persistence, cooldown, etc.)
 - ops (OP-1/OP-2/OP-3 thresholds)
@@ -41,7 +42,7 @@ SUPPORTED_DATASETS = {"caucafall", "le2i"}
 class DeploySpec:
     key: str                     # e.g. "caucafall_tcn"
     dataset: str                  # le2i|caucafall
-    arch: str                     # tcn|gcn
+    arch: str                     # tcn|ctr_gcn
     ckpt: str                     # absolute path to best.pt
     feat_cfg: Dict[str, Any]      # from ops/configs/ops/*.yaml
     model_cfg: Dict[str, Any]     # from reports/ckpt (fallback)
@@ -122,163 +123,136 @@ def _standardise_ops(ops: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _iter_ops_dirs(root: Path) -> tuple[Path, ...]:
-    """Return canonical ops dirs, keeping the legacy layout only as test compatibility."""
-    dirs: list[Path] = []
-    canonical = root / "ops" / "configs" / "ops"
-    legacy = root / "configs" / "ops"
-    for path in (canonical, legacy):
-        if path.exists():
-            dirs.append(path)
-    return tuple(dirs)
+def _parse_ops_yaml_stem(stem: str) -> Tuple[str, str]:
+    """Parse ``<arch>_<dataset-or-profile>`` stems used by ops YAMLs."""
+
+    s = stem.lower().strip()
+    for arch in ("ctr_gcn", "tcn"):
+        prefix = f"{arch}_"
+        if s.startswith(prefix):
+            return arch, s[len(prefix):]
+    parts = s.split("_", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return s, ""
 
 
-def _discover_from_ops_yaml(root: Path) -> Dict[str, DeploySpec]:
+def _deploy_manifest_path(root: Path) -> Path:
+    return root / "ops" / "deploy_assets" / "manifest.json"
+
+
+def _resolve_manifest_path(root: Path, rel_path: Any) -> Optional[Path]:
+    rel = str(rel_path or "").strip()
+    if not rel:
+        return None
+    path = Path(rel)
+    candidate = path if path.is_absolute() else root / path
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(root.resolve())
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _build_spec_from_ops_yaml(
+    root: Path,
+    p: Path,
+    *,
+    manifest_profile: Optional[Dict[str, Any]] = None,
+) -> Optional[DeploySpec]:
+    data = _load_yaml(p)
+    if not data:
+        return None
+    profile = manifest_profile if isinstance(manifest_profile, dict) else {}
+    model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
+
+    # Filename pattern: <arch>_<dataset-or-profile>.yaml
+    # Example: tcn_caucafall.yaml. Manifest metadata wins over the filename so
+    # archived/renamed experiment profiles cannot silently become runtime specs.
+    arch_guess, dataset_guess = _parse_ops_yaml_stem(p.stem)
+    arch = str(profile.get("arch") or data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
+    dataset = str(profile.get("dataset") or dataset_guess).lower().strip()
+    if arch not in {"tcn", "ctr_gcn"}:
+        return None
+    if dataset not in SUPPORTED_DATASETS:
+        return None
+    ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
+    if not ckpt_rel:
+        return None
+    if os.path.isabs(ckpt_rel):
+        ckpt_path = Path(ckpt_rel)
+    else:
+        ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
+        ckpt_from_root = (root / ckpt_rel).resolve()
+        ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
+    if not ckpt_path.exists():
+        return None
+
+    spec_key = f"{dataset}_{arch}"
+    feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
+    alert_cfg = data.get("alert_cfg") or {}
+    ops = _standardise_ops(data.get("ops") or {})
+
+    return DeploySpec(
+        key=spec_key,
+        dataset=dataset,
+        arch=arch,
+        ckpt=str(ckpt_path),
+        feat_cfg=feat_cfg if isinstance(feat_cfg, dict) else {},
+        model_cfg={},
+        data_cfg={},
+        alert_cfg=alert_cfg if isinstance(alert_cfg, dict) else {},
+        ops=ops,
+        ops_path=str(p),
+    )
+
+
+def _discover_from_ops_yaml(root: Path, yaml_paths: Optional[tuple[Path, ...]] = None) -> Dict[str, DeploySpec]:
     specs: Dict[str, DeploySpec] = {}
-    ops_dirs = _iter_ops_dirs(root)
-    if not ops_dirs:
+    if yaml_paths is None:
+        ops_dir = root / "ops" / "configs" / "ops"
+        yaml_paths = tuple(sorted(list(ops_dir.glob("*.yaml")) + list(ops_dir.glob("*.yml")))) if ops_dir.exists() else ()
+    if not yaml_paths:
         return specs
 
-    for ops_dir in ops_dirs:
-        for p in sorted(list(ops_dir.glob("*.yaml")) + list(ops_dir.glob("*.yml"))):
-            data = _load_yaml(p)
-            if not data:
-                continue
-            model_block = data.get("model") if isinstance(data.get("model"), dict) else {}
-
-            # Filename pattern: <arch>_<dataset>.yaml (e.g. gcn_muvim.yaml)
-            stem = p.stem.lower().strip()
-            parts = stem.split("_")
-            if len(parts) < 2:
-                continue
-            arch_guess, dataset_guess = parts[0], "_".join(parts[1:])
-
-            arch = str(data.get("arch") or model_block.get("arch") or arch_guess).lower().strip()
-            dataset = dataset_guess.lower().strip()
-            if arch not in {"tcn", "gcn"}:
-                continue
-            ckpt_rel = str(data.get("ckpt") or model_block.get("ckpt") or "").strip()
-            if not ckpt_rel:
-                continue
-            if os.path.isabs(ckpt_rel):
-                ckpt_path = Path(ckpt_rel)
-            else:
-                ckpt_from_yaml = (p.parent / ckpt_rel).resolve()
-                ckpt_from_root = (root / ckpt_rel).resolve()
-                ckpt_path = ckpt_from_yaml if ckpt_from_yaml.exists() else ckpt_from_root
-            if not ckpt_path.exists():
-                # Skip broken configs
-                continue
-
-            spec_key = f"{dataset}_{arch}"
-
-            feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
-            alert_cfg = data.get("alert_cfg") or {}
-            ops = _standardise_ops(data.get("ops") or {})
-
-            specs[spec_key] = DeploySpec(
-                key=spec_key,
-                dataset=dataset,
-                arch=arch,
-                ckpt=str(ckpt_path),
-                feat_cfg=feat_cfg if isinstance(feat_cfg, dict) else {},
-                model_cfg={},
-                data_cfg={},
-                alert_cfg=alert_cfg if isinstance(alert_cfg, dict) else {},
-                ops=ops,
-                ops_path=str(p),
-            )
+    for p in sorted(yaml_paths):
+        spec = _build_spec_from_ops_yaml(root, p)
+        if spec is not None:
+            specs[spec.key] = spec
 
     return specs
 
 
-def _extract_ops_from_report(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Fallback when ops/configs/ops/*.yaml is missing."""
-    ops_eval = report.get("ops_eval") or {}
-    out: Dict[str, Dict[str, Any]] = {}
-    for k, op_code in [("op1", "OP-1"), ("op2", "OP-2"), ("op3", "OP-3")]:
-        o = ops_eval.get(k) or {}
-        alert = o.get("alert_cfg") or {}
-        tau_low = _safe_float(alert.get("tau_low"), 0.5)
-        tau_high = _safe_float(alert.get("tau_high"), 0.85)
-        out[op_code] = {"tau_low": tau_low, "tau_high": tau_high}
-    return out
-
-
-def _discover_from_reports(root: Path) -> Dict[str, DeploySpec]:
-    """Legacy discovery from outputs/reports/*.json."""
-    reports_dir = root / "outputs" / "reports"
+def _discover_from_manifest(root: Path) -> Dict[str, DeploySpec]:
+    manifest = _load_json(_deploy_manifest_path(root))
+    promoted = manifest.get("promoted_runtime_assets") if isinstance(manifest, dict) else {}
+    profiles = promoted.get("op_profiles") if isinstance(promoted, dict) else []
     specs: Dict[str, DeploySpec] = {}
-    if not reports_dir.exists():
+    if not isinstance(profiles, list):
         return specs
 
-    candidates: Dict[str, Tuple[int, Path]] = {}
-    for p in sorted(reports_dir.glob("*.json")):
-        name = p.stem.lower()
-        r = _load_json(p)
-        arch = (r.get("arch") or "").lower().strip()
-        ckpt = r.get("ckpt") or r.get("ckpt_path") or ""
-        if arch not in {"tcn", "gcn"}:
+    for profile in profiles:
+        if not isinstance(profile, dict):
             continue
-        if not isinstance(ckpt, str) or ckpt.strip() == "":
+        path = _resolve_manifest_path(root, profile.get("path"))
+        if path is None or not path.exists():
             continue
-
-        if "_on_" in name:
-            dataset = name.split("_on_")[0]
-            spec_key = f"{dataset}_{arch}"
-            priority = 10
-        else:
-            if not name.endswith(f"_{arch}"):
-                continue
-            dataset = name[: -(len(arch) + 1)]
-            spec_key = f"{dataset}_{arch}"
-            priority = 0
-
-        prev = candidates.get(spec_key)
-        if prev is None or priority < prev[0]:
-            candidates[spec_key] = (priority, p)
-
-    for spec_key, (_prio, path) in candidates.items():
-        rep = _load_json(path)
-        arch = (rep.get("arch") or "").lower().strip()
-        ckpt_rel = str(rep.get("ckpt") or rep.get("ckpt_path") or "").strip()
-        dataset = spec_key.split("_")[0]
-        if dataset not in SUPPORTED_DATASETS:
-            continue
-        ckpt_path = (root / ckpt_rel).resolve() if not os.path.isabs(ckpt_rel) else Path(ckpt_rel)
-        if not ckpt_path.exists():
-            continue
-
-        feat_cfg: Dict[str, Any] = rep.get("feat_cfg") or {}
-        model_cfg: Dict[str, Any] = rep.get("model_cfg") or {}
-        data_cfg: Dict[str, Any] = rep.get("data_cfg") or {}
-        ops = _extract_ops_from_report(rep)
-
-        specs[spec_key] = DeploySpec(
-            key=spec_key,
-            dataset=dataset,
-            arch=arch,
-            ckpt=str(ckpt_path),
-            feat_cfg=feat_cfg,
-            model_cfg=model_cfg,
-            data_cfg=data_cfg,
-            alert_cfg={},
-            ops=ops,
-            ops_path=str(path),
-        )
-
+        spec = _build_spec_from_ops_yaml(root, path, manifest_profile=profile)
+        if spec is not None:
+            specs[spec.key] = spec
     return specs
 
 
 def discover_specs() -> Dict[str, DeploySpec]:
     """Discover deployable specs.
 
-    Clean-branch runtime discovery must resolve only from canonical operating-point
-    YAMLs. Legacy report-based discovery is retained as a test helper, not as the
-    active runtime contract on the supervisor-facing branch.
+    Clean-branch runtime discovery resolves only promoted manifest profiles.
+    Broad ops-directory scans and report-based discovery are intentionally not
+    part of the active runtime contract.
     """
     root = _repo_root()
-    return _discover_from_ops_yaml(root)
+    return _discover_from_manifest(root)
 
 
 _SPECS: Optional[Dict[str, DeploySpec]] = None
@@ -382,7 +356,7 @@ def _pick_device(torch: Any) -> Any:
             return torch.device("cuda")
     except (AttributeError, RuntimeError, TypeError):
         pass
-    # NOTE: MPS can be unstable for some GCN runtime ops in long-running API process.
+    # NOTE: MPS can be unstable for graph-model runtime ops in long-running API processes.
     # Keep CPU as default for service stability; allow opt-in via env.
     allow_mps = str(os.environ.get("SERVER_ALLOW_MPS", "0")).strip().lower() in {"1", "true", "yes"}
     if allow_mps:
@@ -433,6 +407,7 @@ def _get_ml_runtime() -> Dict[str, Any]:
             FeatCfg,
             build_canonical_input,
             build_tcn_input,
+            split_ctr_gcn_two_stream,
             split_gcn_two_stream,
         )
         from fall_detection.core.uncertainty import mc_predict_mu_sigma
@@ -450,6 +425,7 @@ def _get_ml_runtime() -> Dict[str, Any]:
         "FeatCfg": FeatCfg,
         "build_canonical_input": build_canonical_input,
         "build_tcn_input": build_tcn_input,
+        "split_ctr_gcn_two_stream": split_ctr_gcn_two_stream,
         "split_gcn_two_stream": split_gcn_two_stream,
         "mc_predict_mu_sigma": mc_predict_mu_sigma,
     }
@@ -622,6 +598,9 @@ def _prepare_features(
     build_canonical_input = runtime["build_canonical_input"]
     build_tcn_input = runtime["build_tcn_input"]
     split_gcn_two_stream = runtime["split_gcn_two_stream"]
+    split_ctr_gcn_two_stream = runtime.get("split_ctr_gcn_two_stream") or (
+        lambda xg, feat, stream_mode="joint_bone": split_gcn_two_stream(xg, feat)
+    )
     torch = runtime["torch"]
 
     expected_v = None
@@ -655,7 +634,13 @@ def _prepare_features(
     xb = torch.from_numpy(np.asarray(Xg, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
     is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
     if is_two_stream:
-        xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
+        if spec.arch == "ctr_gcn":
+            stream_mode = "joint_bone"
+            if isinstance(model_cfg, dict):
+                stream_mode = str(model_cfg.get("stream_mode", stream_mode))
+            xj_np, xm_np = split_ctr_gcn_two_stream(Xg, feat_cfg, stream_mode=stream_mode)
+        else:
+            xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
         xj_t = torch.from_numpy(np.asarray(xj_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
         xm_t = torch.from_numpy(np.asarray(xm_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
         return {"kind": "gcn_two_stream", "xj_t": xj_t, "xm_t": xm_t}
@@ -762,24 +747,3 @@ def predict_spec(
         "ops": spec.ops,
         "alert_cfg": alert_cfg,
     }
-
-
-def fuse_hybrid(tri_tcn: str, tri_gcn: str) -> str:
-    """Fuse two triage states using the requested policy.
-
-    Policy:
-    - NOT_FALL only if both NOT_FALL
-    - FALL if (one is FALL) and (the other is FALL or UNCERTAIN)
-    - otherwise UNCERTAIN
-    """
-    t = (tri_tcn or "not_fall").lower()
-    g = (tri_gcn or "not_fall").lower()
-
-    if t == "not_fall" and g == "not_fall":
-        return "not_fall"
-
-    # "one fall + one uncertain also counts as fall"
-    if (t == "fall" and g in {"fall", "uncertain"}) or (g == "fall" and t in {"fall", "uncertain"}):
-        return "fall"
-
-    return "uncertain"

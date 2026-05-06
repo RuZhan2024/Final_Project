@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 import numpy as np
 from fastapi.testclient import TestClient
 
-from applications.backend import core
 from applications.backend.app import app
+from applications.backend.runtime_state import get_session_store
 
 
 def _group_windows(windows_dir: Path) -> Dict[str, List[Path]]:
@@ -49,7 +49,7 @@ def main() -> None:
 
     for video_id, files in sorted(groups.items()):
         session_id = f"{args.session_prefix}:{video_id}"
-        core._SESSION_STATE.pop(session_id, None)
+        get_session_store().pop(session_id, None)
         gt = _gt_for_video(video_id)
         pred = 0
         first_fall_idx = None

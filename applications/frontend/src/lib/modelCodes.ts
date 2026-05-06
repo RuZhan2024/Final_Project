@@ -1,21 +1,20 @@
 /** Normalize model-family codes used across monitor, dashboard, and settings UI. */
-export function normalizeModelCode(code: unknown): "TCN" | "GCN" | "HYBRID" {
-  const v = String(code || "").trim().toUpperCase();
+export type ModelCode = "TCN" | "CTR_GCN";
+
+export function normalizeModelCode(code: unknown): ModelCode {
+  const v = String(code || "").trim().toUpperCase().replace("-", "_");
   if (v === "TCN") return "TCN";
-  if (v === "GCN") return "GCN";
-  if (v === "HYBRID") return "HYBRID";
+  if (v === "CTR_GCN" || v === "CTRGCN") return "CTR_GCN";
   return "TCN";
 }
 
 export function modelCodeToLabel(code: unknown): string {
-  return normalizeModelCode(code);
+  return normalizeModelCode(code).replace("_", "-");
 }
 
-export function modelLabelToCode(label: unknown): "TCN" | "GCN" | "HYBRID" {
-  // Some older UI labels include extra words, so match by substring rather than exact text.
+export function modelLabelToCode(label: unknown): ModelCode {
   const v = String(label || "").toLowerCase();
-  if (v.includes("hybrid")) return "HYBRID";
+  if (v.includes("ctr")) return "CTR_GCN";
   if (v.includes("tcn")) return "TCN";
-  if (v.includes("gcn")) return "GCN";
   return "TCN";
 }

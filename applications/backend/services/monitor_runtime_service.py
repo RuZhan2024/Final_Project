@@ -201,7 +201,7 @@ def persist_monitor_event(
     primary_uncertainty: float,
     primary_threshold: float,
     models_out: Dict[str, Any],
-    dual_policy_alerts: Dict[str, Any],
+    policy_alerts: Dict[str, Any],
 ) -> tuple[Optional[int], Optional[Dict[str, Any]]]:
     """Persist an event row and optionally dispatch a SafeGuard notification.
 
@@ -226,7 +226,7 @@ def persist_monitor_event(
         "expected_fps": expected_fps,
         "capture_fps_est": capture_fps_est,
         "models": models_out,
-        "policy_alerts": dual_policy_alerts,
+        "policy_alerts": policy_alerts,
         "safe_alert": safe_alert,
         "safe_state": safe_state_out,
         "recall_alert": recall_alert,

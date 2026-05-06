@@ -228,8 +228,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
             "INSERT INTO models (code, family, name, description) VALUES (?, ?, ?, ?)",
             [
                 ("TCN", "TCN", "TCN", "Temporal Convolution Network"),
-                ("GCN", "GCN", "GCN", "Graph Convolution Network"),
-                ("HYBRID", "HYBRID", "Hybrid", "GCN + TCN (hybrid)"),
+                ("CTR_GCN", "CTR_GCN", "CTR-GCN", "Channel-wise Topology Refinement GCN"),
             ],
         )
 

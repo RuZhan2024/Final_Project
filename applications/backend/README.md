@@ -3,7 +3,7 @@
 This folder contains the **server-side** component that bridges:
 
 1) the front-end (captures RGB, extracts skeletons), and
-2) the trained fall-detection models (TCN / GCN / TCN+GCN).
+2) the promoted trained fall-detection model runtime.
 
 The server accepts **skeleton windows** and returns:
 - per-model probability `p_fall` (and optional MC-dropout uncertainty),
@@ -28,8 +28,8 @@ The backend is organized around explicit assembly and configuration boundaries:
   - runtime and response orchestration
 - `applications/backend/repositories/`
   - persistence-facing read/write logic
-- `applications/backend/core.py`
-  - shared backend helpers and in-memory fallback state
+- `applications/backend/runtime_state.py`, `applications/backend/inmemory_state.py`, `applications/backend/runtime_assets.py`
+  - session state, DB-fallback state, and event-clip/privacy helpers
 
 ## Run
 
@@ -45,8 +45,8 @@ uvicorn applications.backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 POST ` /api/monitor/predict_window `
 
-- `mode`: `"tcn" | "gcn" | "hybrid"`
-- `model_tcn`, `model_gcn`: optional model IDs (strings) when mode is `hybrid`
+- `mode`: `"tcn"` for the promoted runtime build
+- `model_tcn`: optional explicit promoted model spec id
 - preferred live payload:
   - `raw_t_ms`: capture timestamps in milliseconds, shape `[N]`
   - `raw_xy`: pose coordinates, shape `[N,J,2]`
@@ -54,7 +54,7 @@ POST ` /api/monitor/predict_window `
   - `window_end_t_ms`: optional explicit window end timestamp
 - runtime windowing params:
   - `target_T`: fixed window length used for inference (default `48`)
-  - `dataset_code`: dataset profile (`le2i | urfd | caucafall | muvim`) to resolve expected FPS
+  - `dataset_code`: dataset profile (`caucafall` for the promoted runtime build) to resolve expected FPS
 - compatibility fallback:
   - `xy` and `conf` are still accepted when `raw_*` is unavailable
 
@@ -75,11 +75,10 @@ caregivers, and notifications endpoints.
 
 ## Runtime config source of truth
 
-- FastAPI live inference uses deploy specs discovered from `ops/configs/ops/*.yaml`
-  (checkpoint path + `ops` + `alert_cfg`).
-- `ops/configs/deploy_modes.yaml` is used by offline deploy scripts (for example
-  `ml/src/fall_detection/deploy/run_modes.py`) and is not the primary config source
-  for `applications/backend/routes/monitor.py`.
+- FastAPI live inference uses deploy specs promoted by `ops/deploy_assets/manifest.json`
+  (checkpoint path + profile YAML containing `ops` + `alert_cfg`).
+- `ops/configs/deploy_modes.yaml` is retained for offline deploy experiments and is
+  not the primary config source for `applications/backend/routes/monitor.py`.
 
 ## Integration audit commands
 

@@ -24,7 +24,7 @@ class SettingsUpdatePayload(BaseModel):
     anonymize_skeleton_data: Optional[bool] = None
     store_anonymized_data: Optional[bool] = None
 
-    active_model_code: Optional[str] = Field(default=None, description="TCN | GCN | HYBRID")
+    active_model_code: Optional[str] = Field(default=None, description="TCN | CTR_GCN")
     active_operating_point: Optional[int] = Field(default=None, description="operating_points.id")
     active_dataset_code: Optional[str] = Field(default=None, description="le2i | caucafall")
     active_op_code: Optional[str] = Field(default=None, description="OP-1 | OP-2 | OP-3")
@@ -76,7 +76,6 @@ class MonitorPredictPayload(BaseModel):
     op: Optional[str] = None
 
     model_tcn: Optional[str] = None
-    model_gcn: Optional[str] = None
     model_id: Optional[str] = None
 
     resident_id: Optional[int] = None

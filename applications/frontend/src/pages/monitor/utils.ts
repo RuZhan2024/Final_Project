@@ -11,11 +11,8 @@ export function clamp01(x: unknown): number {
 }
 
 export function normModeFromCode(code: unknown): MonitorMode {
-  // Unknown or missing mode still falls back to TCN to match the backend default.
   const c = String(code || "").toUpperCase();
   if (c === "TCN") return "tcn";
-  if (c === "GCN") return "gcn";
-  if (c === "HYBRID") return "hybrid";
   return "tcn";
 }
 
@@ -29,8 +26,6 @@ export function labelForTriage(triageState: unknown): string {
 export function prettyModelTag(activeModelCode: unknown): string {
   const c = String(activeModelCode || "").toUpperCase();
   if (c === "TCN") return "TCN";
-  if (c === "GCN") return "GCN";
-  if (c === "HYBRID") return "HYBRID";
   return "TCN";
 }
 
@@ -48,13 +43,6 @@ export function pickFirstByArch(models: SpecModel[], arch: string, datasetCode: 
   const any = arr.find((x) => String(x?.arch || "").toLowerCase() === a);
   if (any?.id) return any.id;
   return matched?.id || "";
-}
-
-export function pickModelPair(models: SpecModel[], datasetCode: string): { tcn: string; gcn: string } {
-  return {
-    tcn: pickFirstByArch(models, "tcn", datasetCode),
-    gcn: pickFirstByArch(models, "gcn", datasetCode),
-  };
 }
 
 export function targetFpsForDataset(datasetCode: unknown): number {

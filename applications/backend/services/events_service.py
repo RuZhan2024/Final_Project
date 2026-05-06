@@ -249,7 +249,7 @@ def build_events_summary_response(conn: Any, resident_id: Optional[int], deps: E
         has_status=has_status,
         since=datetime.utcnow() - timedelta(hours=24),
     )
-    return deps.jsonable({"resident_id": rid, **summary})
+    return deps.jsonable({"resident_id": rid, **summary, "db_available": True})
 
 
 def persist_event_status(conn: Any, event_id: int, status: str, deps: EventsDeps) -> Dict[str, Any]:

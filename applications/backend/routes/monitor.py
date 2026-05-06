@@ -37,7 +37,6 @@ from ..deploy_runtime import (
 from ..monitor_policy import (
     DEFAULT_LIVE_GUARD_BY_DATASET,
     DEFAULT_LIVE_GUARD_GLOBAL,
-    load_dual_policy_cfg as _load_dual_policy_cfg,
     op_delivery_gate as _op_delivery_gate,
     op_live_guard as _op_live_guard,
     op_uncertain_promote as _op_uncertain_promote,
@@ -77,12 +76,6 @@ from fall_detection.deploy.confirm import WindowRaw, compute_confirm_scores
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _LOW_MOTION_MEMORY_WINDOWS = 5
-
-
-_detect_variants = detect_variants
-_ensure_system_settings_schema = ensure_system_settings_schema
-_table_exists = table_exists
-_norm_op_code = norm_op_code
 
 
 def _compute_confirm_scores_from_window(
@@ -206,15 +199,9 @@ def _compact_policy_alerts(policy_alerts: Any) -> Dict[str, Any]:
 def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]:
     """Collapse the full prediction response for replay and other compact clients."""
     models = resp.get("models") if isinstance(resp.get("models"), dict) else {}
-    mode_l = str(mode or "").lower()
     compact_models: Dict[str, Any] = {}
-    if mode_l == "hybrid":
-        if "tcn" in models:
-            compact_models["tcn"] = _compact_model_out(models.get("tcn"))
-        if "gcn" in models:
-            compact_models["gcn"] = _compact_model_out(models.get("gcn"))
-    elif mode_l in {"tcn", "gcn"} and mode_l in models:
-        compact_models[mode_l] = _compact_model_out(models.get(mode_l))
+    if "tcn" in models:
+        compact_models["tcn"] = _compact_model_out(models.get("tcn"))
 
     return {
         "triage_state": resp.get("triage_state"),
@@ -276,9 +263,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         preprocess_online_raw_window=_preprocess_online_raw_window,
         direct_window_stats=_direct_window_stats,
         get_deploy_specs=_get_deploy_specs,
-        ensure_system_settings_schema=_ensure_system_settings_schema,
-        detect_variants=_detect_variants,
-        table_exists=_table_exists,
+        ensure_system_settings_schema=ensure_system_settings_schema,
+        detect_variants=detect_variants,
+        table_exists=table_exists,
     )
     compact_response = prepared.compact_response
     _mark_perf("parse_inputs_ms")
@@ -313,10 +300,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     _t_s = prepared.current_t_s
     specs = prepared.specs
     tcn_key = prepared.tcn_key
-    gcn_key = prepared.gcn_key
     guard_spec_key = prepared.guard_spec_key
     primary_spec_key = prepared.primary_spec_key
-    primary_model_key = prepared.primary_model_key
     window_end_t_ms = prepared.window_end_t_ms
     window_seq = prepared.window_seq
     _mark_perf("window_prepare_ms")
@@ -346,11 +331,24 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     st_trackers = st["trackers"]
     st_trackers_cfg = st["trackers_cfg"]
     started_tcn = False
-    started_gcn = False
 
-    live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code, norm_op_code=_norm_op_code)
-    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code, norm_op_code=_norm_op_code)
-    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code, norm_op_code=_norm_op_code)
+    live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code, norm_op_code=norm_op_code)
+    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code, norm_op_code=norm_op_code)
+    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code, norm_op_code=norm_op_code)
+    if is_replay:
+        # Replay clips are already a controlled analysis path. Browser pose
+        # throughput can be lower than the dataset FPS, but that should not
+        # activate live-camera safety gates and hide fall windows. Keep the
+        # final delivery gate active so replay stays aligned with offline
+        # delivery evaluation.
+        live_guard = {
+            **live_guard,
+            "enable_stale_drop": False,
+            "enable_low_motion_gate": False,
+            "enable_occlusion_gate": False,
+            "enable_structural_gate": False,
+            "enable_low_fps_persist_gate": False,
+        }
     min_motion = float(live_guard["min_motion_for_fall"])
     low_motion_block = bool(motion_score is not None and motion_score < min_motion)
     recent_motion_support = _recent_motion_support(
@@ -474,7 +472,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         return _compact_monitor_response(resp, mode) if compact_response else resp
 
     inference = run_monitor_inference(
-        mode=mode,
         xy=xy,
         conf=conf,
         expected_fps=float(expected_fps),
@@ -483,7 +480,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         effective_use_mc=bool(effective_use_mc),
         effective_mc_M=int(effective_mc_M),
         tcn_key=tcn_key,
-        gcn_key=gcn_key,
         dataset_code=dataset_code,
         lying_score=lying_score,
         confirm_motion_score=confirm_motion_score,
@@ -496,27 +492,17 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         recent_motion_support=bool(recent_motion_support),
         structural_quality_block=bool(structural_quality_block),
         predict_spec=_predict_spec,
-        load_dual_policy_cfg=lambda dataset_code, policy_name, op_code: _load_dual_policy_cfg(
-            dataset_code,
-            policy_name,
-            op_code,
-            norm_op_code=_norm_op_code,
-        ),
         apply_uncertainty_fall_gate=apply_uncertainty_fall_gate,
         tracker_cls=OnlineAlertTracker,
         low_motion_high_conf_bypass_fn=_low_motion_high_conf_bypass,
     )
     models_out = inference.models_out
     tri_tcn = inference.tri_tcn
-    tri_gcn = inference.tri_gcn
-    dual_policy_alerts = inference.dual_policy_alerts
+    policy_alerts = inference.policy_alerts
     low_motion_high_conf_bypass = inference.low_motion_high_conf_bypass
     started_tcn = inference.started_tcn
-    started_gcn = inference.started_gcn
     if inference.infer_tcn_ms is not None:
         perf["infer_tcn_ms"] = int(inference.infer_tcn_ms)
-    if inference.infer_gcn_ms is not None:
-        perf["infer_gcn_ms"] = int(inference.infer_gcn_ms)
     _mark_perf("post_infer_policy_ms")
 
     prev_triage_state = str(st.get("last_triage_state") or "not_fall")
@@ -524,12 +510,9 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     notification_dispatch: Optional[Dict[str, Any]] = None
 
     decision = resolve_monitor_decision(
-        mode=mode,
         models_out=models_out,
         tri_tcn=tri_tcn,
-        tri_gcn=tri_gcn,
-        dual_policy_alerts=dual_policy_alerts,
-        primary_model_key=primary_model_key,
+        policy_alerts=policy_alerts,
         primary_spec_key=primary_spec_key,
         resident_id=resident_id,
         dataset_code=dataset_code,
@@ -548,7 +531,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         lying_score=lying_score,
         confirm_motion_score=confirm_motion_score,
         started_tcn=bool(started_tcn),
-        started_gcn=bool(started_gcn),
         low_fps_mode=bool(low_fps_mode),
     )
     triage_state = decision.triage_state
@@ -566,16 +548,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     # Persistence is edge-based and cooldown-gated so one continuous fall does
     # not create a new DB row and notification on every overlapping window.
-    if mode == "tcn":
-        cooldown_s_for_persist = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
-    elif mode == "gcn":
-        cooldown_s_for_persist = float((models_out.get("gcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
-    else:
-        # Hybrid: use safe-channel cooldown when present, fallback to max model cooldown.
-        safe_pol = dual_policy_alerts.get("safe", {}) if isinstance(dual_policy_alerts.get("safe"), dict) else {}
-        c_tcn = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
-        c_gcn = float((models_out.get("gcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
-        cooldown_s_for_persist = float(safe_pol.get("cooldown_s", max(c_tcn, c_gcn)))
+    cooldown_s_for_persist = float((models_out.get("tcn", {}).get("alert_cfg") or {}).get("cooldown_s", 30.0))
     cooldown_s_for_persist = max(1.0, cooldown_s_for_persist)
 
     persistence = resolve_monitor_persistence_plan(
@@ -602,7 +575,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
     if persist and persist_event_type and (not persist_in_cooldown):
         t_persist = time.perf_counter()
-        primary_out = models_out.get(primary_model_key, {}) if isinstance(models_out.get(primary_model_key), dict) else {}
+        primary_out = models_out.get("tcn", {}) if isinstance(models_out.get("tcn"), dict) else {}
         safe_guard_probability = float(primary_out.get("mu", p_display) or p_display)
         safe_guard_uncertainty = float(primary_out.get("sigma", 0.0) or 0.0)
         triage_cfg = primary_out.get("triage", {}) if isinstance(primary_out.get("triage"), dict) else {}
@@ -627,7 +600,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                     requested_mode=requested_mode,
                     effective_mode=mode,
                     runtime=runtime,
-                    table_exists=_table_exists,
+                    table_exists=table_exists,
                     triage_state=str(triage_state),
                     safe_alert=bool(safe_alert),
                     safe_state_out=str(safe_state_out),
@@ -640,7 +613,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
                     primary_uncertainty=float(safe_guard_uncertainty),
                     primary_threshold=float(safe_guard_threshold),
                     models_out=models_out,
-                    dual_policy_alerts=dual_policy_alerts,
+                    policy_alerts=policy_alerts,
                 )
         except (MySQLError, RuntimeError, OSError, TypeError, ValueError) as exc:
             logger.warning(
@@ -668,7 +641,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     resp = build_monitor_prediction_response(
         triage_state=triage_state,
         models_out=models_out,
-        dual_policy_alerts=dual_policy_alerts,
+        policy_alerts=policy_alerts,
         safe_alert=bool(safe_alert),
         safe_state_out=str(safe_state_out),
         recall_alert=bool(recall_alert),

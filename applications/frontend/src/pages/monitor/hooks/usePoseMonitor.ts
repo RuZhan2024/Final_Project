@@ -180,6 +180,7 @@ export function usePoseMonitor({
   } = useMonitorSessionState({
     mode,
     settingsPayload,
+    inputSourceRef,
     clipFlags,
     pendingClipRef,
     uploadedClipIdsRef,

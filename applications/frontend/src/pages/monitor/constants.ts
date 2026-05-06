@@ -15,9 +15,9 @@ export const CAPTURE_RESOLUTIONS = {
   "720p": { w: 1280, h: 720 },
   "1080p": { w: 1920, h: 1080 },
 } as const;
-export const LIVE_POSE_MODEL_COMPLEXITY = 1;
+export const LIVE_POSE_MODEL_COMPLEXITY = 2;
 export const LIVE_DRAW_FPS = 12;
-export const DEGRADED_POSE_MODEL_COMPLEXITY = 0;
+export const DEGRADED_POSE_MODEL_COMPLEXITY = 2;
 
 export const REPLAY_UI_UPDATE_MS = 200;
 

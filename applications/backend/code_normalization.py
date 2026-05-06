@@ -6,7 +6,7 @@ from typing import Optional
 
 
 SUPPORTED_DATASETS = {"caucafall", "le2i"}
-SUPPORTED_MODEL_CODES = {"TCN", "GCN", "HYBRID"}
+SUPPORTED_MODEL_CODES = {"TCN", "CTR_GCN"}
 
 
 def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafall") -> str:
@@ -20,6 +20,9 @@ def normalize_dataset_code(dataset_code: Optional[str], default: str = "caucafal
 def normalize_model_code(model_code: Optional[str], default: str = "TCN") -> str:
     """Return a supported model-family code or the configured default."""
     mc = str(model_code or "").upper().strip()
+    mc = mc.replace("-", "_")
+    if mc in {"CTRGCN", "CTR_GCN"}:
+        return "CTR_GCN"
     if mc in SUPPORTED_MODEL_CODES:
         return mc
     return default
