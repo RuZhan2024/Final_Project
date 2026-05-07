@@ -13,7 +13,7 @@ def _load_script_module(path: Path, name: str):
 
 
 def test_benchmark_summary_schema() -> None:
-    script = Path("scripts/benchmark_monitor_e2e.py").resolve()
+    script = Path("ops/scripts/benchmark_monitor_e2e.py").resolve()
     mod = _load_script_module(script, "benchmark_monitor_mod")
     summary = mod.summarize([10.0, 20.0, 30.0, 40.0, 50.0])
     for k in ("count", "mean", "p50", "p95", "p99", "min", "max"):
@@ -22,4 +22,3 @@ def test_benchmark_summary_schema() -> None:
     assert summary["count"] == 5.0
     assert summary["min"] == 10.0
     assert summary["max"] == 50.0
-

@@ -1,143 +1,47 @@
+from __future__ import annotations
+
+import math
+
 import numpy as np
 
-from core.alerting import (
-    AlertEvent,
-    _count_true_false_alert_events,
-    _event_match_delay_and_alert_stats_arrays,
-    _event_match_delay_and_alert_stats_indices,
-    _event_match_delay_and_alert_stats,
-    _match_gt_delays,
-)
+from fall_detection.core.alerting import AlertCfg, event_metrics_from_windows
 
 
-def test_event_match_delay_and_alert_stats_matches_reference():
-    gt = [(2.0, 4.0), (8.0, 9.5), (12.0, 13.0)]
-    alerts = [
-        AlertEvent(0, 0, 1.0, 1.5, 0.7),
-        AlertEvent(1, 3, 2.5, 4.2, 0.8),
-        AlertEvent(4, 5, 8.8, 9.1, 0.9),
-        AlertEvent(6, 7, 15.0, 16.0, 0.6),
-    ]
-    slack = 0.2
+def test_event_metrics_counts_true_and_false_alert_events():
+    cfg = AlertCfg(ema_alpha=0.0, k=1, n=1, tau_high=0.8, tau_low=0.5, cooldown_s=0.0)
+    probs = np.asarray([0.1, 0.95, 0.95, 0.2, 0.1, 0.95, 0.95, 0.2], dtype=np.float32)
+    y_true = np.asarray([0, 1, 1, 0, 0, 0, 0, 0], dtype=np.int32)
+    times = np.arange(probs.size, dtype=np.float32)
 
-    matched, delays = _match_gt_delays(gt, alerts, slack_s=slack)
-    true_a, false_a = _count_true_false_alert_events(alerts, gt, slack_s=slack)
-
-    m2, dsum2, nd2, t2, f2 = _event_match_delay_and_alert_stats(gt, alerts, slack_s=slack)
-
-    assert m2 == matched
-    assert nd2 == len(delays)
-    assert np.isclose(dsum2, float(sum(delays)))
-    assert t2 == true_a
-    assert f2 == false_a
-
-
-def test_event_match_delay_and_alert_stats_edge_cases():
-    gt = [(1.0, 2.0)]
-    alerts = [AlertEvent(0, 0, 3.0, 4.0, 0.5)]
-
-    m, dsum, nd, t, f = _event_match_delay_and_alert_stats(gt, [], slack_s=0.0)
-    assert (m, dsum, nd, t, f) == (0, 0.0, 0, 0, 0)
-
-    m, dsum, nd, t, f = _event_match_delay_and_alert_stats([], alerts, slack_s=0.0)
-    assert (m, dsum, nd, t, f) == (0, 0.0, 0, 0, 1)
-
-
-def test_event_match_indices_matches_array_time_variant():
-    t = np.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5], dtype=np.float32)
-    gt_start = np.asarray([0.4, 2.8], dtype=np.float32)
-    gt_end = np.asarray([1.6, 3.4], dtype=np.float32)
-    starts = np.asarray([1, 5], dtype=np.int32)
-    ends = np.asarray([3, 6], dtype=np.int32)
-
-    out_idx = _event_match_delay_and_alert_stats_indices(
-        gt_start,
-        gt_end,
-        t,
-        starts,
-        ends,
-        slack_s=0.1,
+    metrics, detail = event_metrics_from_windows(
+        probs,
+        y_true,
+        times,
+        cfg,
+        duration_s=8.0,
+        merge_gap_s=1.0,
+        overlap_slack_s=0.0,
     )
-    out_arr = _event_match_delay_and_alert_stats_arrays(
-        gt_start,
-        gt_end,
-        t[starts],
-        t[ends],
-        slack_s=0.1,
-    )
-    assert out_idx == out_arr
+
+    assert metrics.n_gt_events == 1
+    assert metrics.n_alert_events == 2
+    assert metrics.n_matched_gt == 1
+    assert metrics.n_true_alerts == 1
+    assert metrics.n_false_alerts == 1
+    assert metrics.event_recall == 1.0
+    assert metrics.event_precision == 0.5
+    assert metrics.event_f1 == 2.0 / 3.0
+    assert metrics.false_alerts_per_hour == 450.0
+    assert detail["gt_events"] == [{"start_s": 1.0, "end_s": 2.0}]
+    assert [(ev["start_idx"], ev["end_idx"]) for ev in detail["alert_events"]] == [(1, 3), (5, 7)]
 
 
-def test_event_match_indices_matches_array_time_variant_randomized():
-    rng = np.random.default_rng(1234)
-    for _ in range(20):
-        n_alert = int(rng.integers(1, 16))
-        n_gt = int(rng.integers(1, 12))
+def test_event_metrics_empty_inputs_return_nan_rates_and_zero_counts():
+    cfg = AlertCfg()
+    metrics, detail = event_metrics_from_windows([], [], [], cfg)
 
-        starts = []
-        ends = []
-        cur = 0
-        for _i in range(n_alert):
-            s = cur + int(rng.integers(0, 3))
-            e = s + int(rng.integers(1, 4))
-            starts.append(s)
-            ends.append(e)
-            cur = e + int(rng.integers(0, 3))
-
-        t = np.arange(max(ends) + 3, dtype=np.float32) * 0.25
-        starts_i = np.asarray(starts, dtype=np.int32)
-        ends_i = np.asarray(ends, dtype=np.int32)
-
-        gt_s = np.sort(rng.uniform(float(t[0]), float(t[-1]), size=(n_gt,)).astype(np.float32))
-        gt_e = np.minimum(gt_s + rng.uniform(0.1, 1.2, size=(n_gt,)).astype(np.float32), float(t[-1]))
-
-        out_idx = _event_match_delay_and_alert_stats_indices(
-            gt_s,
-            gt_e,
-            t,
-            starts_i,
-            ends_i,
-            slack_s=0.1,
-        )
-        out_arr = _event_match_delay_and_alert_stats_arrays(
-            gt_s,
-            gt_e,
-            t[starts_i],
-            t[ends_i],
-            slack_s=0.1,
-        )
-        assert out_idx[0] == out_arr[0]
-        assert np.isclose(out_idx[1], out_arr[1], atol=1e-6)
-        assert out_idx[2:] == out_arr[2:]
-
-
-def test_event_match_indices_single_gt_fast_path_parity():
-    t = np.asarray([0.0, 0.5, 1.0, 1.5, 2.0], dtype=np.float32)
-    gt_start = np.asarray([0.8], dtype=np.float32)
-    gt_end = np.asarray([1.6], dtype=np.float32)
-    starts = np.asarray([0, 2, 4], dtype=np.int32)
-    ends = np.asarray([1, 3, 4], dtype=np.int32)
-
-    out_idx = _event_match_delay_and_alert_stats_indices(
-        gt_start, gt_end, t, starts, ends, slack_s=0.1
-    )
-    out_arr = _event_match_delay_and_alert_stats_arrays(
-        gt_start, gt_end, t[starts], t[ends], slack_s=0.1
-    )
-    assert out_idx == out_arr
-
-
-def test_event_match_indices_single_alert_fast_path_parity():
-    t = np.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 2.5], dtype=np.float32)
-    gt_start = np.asarray([0.2, 1.8], dtype=np.float32)
-    gt_end = np.asarray([0.7, 2.3], dtype=np.float32)
-    starts = np.asarray([3], dtype=np.int32)
-    ends = np.asarray([4], dtype=np.int32)
-
-    out_idx = _event_match_delay_and_alert_stats_indices(
-        gt_start, gt_end, t, starts, ends, slack_s=0.1
-    )
-    out_arr = _event_match_delay_and_alert_stats_arrays(
-        gt_start, gt_end, t[starts], t[ends], slack_s=0.1
-    )
-    assert out_idx == out_arr
+    assert metrics.n_gt_events == 0
+    assert metrics.n_alert_events == 0
+    assert math.isnan(metrics.event_recall)
+    assert math.isnan(metrics.false_alerts_per_day)
+    assert detail == {"gt_events": [], "alert_events": []}

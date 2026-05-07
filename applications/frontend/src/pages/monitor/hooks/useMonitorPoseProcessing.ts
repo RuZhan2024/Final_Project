@@ -67,7 +67,7 @@ export function useMonitorPoseProcessing({
         if (!lowFpsSinceMsRef.current) lowFpsSinceMsRef.current = nowMs;
         if (nowMs - lowFpsSinceMsRef.current > LOW_FPS_HOLD_MS) {
           // Degrade only after low FPS persists; brief camera jitter should not
-          // permanently lower model complexity or prediction cadence.
+          // permanently lower prediction cadence.
           adaptiveDrawFpsRef.current = DEGRADED_DRAW_FPS;
           adaptiveInferFpsRef.current = DEGRADED_INFER_FPS;
           if (!degradedModeRef.current && poseRef.current?.setOptions) {

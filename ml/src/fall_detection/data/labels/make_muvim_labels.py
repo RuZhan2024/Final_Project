@@ -186,8 +186,8 @@ def seq_len_from_npz(path: str, *, verbose: bool = False) -> Optional[int]:
 def main():
     ap = argparse.ArgumentParser(description="Build MUVIM labels and optional fall spans from ZED_RGB.csv.")
     ap.add_argument("--npz_dir", default="data/interim/muvim/pose_npz")
-    ap.add_argument("--out_labels", default="configs/labels/muvim.json")
-    ap.add_argument("--out_spans", default="configs/labels/muvim_spans.json")
+    ap.add_argument("--out_labels", default="ops/configs/labels/muvim.json")
+    ap.add_argument("--out_spans", default="ops/configs/labels/muvim_spans.json")
     ap.add_argument("--zed_csv", default=None, help="Path to ZED_RGB.csv. If omitted, spans are not written.")
     ap.add_argument("--pad_pre", type=int, default=0)
     ap.add_argument("--pad_post", type=int, default=0)

@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.preprocess_pose_npz import clip_xy_finite
+from fall_detection.pose.preprocess_pose_npz import clip_xy_finite
 
 
 def test_clip_xy_finite_clips_values_and_keeps_nan():

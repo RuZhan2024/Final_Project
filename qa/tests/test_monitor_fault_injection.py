@@ -44,7 +44,7 @@ def _install_mock_runtime(monkeypatch) -> None:
     )
 
 
-def test_predict_window_handles_non_monotonic_timestamps(monkeypatch) -> None:
+def test_predict_window_rejects_non_monotonic_timestamps(monkeypatch) -> None:
     _install_mock_runtime(monkeypatch)
     c = TestClient(app)
     payload = {
@@ -59,8 +59,8 @@ def test_predict_window_handles_non_monotonic_timestamps(monkeypatch) -> None:
         "window_end_t_ms": 80,
     }
     r = c.post("/api/monitor/predict_window", json=payload)
-    assert r.status_code == 200
-    assert "triage_state" in r.json()
+    assert r.status_code == 400
+    assert "strictly increasing" in r.json().get("detail", "")
 
 
 def test_predict_window_handles_conf_missing_and_sparse_xy(monkeypatch) -> None:
@@ -98,7 +98,7 @@ def test_predict_window_rejects_empty_raw_window(monkeypatch) -> None:
     }
     r = c.post("/api/monitor/predict_window", json=payload)
     assert r.status_code == 400
-    assert "raw_*" in r.json().get("detail", "")
+    assert "raw_xy" in r.json().get("detail", "")
 
 
 def test_predict_window_logs_db_default_read_failure(monkeypatch, caplog) -> None:

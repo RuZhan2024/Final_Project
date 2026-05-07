@@ -5,7 +5,7 @@
 Small online alerting helper that applies the same core idea as
 core.alerting.detect_alert_events, but incrementally.
 
-We use the deployment parameters from ops/configs/ops/*.yaml (via
+We use the deployment parameters promoted by ops/deploy_assets/manifest.json (via
 applications.backend.deploy_runtime.get_alert_cfg).
 
 This is deliberately lightweight and dependency-free (no torch).

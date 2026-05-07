@@ -19,6 +19,7 @@ const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
 export function useMonitorSessionState({
   mode,
   settingsPayload,
+  inputSourceRef,
   clipFlags,
   pendingClipRef,
   uploadedClipIdsRef,
@@ -121,6 +122,7 @@ export function useMonitorSessionState({
       mode,
       previousStable: triageStableRef.current,
       settingsPayload,
+      smoothTriage: (inputSourceRef.current || "camera") !== "video",
     });
     triageStableRef.current = nextState.stable;
 
@@ -183,6 +185,7 @@ export function useMonitorSessionState({
   }, [
     addTimelineMarker,
     clipFlags,
+    inputSourceRef,
     mode,
     maybeFinalizeClipUpload,
     pendingClipRef,

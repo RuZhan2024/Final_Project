@@ -272,6 +272,8 @@ def detect_alert_events(
     """
     p = np.asarray(probs, dtype=np.float32).reshape(-1)
     t = np.asarray(times_s, dtype=np.float32).reshape(-1)
+    if p.size != t.size:
+        raise ValueError("probs and times_s must have the same length")
     if p.size == 0:
         return np.asarray([], dtype=bool), []
 
@@ -963,31 +965,8 @@ class SingleModeCfg:
     cooldown_possible_s: float = 15.0
     cooldown_confirmed_s: float = 60.0
 
-    # Optional skeleton-derived confirmation gate (applied at CONFIRMED time).
-    confirm_use_scores: bool = False
-    confirm_min_lying: float = 0.65
-    confirm_max_motion: float = 0.08
-
     # Optional lightweight confirmation using skeleton-derived heuristics.
     # (Useful for rejecting fast-sit / kneel / stumble false positives.)
-    confirm_use_scores: bool = False
-    confirm_min_lying: float = 0.65
-    confirm_max_motion: float = 0.08
-
-
-@dataclass
-class DualModeCfg:
-    """Temporal logic for dual-model fusion (Mode 3)."""
-    possible_k: int = 3
-    possible_T_s: float = 2.0
-    confirm_T_s: float = 3.6
-    confirm_k_tcn: int = 1
-    confirm_k_gcn: int = 1
-    require_both: bool = True
-    cooldown_possible_s: float = 15.0
-    cooldown_confirmed_s: float = 60.0
-
-    # Optional skeleton-derived confirmation gate (applied at CONFIRMED time).
     confirm_use_scores: bool = False
     confirm_min_lying: float = 0.65
     confirm_max_motion: float = 0.08
@@ -1099,135 +1078,6 @@ class SingleTriageStateMachine:
                 self._state = "idle"
                 self._cooldown_until = t + float(self.mode_cfg.cooldown_possible_s)
                 self._fall_times = []
-            return evs
-
-        return evs
-
-
-class DualTriageStateMachine:
-    """Fusion state machine for Mode 3 (TCN + GCN).
-
-    Possible fall triggers if *either* model is suspicious (UNCERTAIN or FALL)
-    for K times within possible_T_s.
-
-    Confirmed fall triggers if:
-      - require_both=True: each model reaches its own confirm_k in the confirm window.
-      - else: either model reaches (confirm_k_tcn) within the confirm window.
-    """
-
-    def __init__(self, triage_tcn: TriageCfg, triage_gcn: TriageCfg, mode_cfg: DualModeCfg):
-        self.triage_tcn = triage_tcn
-        self.triage_gcn = triage_gcn
-        self.mode_cfg = mode_cfg
-        self.reset()
-
-    def reset(self) -> None:
-        self._ema_tcn: Optional[float] = None
-        self._ema_gcn: Optional[float] = None
-        self._state: str = "idle"
-        self._t_state0: float = 0.0
-        self._sus_times: List[float] = []
-        self._fall_tcn: List[float] = []
-        self._fall_gcn: List[float] = []
-        self._cooldown_until: float = -1.0
-
-    def _ema_update(self, which: str, x: float) -> float:
-        a_t = float(self.triage_tcn.ema_alpha)
-        a_g = float(self.triage_gcn.ema_alpha)
-        if which == "tcn":
-            if self._ema_tcn is None:
-                self._ema_tcn = float(x)
-            else:
-                self._ema_tcn = a_t * float(x) + (1.0 - a_t) * float(self._ema_tcn)
-            return float(self._ema_tcn)
-        else:
-            if self._ema_gcn is None:
-                self._ema_gcn = float(x)
-            else:
-                self._ema_gcn = a_g * float(x) + (1.0 - a_g) * float(self._ema_gcn)
-            return float(self._ema_gcn)
-
-    def step(
-        self,
-        t_sec: float,
-        p_tcn: float,
-        p_gcn: float,
-        sigma_tcn: Optional[float] = None,
-        sigma_gcn: Optional[float] = None,
-        lying: Optional[float] = None,
-        motion: Optional[float] = None,
-    ) -> List[TriageEvent]:
-        evs: List[TriageEvent] = []
-        t = float(t_sec)
-
-        if t < self._cooldown_until:
-            return evs
-
-        mu_t = self._ema_update("tcn", float(p_tcn))
-        mu_g = self._ema_update("gcn", float(p_gcn))
-
-        s_t = triage_state(mu_t, self.triage_tcn.tau_low, self.triage_tcn.tau_high, sigma=sigma_tcn, sigma_max=self.triage_tcn.sigma_max)
-        s_g = triage_state(mu_g, self.triage_gcn.tau_low, self.triage_gcn.tau_high, sigma=sigma_gcn, sigma_max=self.triage_gcn.sigma_max)
-
-        suspicious = (s_t != TRIAGE_NOT_FALL) or (s_g != TRIAGE_NOT_FALL)
-
-        if self._state == "idle":
-            if suspicious:
-                self._sus_times.append(t)
-            Tp = float(self.mode_cfg.possible_T_s)
-            self._sus_times = [x for x in self._sus_times if (t - x) <= Tp]
-            if len(self._sus_times) >= int(self.mode_cfg.possible_k):
-                evs.append(TriageEvent(EVENT_POSSIBLE, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
-                self._state = "confirm"
-                self._t_state0 = t
-                self._fall_tcn = []
-                self._fall_gcn = []
-                self._sus_times = []
-            return evs
-
-        if self._state == "confirm":
-            if s_t == TRIAGE_FALL:
-                self._fall_tcn.append(t)
-            if s_g == TRIAGE_FALL:
-                self._fall_gcn.append(t)
-
-            Tc = float(self.mode_cfg.confirm_T_s)
-            self._fall_tcn = [x for x in self._fall_tcn if (t - x) <= Tc]
-            self._fall_gcn = [x for x in self._fall_gcn if (t - x) <= Tc]
-
-            ok_t = len(self._fall_tcn) >= int(self.mode_cfg.confirm_k_tcn)
-            ok_g = len(self._fall_gcn) >= int(self.mode_cfg.confirm_k_gcn)
-
-            confirmed = (ok_t and ok_g) if bool(self.mode_cfg.require_both) else (ok_t or ok_g)
-            if confirmed:
-                gate = bool(getattr(self.mode_cfg, "confirm_use_scores", False)) and (lying is not None or motion is not None)
-                if gate:
-                    ok_lying = True if lying is None else (float(lying) >= float(getattr(self.mode_cfg, "confirm_min_lying", 0.65)))
-                    ok_motion = True if motion is None else (float(motion) <= float(getattr(self.mode_cfg, "confirm_max_motion", 0.08)))
-                    if not (ok_lying and ok_motion):
-                        # Do not confirm yet; wait for more evidence or timeout.
-                        pass
-                    else:
-                        evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn, "lying": lying, "motion": motion}))
-                        self._state = "idle"
-                        self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
-                        self._fall_tcn = []
-                        self._fall_gcn = []
-                        return evs
-                else:
-                    evs.append(TriageEvent(EVENT_CONFIRMED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn, "lying": lying, "motion": motion}))
-                    self._state = "idle"
-                    self._cooldown_until = t + float(self.mode_cfg.cooldown_confirmed_s)
-                    self._fall_tcn = []
-                    self._fall_gcn = []
-                    return evs
-
-            if (t - self._t_state0) > Tc:
-                evs.append(TriageEvent(EVENT_RESOLVED, t, {"mu_tcn": mu_t, "mu_gcn": mu_g, "sigma_tcn": sigma_tcn, "sigma_gcn": sigma_gcn}))
-                self._state = "idle"
-                self._cooldown_until = t + float(self.mode_cfg.cooldown_possible_s)
-                self._fall_tcn = []
-                self._fall_gcn = []
             return evs
 
         return evs

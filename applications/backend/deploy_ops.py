@@ -62,7 +62,7 @@ def derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str
         return {"spec_key": spec_key, "alert_cfg": alert_cfg, "op": op}
 
     tcn = pack(f"{ds}_tcn")
-    gcn = pack(f"{ds}_gcn")
+    ctr_gcn = pack(f"{ds}_ctr_gcn")
 
     def tau(pack_: Optional[Dict[str, Any]], key: str, default: float) -> float:
         try:
@@ -88,39 +88,17 @@ def derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str
             pass
         return alert_cfg_value(pack_, key, default)
 
-    if mc == "TCN":
-        tau_low = tau(tcn, "tau_low", 0.0)
-        tau_high = tau(tcn, "tau_high", 0.85)
-        cooldown_s = op_or_alert_cfg(tcn, "cooldown_s", 3.0)
-        ema_alpha = op_or_alert_cfg(tcn, "ema_alpha", 0.0)
-        k = int(op_or_alert_cfg(tcn, "k", 2))
-        n = int(op_or_alert_cfg(tcn, "n", 3))
-        uncertainty_cfg = resolve_uncertainty_cfg(
-            dict(tcn.get("alert_cfg") or {}) if tcn else {},
-            dict(tcn.get("op") or {}) if tcn else {},
-        )
-    elif mc == "GCN":
-        tau_low = tau(gcn, "tau_low", 0.0)
-        tau_high = tau(gcn, "tau_high", 0.85)
-        cooldown_s = op_or_alert_cfg(gcn, "cooldown_s", 3.0)
-        ema_alpha = op_or_alert_cfg(gcn, "ema_alpha", 0.0)
-        k = int(op_or_alert_cfg(gcn, "k", 2))
-        n = int(op_or_alert_cfg(gcn, "n", 3))
-        uncertainty_cfg = resolve_uncertainty_cfg(
-            dict(gcn.get("alert_cfg") or {}) if gcn else {},
-            dict(gcn.get("op") or {}) if gcn else {},
-        )
-    else:
-        tau_low = tau(tcn, "tau_low", tau(gcn, "tau_low", 0.0))
-        tau_high = tau(tcn, "tau_high", tau(gcn, "tau_high", 0.85))
-        cooldown_s = op_or_alert_cfg(tcn, "cooldown_s", op_or_alert_cfg(gcn, "cooldown_s", 3.0))
-        ema_alpha = op_or_alert_cfg(tcn, "ema_alpha", op_or_alert_cfg(gcn, "ema_alpha", 0.0))
-        k = int(op_or_alert_cfg(tcn, "k", op_or_alert_cfg(gcn, "k", 2)))
-        n = int(op_or_alert_cfg(tcn, "n", op_or_alert_cfg(gcn, "n", 3)))
-        uncertainty_cfg = resolve_uncertainty_cfg(
-            dict(tcn.get("alert_cfg") or gcn.get("alert_cfg") or {}) if (tcn or gcn) else {},
-            dict(tcn.get("op") or gcn.get("op") or {}) if (tcn or gcn) else {},
-        )
+    selected = ctr_gcn if mc == "CTR_GCN" else tcn
+    tau_low = tau(selected, "tau_low", 0.0)
+    tau_high = tau(selected, "tau_high", 0.85)
+    cooldown_s = op_or_alert_cfg(selected, "cooldown_s", 3.0)
+    ema_alpha = op_or_alert_cfg(selected, "ema_alpha", 0.0)
+    k = int(op_or_alert_cfg(selected, "k", 2))
+    n = int(op_or_alert_cfg(selected, "n", 3))
+    uncertainty_cfg = resolve_uncertainty_cfg(
+        dict(selected.get("alert_cfg") or {}) if selected else {},
+        dict(selected.get("op") or {}) if selected else {},
+    )
 
     return {
         "ui": {
@@ -134,6 +112,7 @@ def derive_ops_params_from_yaml(dataset_code: str, model_code: str, op_code: str
             "mc_boundary_margin": float(uncertainty_cfg.get("boundary_margin", 0.08)),
             "mc_sigma_fall_max": float(uncertainty_cfg.get("sigma_fall_max", 0.08)),
         },
-        "tcn": tcn if mc in {"TCN", "HYBRID"} else None,
-        "gcn": gcn if mc in {"GCN", "HYBRID"} else None,
+        "model": selected,
+        "tcn": tcn if mc == "TCN" else None,
+        "ctr_gcn": ctr_gcn if mc == "CTR_GCN" else None,
     }

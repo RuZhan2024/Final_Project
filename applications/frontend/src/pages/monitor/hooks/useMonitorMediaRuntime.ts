@@ -14,7 +14,7 @@ import {
 } from "../constants";
 import type { UseMonitorMediaRuntimeOptions } from "../types";
 
-const REPLAY_POSE_MODEL_COMPLEXITY = 1;
+const REPLAY_POSE_MODEL_COMPLEXITY = 2;
 const REPLAY_MIN_DETECTION_CONFIDENCE = 0.35;
 const REPLAY_MIN_TRACKING_CONFIDENCE = 0.35;
 const MEDIAPIPE_POSE_ASSET_ROOT = `${process.env.PUBLIC_URL || ""}/mediapipe/pose`;

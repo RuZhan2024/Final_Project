@@ -10,14 +10,13 @@ import type { MutableRefObject } from "react";
  * bundles. Keeping them here prevents each hook from drifting its own local
  * contract.
  */
-export type MonitorMode = "tcn" | "gcn" | "hybrid";
+export type MonitorMode = "tcn";
 export type InputSource = "camera" | "video";
 export type CaptureResolutionPreset = "480p" | "540p" | "720p" | "1080p";
 
 export interface ChosenSpecs {
-  /** Deploy spec ids currently selected for each model family in hybrid mode. */
+  /** Promoted deploy spec id used by the monitor runtime. */
   tcn: string;
-  gcn: string;
 }
 
 export interface MarkerEntry {
@@ -178,6 +177,7 @@ export interface UseMonitorMediaRuntimeOptions {
 export interface UseMonitorSessionStateOptions {
   mode: string;
   settingsPayload: SettingsResponse | null;
+  inputSourceRef: MutableRefObject<string>;
   clipFlags: MonitorClipFlags;
   pendingClipRef: MutableRefObject<PendingClip | null>;
   uploadedClipIdsRef: MutableRefObject<Set<string>>;

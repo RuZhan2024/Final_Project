@@ -155,8 +155,8 @@ def main():
     ap = argparse.ArgumentParser(description="Build LE2i labels + fall spans.")
     ap.add_argument("--raw_root", default="data/raw/LE2i", help="LE2i raw root containing scenes/*/Annotation_files")
     ap.add_argument("--npz_dir", default="data/interim/le2i/pose_npz", help="Cleaned pose npz dir for LE2i")
-    ap.add_argument("--out_labels", default="configs/labels/le2i.json")
-    ap.add_argument("--out_spans", default="configs/labels/le2i_spans.json")
+    ap.add_argument("--out_labels", default="ops/configs/labels/le2i.json")
+    ap.add_argument("--out_spans", default="ops/configs/labels/le2i_spans.json")
     ap.add_argument("--include_unannotated_as_adl", action="store_true",
                     help="Include sequences without annotation txt as ADL labels.")
     ap.add_argument("--end_inclusive", action="store_true")

@@ -2,18 +2,18 @@ import math
 
 import numpy as np
 
-from core.alerting import AlertCfg, detect_alert_events_from_smoothed, sweep_alert_policy_from_windows
-from core.metrics import sweep_with_fa24h
-from core.confirm import lying_score_window, motion_score_window, confirm_scores_window
+from fall_detection.core.alerting import AlertCfg, detect_alert_events, sweep_alert_policy_from_windows
+from fall_detection.core.metrics import sweep_with_fa24h
+from fall_detection.core.confirm import lying_score_window, motion_score_window, confirm_scores_window
 
 
-def test_detect_alert_events_from_smoothed_ignores_confirm_scores_when_disabled():
+def test_detect_alert_events_ignores_confirm_scores_when_disabled():
     cfg = AlertCfg(k=1, n=1, tau_high=0.9, tau_low=0.6, confirm=False)
     ps = np.array([0.1, 0.2, 0.3], dtype=np.float32)
     ts = np.array([0.0, 1.0, 2.0], dtype=np.float32)
 
     # Deliberately mismatched lengths should not matter when confirm=False.
-    active, events = detect_alert_events_from_smoothed(
+    active, events = detect_alert_events(
         ps,
         ts,
         cfg,
@@ -27,12 +27,12 @@ def test_detect_alert_events_from_smoothed_ignores_confirm_scores_when_disabled(
     assert events == []
 
 
-def test_detect_alert_events_from_smoothed_length_mismatch_raises():
+def test_detect_alert_events_length_mismatch_raises():
     cfg = AlertCfg()
     ps = np.array([0.1, 0.2], dtype=np.float32)
     ts = np.array([0.0], dtype=np.float32)
     try:
-        detect_alert_events_from_smoothed(ps, ts, cfg)
+        detect_alert_events(ps, ts, cfg)
     except ValueError as exc:
         assert "same length" in str(exc)
     else:
@@ -126,8 +126,8 @@ def test_confirm_scores_window_all_missing_fast_path():
     joints = np.full((T, V, 2), np.nan, dtype=np.float32)
     mask = np.zeros((T, V), dtype=np.uint8)
     ls, ms = confirm_scores_window(joints, mask, 25.0, tail_s=0.5, smooth="median")
-    assert ls == 0.0
-    assert math.isinf(ms)
+    assert math.isnan(ls)
+    assert ms == 0.0
 
 
 def test_sweep_confirm_without_scores_matches_non_confirm():

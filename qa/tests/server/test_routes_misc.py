@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from applications.backend.main import app
-from applications.backend import core as core_mod
+from applications.backend import runtime_state
 from applications.backend.routes import caregivers as caregivers_route
 from applications.backend.routes import dashboard as dashboard_route
 from applications.backend.routes import events as events_route
@@ -40,13 +40,13 @@ def test_dashboard_summary_alias(monkeypatch):
 def test_models_summary_uses_specs_and_db_fallback(monkeypatch):
     spec = SimpleNamespace(
         dataset="muvim",
-        arch="gcn",
+        arch="ctr_gcn",
         ckpt="/tmp/mock.pt",
         data_cfg={"fps_default": 30},
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.8}},
         alert_cfg={"k": 2},
     )
-    monkeypatch.setattr(specs_route, "_get_deploy_specs", lambda: {"muvim_gcn": spec})
+    monkeypatch.setattr(specs_route, "_get_deploy_specs", lambda: {"muvim_ctr_gcn": spec})
 
     @contextmanager
     def _broken():
@@ -59,7 +59,7 @@ def test_models_summary_uses_specs_and_db_fallback(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["models"]) == 1
-    assert body["models"][0]["spec_key"] == "muvim_gcn"
+    assert body["models"][0]["spec_key"] == "muvim_ctr_gcn"
     assert body["db_models"] == []
 
 
@@ -103,11 +103,11 @@ def test_operating_points_yaml_fallback(monkeypatch):
     monkeypatch.setattr(ops_route, "get_conn", _broken)
     monkeypatch.setattr(
         ops_route,
-        "_derive_ops_params_from_yaml",
+        "derive_ops_params_from_yaml",
         lambda dataset_code, model_code, op_code: {"ui": {"tau_low": 0.1, "tau_high": 0.9, "cooldown_s": 3.0}},
     )
     client = TestClient(app)
-    resp = client.get("/api/operating_points?model_code=GCN&dataset_code=muvim")
+    resp = client.get("/api/operating_points?model_code=CTR_GCN&dataset_code=muvim")
     assert resp.status_code == 200
     body = resp.json()
     assert body["db_available"] is False
@@ -127,7 +127,8 @@ def test_caregivers_get_and_upsert_db_unavailable(monkeypatch):
     assert r1.json()["db_available"] is False
 
     r2 = client.put("/api/caregivers", json={"resident_id": 7, "name": "A"})
-    assert r2.status_code == 503
+    assert r2.status_code == 200
+    assert r2.json()["db_available"] is False
 
 
 def test_caregivers_table_missing_paths(monkeypatch):
@@ -153,8 +154,8 @@ def test_caregivers_table_missing_paths(monkeypatch):
         yield _Conn()
 
     monkeypatch.setattr(caregivers_route, "get_conn_optional", _db)
-    monkeypatch.setattr(caregivers_route, "_ensure_caregivers_table", lambda _c: None)
-    monkeypatch.setattr(caregivers_route, "_table_exists", lambda _c, _t: False)
+    monkeypatch.setattr(caregivers_route, "ensure_caregivers_table", lambda _c: None)
+    monkeypatch.setattr(caregivers_route, "table_exists", lambda _c, _t: False)
 
     client = TestClient(app)
     r1 = client.get("/api/caregivers?resident_id=1")
@@ -162,7 +163,8 @@ def test_caregivers_table_missing_paths(monkeypatch):
     assert r1.json()["caregivers"] == []
 
     r2 = client.put("/api/caregivers", json={"resident_id": 1, "name": "X"})
-    assert r2.status_code == 500
+    assert r2.status_code == 200
+    assert r2.json()["db_available"] is False
 
 
 def test_settings_update_fallback_inmem(monkeypatch):
@@ -173,7 +175,7 @@ def test_settings_update_fallback_inmem(monkeypatch):
 
     calls = {"payload": None, "resident_id": None}
 
-    def _capture(payload, resident_id):
+    def _capture(payload, resident_id, **_kwargs):
         calls["payload"] = payload
         calls["resident_id"] = resident_id
 
@@ -201,9 +203,9 @@ def test_events_skeleton_clip_validation_errors(monkeypatch):
 
 
 def test_monitor_reset_session(monkeypatch):
-    core_mod._SESSION_STATE["to-reset"] = {"x": 1}
+    runtime_state.SESSION_STATE["to-reset"] = {"x": 1}
     client = TestClient(app)
     resp = client.post("/api/monitor/reset_session?session_id=to-reset")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert "to-reset" not in core_mod._SESSION_STATE
+    assert "to-reset" not in runtime_state.SESSION_STATE

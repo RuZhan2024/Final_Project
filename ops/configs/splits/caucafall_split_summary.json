@@ -1,5 +1,5 @@
 {
-  "labels_json": "configs/labels/caucafall.json",
+  "labels_json": "ops/configs/labels/caucafall.json",
   "prefix": "caucafall",
   "seed": 33724876,
   "fractions": {
@@ -42,8 +42,8 @@
     }
   },
   "files": {
-    "train": "configs/splits/caucafall_train.txt",
-    "val": "configs/splits/caucafall_val.txt",
-    "test": "configs/splits/caucafall_test.txt"
+    "train": "ops/configs/splits/caucafall_train.txt",
+    "val": "ops/configs/splits/caucafall_val.txt",
+    "test": "ops/configs/splits/caucafall_test.txt"
   }
 }

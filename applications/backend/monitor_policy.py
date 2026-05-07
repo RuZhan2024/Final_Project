@@ -2,16 +2,13 @@ from __future__ import annotations
 
 """Operating-point policy helpers for the live monitor endpoint."""
 
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict
 
-import yaml
 from fastapi import HTTPException
 
 from .services.value_coercion import coerce_bool
 
 
-DUAL_POLICY_CFG_CACHE: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
 DEFAULT_LIVE_GUARD_GLOBAL = {
     "low_fps_mode_threshold": 16.0,
     "low_fps_fall_persist_n": 3,
@@ -174,72 +171,6 @@ def op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str, *, 
     return out
 
 
-def load_dual_policy_cfg(dataset_code: str, policy_name: str, op_code: str, *, norm_op_code) -> Optional[Dict[str, Any]]:
-    """Load TCN safe/recall tracker settings for a dataset and op point.
-
-    Dual policy is optional: missing or invalid YAML falls back to the primary
-    tracker instead of failing monitor prediction.
-    """
-
-    key = (f"{dataset_code}:{policy_name}", norm_op_code(op_code))
-    if key in DUAL_POLICY_CFG_CACHE:
-        return DUAL_POLICY_CFG_CACHE[key]
-
-    root = Path(__file__).resolve().parents[1]
-    path = root / "configs" / "ops" / "dual_policy" / f"tcn_{dataset_code}_dual_{policy_name}.yaml"
-    if not path.exists():
-        DUAL_POLICY_CFG_CACHE[key] = None
-        return None
-
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError, UnicodeDecodeError):
-        DUAL_POLICY_CFG_CACHE[key] = None
-        return None
-
-    if not isinstance(data, dict):
-        DUAL_POLICY_CFG_CACHE[key] = None
-        return None
-
-    cfg: Dict[str, Any] = {}
-    if isinstance(data.get("alert_cfg"), dict):
-        cfg.update(data.get("alert_cfg") or {})
-    elif isinstance(data.get("alert_base"), dict):
-        cfg.update(data.get("alert_base") or {})
-
-    ops = data.get("ops") if isinstance(data.get("ops"), dict) else {}
-    op_entry = None
-    want = norm_op_code(op_code)
-    # Historical configs use both OP2 and OP-2 spellings; accept both so old
-    # experiment YAMLs remain deployable.
-    for key_name, value in (ops or {}).items():
-        if not isinstance(value, dict):
-            continue
-        normalized = str(key_name).strip().upper().replace("_", "-")
-        if normalized in {want, want.replace("-", "")}:
-            op_entry = value
-            break
-    if op_entry is None and isinstance(ops, dict):
-        op_entry = (ops.get("OP2") or ops.get("OP-2") or ops.get("op2") or ops.get("op-2"))
-
-    if isinstance(op_entry, dict):
-        if op_entry.get("tau_low") is not None:
-            cfg["tau_low"] = float(op_entry.get("tau_low"))
-        if op_entry.get("tau_high") is not None:
-            cfg["tau_high"] = float(op_entry.get("tau_high"))
-
-    cfg.setdefault("ema_alpha", 0.2)
-    cfg.setdefault("k", 2)
-    cfg.setdefault("n", 3)
-    cfg.setdefault("cooldown_s", 30.0)
-    cfg.setdefault("tau_low", 0.5)
-    cfg.setdefault("tau_high", 0.85)
-
-    DUAL_POLICY_CFG_CACHE[key] = cfg
-    return cfg
-
-
 def resolve_monitor_specs(
     *,
     specs: Dict[str, Any],
@@ -247,7 +178,7 @@ def resolve_monitor_specs(
     mode: str,
     payload_d: Dict[str, Any],
 ) -> Dict[str, str]:
-    """Select deploy specs for requested dataset/mode and resolve hybrid fallback."""
+    """Select the single deploy spec used by the monitor runtime."""
 
     def resolve_spec_key(arch: str, preferred: str) -> str:
         """Use explicit spec keys when present, otherwise pick a dataset match."""
@@ -265,37 +196,19 @@ def resolve_monitor_specs(
     def spec_key_for(arch: str) -> str:
         return f"{dataset_code}_{arch}".lower()
 
-    tcn_key = resolve_spec_key("tcn", str(payload_d.get("model_tcn") or spec_key_for("tcn")).lower())
-    gcn_key = resolve_spec_key("gcn", str(payload_d.get("model_gcn") or spec_key_for("gcn")).lower())
+    if mode != "tcn":
+        raise HTTPException(status_code=400, detail="Monitor runtime supports only mode='tcn'.")
+
+    preferred = str(payload_d.get("model_tcn") or payload_d.get("model_id") or spec_key_for("tcn")).lower()
+    tcn_key = resolve_spec_key("tcn", preferred)
     has_tcn = tcn_key in specs
-    has_gcn = gcn_key in specs
 
-    resolved_mode = mode
-    if resolved_mode == "tcn":
-        if not has_tcn:
-            raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
-    elif resolved_mode == "gcn":
-        if not has_gcn:
-            raise HTTPException(status_code=404, detail=f"No GCN deploy spec found for dataset '{dataset_code}'.")
-    else:
-        if not has_tcn and not has_gcn:
-            raise HTTPException(status_code=404, detail=f"No deploy specs found for dataset '{dataset_code}'.")
-        if has_tcn and not has_gcn:
-            resolved_mode = "tcn"
-        elif has_gcn and not has_tcn:
-            resolved_mode = "gcn"
-        elif not has_tcn or not has_gcn:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Hybrid mode requires both TCN and GCN deploy specs for dataset '{dataset_code}'.",
-            )
+    if not has_tcn:
+        raise HTTPException(status_code=404, detail=f"No TCN deploy spec found for dataset '{dataset_code}'.")
 
-    primary_spec_key = tcn_key if resolved_mode == "tcn" else gcn_key if resolved_mode == "gcn" else tcn_key
     return {
-        "mode": resolved_mode,
+        "mode": "tcn",
         "tcn_key": tcn_key,
-        "gcn_key": gcn_key,
-        "guard_spec_key": tcn_key if resolved_mode in {"tcn", "hybrid"} else gcn_key,
-        "primary_spec_key": primary_spec_key,
-        "primary_model_key": "tcn" if resolved_mode in {"tcn", "hybrid"} else "gcn",
+        "guard_spec_key": tcn_key,
+        "primary_spec_key": tcn_key,
     }

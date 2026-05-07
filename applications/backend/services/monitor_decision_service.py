@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Final policy stage for monitor prediction responses.
 
-Inference has already produced per-model tracker states. This module defines the
+Inference has already produced the tracker state. This module defines the
 API-level contract: one triage state, safe/recall alert flags, persistence edge
 signals, and diagnostics explaining any gate that downgraded a fall.
 """
@@ -40,12 +40,9 @@ class MonitorDecisionResult:
 
 def resolve_monitor_decision(
     *,
-    mode: str,
     models_out: Dict[str, Any],
     tri_tcn: Optional[str],
-    tri_gcn: Optional[str],
-    dual_policy_alerts: Dict[str, Any],
-    primary_model_key: str,
+    policy_alerts: Dict[str, Any],
     primary_spec_key: str,
     resident_id: int,
     dataset_code: str,
@@ -64,78 +61,33 @@ def resolve_monitor_decision(
     lying_score: Optional[float],
     confirm_motion_score: Optional[float],
     started_tcn: bool,
-    started_gcn: bool,
     low_fps_mode: bool,
 ) -> MonitorDecisionResult:
-    """Combine model states into the final monitor decision.
+    """Resolve the single-model monitor decision.
 
-    Precedence is: model/dual-policy tracker state -> hybrid fusion -> MC
-    uncertainty downgrade -> live quality downgrades -> low-FPS persistence
-    confirmation -> delivery gate -> optional replay-only uncertain promotion.
+    Precedence is: model tracker state -> MC uncertainty downgrade -> live
+    quality downgrades -> low-FPS persistence confirmation -> delivery gate ->
+    optional replay-only uncertain promotion.
     The only intentional mutation is session-state bookkeeping for decisions
     that depend on consecutive windows.
     """
 
-    # Dual-policy output is preferred when present because it carries the
-    # calibrated safe/recall contract; single TCN triage remains the fallback for
-    # specs that do not ship dual-policy YAML.
-    tcn_safe_alert = (
-        bool(dual_policy_alerts.get("safe", {}).get("alert"))
-        if "safe" in dual_policy_alerts
+    safe_alert = (
+        bool(policy_alerts.get("safe", {}).get("alert"))
+        if "safe" in policy_alerts
         else bool((tri_tcn or "not_fall") == "fall")
     )
-    tcn_recall_alert = (
-        bool(dual_policy_alerts.get("recall", {}).get("alert"))
-        if "recall" in dual_policy_alerts
-        else tcn_safe_alert
+    recall_alert = (
+        bool(policy_alerts.get("recall", {}).get("alert"))
+        if "recall" in policy_alerts
+        else bool(safe_alert)
     )
-    gcn_alert = bool((tri_gcn or "not_fall") == "fall")
-
-    if mode == "tcn":
-        triage_state = str(dual_policy_alerts.get("safe", {}).get("state") or tri_tcn or "not_fall")
-        p_display = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
-        safe_alert = tcn_safe_alert
-        recall_alert = tcn_recall_alert
-    elif mode == "gcn":
-        triage_state = tri_gcn or "not_fall"
-        p_display = float(models_out.get("gcn", {}).get("p_alert_in", models_out.get("gcn", {}).get("mu", 0.0)))
-        safe_alert = gcn_alert
-        recall_alert = gcn_alert
-    else:
-        # Hybrid deliberately makes delivery stricter than visibility: a fall is
-        # deliverable only when TCN-safe and GCN agree, but a recall-only hit is
-        # still surfaced as uncertain for review.
-        safe_alert = bool(tcn_safe_alert and gcn_alert)
-        recall_alert = bool(tcn_recall_alert or gcn_alert)
-        if safe_alert:
-            triage_state = "fall"
-        elif recall_alert:
-            triage_state = "uncertain"
-        else:
-            triage_state = "not_fall"
-        p_tcn = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
-        p_gcn = float(models_out.get("gcn", {}).get("p_alert_in", models_out.get("gcn", {}).get("mu", 0.0)))
-        p_display = float(max(p_tcn, p_gcn))
-        dual_policy_alerts.setdefault(
-            "safe",
-            {
-                "state": "fall" if safe_alert else "not_fall",
-                "alert": safe_alert,
-                "source": "tcn_safe_and_gcn",
-            },
-        )
-        dual_policy_alerts.setdefault(
-            "recall",
-            {
-                "state": "fall" if recall_alert else "not_fall",
-                "alert": recall_alert,
-                "source": "tcn_recall_or_gcn",
-            },
-        )
+    triage_state = str(policy_alerts.get("safe", {}).get("state") or tri_tcn or "not_fall")
+    p_display = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
 
     primary_uncertainty_eval = (
-        models_out.get(primary_model_key, {}).get("uncertainty_gate_eval", {})
-        if isinstance(models_out.get(primary_model_key), dict)
+        models_out.get("tcn", {}).get("uncertainty_gate_eval", {})
+        if isinstance(models_out.get("tcn"), dict)
         else {}
     )
     if (
@@ -143,27 +95,16 @@ def resolve_monitor_decision(
         and bool(primary_uncertainty_eval.get("blocked_fall", False))
         and triage_state == "fall"
     ):
-        # Uncertainty downgrades after hybrid fusion so it can veto whichever
-        # model is primary for the response without erasing model diagnostics.
+        # Uncertainty downgrades after tracker evaluation without erasing model
+        # diagnostics.
         triage_state = "uncertain"
         safe_alert = False
         recall_alert = False
 
-    if mode == "tcn":
-        if "safe" in dual_policy_alerts:
-            started_event = bool(dual_policy_alerts.get("safe", {}).get("started_event"))
-        else:
-            started_event = bool(started_tcn)
-    elif mode == "gcn":
-        started_event = bool(started_gcn)
+    if "safe" in policy_alerts:
+        started_event = bool(policy_alerts.get("safe", {}).get("started_event"))
     else:
-        # The combined safe policy is not a tracker object, so persistence needs
-        # its own rising-edge detector to avoid saving every fall window.
-        edge_key = f"persist_edge:{resident_id}:{dataset_code}:{mode}:{op_code}"
-        prev_safe = bool(st.get(edge_key, False))
-        curr_safe = bool(safe_alert)
-        started_event = bool(curr_safe and (not prev_safe))
-        st[edge_key] = curr_safe
+        started_event = bool(started_tcn)
 
     if (
         isinstance(primary_uncertainty_eval, dict)
@@ -172,7 +113,7 @@ def resolve_monitor_decision(
     ):
         started_event = False
 
-    low_fps_gate_key = f"{dataset_code}:{mode}:fall_confirm_count"
+    low_fps_gate_key = f"{dataset_code}:tcn:fall_confirm_count"
     low_fps_confirm_count = int(st.get(low_fps_gate_key, 0) or 0)
     low_fps_gate_reason: Optional[str] = None
     if (
@@ -201,7 +142,7 @@ def resolve_monitor_decision(
     if bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
         # Low-FPS confirmation protects the persistence edge, not the model
         # score: slow capture can compress motion enough to mimic an impact.
-        safe_gate_ok = bool(safe_alert) if mode in {"tcn", "hybrid"} else True
+        safe_gate_ok = bool(safe_alert)
         motion_gate_ok = not low_motion_block
         structure_gate_ok = not structural_quality_block
         occlusion_gate_ok = not occlusion_block
@@ -235,7 +176,7 @@ def resolve_monitor_decision(
         "mean_motion_high": None,
         "event_start_s": None,
     }
-    if mode in {"tcn", "gcn"} and bool(delivery_gate.get("enabled", False)):
+    if bool(delivery_gate.get("enabled", False)):
         gate_state_key = f"delivery_gate:{primary_spec_key}:{norm_op_code(op_code)}"
         if triage_state == "fall":
             gate_state = st.setdefault(gate_state_key, {})
@@ -256,11 +197,11 @@ def resolve_monitor_decision(
                 gate_state["motion_high_count"] = 0
             if lying_score is not None and math.isfinite(float(lying_score)):
                 gate_state["max_lying"] = max(float(gate_state.get("max_lying", float("-inf"))), float(lying_score))
-            tau_high_live = float(models_out.get(primary_model_key, {}).get("triage", {}).get("tau_high", 1.0))
+            tau_high_live = float(models_out.get("tcn", {}).get("triage", {}).get("tau_high", 1.0))
             if (
                 confirm_motion_score is not None
                 and math.isfinite(float(confirm_motion_score))
-                and float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0)) >= tau_high_live
+                and float(models_out.get("tcn", {}).get("p_alert_in", 0.0)) >= tau_high_live
             ):
                 # Motion confirmation is tied to high-probability windows; using
                 # every window would let quiet pre/post-roll dilute the impact.
@@ -320,15 +261,14 @@ def resolve_monitor_decision(
 
     uncertain_promoted = False
     if (
-        mode in {"tcn", "gcn"}
-        and triage_state == "uncertain"
+        triage_state == "uncertain"
         and bool(uncertain_promote.get("enabled", False))
         and (not bool(uncertain_promote.get("video_only", True)) or is_replay)
     ):
         # Promotion is late and usually replay-only because it reverses earlier
         # conservative gates; live alerts should not become fall unless delivery
         # evidence is already strong before this point.
-        p_alert_live = float(models_out.get(primary_model_key, {}).get("p_alert_in", 0.0) or 0.0)
+        p_alert_live = float(models_out.get("tcn", {}).get("p_alert_in", 0.0) or 0.0)
         p_ok = (
             uncertain_promote.get("min_p_alert") is None
             or p_alert_live >= float(uncertain_promote["min_p_alert"])
@@ -355,8 +295,8 @@ def resolve_monitor_decision(
             recall_alert = True
             uncertain_promoted = True
 
-    safe_state_out = dual_policy_alerts.get("safe", {}).get("state")
-    recall_state_out = dual_policy_alerts.get("recall", {}).get("state")
+    safe_state_out = policy_alerts.get("safe", {}).get("state")
+    recall_state_out = policy_alerts.get("recall", {}).get("state")
     if not safe_state_out:
         if triage_state == "uncertain":
             safe_state_out = "uncertain"

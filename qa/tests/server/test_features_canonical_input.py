@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from core.features import FeatCfg, build_canonical_input, channel_layout, split_gcn_two_stream
+from fall_detection.core.features import FeatCfg, build_canonical_input, channel_layout, split_gcn_two_stream
 
 
 def test_build_canonical_input_all_valid_keeps_conf_channel():

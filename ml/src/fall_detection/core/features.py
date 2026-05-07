@@ -31,6 +31,7 @@ Features implemented (all per-joint):
 Note:
   - build_canonical_input() returns X[T,V,F] and mask[T,V] (bool).
   - split_gcn_two_stream() returns (X_joint, X_motion) using the layout.
+  - split_ctr_gcn_two_stream() returns CTR-GCN late-fusion streams.
   - build_tcn_input() flattens to [T, V*F] for TCN.
 """
 
@@ -693,6 +694,66 @@ def split_gcn_two_stream(X: np.ndarray, feat_cfg: FeatCfg) -> Tuple[np.ndarray, 
         xm = np.zeros((T, V, 2), dtype=np.float32)
 
     return xj, xm
+
+
+def split_ctr_gcn_two_stream(
+    X: np.ndarray,
+    feat_cfg: FeatCfg,
+    *,
+    stream_mode: str = "joint_bone",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Split canonical X[T,V,F] into CTR-GCN late-fusion streams.
+
+    The first supported mode is ``joint_bone``:
+    - joint stream: xy (+ motion) (+ conf)
+    - bone stream: bone_xy (+ bone_len) (+ conf)
+
+    Duplicating confidence into both streams keeps the masking/visibility signal
+    available after the split while preserving one canonical feature builder.
+    """
+    mode = str(stream_mode or "joint_bone").lower()
+    if mode in {"gcn", "joint_motion"}:
+        return split_gcn_two_stream(X, feat_cfg)
+    if mode != "joint_bone":
+        raise ValueError(f"unsupported CTR-GCN two-stream mode: {stream_mode}")
+
+    if isinstance(X, np.ndarray) and X.dtype == np.float32:
+        X = X
+    else:
+        X = np.asarray(X, dtype=np.float32)
+    T, V, _F = X.shape
+    lo = channel_layout(feat_cfg)
+    if "bone" not in lo:
+        raise ValueError("CTR-GCN joint_bone two-stream mode requires feat_cfg.use_bone=1")
+
+    has_motion = "motion" in lo
+    has_bone_len = "bone_len" in lo
+    has_conf = "conf" in lo
+
+    jF = 2 + (2 if has_motion else 0) + (1 if has_conf else 0)
+    bF = 2 + (1 if has_bone_len else 0) + (1 if has_conf else 0)
+    xj = np.empty((T, V, jF), dtype=np.float32)
+    xb = np.empty((T, V, bF), dtype=np.float32)
+
+    off = 0
+    xj[..., off:off + 2] = X[..., slice(*lo["xy"])]
+    off += 2
+    if has_motion:
+        xj[..., off:off + 2] = X[..., slice(*lo["motion"])]
+        off += 2
+    if has_conf:
+        xj[..., off:off + 1] = X[..., slice(*lo["conf"])]
+
+    off = 0
+    xb[..., off:off + 2] = X[..., slice(*lo["bone"])]
+    off += 2
+    if has_bone_len:
+        xb[..., off:off + 1] = X[..., slice(*lo["bone_len"])]
+        off += 1
+    if has_conf:
+        xb[..., off:off + 1] = X[..., slice(*lo["conf"])]
+
+    return xj, xb
 
 
 def build_tcn_input(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:

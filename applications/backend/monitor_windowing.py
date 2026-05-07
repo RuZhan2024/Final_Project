@@ -327,18 +327,16 @@ def resolve_runtime_fps(
 ) -> Tuple[float, float]:
     """Choose expected and effective FPS for replay and live monitor windows.
 
-    Replay uses measured FPS for deterministic offline evaluation. Live camera
-    input keeps the dataset expected FPS for policy thresholds while resampling
-    to a clamped effective FPS when the capture stream slows down.
+    Replay keeps the dataset expected FPS so browser/MediaPipe throughput does
+    not change the model's temporal scale. Live camera input keeps the dataset
+    expected FPS for policy thresholds while resampling to a clamped effective
+    FPS when the capture stream slows down.
     """
 
     expected_fps = {
         "le2i": 25,
         "caucafall": 23,
     }.get(dataset_code, int(payload_d.get("target_fps") or payload_d.get("fps") or 23))
-    if is_replay and raw_fps_est is not None and math.isfinite(float(raw_fps_est)) and float(raw_fps_est) > 0:
-        measured_fps = float(raw_fps_est)
-        return measured_fps, measured_fps
     effective_fps = (
         float(expected_fps)
         if is_replay

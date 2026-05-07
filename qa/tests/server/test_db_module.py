@@ -1,7 +1,9 @@
 import pytest
+import sys
 import types
 
 from applications.backend import db as db_mod
+from applications.backend.config import get_app_config
 
 
 def test_require_env_raises_when_missing(monkeypatch):
@@ -22,6 +24,11 @@ def test_get_conn_optional_yields_none_on_failure(monkeypatch):
 def test_get_conn_import_error(monkeypatch):
     import builtins
 
+    monkeypatch.setenv("DB_BACKEND", "mysql")
+    get_app_config.cache_clear()
+    monkeypatch.delitem(sys.modules, "pymysql", raising=False)
+    monkeypatch.delitem(sys.modules, "pymysql.cursors", raising=False)
+
     real_import = builtins.__import__
 
     def _fake_import(name, *args, **kwargs):
@@ -30,9 +37,12 @@ def test_get_conn_import_error(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _fake_import)
-    with pytest.raises(RuntimeError):
-        with db_mod.get_conn():
-            pass
+    try:
+        with pytest.raises(RuntimeError):
+            with db_mod.get_conn():
+                pass
+    finally:
+        get_app_config.cache_clear()
 
 
 def test_get_conn_success_close_error_and_optional_success(monkeypatch):

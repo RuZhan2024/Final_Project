@@ -8,12 +8,10 @@ def test_discover_specs_reads_promoted_runtime_assets() -> None:
     try:
         dr._SPECS = None
         specs = dr.discover_specs()
-        expected = {"caucafall_tcn", "caucafall_gcn", "le2i_tcn", "le2i_gcn"}
-        assert expected.issubset(specs.keys())
-        for key in expected:
-            spec = specs[key]
-            assert "/ops/configs/ops/" in spec.ops_path
-            assert "/ops/deploy_assets/checkpoints/" in spec.ckpt
-            assert spec.ops
+        assert set(specs.keys()) == {"caucafall_tcn"}
+        spec = specs["caucafall_tcn"]
+        assert "/ops/configs/ops/" in spec.ops_path.replace("\\", "/")
+        assert "/ops/deploy_assets/checkpoints/" in spec.ckpt.replace("\\", "/")
+        assert spec.ops
     finally:
         dr._SPECS = old_specs

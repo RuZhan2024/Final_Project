@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from applications.backend import core as core_mod
+from applications.backend import code_normalization, inmemory_state
 from applications.backend.repositories import settings_repository as repo
+from applications.backend.schemas import SettingsUpdatePayload
 from applications.backend.services import monitor_context_service as ctx_service
 from applications.backend.services import settings_service
 
@@ -33,9 +34,15 @@ class _Conn:
 
 
 def test_apply_settings_update_inmem_normalizes_op_code() -> None:
-    payload = core_mod.SettingsUpdatePayload(active_op_code="op2")
-    core_mod.apply_settings_update_inmem(payload, resident_id=99)
-    system, _deploy = core_mod.get_inmem_settings(99).values()
+    payload = SettingsUpdatePayload(active_op_code="op2")
+    inmemory_state.apply_settings_update_inmem(
+        payload,
+        resident_id=99,
+        normalize_model_code=code_normalization.normalize_model_code,
+        normalize_dataset_code=code_normalization.normalize_dataset_code,
+        norm_op_code=code_normalization.norm_op_code,
+    )
+    system, _deploy = inmemory_state.get_inmem_settings(99).values()
     assert system["active_op_code"] == "OP-2"
 
 
@@ -75,8 +82,8 @@ def test_load_settings_snapshot_normalizes_active_op_code(monkeypatch) -> None:
     system = {}
     deploy = {}
     conn = _Conn([{"active_op_code": "op3"}])
-    monkeypatch.setattr(repo, "_ensure_system_settings_schema", lambda _conn: None)
-    monkeypatch.setattr(repo, "_table_exists", lambda _conn, name: name == "system_settings")
+    monkeypatch.setattr(repo, "ensure_system_settings_schema", lambda _conn: None)
+    monkeypatch.setattr(repo, "table_exists", lambda _conn, name: name == "system_settings")
 
     repo.load_settings_snapshot(conn, 1, system, deploy)
 

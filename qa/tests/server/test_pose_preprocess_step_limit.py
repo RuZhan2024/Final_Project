@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.preprocess_pose_npz import limit_step_displacement
+from fall_detection.pose.preprocess_pose_npz import limit_step_displacement
 
 
 def test_limit_step_displacement_clamps_large_jump():

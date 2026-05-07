@@ -88,41 +88,29 @@ function Monitor({ isActive = true }: MonitorProps) {
   } = useReplayClips(apiBase, isActive);
 
   const chosen = useMemo<ChosenSpecs>(() => {
-    if (mode === "tcn") return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode), gcn: "" };
-    if (mode === "gcn") return { tcn: "", gcn: pickFirstByArch(models, "gcn", activeDatasetCode) };
-    return {
-      tcn: pickFirstByArch(models, "tcn", activeDatasetCode),
-      gcn: pickFirstByArch(models, "gcn", activeDatasetCode),
-    };
-  }, [mode, models, activeDatasetCode]);
+    return { tcn: pickFirstByArch(models, "tcn", activeDatasetCode) };
+  }, [models, activeDatasetCode]);
 
   const effectiveMode = useMemo(() => {
     if (mode === "tcn" && chosen.tcn) return "tcn";
-    if (mode === "gcn" && chosen.gcn) return "gcn";
-    if (mode === "hybrid" && chosen.tcn && chosen.gcn) return "hybrid";
-    // Auto-fallback when selected arch is unavailable for the dataset.
-    if (chosen.tcn) return "tcn";
-    if (chosen.gcn) return "gcn";
     return mode;
   }, [mode, chosen]);
 
   const modelTag = useMemo(() => prettyModelTag(effectiveMode), [effectiveMode]);
 
   const chosenSpec = useMemo(() => {
-    if (effectiveMode === "tcn") return models.find((m) => m.id === chosen.tcn) || null;
-    if (effectiveMode === "hybrid") return null;
-    return models.find((m) => m.id === chosen.gcn) || null;
-  }, [effectiveMode, models, chosen]);
+    return models.find((m) => m.id === chosen.tcn) || null;
+  }, [models, chosen]);
 
   const resolvedDatasetCode = useMemo(() => {
     const fromSpec =
       chosenSpec?.dataset_code ||
       chosenSpec?.dataset ||
-      (effectiveMode === "tcn" ? (models.find((m) => m.id === chosen.tcn)?.dataset_code || models.find((m) => m.id === chosen.tcn)?.dataset) : null) ||
-      (effectiveMode === "gcn" ? (models.find((m) => m.id === chosen.gcn)?.dataset_code || models.find((m) => m.id === chosen.gcn)?.dataset) : null);
+      models.find((m) => m.id === chosen.tcn)?.dataset_code ||
+      models.find((m) => m.id === chosen.tcn)?.dataset;
     // Spec metadata wins when available so replay/live requests stay aligned with the chosen checkpoint.
     return String(fromSpec || activeDatasetCode || "caucafall");
-  }, [chosenSpec, effectiveMode, models, chosen, activeDatasetCode]);
+  }, [chosenSpec, models, chosen, activeDatasetCode]);
 
   // ---- Operating point params (YAML-derived preferred; legacy DB fallback) ----
   const { opCode, tauLow, tauHigh, confirmK, confirmN, cooldownS } = useOperatingPointParams({

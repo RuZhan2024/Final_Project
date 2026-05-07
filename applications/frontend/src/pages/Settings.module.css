@@ -184,6 +184,17 @@ input:checked + .slider:before {
   color: #3C4043;
 }
 
+.lockedValue {
+  color: #174EA6;
+  background: #E8F0FE;
+  border: 1px solid #D2E3FC;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-align: right;
+}
+
 /* --- Custom Radio Buttons --- */
 .radioGroup {
   display: flex;

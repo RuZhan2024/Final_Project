@@ -20,9 +20,9 @@ def test_app_config_uses_env_for_cors_and_runtime_paths(monkeypatch):
 
     assert cfg.cors_allowed_origins == ("http://localhost:3000", "https://example.com")
     assert cfg.db_backend == "sqlite"
-    assert str(cfg.sqlite_path).endswith("tmp/test_app.sqlite3")
-    assert str(cfg.event_clips_dir).endswith("tmp/test_event_clips")
-    assert str(cfg.notification_sqlite_path).endswith("tmp/test_notifications.sqlite3")
+    assert cfg.sqlite_path.parts[-2:] == ("tmp", "test_app.sqlite3")
+    assert cfg.event_clips_dir.parts[-2:] == ("tmp", "test_event_clips")
+    assert cfg.notification_sqlite_path.parts[-2:] == ("tmp", "test_notifications.sqlite3")
     assert cfg.app_base_url == "https://frontend.example.com"
     assert cfg.app_timezone == "UTC"
     assert cfg.session_ttl_s == 2400

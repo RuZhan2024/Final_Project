@@ -21,7 +21,14 @@ import yaml
 from fall_detection.core.alerting import AlertCfg, detect_alert_events, times_from_windows
 from fall_detection.core.ckpt import get_cfg, load_ckpt
 from fall_detection.core.confirm import confirm_scores_window
-from fall_detection.core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_gcn_two_stream
+from fall_detection.core.features import (
+    FeatCfg,
+    build_canonical_input,
+    build_tcn_input,
+    read_window_npz,
+    split_ctr_gcn_two_stream,
+    split_gcn_two_stream,
+)
 from fall_detection.core.models import build_model, p_fall_from_logits, pick_device
 
 
@@ -217,11 +224,17 @@ def main() -> None:
                     x = build_tcn_input(X, feat_cfg_obj)
                     xb = torch.from_numpy(x).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
-                else:
-                    xj, xm = split_gcn_two_stream(X, feat_cfg_obj)
+                elif arch in {"gcn", "ctr_gcn"} and bool(model_cfg.get("two_stream", False)):
+                    if arch == "ctr_gcn":
+                        xj, xm = split_ctr_gcn_two_stream(X, feat_cfg_obj, stream_mode="joint_bone")
+                    else:
+                        xj, xm = split_gcn_two_stream(X, feat_cfg_obj)
                     xjb = torch.from_numpy(xj).to(torch.float32).unsqueeze(0).to(device)
                     xmb = torch.from_numpy(xm).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xjb, xmb)).detach().cpu().numpy().reshape(-1)[0])
+                else:
+                    xb = torch.from_numpy(X).to(torch.float32).unsqueeze(0).to(device)
+                    p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
                 probs.append(p)
                 ws.append(r["w_start"])
                 we.append(r["w_end"])

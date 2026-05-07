@@ -1,6 +1,6 @@
 import numpy as np
 
-from core.metrics import (
+from fall_detection.core.metrics import (
     _group_fp_events_for_video,
     _group_fp_events_for_video_from_scores,
 )

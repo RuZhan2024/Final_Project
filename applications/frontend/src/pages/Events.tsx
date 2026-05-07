@@ -10,7 +10,7 @@ import styles from "./Events.module.css";
 
 type EventFilterType = "All" | "Fall" | "Uncertain" | "Safe";
 type StatusFilterType = "All" | "Unreviewed" | "Confirmed" | "Not a Fall" | "Dismissed";
-type ModelFilterType = "All" | "TCN" | "GCN";
+type ModelFilterType = "All" | "TCN" | "CTR-GCN";
 
 function hasStoredReplay(ev: EventRecord | null): boolean {
   return Boolean(ev?.meta?.skeleton_clip?.path);
@@ -60,8 +60,8 @@ export default function Events() {
       }
 
       if (model !== "All") {
-        const want = model.toUpperCase();
-        if ((ev.model_code || "").toUpperCase() !== want) return false;
+        const want = model.toUpperCase().replace("-", "_");
+        if ((ev.model_code || "").toUpperCase().replace("-", "_") !== want) return false;
       }
 
       return true;
@@ -187,7 +187,7 @@ export default function Events() {
           >
             <option>All</option>
             <option>TCN</option>
-            <option>GCN</option>
+            <option>CTR-GCN</option>
           </select>
 
           <div className={styles.filterActions}>

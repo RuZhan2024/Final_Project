@@ -12,12 +12,6 @@ from ..code_normalization import norm_op_code, normalize_dataset_code, normalize
 from ..db_schema import col_exists, ensure_system_settings_schema, table_exists
 from ..schemas import SettingsUpdatePayload
 
-_norm_op_code = norm_op_code
-_col_exists = col_exists
-_ensure_system_settings_schema = ensure_system_settings_schema
-_table_exists = table_exists
-
-
 def _updated_at_expr(conn: Any) -> str:
     """Return the backend-specific SQL expression for the current timestamp."""
     return "CURRENT_TIMESTAMP" if str(getattr(conn, "db_backend", "mysql")).lower() == "sqlite" else "NOW()"
@@ -25,9 +19,9 @@ def _updated_at_expr(conn: Any) -> str:
 
 def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], deploy: Dict[str, Any]) -> None:
     """Merge DB-backed settings columns into mutable system/deploy dicts."""
-    _ensure_system_settings_schema(conn)
+    ensure_system_settings_schema(conn)
 
-    if not _table_exists(conn, "system_settings"):
+    if not table_exists(conn, "system_settings"):
         return
 
     with conn.cursor() as cur:
@@ -81,7 +75,7 @@ def load_settings_snapshot(conn: Any, resident_id: int, system: Dict[str, Any], 
 
 def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdatePayload) -> bool:
     """Write a settings patch into `system_settings`, creating the row if needed."""
-    _ensure_system_settings_schema(conn)
+    ensure_system_settings_schema(conn)
 
     sets = []
     vals = []
@@ -89,7 +83,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
 
     def add(col: str, expr: str, value: Any) -> None:
         """Append an update fragment only when the target column exists."""
-        if _col_exists(conn, "system_settings", col):
+        if col_exists(conn, "system_settings", col):
             sets.append(expr)
             vals.append(value)
 
@@ -97,7 +91,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
         add("monitoring_enabled", "monitoring_enabled=%s", 1 if payload.monitoring_enabled else 0)
 
     if payload.fall_threshold is not None:
-        if _col_exists(conn, "system_settings", "p_fall_threshold"):
+        if col_exists(conn, "system_settings", "p_fall_threshold"):
             sets.append("p_fall_threshold=%s")
             vals.append(payload.fall_threshold)
         else:
@@ -131,7 +125,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
     if payload.active_dataset_code is not None:
         add("active_dataset_code", "active_dataset_code=%s", normalize_dataset_code(payload.active_dataset_code))
 
-    if payload.active_op_code is not None and _col_exists(conn, "system_settings", "active_op_code"):
+    if payload.active_op_code is not None and col_exists(conn, "system_settings", "active_op_code"):
         add("active_op_code", "active_op_code=%s", norm_op_code(payload.active_op_code))
 
     if payload.mc_enabled is not None:
@@ -144,9 +138,9 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
         add("mc_M_confirm", "mc_M_confirm=%s", int(payload.mc_M_confirm))
 
     if payload.active_model_code is not None:
-        if _col_exists(conn, "system_settings", "active_model_code"):
+        if col_exists(conn, "system_settings", "active_model_code"):
             add("active_model_code", "active_model_code=%s", normalize_model_code(payload.active_model_code))
-        if _col_exists(conn, "system_settings", "active_model_id") and _table_exists(conn, "models"):
+        if col_exists(conn, "system_settings", "active_model_id") and table_exists(conn, "models"):
             norm_mc = normalize_model_code(payload.active_model_code)
             with conn.cursor() as cur:
                 cur.execute(
@@ -159,7 +153,7 @@ def persist_settings_update(conn: Any, resident_id: int, payload: SettingsUpdate
                 vals.append(int(model_row["id"]))
 
     if payload.active_operating_point is not None:
-        if _col_exists(conn, "system_settings", "active_operating_point_id"):
+        if col_exists(conn, "system_settings", "active_operating_point_id"):
             sets.append("active_operating_point_id=%s")
             vals.append(payload.active_operating_point)
         else:

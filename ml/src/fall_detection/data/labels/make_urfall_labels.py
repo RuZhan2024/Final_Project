@@ -152,8 +152,8 @@ def bool_runs_to_spans(flags: List[bool], min_run: int, gap_fill: int) -> List[L
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--npz_dir", default="data/interim/urfd/pose_npz")
-    ap.add_argument("--out_labels", default="configs/labels/urfd.json")
-    ap.add_argument("--out_spans", default="configs/labels/urfd_spans.json")
+    ap.add_argument("--out_labels", default="ops/configs/labels/urfd.json")
+    ap.add_argument("--out_spans", default="ops/configs/labels/urfd_spans.json")
     ap.add_argument("--ann_glob", default=None,
                     help="Per-frame annotation glob with {stem} placeholder.")
     ap.add_argument("--use_per_frame_action_txt", type=int, default=0,

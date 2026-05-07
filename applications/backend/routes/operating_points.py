@@ -28,7 +28,7 @@ router = APIRouter()
 @router.get("/api/operating_points")
 @router.get("/api/v1/operating_points")
 def operating_points(
-    model_code: str = Query(..., description="TCN | GCN"),
+    model_code: str = Query(..., description="TCN | CTR_GCN"),
     dataset_code: str = Query("caucafall", description="Dataset code (caucafall | le2i)"),
 ) -> Dict[str, Any]:
     """Return operating point presets for a model.
@@ -37,8 +37,8 @@ def operating_points(
     - If DB is not available, returns YAML-derived OP-1/OP-2/OP-3 thresholds.
     """
     model_code = normalize_model_code(model_code, default="")
-    if model_code not in {"TCN", "GCN"}:
-        raise HTTPException(status_code=400, detail="model_code must be one of: TCN, GCN")
+    if model_code not in {"TCN", "CTR_GCN"}:
+        raise HTTPException(status_code=400, detail="model_code must be one of: TCN, CTR_GCN")
 
     dataset_code = normalize_dataset_code(dataset_code, default="caucafall")
 

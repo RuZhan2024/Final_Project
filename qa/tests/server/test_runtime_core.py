@@ -4,9 +4,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from applications.backend import core as core_mod
+from applications.backend import code_normalization, db_schema, deploy_ops, event_schema
 from applications.backend import deploy_runtime as dr
+from applications.backend import inmemory_state, json_utils, runtime_assets
 from applications.backend.online_alert import OnlineAlertTracker
+from applications.backend.repositories import models_repository, residents_repository
+from applications.backend.schemas import SettingsUpdatePayload
 
 
 class _FakeCursor:
@@ -99,16 +102,16 @@ class _FakeTorch:
     float32 = np.float32
 
 
-def test_core_jsonable_and_anonymize_xy():
+def test_jsonable_and_anonymize_xy():
     x = {"b": b"abc", "arr": [1, 2, {"k": 3}]}
-    out = core_mod._jsonable(x)
+    out = json_utils.jsonable(x)
     assert out["b"] == "abc"
     assert out["arr"][2]["k"] == 3
 
     xy = np.zeros((2, 33, 2), dtype=np.float32)
     xy[:, 23, :] = np.array([1.0, 2.0], dtype=np.float32)
     xy[:, 24, :] = np.array([3.0, 4.0], dtype=np.float32)
-    anon = core_mod._anonymize_xy_inplace(xy.copy())
+    anon = runtime_assets.anonymize_xy_inplace(xy.copy())
     assert np.allclose(anon[:, 23, :], np.array([[-1.0, -1.0], [-1.0, -1.0]], dtype=np.float32))
 
 
@@ -118,33 +121,31 @@ def test_core_derive_ops_params_from_yaml_modes(monkeypatch):
             alert_cfg={"cooldown_s": 4, "ema_alpha": 0.2, "k": 2, "n": 3},
             ops={"OP-2": {"tau_low": 0.15, "tau_high": 0.8}},
         ),
-        "caucafall_gcn": SimpleNamespace(
+        "caucafall_ctr_gcn": SimpleNamespace(
             alert_cfg={"cooldown_s": 5, "ema_alpha": 0.1, "k": 3, "n": 4},
             ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.85}},
         ),
     }
-    monkeypatch.setattr(core_mod, "_get_deploy_specs", lambda: specs)
+    monkeypatch.setattr(deploy_ops, "get_deploy_specs", lambda: specs)
 
-    tcn = core_mod._derive_ops_params_from_yaml("caucafall", "TCN", "op2")
-    gcn = core_mod._derive_ops_params_from_yaml("caucafall", "GCN", "op2")
-    hyb = core_mod._derive_ops_params_from_yaml("caucafall", "HYBRID", "op2")
+    tcn = deploy_ops.derive_ops_params_from_yaml("caucafall", "TCN", "op2")
+    ctr = deploy_ops.derive_ops_params_from_yaml("caucafall", "ctr-gcn", "op2")
 
     assert tcn["ui"]["tau_high"] == 0.8
-    assert gcn["ui"]["tau_high"] == 0.85
-    assert hyb["ui"]["tau_high"] == 0.8
-    assert hyb["ui"]["cooldown_s"] == 4.0
+    assert ctr["ui"]["tau_high"] == 0.85
+    assert ctr["ui"]["cooldown_s"] == 5.0
 
 
 def test_deploy_runtime_discover_from_ops_yaml(tmp_path: Path):
     root = tmp_path
-    (root / "configs" / "ops").mkdir(parents=True)
-    ckpt = root / "outputs" / "muvim_gcn" / "best.pt"
+    (root / "ops" / "configs" / "ops").mkdir(parents=True)
+    ckpt = root / "outputs" / "caucafall_tcn" / "best.pt"
     ckpt.parent.mkdir(parents=True)
     ckpt.write_bytes(b"x")
 
     yml = {
-        "arch": "gcn",
-        "ckpt": "outputs/muvim_gcn/best.pt",
+        "arch": "tcn",
+        "ckpt": "outputs/caucafall_tcn/best.pt",
         "feat_cfg": {"use_motion": True},
         "alert_cfg": {"k": 2, "n": 3},
         "ops": {
@@ -153,18 +154,49 @@ def test_deploy_runtime_discover_from_ops_yaml(tmp_path: Path):
             "op3": {"tau_low": 0.3, "tau_high": 0.7},
         },
     }
-    (root / "configs" / "ops" / "gcn_muvim.yaml").write_text(json.dumps(yml), encoding="utf-8")
+    yml_path = root / "ops" / "configs" / "ops" / "tcn_caucafall.yaml"
+    yml_path.write_text(json.dumps(yml), encoding="utf-8")
 
-    specs = dr._discover_from_ops_yaml(root)
-    assert "muvim_gcn" in specs
-    assert specs["muvim_gcn"].ops["OP-2"]["tau_high"] == 0.8
+    specs = dr._discover_from_ops_yaml(root, (yml_path,))
+    assert "caucafall_tcn" in specs
+    assert specs["caucafall_tcn"].ops["OP-2"]["tau_high"] == 0.8
 
 
-def test_deploy_runtime_alert_cfg_and_fuse():
+def test_deploy_runtime_discovers_ctr_gcn_ops_yaml(tmp_path: Path):
+    root = tmp_path
+    (root / "ops" / "configs" / "ops").mkdir(parents=True)
+    ckpt = root / "outputs" / "ctr_gcn" / "demo" / "best.pt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b"x")
+
+    yml = {
+        "model": {
+            "arch": "ctr_gcn",
+            "ckpt": "outputs/ctr_gcn/demo/best.pt",
+            "feat_cfg": {"use_motion": True, "use_bone": True},
+            "model_cfg": {"num_joints": 33, "in_feats": 8},
+        },
+        "ops": {"OP2": {"tau_low": 0.3, "tau_high": 0.4}},
+    }
+    yml_path = root / "ops" / "configs" / "ops" / "ctr_gcn_caucafall.yaml"
+    yml_path.write_text(
+        json.dumps(yml),
+        encoding="utf-8",
+    )
+
+    specs = dr._discover_from_ops_yaml(root, (yml_path,))
+    spec = specs["caucafall_ctr_gcn"]
+    assert spec.arch == "ctr_gcn"
+    assert spec.dataset == "caucafall"
+    assert spec.ckpt == str(ckpt.resolve())
+    assert spec.ops["OP-2"]["tau_high"] == 0.4
+
+
+def test_deploy_runtime_alert_cfg():
     s = dr.DeploySpec(
         key="k",
         dataset="muvim",
-        arch="gcn",
+        arch="tcn",
         ckpt="/tmp/none",
         feat_cfg={},
         model_cfg={},
@@ -179,9 +211,6 @@ def test_deploy_runtime_alert_cfg_and_fuse():
         tau_low, tau_high = dr.get_op_taus("k", "op2")
         assert cfg["tau_low"] == 0.2
         assert tau_high == 0.8
-        assert dr.fuse_hybrid("not_fall", "not_fall") == "not_fall"
-        assert dr.fuse_hybrid("fall", "uncertain") == "fall"
-        assert dr.fuse_hybrid("uncertain", "not_fall") == "uncertain"
     finally:
         dr._SPECS = old
 
@@ -359,7 +388,7 @@ def test_prepare_features_tcn_uses_runtime_builders(monkeypatch):
     assert out["x_t"].shape == (4, 10)
 
 
-def test_prepare_features_gcn_two_stream_uses_runtime_splitter(monkeypatch):
+def test_prepare_features_ctr_gcn_two_stream_uses_runtime_splitter(monkeypatch):
     monkeypatch.setattr(
         dr,
         "_get_ml_runtime",
@@ -367,6 +396,7 @@ def test_prepare_features_gcn_two_stream_uses_runtime_splitter(monkeypatch):
             "build_canonical_input": lambda **_kwargs: (np.zeros((4, 5, 6), dtype=np.float32), None),
             "build_tcn_input": lambda xg, _feat: xg,
             "split_gcn_two_stream": lambda xg, _feat: (xg[..., :4], xg[..., 4:6]),
+            "split_ctr_gcn_two_stream": lambda xg, _feat, stream_mode="joint_bone": (xg[..., :4], xg[..., 4:6]),
             "torch": _FakeTorch(),
         },
     )
@@ -375,7 +405,7 @@ def test_prepare_features_gcn_two_stream_uses_runtime_splitter(monkeypatch):
         two_stream = True
 
     out = dr._prepare_features(
-        spec=dr.DeploySpec("k", "caucafall", "gcn", "/tmp/x", {}, {}, {}, {}, {}),
+        spec=dr.DeploySpec("k", "caucafall", "ctr_gcn", "/tmp/x", {}, {}, {}, {}, {}),
         model=_TwoStreamModel(),
         device="cpu",
         feat_cfg={},
@@ -416,21 +446,27 @@ def test_online_alert_tracker_transition_flow():
 
 
 def test_core_apply_settings_update_inmem():
-    payload = core_mod.SettingsUpdatePayload(
+    payload = SettingsUpdatePayload(
         monitoring_enabled=True,
         alert_cooldown_sec=7,
         fall_threshold=90,
-        active_model_code="gcn",
+        active_model_code="ctr-gcn",
         active_dataset_code="LE2I",
         active_op_code="op-3",
         mc_M=12,
         mc_M_confirm=21,
     )
-    core_mod.apply_settings_update_inmem(payload, resident_id=99)
-    cfg = core_mod.get_inmem_settings(99)
+    inmemory_state.apply_settings_update_inmem(
+        payload,
+        resident_id=99,
+        normalize_model_code=code_normalization.normalize_model_code,
+        normalize_dataset_code=code_normalization.normalize_dataset_code,
+        norm_op_code=code_normalization.norm_op_code,
+    )
+    cfg = inmemory_state.get_inmem_settings(99)
     assert cfg["system"]["monitoring_enabled"] is True
     assert cfg["system"]["fall_threshold"] == 0.9
-    assert cfg["system"]["active_model_code"] == "GCN"
+    assert cfg["system"]["active_model_code"] == "CTR_GCN"
     assert cfg["system"]["active_dataset_code"] == "le2i"
     assert cfg["system"]["active_op_code"] == "OP-3"
     assert cfg["deploy"]["mc"]["M"] == 12
@@ -438,100 +474,75 @@ def test_core_apply_settings_update_inmem():
 
 
 def test_core_db_helper_functions(monkeypatch):
-    core_mod._TABLE_CACHE = None
+    db_schema._TABLE_CACHE = None
     c1 = _FakeConn(responses=[[{"Tables_in_x": "events"}, {"Tables_in_x": "models"}]])
-    tables = core_mod._list_tables(c1)
+    tables = db_schema.list_tables(c1)
     assert "events" in tables and "models" in tables
 
-    core_mod._COL_CACHE.clear()
+    db_schema._COL_CACHE.clear()
     c2 = _FakeConn(responses=[[{"Field": "ts"}, {"Field": "score"}]])
-    cols = core_mod._cols(c2, "events")
+    cols = db_schema.cols(c2, "events")
     assert "ts" in cols
-    assert core_mod._has_col(c2, "events", "score") is True
+    assert db_schema.has_col(c2, "events", "score") is True
 
     c3 = _FakeConn(responses=[{"id": 11}, {"ok": 1}])
-    assert core_mod._one_resident_id(c3) == 11
-    assert core_mod._resident_exists(c3, 11) is True
+    assert residents_repository.one_resident_id(c3) == 11
+    assert residents_repository.resident_exists(c3, 11) is True
 
-    c4 = _FakeConn(responses=[{"id": 5}, {"code": "GCN"}, {"id": 3, "model_id": 5}])
-    assert core_mod._resolve_model_id(c4, "GCN") == 5
-    assert core_mod._resolve_model_code(c4, 5) == "GCN"
-    assert core_mod._resolve_op_id(c4, 5, 3) == 3
+    c4 = _FakeConn(responses=[{"id": 5}, {"code": "CTR_GCN"}, {"id": 3, "model_id": 5}])
+    assert models_repository.resolve_model_id(c4, "CTR_GCN") == 5
+    assert models_repository.resolve_model_code(c4, 5) == "CTR_GCN"
+    assert models_repository.resolve_op_id(c4, 5, 3) == 3
 
-    monkeypatch.setattr(core_mod, "_cols", lambda _conn, _table: {"created_at", "p_fall"})
-    assert core_mod._event_time_col(c4) == "created_at"
-    assert core_mod._event_prob_col(c4) == "p_fall"
+    monkeypatch.setattr(event_schema, "cols", lambda _conn, _table: {"created_at", "p_fall"})
+    assert event_schema.event_time_col(c4) == "created_at"
+    assert event_schema.event_prob_col(c4) == "p_fall"
 
 
 def test_core_clip_privacy_and_caregiver_table_paths(monkeypatch):
     c = _FakeConn(responses=[{"store_event_clips": 1, "anonymize_skeleton_data": 0}])
-    monkeypatch.setattr(core_mod, "_ensure_system_settings_schema", lambda _c: None)
-    monkeypatch.setattr(core_mod, "_detect_variants", lambda _c: {"settings": "v2", "events": "v1", "ops": "v1"})
-    monkeypatch.setattr(core_mod, "_table_exists", lambda _c, t: t in {"system_settings"})
 
-    store, anon = core_mod._read_clip_privacy_flags(c, resident_id=1)
+    store, anon = runtime_assets.read_clip_privacy_flags(
+        c,
+        resident_id=1,
+        ensure_system_settings_schema=lambda _c: None,
+        table_exists=lambda _c, t: t in {"system_settings"},
+    )
     assert store is True
     assert anon is False
 
     c2 = _FakeConn()
-    monkeypatch.setattr(core_mod, "_table_exists", lambda _c, t: False if t == "caregivers" else True)
-    core_mod._ensure_caregivers_table(c2)
+    monkeypatch.setattr(db_schema, "table_exists", lambda _c, t: False if t == "caregivers" else True)
+    db_schema.ensure_caregivers_table(c2)
     assert c2.commits >= 1
 
 
 def test_core_system_settings_schema_and_variants(monkeypatch):
     c = _FakeConn(responses=[[{"Tables_in_x": "system_settings"}], [{"Field": "fall_threshold"}]])
-    core_mod._TABLE_CACHE = None
-    core_mod._COL_CACHE.clear()
-    core_mod._ensure_system_settings_schema(c)
+    db_schema._TABLE_CACHE = None
+    db_schema._COL_CACHE.clear()
+    db_schema.ensure_system_settings_schema(c)
     assert c.commits >= 1
 
     monkeypatch.setattr(
-        core_mod,
-        "_cols",
+        deploy_ops,
+        "cols",
         lambda _conn, table: {
             "system_settings": {"active_model_id"},
             "events": {"event_time"},
             "operating_points": {"model_id"},
         }[table],
     )
-    v = core_mod._detect_variants(c)
+    v = deploy_ops.detect_variants(c)
     assert v == {"settings": "v2", "events": "v2", "ops": "v2"}
 
 
 def test_core_resolvers_fallback_branches(monkeypatch):
     c = _FakeConn(responses=[{}, {"id": 7}])
-    assert core_mod._resolve_model_id(c, "GCN") == 7
+    assert models_repository.resolve_model_id(c, "CTR_GCN") == 7
 
     c2 = _FakeConn(responses=[{"id": 4, "model_id": 123}])
-    assert core_mod._resolve_op_id(c2, model_id=999, op_id=4) is None
+    assert models_repository.resolve_op_id(c2, model_id=999, op_id=4) is None
 
-    monkeypatch.setattr(core_mod, "_cols", lambda _conn, _table: {"something_else"})
-    assert core_mod._event_prob_col(c2) is None
-
-
-def test_deploy_runtime_discover_from_reports(tmp_path: Path):
-    root = tmp_path
-    reports = root / "outputs" / "reports"
-    reports.mkdir(parents=True)
-    ckpt = root / "outputs" / "le2i_tcn" / "best.pt"
-    ckpt.parent.mkdir(parents=True)
-    ckpt.write_bytes(b"x")
-
-    rep = {
-        "arch": "tcn",
-        "ckpt": "outputs/le2i_tcn/best.pt",
-        "feat_cfg": {"x": 1},
-        "model_cfg": {"h": 2},
-        "data_cfg": {"fps_default": 25},
-        "ops_eval": {
-            "op1": {"alert_cfg": {"tau_low": 0.1, "tau_high": 0.9}},
-            "op2": {"alert_cfg": {"tau_low": 0.2, "tau_high": 0.8}},
-            "op3": {"alert_cfg": {"tau_low": 0.3, "tau_high": 0.7}},
-        },
-    }
-    (reports / "le2i_tcn.json").write_text(json.dumps(rep), encoding="utf-8")
-
-    specs = dr._discover_from_reports(root)
-    assert "le2i_tcn" in specs
-    assert specs["le2i_tcn"].ops["OP-2"]["tau_high"] == 0.8
+    monkeypatch.setattr(event_schema, "cols", lambda _conn, _table: {"something_else"})
+    assert event_schema.event_prob_col(c2) is None

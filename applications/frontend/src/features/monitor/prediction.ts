@@ -76,7 +76,7 @@ export function buildPredictPayload({
   mode: string;
   datasetCode: string;
   opCode: string;
-  chosen: { tcn: string; gcn: string };
+  chosen: { tcn: string };
   targetFps: number;
   deployW: number | null;
   streamFps: number | null;
@@ -96,9 +96,8 @@ export function buildPredictPayload({
     mode,
     dataset_code: datasetCode,
     op_code: opCode,
-    model_tcn: mode !== "gcn" ? chosen.tcn : null,
-    model_gcn: mode !== "tcn" ? chosen.gcn : null,
-    model_id: mode === "tcn" ? chosen.tcn : mode === "gcn" ? chosen.gcn : null,
+    model_tcn: chosen.tcn || null,
+    model_id: chosen.tcn || null,
     fps: targetFps,
     target_fps: targetFps,
     target_T: deployW,
@@ -120,7 +119,8 @@ export function buildPredictPayload({
 export function resolveStableTriage(
   previousStable: { fall?: number; uncertain?: number; safe?: number; last?: string },
   triageCandidate: string,
-  safeAlert: boolean | null
+  safeAlert: boolean | null,
+  options: { smooth?: boolean } = {}
 ) {
   /**
    * Smooth short-lived triage flips before they reach the visible monitor UI.
@@ -135,6 +135,14 @@ export function resolveStableTriage(
     safe: Number(previousStable?.safe || 0),
     last: String(previousStable?.last || "not_fall"),
   };
+
+  if (options.smooth === false) {
+    next.fall = triageCandidate === "fall" ? 1 : 0;
+    next.uncertain = triageCandidate === "uncertain" ? 1 : 0;
+    next.safe = triageCandidate === "not_fall" ? 1 : 0;
+    next.last = triageCandidate || "not_fall";
+    return { stable: next, triageState: next.last };
+  }
 
   if (triageCandidate === "fall" && safeAlert !== false) {
     next.fall += 1;
@@ -164,11 +172,13 @@ export function extractPredictionState({
   mode,
   previousStable,
   settingsPayload,
+  smoothTriage,
 }: {
   data: Record<string, any>;
   mode: string;
   previousStable: { fall?: number; uncertain?: number; safe?: number; last?: string };
   settingsPayload: SettingsResponse | null;
+  smoothTriage?: boolean;
 }): MonitorPredictionState {
   /**
    * Parse a backend prediction response into frontend monitor state.
@@ -179,7 +189,10 @@ export function extractPredictionState({
    */
   const safeObj = data?.policy_alerts?.safe;
   const recallObj = data?.policy_alerts?.recall;
-  const triRaw = String(data?.triage_state || data?.triageState || "not_fall").toLowerCase();
+  const triRaw =
+    data?.triage_state != null || data?.triageState != null
+      ? String(data?.triage_state ?? data?.triageState).toLowerCase()
+      : "";
   const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
   const safeAlert =
     typeof data?.safe_alert === "boolean"
@@ -196,13 +209,13 @@ export function extractPredictionState({
   const safeState = (data?.safe_state || safeObj?.state || null) ?? null;
   const recallState = (data?.recall_state || recallObj?.state || null) ?? null;
 
-  let triageCandidate = safeStateRaw || triRaw || "not_fall";
+  let triageCandidate = triRaw || safeStateRaw || "not_fall";
   if (triageCandidate !== "fall" && triageCandidate !== "uncertain") triageCandidate = "not_fall";
-  const { stable, triageState } = resolveStableTriage(previousStable, triageCandidate, safeAlert);
+  const { stable, triageState } = resolveStableTriage(previousStable, triageCandidate, safeAlert, {
+    smooth: smoothTriage,
+  });
 
-  // Hybrid uses the TCN branch for display because safe/recall policy output is
-  // anchored there; single-model modes read their own branch directly.
-  const modelOutput = mode === "hybrid" ? data?.models?.tcn : data?.models?.[mode];
+  const modelOutput = data?.models?.tcn || data?.models?.[mode];
   const pFall = modelOutput
     ? modelOutput?.triage?.ps != null
       ? Number(modelOutput.triage.ps)

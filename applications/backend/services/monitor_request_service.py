@@ -9,6 +9,7 @@ code sees the request.
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,9 @@ except (ImportError, ModuleNotFoundError):
 from ..runtime_state import get_session_store
 from .monitor_context_service import load_monitor_request_context
 from .monitor_session_service import get_monitor_session_state
+
+
+MAX_MONITOR_RAW_FRAMES = 4096
 
 
 @dataclass(frozen=True)
@@ -65,12 +69,92 @@ class MonitorPreparedRequest:
     current_t_s: float
     specs: Dict[str, Any]
     tcn_key: str
-    gcn_key: str
     guard_spec_key: str
     primary_spec_key: str
-    primary_model_key: str
     window_end_t_ms: Optional[float]
     window_seq: Any
+
+
+def _coerce_numeric(value: Any, *, field: str, allow_nonfinite: bool = False) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be numeric") from exc
+    if (not allow_nonfinite) and (not math.isfinite(out)):
+        raise HTTPException(status_code=400, detail=f"{field} must contain finite numeric values")
+    return out
+
+
+def _validate_t_ms(raw_t_ms: Any) -> None:
+    if raw_t_ms is None:
+        return
+    if not isinstance(raw_t_ms, list):
+        raise HTTPException(status_code=400, detail="raw_t_ms must be a numeric array")
+    if len(raw_t_ms) > MAX_MONITOR_RAW_FRAMES:
+        raise HTTPException(status_code=413, detail="raw_t_ms too long")
+    prev: Optional[float] = None
+    for value in raw_t_ms:
+        cur = _coerce_numeric(value, field="raw_t_ms")
+        if prev is not None and cur <= prev:
+            raise HTTPException(status_code=400, detail="raw_t_ms must be strictly increasing")
+        prev = cur
+
+
+def _validate_xy_window(name: str, value: Any, *, target_T: Optional[int] = None) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list) or len(value) <= 0:
+        raise HTTPException(status_code=400, detail=f"{name} must be shaped [T,J,2]")
+    if target_T is not None and int(target_T) > 0 and len(value) != int(target_T):
+        raise HTTPException(status_code=400, detail=f"{name} time length mismatch")
+    joints: Optional[int] = None
+    for frame in value:
+        if not isinstance(frame, list) or len(frame) <= 0:
+            raise HTTPException(status_code=400, detail=f"{name} must be shaped [T,J,2]")
+        if joints is None:
+            joints = len(frame)
+        elif len(frame) != joints:
+            raise HTTPException(status_code=400, detail=f"{name} must be rectangular [T,J,2]")
+        for point in frame:
+            if not isinstance(point, list) or len(point) < 2:
+                raise HTTPException(status_code=400, detail=f"{name} must be shaped [T,J,2]")
+            _coerce_numeric(point[0], field=name)
+            _coerce_numeric(point[1], field=name)
+
+
+def _validate_conf_window(name: str, value: Any, *, frames: int, joints: int) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list) or len(value) != frames:
+        raise HTTPException(status_code=400, detail=f"{name} shape mismatch for xy")
+    for frame in value:
+        if not isinstance(frame, list) or len(frame) != joints:
+            raise HTTPException(status_code=400, detail=f"{name} shape mismatch for xy")
+        for conf in frame:
+            _coerce_numeric(conf, field=name, allow_nonfinite=True)
+
+
+def _validate_pose_payload(payload_d: Dict[str, Any], *, target_T: int) -> None:
+    raw_t_ms = payload_d.get("raw_t_ms")
+    raw_xy = payload_d.get("raw_xy")
+    raw_conf = payload_d.get("raw_conf")
+    xy = payload_d.get("xy")
+    conf = payload_d.get("conf")
+
+    _validate_t_ms(raw_t_ms)
+    if raw_xy is not None:
+        _validate_xy_window("raw_xy", raw_xy)
+        if raw_t_ms is not None and isinstance(raw_t_ms, list) and len(raw_t_ms) != len(raw_xy):
+            raise HTTPException(status_code=400, detail="raw_t_ms and raw_xy time dimensions must match")
+        frames = len(raw_xy)
+        joints = len(raw_xy[0]) if frames and isinstance(raw_xy[0], list) else 0
+        _validate_conf_window("raw_conf", raw_conf, frames=frames, joints=joints)
+
+    if xy is not None:
+        _validate_xy_window("xy", xy, target_T=int(target_T))
+        frames = len(xy)
+        joints = len(xy[0]) if frames and isinstance(xy[0], list) else 0
+        _validate_conf_window("conf", conf, frames=frames, joints=joints)
 
 
 def prepare_monitor_request(
@@ -110,11 +194,9 @@ def prepare_monitor_request(
     is_replay = input_source in {"video", "replay", "file"}
 
     requested_mode = str(payload_d.get("mode") or "tcn").lower().strip()
-    mode = requested_mode
-    if mode in {"hyb", "hybrid", "dual"}:
-        mode = "hybrid"
-    elif mode not in {"tcn", "gcn", "hybrid"}:
-        mode = "tcn"
+    if requested_mode not in {"", "tcn"}:
+        raise HTTPException(status_code=400, detail="Monitor runtime supports only mode='tcn'.")
+    mode = "tcn"
 
     dataset_code = normalize_dataset_code(payload_d.get("dataset_code") or payload_d.get("dataset"))
     op_code = str(payload_d.get("op_code") or payload_d.get("op") or "").upper().strip()
@@ -131,6 +213,7 @@ def prepare_monitor_request(
     raw_t_ms = payload_d.get("raw_t_ms")
     window_end_t_ms = payload_d.get("window_end_t_ms", None)
     window_seq = payload_d.get("window_seq", None)
+    _validate_pose_payload(payload_d, target_T=int(target_T))
     # Decode before computing stats; otherwise the API diagnostics would describe
     # an empty raw window while inference still runs on decoded pose data.
     if raw_xy is None and raw_xy_q is not None:
@@ -146,7 +229,7 @@ def prepare_monitor_request(
     cap_fps_est: Optional[float] = None
 
     resident_id = int(payload_d.get("resident_id") or 1)
-    active_model_code = mode.upper()
+    active_model_code = "TCN"
     request_context = None
     try:
         with get_conn() as conn:
@@ -198,7 +281,7 @@ def prepare_monitor_request(
     event_location = request_context.event_location
     dataset_code = request_context.dataset_code
     op_code = request_context.op_code
-    active_model_code = request_context.active_model_code
+    active_model_code = "TCN"
     cooldown_sec = request_context.cooldown_sec
     requested_use_mc = request_context.requested_use_mc
     requested_mc_M = request_context.requested_mc_M
@@ -223,13 +306,10 @@ def prepare_monitor_request(
         mode=mode,
         payload_d=payload_d,
     )
-    # Spec resolution may rewrite hybrid aliases and pick the concrete guard/primary keys.
     mode = spec_selection["mode"]
     tcn_key = spec_selection["tcn_key"]
-    gcn_key = spec_selection["gcn_key"]
     guard_spec_key = spec_selection["guard_spec_key"]
     primary_spec_key = spec_selection["primary_spec_key"]
-    primary_model_key = spec_selection["primary_model_key"]
 
     raw_preproc_cfg = None
     if raw_xy is not None and raw_t_ms is not None:
@@ -299,10 +379,8 @@ def prepare_monitor_request(
         current_t_s=float(current_t_s),
         specs=specs,
         tcn_key=tcn_key,
-        gcn_key=gcn_key,
         guard_spec_key=guard_spec_key,
         primary_spec_key=primary_spec_key,
-        primary_model_key=primary_model_key,
         window_end_t_ms=float(window_end_t_ms) if window_end_t_ms is not None else None,
         window_seq=window_seq,
     )

@@ -86,6 +86,79 @@ def _write_landmarks_xy_conf(lm, xy_out: np.ndarray, conf_out: np.ndarray) -> No
             conf_out[i] = v
 
 
+def _write_landmarks_xy_conf_mapped(
+    lm,
+    xy_out: np.ndarray,
+    conf_out: np.ndarray,
+    *,
+    x0: int,
+    y0: int,
+    crop_w: int,
+    crop_h: int,
+    full_w: int,
+    full_h: int,
+) -> None:
+    isfinite = np.isfinite
+    xy_out.fill(0.0)
+    conf_out.fill(0.0)
+    n_lm = min(J, int(len(lm)) if lm is not None else 0)
+    if crop_w <= 0 or crop_h <= 0 or full_w <= 0 or full_h <= 0:
+        return
+    for i in range(n_lm):
+        p = lm[i]
+        x = float(p.x)
+        y = float(p.y)
+        v = float(p.visibility)
+        if not (isfinite(x) and isfinite(y) and isfinite(v)):
+            continue
+        xf = (float(x0) + x * float(crop_w)) / float(full_w)
+        yf = (float(y0) + y * float(crop_h)) / float(full_h)
+        xy_out[i, 0] = float(np.clip(xf, 0.0, 1.0))
+        xy_out[i, 1] = float(np.clip(yf, 0.0, 1.0))
+        conf_out[i] = float(np.clip(v, 0.0, 1.0))
+
+
+def _read_yolo_bbox(frame_path: str):
+    txt_path = os.path.splitext(frame_path)[0] + ".txt"
+    if not os.path.exists(txt_path):
+        return None
+    try:
+        with open(txt_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 5:
+                    continue
+                xc, yc, bw, bh = (float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
+                if bw > 0.0 and bh > 0.0:
+                    return xc, yc, bw, bh
+    except Exception:
+        return None
+    return None
+
+
+def _bbox_crop_rect(frame_path: str, width: int, height: int, scale: float):
+    bbox = _read_yolo_bbox(frame_path)
+    if bbox is None or width <= 0 or height <= 0:
+        return None
+    xc, yc, bw, bh = bbox
+    scale = max(1.0, float(scale))
+    cx = xc * width
+    cy = yc * height
+    crop_w = bw * width * scale
+    crop_h = bh * height * scale
+    x0 = int(np.floor(cx - crop_w / 2.0))
+    y0 = int(np.floor(cy - crop_h / 2.0))
+    x1 = int(np.ceil(cx + crop_w / 2.0))
+    y1 = int(np.ceil(cy + crop_h / 2.0))
+    x0 = max(0, min(width - 1, x0))
+    y0 = max(0, min(height - 1, y0))
+    x1 = max(x0 + 1, min(width, x1))
+    y1 = max(y0 + 1, min(height, y1))
+    if (x1 - x0) < 8 or (y1 - y0) < 8:
+        return None
+    return x0, y0, x1, y1
+
+
 def list_sequences(image_globs, sequence_id_depth: int):
     """
     Return:
@@ -139,7 +212,17 @@ def _safe_out_name(seq_id: str, src_rel: str) -> str:
     return f"{base}__{h}.npz"
 
 
-def extract_sequence(frames, pose, out_npz: str, fps: float, src: str, seq_id: str, store_frames: bool = False):
+def extract_sequence(
+    frames,
+    pose,
+    out_npz: str,
+    fps: float,
+    src: str,
+    seq_id: str,
+    store_frames: bool = False,
+    bbox_crop_mode: str = "off",
+    bbox_crop_scale: float = 1.25,
+):
     """
     Save:
       xy  [T,33,2] (0 when missing)
@@ -165,14 +248,58 @@ def extract_sequence(frames, pose, out_npz: str, fps: float, src: str, seq_id: s
             size[0] = w
             size[1] = h
 
+        h, w = img.shape[:2]
+        crop_rect = None
+        if bbox_crop_mode in {"fallback", "always"}:
+            crop_rect = _bbox_crop_rect(f, w, h, bbox_crop_scale)
+
+        if bbox_crop_mode == "always" and crop_rect is not None:
+            x0, y0, x1, y1 = crop_rect
+            rgb = cvt_color(img[y0:y1, x0:x1], bgr2rgb)
+            rgb.flags.writeable = False
+            res = pose_process(rgb)
+            if res.pose_landmarks and res.pose_landmarks.landmark:
+                lm = res.pose_landmarks.landmark
+                _write_landmarks_xy_conf_mapped(
+                    lm,
+                    xy[i],
+                    cf[i],
+                    x0=x0,
+                    y0=y0,
+                    crop_w=x1 - x0,
+                    crop_h=y1 - y0,
+                    full_w=w,
+                    full_h=h,
+                )
+                continue
+
         rgb = cvt_color(img, bgr2rgb)
         rgb.flags.writeable = False
         res = pose_process(rgb)
 
-        if not res.pose_landmarks or not res.pose_landmarks.landmark:
+        if res.pose_landmarks and res.pose_landmarks.landmark:
+            lm = res.pose_landmarks.landmark
+            _write_landmarks_xy_conf(lm, xy[i], cf[i])
             continue
-        lm = res.pose_landmarks.landmark
-        _write_landmarks_xy_conf(lm, xy[i], cf[i])
+
+        if bbox_crop_mode == "fallback" and crop_rect is not None:
+            x0, y0, x1, y1 = crop_rect
+            rgb_crop = cvt_color(img[y0:y1, x0:x1], bgr2rgb)
+            rgb_crop.flags.writeable = False
+            res_crop = pose_process(rgb_crop)
+            if res_crop.pose_landmarks and res_crop.pose_landmarks.landmark:
+                lm = res_crop.pose_landmarks.landmark
+                _write_landmarks_xy_conf_mapped(
+                    lm,
+                    xy[i],
+                    cf[i],
+                    x0=x0,
+                    y0=y0,
+                    crop_w=x1 - x0,
+                    crop_h=y1 - y0,
+                    full_w=w,
+                    full_h=h,
+                )
 
     Path(out_npz).parent.mkdir(parents=True, exist_ok=True)
 
@@ -214,14 +341,20 @@ def parse_args():
                     help="Optional cap for debugging (process only first N sequences).")
     ap.add_argument("--store_frames", action="store_true",
                     help="Store frame paths in NPZ (bigger files).")
-    ap.add_argument("--model_complexity", type=int, default=1, choices=[0, 1, 2],
-                    help="0=lite,1=full,2=heavy (default 1).")
+    ap.add_argument("--source_root", default=None,
+                    help="Optional stable source root used for output filename hashes.")
+    ap.add_argument("--model_complexity", type=int, default=2, choices=[0, 1, 2],
+                    help="0=lite,1=full,2=heavy (default).")
     ap.add_argument("--min_det_conf", type=float, default=0.5,
                     help="Min detection confidence.")
     ap.add_argument("--min_track_conf", type=float, default=0.5,
                     help="Min tracking confidence.")
     ap.add_argument("--static_image_mode", action="store_true",
                     help="If set, disables temporal tracking (usually slower for sequences).")
+    ap.add_argument("--bbox_crop_mode", choices=["off", "fallback", "always"], default="off",
+                    help="Use sidecar YOLO txt boxes to crop before MediaPipe. fallback keeps full-frame first.")
+    ap.add_argument("--bbox_crop_scale", type=float, default=1.25,
+                    help="Expansion factor for sidecar bbox crops.")
     # kept for backwards compatibility (ignored)
     ap.add_argument("--label_component", type=int, default=None,
                     help="(Deprecated/ignored) Previously used for inline labelling.")
@@ -243,10 +376,13 @@ def main():
         raise SystemExit("[ERR] no images matched your glob(s).")
 
     # common root for readable src dirs (best effort)
-    try:
-        common_root = os.path.commonpath(all_paths)
-    except Exception:
-        common_root = os.path.dirname(all_paths[0])
+    if args.source_root:
+        common_root = os.path.abspath(args.source_root)
+    else:
+        try:
+            common_root = os.path.commonpath(all_paths)
+        except Exception:
+            common_root = os.path.dirname(all_paths[0])
 
     seq_items = list(frames_by_seq.items())
     if args.max_sequences is not None:
@@ -298,6 +434,8 @@ def main():
                 src=src_rel,
                 seq_id=seq_id,
                 store_frames=args.store_frames,
+                bbox_crop_mode=args.bbox_crop_mode,
+                bbox_crop_scale=float(args.bbox_crop_scale),
             )
 
     print(f"[OK] wrote {len(seq_items)} sequences to {args.out_dir}")

@@ -1,0 +1,15 @@
+windows_dir: artifacts/fall_test_eval_20260315/windows/unsplit
+ops_yaml: ops/configs/ops/tcn_caucafall.yaml
+op_code: OP2
+out_prefix: artifacts/archive/report_evidence_20260506/eval/fall_test_eval_20260506_phase18_tcn_mix25_s42_motion_gate/tcn_mix25_s42_op2_motion018
+
+fall_contains:
+  - /corridor/
+  - /kitchen/
+
+nonfall_contains:
+  - corridor_adl
+  - kitchen_adl
+
+delivery_gate:
+  min_mean_motion_high: 0.18

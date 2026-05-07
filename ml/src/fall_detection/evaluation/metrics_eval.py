@@ -35,7 +35,14 @@ from fall_detection.core.alerting import (
     classify_states,
 )
 from fall_detection.core.ckpt import get_cfg, load_ckpt
-from fall_detection.core.features import FeatCfg, read_window_npz, build_tcn_input, build_canonical_input, split_gcn_two_stream
+from fall_detection.core.features import (
+    FeatCfg,
+    build_canonical_input,
+    build_tcn_input,
+    read_window_npz,
+    split_ctr_gcn_two_stream,
+    split_gcn_two_stream,
+)
 from fall_detection.core.confirm import confirm_scores_window
 from fall_detection.core.models import build_model, logits_1d, pick_device
 from fall_detection.core.metrics import ap_auc
@@ -255,7 +262,10 @@ class LabeledWindows(Dataset):
         else:
             X = Xc
             if self.two_stream:
-                X = split_gcn_two_stream(X, self.feat_cfg)
+                if self.arch == "ctr_gcn":
+                    X = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
+                else:
+                    X = split_gcn_two_stream(X, self.feat_cfg)
 
         return X, meta
 

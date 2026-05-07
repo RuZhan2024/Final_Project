@@ -94,7 +94,7 @@ def build_monitor_prediction_response(
     *,
     triage_state: str,
     models_out: Dict[str, Any],
-    dual_policy_alerts: Dict[str, Any],
+    policy_alerts: Dict[str, Any],
     safe_alert: bool,
     safe_state_out: str,
     recall_alert: bool,
@@ -150,7 +150,7 @@ def build_monitor_prediction_response(
     return {
         "triage_state": triage_state,
         "models": models_out,
-        "policy_alerts": dual_policy_alerts,
+        "policy_alerts": policy_alerts,
         "safe_alert": safe_alert,
         "safe_state": safe_state_out,
         "recall_alert": recall_alert,

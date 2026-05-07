@@ -3,8 +3,6 @@ import type { ChangeEvent } from "react";
 import type { SettingsPatch, SystemSettings } from "../../features/settings/types";
 import { useMonitoring } from "../../monitoring/MonitoringContext";
 import { readBool } from "../../lib/booleans";
-import { modelCodeToLabel, modelLabelToCode } from "../../lib/modelCodes";
-import { presetFromOpCode, opCodeForPreset, PRESET_LABELS } from "../../lib/operatingPoints";
 import { sliderBackground } from "../../lib/ui";
 import { useCaregivers } from "./hooks/useCaregivers";
 
@@ -58,16 +56,12 @@ export default function SettingsPage() {
   const caregiverNameReady = Boolean(String(cgName || "").trim());
   const caregiverTelegramReady = Boolean(String(cgTelegramChatId || "").trim());
 
-  const activeDatasetCode = String(sys.active_dataset_code || "caucafall").toLowerCase();
-  const mcEnabled = readBool(sys.mc_enabled, false);
   const storeAnonymizedData = readBool(
     sys.store_anonymized_data,
     readBool(sys.store_event_clips, false) && readBool(sys.anonymize_skeleton_data, true)
   );
 
-  const activeModelLabel = modelCodeToLabel(sys.active_model_code || "TCN");
   const activeOpCode = String(sys.active_op_code || "OP-2").toUpperCase();
-  const activePreset = presetFromOpCode(activeOpCode);
 
   // These are real params derived from configs/ops/*.yaml (server sets them in GET /api/settings)
   const fallThresholdPct = useMemo(() => {
@@ -294,109 +288,29 @@ export default function SettingsPage() {
           <div className={styles.card}>
             <h3 className={styles.cardTitle}>Detection Settings</h3>
 
-            {/* Dataset */}
             <div className={styles.row}>
-              <span className={styles.labelBold}>Dataset</span>
-              <div className={styles.radioGroup}>
-                {[
-                  { code: "le2i", label: "LE2I" },
-                  { code: "caucafall", label: "CAUCAFall" },
-                ].map((d) => (
-                  <label
-                    key={d.code}
-                    className={`${styles.radioLabel} ${activeDatasetCode === d.code ? styles.radioLabelActive : ""}`}
-                  >
-                    {d.label}
-                    <input
-                      type="radio"
-                      checked={activeDatasetCode === d.code}
-                      onChange={() =>
-                        void savePatch(
-                          { active_dataset_code: d.code },
-                          "Dataset selection",
-                          `Dataset switched to ${d.label}. Model/profile compatibility will follow this dataset.`
-                        )
-                      }
-                      disabled={!loaded}
-                    />
-                    <span className={styles.radioCustom}></span>
-                  </label>
-                ))}
-              </div>
+              <span className={styles.labelBold}>Training Corpus</span>
+              <span className={styles.lockedValue}>CAUCAFall + LE2I mix</span>
             </div>
 
-            {/* Uncertainty-aware live gate */}
-            <div className={styles.toggleRow}>
-              <span>Live Uncertainty Gate</span>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  checked={mcEnabled}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    void savePatch(
-                      { mc_enabled: e.target.checked },
-                      "Live uncertainty gate",
-                      e.target.checked
-                        ? "Live uncertainty gate enabled. Boundary windows can use MC dropout and high-uncertainty falls will be downgraded to uncertain."
-                        : "Live uncertainty gate disabled. Live monitoring now uses deterministic single-pass scoring only."
-                    )
-                  }
-                  disabled={!loaded}
-                />
-                <span className={styles.slider}></span>
-              </label>
-            </div>
-
-            {/* Model */}
             <div className={styles.row}>
               <span className={styles.labelBold}>Active Model</span>
-              <div className={styles.radioGroup}>
-                {["TCN", "GCN", "HYBRID"].map((m) => (
-                  <label
-                    key={m}
-                    className={`${styles.radioLabel} ${activeModelLabel === m ? styles.radioLabelActive : ""}`}
-                  >
-                    {m}
-                    <input
-                      type="radio"
-                      name="model"
-                      checked={activeModelLabel === m}
-                      onChange={() =>
-                        void savePatch(
-                          { active_model_code: modelLabelToCode(m) },
-                          "Active model",
-                          `Active model set to ${m}. New monitoring windows will use this model choice.`
-                        )
-                      }
-                      disabled={!loaded}
-                    />
-                    <span className={styles.customRadio}></span>
-                  </label>
-                ))}
-              </div>
+              <span className={styles.lockedValue}>TCN champion</span>
             </div>
 
-            {/* Presets */}
-            <div className={styles.sectionSpace}>
-              <span className={styles.labelBold}>Operating Point Presets</span>
-              <div className={styles.presetButtons}>
-                {PRESET_LABELS.map((p) => (
-                  <button
-                    key={p}
-                    className={`${styles.presetBtn} ${activePreset === p ? styles.activePreset : ""}`}
-                    onClick={() =>
-                      void savePatch(
-                        { active_op_code: opCodeForPreset(p) },
-                        "Operating point preset",
-                        `${p} preset applied. Detection thresholds are now loaded from deploy config.`
-                      )
-                    }
-                    disabled={!loaded}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
+            <div className={styles.row}>
+              <span className={styles.labelBold}>Operating Point</span>
+              <span className={styles.lockedValue}>Balanced (OP2)</span>
+            </div>
+
+            <div className={styles.row}>
+              <span className={styles.labelBold}>Delivery Gate</span>
+              <span className={styles.lockedValue}>Motion 0.18</span>
+            </div>
+
+            <div className={styles.inlineInfo}>
+              <div className={styles.inlineInfoTitle}>Validated Deployment Profile</div>
+              <div>Runtime is locked to the replay-validated OP2 policy for the current build.</div>
             </div>
 
             {/* Sliders (read-only; derived from YAML configs on the server) */}

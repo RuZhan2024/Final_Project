@@ -1,6 +1,6 @@
 import numpy as np
 
-from pose.preprocess_pose_npz import smooth_weighted_moving_average
+from fall_detection.pose.preprocess_pose_npz import smooth_weighted_moving_average
 
 
 def _naive_smooth_weighted_moving_average(xy: np.ndarray, conf: np.ndarray, conf_thr: float, k: int) -> np.ndarray:
