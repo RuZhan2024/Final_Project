@@ -89,32 +89,6 @@ export function useEventsData(apiBase: string, residentId = 1): UseEventsDataRes
     return () => abortRef.current?.abort();
   }, [reload]);
 
-  useEffect(() => {
-    function refreshVisible() {
-      if (document.visibilityState !== "visible") return;
-      void reload({ silent: true });
-    }
-
-    function refreshOnFocus() {
-      void reload({ silent: true });
-    }
-
-    const pollId = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      // Hidden tabs do not need background event polling; visibility/focus
-      // hooks refresh again when the reviewer returns to the page.
-      void reload({ silent: true });
-    }, 10000);
-
-    document.addEventListener("visibilitychange", refreshVisible);
-    window.addEventListener("focus", refreshOnFocus);
-    return () => {
-      window.clearInterval(pollId);
-      document.removeEventListener("visibilitychange", refreshVisible);
-      window.removeEventListener("focus", refreshOnFocus);
-    };
-  }, [reload]);
-
   const updateStatus = useCallback(
     async (eventId: number, status: EventStatus): Promise<void> => {
       await updateEventStatus(apiBase, eventId, status);
