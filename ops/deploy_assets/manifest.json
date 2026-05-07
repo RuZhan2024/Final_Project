@@ -15,7 +15,7 @@
       "Assets listed in this manifest are the tracked runtime-approved subset for the cleaned supervisor-facing branch.",
       "Training outputs under outputs/ remain experimental or local unless explicitly promoted into ops/deploy_assets and referenced here.",
       "Runtime profile YAMLs listed here are the only operating-point configs expected by the backend deploy path.",
-      "Historical GCN, LE2i, and sweep artifacts are retained under archive directories for report traceability, but they are not deployable runtime assets."
+      "Historical LE2i and sweep artifacts are retained under archive directories for report traceability, but they are not deployable runtime assets."
     ]
   },
   "promoted_runtime_assets": {

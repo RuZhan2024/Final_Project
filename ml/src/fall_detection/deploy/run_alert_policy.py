@@ -57,7 +57,7 @@ def load_alert_cfg(path: str) -> AlertCfg:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["tcn", "gcn", "ctr_gcn"], required=True)
+    ap.add_argument("--arch", choices=["tcn", "ctr_gcn"], required=True)
     ap.add_argument("--win_dir", required=True)
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--alert_cfg", required=True)

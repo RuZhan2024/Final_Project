@@ -27,7 +27,6 @@ from fall_detection.core.features import (
     build_tcn_input,
     read_window_npz,
     split_ctr_gcn_two_stream,
-    split_gcn_two_stream,
 )
 from fall_detection.core.models import build_model, p_fall_from_logits, pick_device
 
@@ -224,17 +223,16 @@ def main() -> None:
                     x = build_tcn_input(X, feat_cfg_obj)
                     xb = torch.from_numpy(x).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
-                elif arch in {"gcn", "ctr_gcn"} and bool(model_cfg.get("two_stream", False)):
-                    if arch == "ctr_gcn":
-                        xj, xm = split_ctr_gcn_two_stream(X, feat_cfg_obj, stream_mode="joint_bone")
-                    else:
-                        xj, xm = split_gcn_two_stream(X, feat_cfg_obj)
+                elif arch == "ctr_gcn" and bool(model_cfg.get("two_stream", False)):
+                    xj, xm = split_ctr_gcn_two_stream(X, feat_cfg_obj, stream_mode="joint_bone")
                     xjb = torch.from_numpy(xj).to(torch.float32).unsqueeze(0).to(device)
                     xmb = torch.from_numpy(xm).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xjb, xmb)).detach().cpu().numpy().reshape(-1)[0])
-                else:
+                elif arch == "ctr_gcn":
                     xb = torch.from_numpy(X).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
+                else:
+                    raise ValueError(f"Unknown arch: {arch}")
                 probs.append(p)
                 ws.append(r["w_start"])
                 we.append(r["w_end"])

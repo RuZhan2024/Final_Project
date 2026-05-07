@@ -20,7 +20,7 @@ import torch
 from fall_detection.core.alerting import AlertCfg, classify_states, detect_alert_events, times_from_windows
 from fall_detection.core.ckpt import get_cfg, load_ckpt
 from fall_detection.core.confirm import confirm_scores_window
-from fall_detection.core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_gcn_two_stream
+from fall_detection.core.features import FeatCfg, build_canonical_input, build_tcn_input, read_window_npz, split_ctr_gcn_two_stream
 from fall_detection.core.models import build_model, logits_1d, p_fall_from_logits, pick_device
 
 
@@ -88,16 +88,18 @@ def _infer_probs(
                 x = build_tcn_input(X, feat_cfg)
                 xb = torch.from_numpy(x).to(torch.float32).unsqueeze(0).to(device)
                 p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
-            else:
-                two_stream = bool(getattr(model, "j_enc", None) is not None and getattr(model, "m_enc", None) is not None)
+            elif arch == "ctr_gcn":
+                two_stream = bool(getattr(model, "j_enc", None) is not None and getattr(model, "b_enc", None) is not None)
                 if two_stream:
-                    xj, xm = split_gcn_two_stream(X, feat_cfg)
+                    xj, xm = split_ctr_gcn_two_stream(X, feat_cfg, stream_mode="joint_bone")
                     xjb = torch.from_numpy(xj).to(torch.float32).unsqueeze(0).to(device)
                     xmb = torch.from_numpy(xm).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xjb, xmb)).detach().cpu().numpy().reshape(-1)[0])
                 else:
                     xb = torch.from_numpy(X).to(torch.float32).unsqueeze(0).to(device)
                     p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
+            else:
+                raise ValueError(f"Unknown arch: {arch}")
             probs.append(p)
 
     return (

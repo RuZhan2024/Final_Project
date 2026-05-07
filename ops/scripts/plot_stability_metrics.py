@@ -13,8 +13,8 @@ import numpy as np
 
 
 PRIMARY_DATASETS = ("caucafall", "le2i")
-MODEL_ORDER = ("tcn", "gcn")
-MODEL_COLORS = {"tcn": "#1f77b4", "gcn": "#ff7f0e"}
+MODEL_ORDER = ("tcn", "ctr_gcn")
+MODEL_COLORS = {"tcn": "#1f77b4", "ctr_gcn": "#ff7f0e"}
 DATASET_TITLES = {"caucafall": "CAUCAFall (Primary)", "le2i": "LE2i (Comparative)"}
 METRICS = (
     ("f1", "F1"),

@@ -158,7 +158,7 @@ def build_manifest(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="le2i")
-    ap.add_argument("--model", default="tcn", choices=["tcn", "gcn"])
+    ap.add_argument("--model", default="tcn", choices=["tcn", "ctr-gcn"])
     ap.add_argument("--op", default="op2")
     ap.add_argument("--run", type=int, default=0, help="1 to execute commands, 0 to generate manifest only.")
     ap.add_argument(
@@ -177,9 +177,10 @@ def main() -> None:
     log_dir = out_dir / "command_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    audit_model = str(args.model).replace("-", "_")
     default_cmds = [
         f"make pipeline-auto-{args.model}-{args.dataset}",
-        f"make audit-all MODEL={args.model}",
+        f"make audit-all MODEL={audit_model}",
     ]
     cmds = list(args.cmd) if args.cmd else default_cmds
 

@@ -367,7 +367,6 @@ def test_prepare_features_tcn_uses_runtime_builders(monkeypatch):
         lambda: {
             "build_canonical_input": _build_canonical_input,
             "build_tcn_input": lambda xg, _feat: np.zeros((xg.shape[0], 10), dtype=np.float32),
-            "split_gcn_two_stream": lambda xg, _feat: (xg, xg),
             "torch": _FakeTorch(),
         },
     )
@@ -395,7 +394,6 @@ def test_prepare_features_ctr_gcn_two_stream_uses_runtime_splitter(monkeypatch):
         lambda: {
             "build_canonical_input": lambda **_kwargs: (np.zeros((4, 5, 6), dtype=np.float32), None),
             "build_tcn_input": lambda xg, _feat: xg,
-            "split_gcn_two_stream": lambda xg, _feat: (xg[..., :4], xg[..., 4:6]),
             "split_ctr_gcn_two_stream": lambda xg, _feat, stream_mode="joint_bone": (xg[..., :4], xg[..., 4:6]),
             "torch": _FakeTorch(),
         },
@@ -415,9 +413,9 @@ def test_prepare_features_ctr_gcn_two_stream_uses_runtime_splitter(monkeypatch):
         fps=23.0,
     )
 
-    assert out["kind"] == "gcn_two_stream"
+    assert out["kind"] == "ctr_gcn_two_stream"
     assert out["xj_t"].shape == (4, 5, 4)
-    assert out["xm_t"].shape == (4, 5, 2)
+    assert out["xb_t"].shape == (4, 5, 2)
 
 
 def test_align_joint_count_trims_and_pads():

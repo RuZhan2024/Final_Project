@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """Project-adapted CTR-GCN for pose-based fall detection.
 
-This module intentionally defines a separate graph-model family instead of
-mutating the existing custom-GCN line.
+This module defines the current graph-model family for CTR-GCN training and
+evaluation.
 
 Project contract:
 - external input: ``[B, T, V, F]``

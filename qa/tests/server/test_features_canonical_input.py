@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from fall_detection.core.features import FeatCfg, build_canonical_input, channel_layout, split_gcn_two_stream
+from fall_detection.core.features import FeatCfg, build_canonical_input, channel_layout, split_ctr_gcn_two_stream
 
 
 def test_build_canonical_input_all_valid_keeps_conf_channel():
@@ -59,7 +59,7 @@ def test_build_canonical_input_masks_invalid_joints_across_channels():
     assert np.allclose(conf_ch[2:5, 10], 0.0)
 
 
-def test_split_gcn_two_stream_fast_path_without_motion():
+def test_split_ctr_gcn_two_stream_without_motion():
     T, V = 5, 33
     rng = np.random.default_rng(1)
     joints = rng.uniform(0.0, 1.0, size=(T, V, 2)).astype(np.float32)
@@ -75,15 +75,21 @@ def test_split_gcn_two_stream_fast_path_without_motion():
         use_precomputed_mask=True,
     )
     X, _ = build_canonical_input(joints, None, conf, mask, fps=25.0, feat_cfg=cfg)
-    xj, xm = split_gcn_two_stream(X, cfg)
+    xj, xb = split_ctr_gcn_two_stream(X, cfg)
 
-    assert np.shares_memory(xj, X)
-    assert xj.shape == X.shape
-    assert xm.shape == (T, V, 2)
-    assert np.allclose(xm, 0.0)
+    lo = channel_layout(cfg)
+    exp_xj = np.concatenate([X[..., slice(*lo["xy"])], X[..., slice(*lo["conf"])]], axis=-1)
+    exp_xb = np.concatenate(
+        [X[..., slice(*lo["bone"])], X[..., slice(*lo["bone_len"])], X[..., slice(*lo["conf"])]],
+        axis=-1,
+    )
+    assert xj.shape == exp_xj.shape
+    assert xb.shape == exp_xb.shape
+    assert np.allclose(xj, exp_xj, atol=1e-6, rtol=1e-6)
+    assert np.allclose(xb, exp_xb, atol=1e-6, rtol=1e-6)
 
 
-def test_split_gcn_two_stream_full_layout_values():
+def test_split_ctr_gcn_two_stream_full_layout_values():
     T, V = 4, 33
     rng = np.random.default_rng(2)
     joints = rng.uniform(0.0, 1.0, size=(T, V, 2)).astype(np.float32)
@@ -100,23 +106,29 @@ def test_split_gcn_two_stream_full_layout_values():
     )
     X, _ = build_canonical_input(joints, None, conf, mask, fps=25.0, feat_cfg=cfg)
     lo = channel_layout(cfg)
-    xj, xm = split_gcn_two_stream(X, cfg)
+    xj, xb = split_ctr_gcn_two_stream(X, cfg)
 
     exp_xj = np.concatenate(
         [
             X[..., slice(*lo["xy"])],
+            X[..., slice(*lo["motion"])],
+            X[..., slice(*lo["conf"])],
+        ],
+        axis=-1,
+    ).astype(np.float32, copy=False)
+    exp_xb = np.concatenate(
+        [
             X[..., slice(*lo["bone"])],
             X[..., slice(*lo["bone_len"])],
             X[..., slice(*lo["conf"])],
         ],
         axis=-1,
     ).astype(np.float32, copy=False)
-    exp_xm = X[..., slice(*lo["motion"])]
 
     assert xj.shape == exp_xj.shape
-    assert xm.shape == exp_xm.shape
+    assert xb.shape == exp_xb.shape
     assert np.allclose(xj, exp_xj, atol=1e-6, rtol=1e-6)
-    assert np.allclose(xm, exp_xm, atol=1e-6, rtol=1e-6)
+    assert np.allclose(xb, exp_xb, atol=1e-6, rtol=1e-6)
 
 
 def test_build_canonical_input_pelvis_center_fast_path_matches_expected():

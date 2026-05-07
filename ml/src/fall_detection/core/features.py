@@ -30,7 +30,6 @@ Features implemented (all per-joint):
 
 Note:
   - build_canonical_input() returns X[T,V,F] and mask[T,V] (bool).
-  - split_gcn_two_stream() returns (X_joint, X_motion) using the layout.
   - split_ctr_gcn_two_stream() returns CTR-GCN late-fusion streams.
   - build_tcn_input() flattens to [T, V*F] for TCN.
 """
@@ -648,54 +647,6 @@ def build_canonical_input(
     return X, m
 
 
-def split_gcn_two_stream(X: np.ndarray, feat_cfg: FeatCfg) -> Tuple[np.ndarray, np.ndarray]:
-    """Split canonical X[T,V,F] into (joint_stream, motion_stream).
-
-    Joint stream includes: xy (+ bone/bone_len) (+ conf)
-    Motion stream includes: motion_xy if enabled, otherwise zeros.
-    """
-    if isinstance(X, np.ndarray) and X.dtype == np.float32:
-        X = X
-    else:
-        X = np.asarray(X, dtype=np.float32)
-    T, V, F = X.shape
-
-    lo = channel_layout(feat_cfg)
-    xy_sl = slice(*lo["xy"])
-    has_bone = "bone" in lo
-    has_bone_len = "bone_len" in lo
-    has_conf = "conf" in lo
-    has_motion = "motion" in lo
-
-    if not has_motion:
-        # Fast path: no motion channel configured, so full tensor is joint stream.
-        xj = X
-    elif not has_bone and not has_bone_len and not has_conf:
-        # Fast path: joint stream is xy only (view/no-op cast).
-        xj = X[..., xy_sl]
-    else:
-        jF = 2 + (2 if has_bone else 0) + (1 if has_bone_len else 0) + (1 if has_conf else 0)
-        xj = np.empty((T, V, jF), dtype=np.float32)
-        off = 0
-        xj[..., off:off + 2] = X[..., xy_sl]
-        off += 2
-        if has_bone:
-            xj[..., off:off + 2] = X[..., slice(*lo["bone"])]
-            off += 2
-        if has_bone_len:
-            xj[..., off:off + 1] = X[..., slice(*lo["bone_len"])]
-            off += 1
-        if has_conf:
-            xj[..., off:off + 1] = X[..., slice(*lo["conf"])]
-
-    if has_motion:
-        xm = X[..., slice(*lo["motion"])]
-    else:
-        xm = np.zeros((T, V, 2), dtype=np.float32)
-
-    return xj, xm
-
-
 def split_ctr_gcn_two_stream(
     X: np.ndarray,
     feat_cfg: FeatCfg,
@@ -712,8 +663,6 @@ def split_ctr_gcn_two_stream(
     available after the split while preserving one canonical feature builder.
     """
     mode = str(stream_mode or "joint_bone").lower()
-    if mode in {"gcn", "joint_motion"}:
-        return split_gcn_two_stream(X, feat_cfg)
     if mode != "joint_bone":
         raise ValueError(f"unsupported CTR-GCN two-stream mode: {stream_mode}")
 

@@ -81,7 +81,7 @@ def main() -> None:
     ap.add_argument("--api_base", default="http://localhost:8000")
     ap.add_argument("--endpoint", default="/api/monitor/predict_window")
     ap.add_argument("--dataset_code", default="le2i")
-    ap.add_argument("--mode", default="tcn", choices=["tcn", "gcn", "dual"])
+    ap.add_argument("--mode", default="tcn", choices=["tcn"])
     ap.add_argument("--op_code", default="OP-2")
     ap.add_argument("--n_windows", type=int, default=40)
     ap.add_argument("--window_frames", type=int, default=48)
@@ -156,4 +156,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

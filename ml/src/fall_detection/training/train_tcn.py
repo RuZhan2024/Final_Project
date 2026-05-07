@@ -135,7 +135,7 @@ def augment_mask(mask: np.ndarray, rng: np.random.Generator, mask_joint_p: float
     return m
 
 
-def flatten_tcn_from_gcn(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
+def flatten_tcn_from_canonical(X: np.ndarray, feat_cfg: FeatCfg) -> np.ndarray:
     """Convert canonical X[T,V,F] into TCN input x[T, V*F].
 
     This delegates to core.features.build_tcn_input so the layout is single-source-of-truth.
@@ -392,7 +392,7 @@ class WindowDatasetTCN(Dataset):
             m_aug = augment_mask(mask_used, self.rng, self.mask_joint_p, self.mask_frame_p)
             Xg = Xg * m_aug[..., None]
 
-        Xt = flatten_tcn_from_gcn(Xg, self.feat_cfg)  # [T,C]
+        Xt = flatten_tcn_from_canonical(Xg, self.feat_cfg)  # [T,C]
         y = 1 if int(meta.y) == 1 else 0
 
         # NumPy -> Torch (explicit, no copy when possible)

@@ -31,7 +31,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from fall_detection.core.ckpt import load_ckpt, get_cfg
-from fall_detection.core.features import FeatCfg, read_window_npz, build_tcn_input, build_canonical_input, split_gcn_two_stream
+from fall_detection.core.features import FeatCfg, read_window_npz, build_tcn_input, build_canonical_input, split_ctr_gcn_two_stream
 from fall_detection.core.models import build_model, pick_device, logits_1d
 from fall_detection.core.confirm import confirm_scores_window
 from fall_detection.core.alerting import AlertCfg, detect_alert_events, classify_states, times_from_windows
@@ -80,10 +80,12 @@ class UnlabeledWindows(Dataset):
 
         if self.arch == "tcn":
             X = build_tcn_input(Xc, self.feat_cfg)
-        else:
+        elif self.arch == "ctr_gcn":
             X = Xc
             if self.two_stream:
-                X = split_gcn_two_stream(X, self.feat_cfg)
+                X = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
+        else:
+            raise ValueError(f"Unknown arch: {self.arch}")
 
         # Confirm scores (computed from window signal; used by alert policy if enabled).
         lying_score = float(getattr(meta, "lying_score", 0.0))

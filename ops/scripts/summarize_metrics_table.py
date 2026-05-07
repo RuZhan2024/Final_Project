@@ -59,7 +59,7 @@ def _fmt(v: Optional[float], nd: int = 4) -> str:
 
 def _parse_model_dataset(path: str) -> tuple[str, str]:
     base = os.path.basename(path)
-    m = re.match(r"(gcn|tcn)_(.+)\.json$", base, flags=re.IGNORECASE)
+    m = re.match(r"(ctr_gcn|tcn)_(.+)\.json$", base, flags=re.IGNORECASE)
     if not m:
         return "unknown", base
     return m.group(1).lower(), m.group(2).lower()
@@ -135,8 +135,8 @@ def main() -> None:
         "files",
         nargs="*",
         default=[
-            "outputs/metrics/gcn_caucafall.json",
-            "outputs/metrics/gcn_le2i.json",
+            "outputs/metrics/ctr_gcn_caucafall.json",
+            "outputs/metrics/ctr_gcn_le2i.json",
             "outputs/metrics/tcn_caucafall.json",
             "outputs/metrics/tcn_le2i.json",
         ],

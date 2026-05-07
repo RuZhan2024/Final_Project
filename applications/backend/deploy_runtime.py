@@ -408,7 +408,6 @@ def _get_ml_runtime() -> Dict[str, Any]:
             build_canonical_input,
             build_tcn_input,
             split_ctr_gcn_two_stream,
-            split_gcn_two_stream,
         )
         from fall_detection.core.uncertainty import mc_predict_mu_sigma
     except (ImportError, ModuleNotFoundError) as e:
@@ -426,7 +425,6 @@ def _get_ml_runtime() -> Dict[str, Any]:
         "build_canonical_input": build_canonical_input,
         "build_tcn_input": build_tcn_input,
         "split_ctr_gcn_two_stream": split_ctr_gcn_two_stream,
-        "split_gcn_two_stream": split_gcn_two_stream,
         "mc_predict_mu_sigma": mc_predict_mu_sigma,
     }
     return _ML_RUNTIME
@@ -597,10 +595,6 @@ def _prepare_features(
     runtime = _get_ml_runtime()
     build_canonical_input = runtime["build_canonical_input"]
     build_tcn_input = runtime["build_tcn_input"]
-    split_gcn_two_stream = runtime["split_gcn_two_stream"]
-    split_ctr_gcn_two_stream = runtime.get("split_ctr_gcn_two_stream") or (
-        lambda xg, feat, stream_mode="joint_bone": split_gcn_two_stream(xg, feat)
-    )
     torch = runtime["torch"]
 
     expected_v = None
@@ -631,30 +625,33 @@ def _prepare_features(
         x_t = _match_in_ch_tcn(torch, model, x_t)
         return {"kind": "tcn", "x_t": x_t}
 
+    if spec.arch != "ctr_gcn":
+        raise ValueError(f"Unsupported deploy arch: {spec.arch}")
+
+    split_ctr_gcn_two_stream = runtime["split_ctr_gcn_two_stream"]
     xb = torch.from_numpy(np.asarray(Xg, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
     is_two_stream = ("twostream" in model.__class__.__name__.lower()) or bool(getattr(model, "two_stream", False))
     if is_two_stream:
-        if spec.arch == "ctr_gcn":
-            stream_mode = "joint_bone"
-            if isinstance(model_cfg, dict):
-                stream_mode = str(model_cfg.get("stream_mode", stream_mode))
-            xj_np, xm_np = split_ctr_gcn_two_stream(Xg, feat_cfg, stream_mode=stream_mode)
-        else:
-            xj_np, xm_np = split_gcn_two_stream(Xg, feat_cfg)
+        stream_mode = "joint_bone"
+        if isinstance(model_cfg, dict):
+            stream_mode = str(model_cfg.get("stream_mode", stream_mode))
+        xj_np, xb_np = split_ctr_gcn_two_stream(Xg, feat_cfg, stream_mode=stream_mode)
         xj_t = torch.from_numpy(np.asarray(xj_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
-        xm_t = torch.from_numpy(np.asarray(xm_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
-        return {"kind": "gcn_two_stream", "xj_t": xj_t, "xm_t": xm_t}
-    return {"kind": "gcn_single_stream", "xb": xb}
+        xb_t = torch.from_numpy(np.asarray(xb_np, dtype=np.float32)).to(device=device, dtype=torch.float32).unsqueeze(0)
+        return {"kind": "ctr_gcn_two_stream", "xj_t": xj_t, "xb_t": xb_t}
+    return {"kind": "ctr_gcn_single_stream", "xb": xb}
 
 
 def _forward_prob(model: Any, prepared: Dict[str, Any]) -> Any:
     kind = prepared["kind"]
     if kind == "tcn":
         logits = model(prepared["x_t"])
-    elif kind == "gcn_two_stream":
-        logits = model(prepared["xj_t"], prepared["xm_t"])
-    else:
+    elif kind == "ctr_gcn_two_stream":
+        logits = model(prepared["xj_t"], prepared["xb_t"])
+    elif kind == "ctr_gcn_single_stream":
         logits = model(prepared["xb"])
+    else:
+        raise ValueError(f"Unknown prepared feature kind: {kind}")
     return logits.sigmoid().view(-1)
 
 

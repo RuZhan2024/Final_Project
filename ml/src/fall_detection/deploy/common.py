@@ -25,7 +25,7 @@ from fall_detection.core.features import (
     FeatCfg,
     read_window_npz,
     build_canonical_input,
-    split_gcn_two_stream,
+    split_ctr_gcn_two_stream,
     build_tcn_input,
 )
 
@@ -79,7 +79,7 @@ def build_input_from_raw(raw: WindowRaw, feat_cfg: FeatCfg, arch: str, *, two_st
 
     - Always build canonical X[T,V,F] first.
     - TCN gets flattened x[T, V*F].
-    - GCN gets X[T,V,F] or (xj,xm) for two-stream.
+    - CTR-GCN gets X[T,V,F] or (xj,xb) for two-stream.
     """
     arch = str(arch).lower()
 
@@ -96,10 +96,10 @@ def build_input_from_raw(raw: WindowRaw, feat_cfg: FeatCfg, arch: str, *, two_st
         x = build_tcn_input(X_can, feat_cfg)
         return x, m
 
-    if arch in {"gcn", "ctr_gcn"}:
+    if arch == "ctr_gcn":
         X = X_can
         if two_stream:
-            X = split_gcn_two_stream(X_can, feat_cfg)
+            X = split_ctr_gcn_two_stream(X_can, feat_cfg, stream_mode="joint_bone")
         return X, m
 
     raise ValueError(f"Unknown arch: {arch}")
@@ -115,11 +115,11 @@ def predict_prob(model: torch.nn.Module, arch: str, X, device: torch.device, two
     if arch == "tcn":
         xb = _to_tensor(X, device)
         logits = logits_1d(model(xb))
-    elif arch in {"gcn", "ctr_gcn"}:
+    elif arch == "ctr_gcn":
         if two_stream:
             xj = _to_tensor(X[0], device)
-            xm = _to_tensor(X[1], device)
-            logits = logits_1d(model(xj, xm))
+            xb = _to_tensor(X[1], device)
+            logits = logits_1d(model(xj, xb))
         else:
             xb = _to_tensor(X, device)
             logits = logits_1d(model(xb))
@@ -145,11 +145,11 @@ def predict_mu_sigma(
         if arch == "tcn":
             xb = _to_tensor(X, device)
             logits = logits_1d(model(xb))
-        elif arch in {"gcn", "ctr_gcn"}:
+        elif arch == "ctr_gcn":
             if two_stream:
                 xj = _to_tensor(X[0], device)
-                xm = _to_tensor(X[1], device)
-                logits = logits_1d(model(xj, xm))
+                xb = _to_tensor(X[1], device)
+                logits = logits_1d(model(xj, xb))
             else:
                 xb = _to_tensor(X, device)
                 logits = logits_1d(model(xb))

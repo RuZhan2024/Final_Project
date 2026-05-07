@@ -18,9 +18,9 @@ import numpy as np
 
 DEFAULT_FILES = [
     "outputs/metrics/tcn_le2i.json",
-    "outputs/metrics/gcn_le2i.json",
+    "outputs/metrics/ctr_gcn_le2i.json",
     "outputs/metrics/tcn_caucafall.json",
-    "outputs/metrics/gcn_caucafall.json",
+    "outputs/metrics/ctr_gcn_caucafall.json",
 ]
 
 
@@ -57,6 +57,8 @@ def _selected_op(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _name_from_path(path: Path) -> str:
     stem = path.stem.lower()
+    if stem.startswith("ctr_gcn_"):
+        return f"CTR-GCN-{stem.removeprefix('ctr_gcn_').upper()}"
     if "_" not in stem:
         return stem
     arch, ds = stem.split("_", 1)

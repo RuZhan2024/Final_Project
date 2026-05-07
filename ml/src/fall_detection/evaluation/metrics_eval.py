@@ -41,7 +41,6 @@ from fall_detection.core.features import (
     build_tcn_input,
     read_window_npz,
     split_ctr_gcn_two_stream,
-    split_gcn_two_stream,
 )
 from fall_detection.core.confirm import confirm_scores_window
 from fall_detection.core.models import build_model, logits_1d, pick_device
@@ -259,13 +258,12 @@ class LabeledWindows(Dataset):
 
         if self.arch == "tcn":
             X = build_tcn_input(Xc, self.feat_cfg)
-        else:
+        elif self.arch == "ctr_gcn":
             X = Xc
             if self.two_stream:
-                if self.arch == "ctr_gcn":
-                    X = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
-                else:
-                    X = split_gcn_two_stream(X, self.feat_cfg)
+                X = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
+        else:
+            raise ValueError(f"Unknown arch: {self.arch}")
 
         return X, meta
 

@@ -48,7 +48,6 @@ from fall_detection.core.features import (
     build_tcn_input,
     read_window_npz,
     split_ctr_gcn_two_stream,
-    split_gcn_two_stream,
 )
 from fall_detection.core.models import build_model
 from fall_detection.core.yamlio import yaml_dump_simple, yaml_load_simple
@@ -454,12 +453,9 @@ class WindowDirDataset(Dataset):
             motion_score=float(ms),
         )
 
-        if self.arch in {"gcn", "ctr_gcn"}:
+        if self.arch == "ctr_gcn":
             if self.two_stream:
-                if self.arch == "ctr_gcn":
-                    xj, xm = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
-                else:
-                    xj, xm = split_gcn_two_stream(X, self.feat_cfg)
+                xj, xm = split_ctr_gcn_two_stream(X, self.feat_cfg, stream_mode="joint_bone")
                 return (
                     torch.from_numpy(xj).to(torch.float32),
                     torch.from_numpy(xm).to(torch.float32),
@@ -505,7 +501,7 @@ def infer_logits(
     metas_all: List[MetaRow] = []
 
     for batch in tqdm(loader, desc="infer", leave=False):
-        if arch in {"gcn", "ctr_gcn"} and two_stream:
+        if arch == "ctr_gcn" and two_stream:
             xj, xm, yb, meta = batch
             xj = xj.to(device).float()
             xm = xm.to(device).float()
@@ -551,23 +547,17 @@ def _preflight_input_contract(
             )
         return
 
-    if kind in {"gcn", "ctr_gcn"}:
+    if kind == "ctr_gcn":
         if two_stream:
             xj, xm = sample[0], sample[1]
             got_j = int(xj.shape[1])
             got_fj = int(xj.shape[-1])
             got_fm = int(xm.shape[-1])
             exp_j = int(model_cfg.get("num_joints", got_j))
-            if kind == "ctr_gcn":
-                exp_fj = int(model_cfg.get("in_feats_j", got_fj))
-                exp_fm = int(model_cfg.get("in_feats_b", got_fm))
-                stream_name = "CTR-GCN two-stream"
-                right_name = "in_feats_bone"
-            else:
-                exp_fj = int(model_cfg.get("in_feats_j", model_cfg.get("in_feats_joint", got_fj)))
-                exp_fm = int(model_cfg.get("in_feats_m", model_cfg.get("in_feats_motion", got_fm)))
-                stream_name = "GCN two-stream"
-                right_name = "in_feats_motion"
+            exp_fj = int(model_cfg.get("in_feats_j", got_fj))
+            exp_fm = int(model_cfg.get("in_feats_b", got_fm))
+            stream_name = "CTR-GCN two-stream"
+            right_name = "in_feats_bone"
             if got_j != exp_j or got_fj != exp_fj or got_fm != exp_fm:
                 raise RuntimeError(
                     f"Input feature mismatch for fit_ops ({stream_name}): "
@@ -584,7 +574,7 @@ def _preflight_input_contract(
             exp_f = int(model_cfg.get("in_feats", got_f))
             if got_j != exp_j or got_f != exp_f:
                 raise RuntimeError(
-                    "Input feature mismatch for fit_ops (GCN): "
+                    "Input feature mismatch for fit_ops (CTR-GCN): "
                     f"ckpt expects num_joints={exp_j}, in_feats={exp_f}; "
                     f"windows from '{source_dir}' produced num_joints={got_j}, in_feats={got_f}. "
                     "Rebuild windows and retrain with a consistent feature contract."
@@ -621,7 +611,7 @@ def _override_feat_cfg(base: FeatCfg, args: argparse.Namespace) -> FeatCfg:
 def main() -> None:
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--arch", type=str, required=True, choices=["tcn", "gcn", "ctr_gcn"])
+    ap.add_argument("--arch", type=str, required=True, choices=["tcn", "ctr_gcn"])
     ap.add_argument("--val_dir", type=str, required=True)
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--out", type=str, required=True)
@@ -712,7 +702,7 @@ def main() -> None:
     feat_cfg = FeatCfg.from_dict(bundle.get("feat_cfg", {}))
     feat_cfg = _override_feat_cfg(feat_cfg, args)
 
-    # Determine two-stream for GCN
+    # Determine two-stream graph-model contract
     two_stream = bool(model_cfg.get("two_stream", False))
 
     model = build_model(args.arch, model_cfg, feat_cfg.to_dict(), fps_default=float(args.fps_default))

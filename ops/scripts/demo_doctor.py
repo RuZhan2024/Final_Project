@@ -42,7 +42,7 @@ def _check_import(mod: str) -> tuple[bool, str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="le2i")
-    ap.add_argument("--model", default="tcn", choices=["tcn", "gcn"])
+    ap.add_argument("--model", default="tcn", choices=["tcn", "ctr_gcn"])
     ap.add_argument("--strict", type=int, default=1, help="exit non-zero when critical checks fail")
     ap.add_argument("--out_json", default="artifacts/reports/demo_doctor.json")
     args = ap.parse_args()

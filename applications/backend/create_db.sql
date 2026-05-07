@@ -115,8 +115,7 @@ VALUES (1, 'Demo Caregiver', 'caregiver@example.com', '0000000000');
 
 INSERT INTO models (code, name, description) VALUES
   ('TCN', 'TCN', 'Temporal Convolution Network'),
-  ('GCN', 'GCN', 'Graph Convolution Network'),
-  ('HYBRID', 'Hybrid', 'GCN + TCN (hybrid)');
+  ('CTR_GCN', 'CTR-GCN', 'Channel-wise Topology Refinement GCN');
 
 -- Seed 3 demo operating points for TCN (model id = 1) using current deployment lock
 INSERT INTO operating_points (model_id, code, name, thr_detect, thr_low_conf, thr_high_conf, est_fa24h, est_recall) VALUES

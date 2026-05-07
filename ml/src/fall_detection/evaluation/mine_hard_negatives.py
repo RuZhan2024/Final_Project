@@ -48,7 +48,7 @@ from fall_detection.core.features import (
     read_window_npz,
     build_tcn_input,
     build_canonical_input,
-    split_gcn_two_stream,
+    split_ctr_gcn_two_stream,
 )
 from fall_detection.core.models import build_model, pick_device, logits_1d
 
@@ -131,11 +131,14 @@ class WindowsForMining(Dataset):
             x = build_tcn_input(Xc, self.feat_cfg)  # [T, V*F]
             return torch.from_numpy(x).float(), p, clip, w_start, w_end, fps_v
 
-        if self.two_stream:
-            xj, xm = split_gcn_two_stream(Xc, self.feat_cfg)
+        if self.arch == "ctr_gcn" and self.two_stream:
+            xj, xm = split_ctr_gcn_two_stream(Xc, self.feat_cfg, stream_mode="joint_bone")
             return (torch.from_numpy(xj).float(), torch.from_numpy(xm).float()), p, clip, w_start, w_end, fps_v
 
-        return torch.from_numpy(Xc).float(), p, clip, w_start, w_end, fps_v
+        if self.arch == "ctr_gcn":
+            return torch.from_numpy(Xc).float(), p, clip, w_start, w_end, fps_v
+
+        raise ValueError(f"Unknown arch: {self.arch}")
 
 
 def collate(batch):
