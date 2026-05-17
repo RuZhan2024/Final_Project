@@ -1,0 +1,71 @@
+{
+  "date": "2026-05-06",
+  "probe": "CAUCAFall c2 W64/S16 paired seed 2025",
+  "fairness": "TCN and CTR-GCN trained from the same W64/S16 c2 train windows, fit on the same val windows, evaluated on the same test windows. TCN did not resume from W48 or use W48 hard-negative lists.",
+  "decision": "reject_w64s16_for_now",
+  "reason": "CTR-GCN W64/S16 seed-2025 underperforms the locked W48/S12 c2+bone anchor on AP/AUC and OP2 recall/F1; paired TCN also beats CTR-GCN under W64/S16 on this seed.",
+  "rows": [
+    {
+      "name": "W48S12_c2_ctr_gcn_bone_anchor_s2025",
+      "arch": "ctr_gcn",
+      "protocol": "W48/S12 c2",
+      "ap": 0.9842452210924075,
+      "auc": 0.9916158536585367,
+      "op2_f1": 1.0,
+      "op2_recall": 1.0,
+      "op2_precision": 1.0,
+      "op2_fa24h": 0.0,
+      "op2_delay_s": 4.486956548690796,
+      "op2_tp": 5,
+      "op2_fp": 0,
+      "metrics_path": "outputs/metrics/ctr_gcn_caucafall_c2_bone_s2025.json",
+      "note": "reference only"
+    },
+    {
+      "name": "W64S16_c2_tcn_paired_s2025",
+      "arch": "tcn",
+      "protocol": "W64/S16 c2",
+      "ap": 0.9799879414657623,
+      "auc": 0.9854215918045706,
+      "op2_f1": 0.888888888888889,
+      "op2_recall": 0.8,
+      "op2_precision": 1.0,
+      "op2_fa24h": 0.0,
+      "op2_delay_s": 4.000000178813934,
+      "op2_tp": 4,
+      "op2_fp": 0,
+      "metrics_path": "outputs/metrics/tcn_caucafall_W64S16_c2_paired_s2025.json",
+      "note": "paired protocol"
+    },
+    {
+      "name": "W64S16_c2_ctr_gcn_bone_paired_s2025",
+      "arch": "ctr_gcn",
+      "protocol": "W64/S16 c2",
+      "ap": 0.9776092173015564,
+      "auc": 0.983057525610717,
+      "op2_f1": 0.888888888888889,
+      "op2_recall": 0.8,
+      "op2_precision": 1.0,
+      "op2_fa24h": 0.0,
+      "op2_delay_s": 4.34782612323761,
+      "op2_tp": 4,
+      "op2_fp": 0,
+      "metrics_path": "outputs/metrics/ctr_gcn_caucafall_W64S16_c2_bone_paired_s2025.json",
+      "note": "paired protocol"
+    }
+  ],
+  "paired_delta_ctr_minus_tcn": {
+    "ap": -0.0023787241642059254,
+    "auc": -0.0023640661938535423,
+    "op2_f1": 0.0,
+    "op2_recall": 0.0,
+    "op2_delay_s": 0.34782594442367554
+  },
+  "ctr_delta_w64_minus_w48_anchor_s2025": {
+    "ap": -0.006636003790851164,
+    "auc": -0.008558328047819641,
+    "op2_f1": -0.11111111111111105,
+    "op2_recall": -0.19999999999999996,
+    "op2_delay_s": -0.1391304254531862
+  }
+}

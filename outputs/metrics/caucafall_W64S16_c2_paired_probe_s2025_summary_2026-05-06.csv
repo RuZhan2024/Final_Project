@@ -1,0 +1,4 @@
+name,arch,protocol,ap,auc,op2_f1,op2_recall,op2_precision,op2_fa24h,op2_delay_s,op2_tp,op2_fp,metrics_path,note
+W48S12_c2_ctr_gcn_bone_anchor_s2025,ctr_gcn,W48/S12 c2,0.9842452210924075,0.9916158536585367,1.0,1.0,1.0,0.0,4.486956548690796,5,0,outputs/metrics/ctr_gcn_caucafall_c2_bone_s2025.json,reference only
+W64S16_c2_tcn_paired_s2025,tcn,W64/S16 c2,0.9799879414657623,0.9854215918045706,0.888888888888889,0.8,1.0,0.0,4.000000178813934,4,0,outputs/metrics/tcn_caucafall_W64S16_c2_paired_s2025.json,paired protocol
+W64S16_c2_ctr_gcn_bone_paired_s2025,ctr_gcn,W64/S16 c2,0.9776092173015564,0.983057525610717,0.888888888888889,0.8,1.0,0.0,4.34782612323761,4,0,outputs/metrics/ctr_gcn_caucafall_W64S16_c2_bone_paired_s2025.json,paired protocol

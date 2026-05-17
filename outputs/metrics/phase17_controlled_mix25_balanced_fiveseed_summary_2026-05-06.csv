@@ -1,0 +1,11 @@
+model,seed,test_ap,test_auc,test_op2_f1,test_op2_recall,test_op2_fa24h,test_op2_delay_s,custom_correct,custom_tp,custom_tn,custom_fp,custom_fn,ckpt
+ctr,42,,,0.888888888888889,0.8,0.0,1.43478262424469,18,8,10,2,4,outputs\ctr_gcn\caucafall_W48S12_c2_bbox_bone_twostream_sum_mix25_balanced_s42\best.pt
+ctr,1337,,,1.0,1.0,0.0,2.2956521034240724,17,7,10,2,5,outputs\ctr_gcn\caucafall_W48S12_c2_bbox_bone_twostream_sum_mix25_balanced_s1337\best.pt
+ctr,17,,,1.0,1.0,0.0,1.5652173995971679,18,9,9,3,3,outputs\ctr_gcn\caucafall_W48S12_c2_bbox_bone_twostream_sum_mix25_balanced_s17\best.pt
+ctr,2025,,,1.0,1.0,0.0,1.7739130020141602,18,7,11,1,5,outputs\ctr_gcn\caucafall_W48S12_c2_bbox_bone_twostream_sum_mix25_balanced_s2025\best.pt
+ctr,33724876,,,1.0,1.0,0.0,1.7739130020141602,19,9,10,2,3,outputs\ctr_gcn\caucafall_W48S12_c2_bbox_bone_twostream_sum_mix25_balanced_s33724876\best.pt
+tcn,42,,,1.0,1.0,0.0,1.04347825050354,20,12,8,4,0,outputs\caucafall_tcn_W48S12_c2_bbox_mix25_balanced_s42\best.pt
+tcn,1337,,,1.0,1.0,0.0,2.2956521987915037,18,9,9,3,3,outputs\caucafall_tcn_W48S12_c2_bbox_mix25_balanced_s1337\best.pt
+tcn,17,,,1.0,1.0,0.0,1.460869550704956,15,10,5,7,2,outputs\caucafall_tcn_W48S12_c2_bbox_mix25_balanced_s17\best.pt
+tcn,2025,,,1.0,1.0,0.0,2.191304349899292,19,12,7,5,0,outputs\caucafall_tcn_W48S12_c2_bbox_mix25_balanced_s2025\best.pt
+tcn,33724876,,,1.0,1.0,0.0,1.878260898590088,17,9,8,4,3,outputs\caucafall_tcn_W48S12_c2_bbox_mix25_balanced_s33724876\best.pt

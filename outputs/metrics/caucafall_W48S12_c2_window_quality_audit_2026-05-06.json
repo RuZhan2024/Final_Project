@@ -1,0 +1,1175 @@
+{
+  "root": "D:\\goldsmiths\\fall_detection_v2\\data\\processed\\caucafall\\windows_eval_W48_S12_c2",
+  "thresholds": {
+    "min_valid_frac": 0.5,
+    "min_frame_valid": 0.25,
+    "min_avg_conf": 0.15
+  },
+  "total": {
+    "n_windows": 1314,
+    "n_videos": 100,
+    "y_counts": {
+      "0": 781,
+      "1": 533
+    },
+    "low_quality_windows": 191,
+    "valid_frac": {
+      "min": 0.0,
+      "p01": 0.0,
+      "p05": 0.5174242585897446,
+      "p10": 0.6497474789619446,
+      "median": 0.8901515007019043,
+      "mean": 0.8389291513251932,
+      "p90": 1.0
+    },
+    "avg_conf": {
+      "min": 0.0,
+      "p01": 0.0,
+      "p05": 0.4036201491951943,
+      "p10": 0.5157266438007355,
+      "median": 0.7184004187583923,
+      "mean": 0.6975605867780417,
+      "p90": 0.8844986736774445
+    },
+    "frame_valid_min": {
+      "min": 0.0,
+      "p01": 0.0,
+      "p05": 0.0,
+      "p10": 0.0,
+      "median": 0.7575757575757576,
+      "mean": 0.6863613301969467,
+      "p90": 1.0
+    },
+    "low_frame_frac_50": {
+      "min": 0.0,
+      "p01": 0.0,
+      "p05": 0.0,
+      "p10": 0.0,
+      "median": 0.0,
+      "mean": 0.06557584982242518,
+      "p90": 0.20833333333333334
+    },
+    "worst_videos": [
+      {
+        "video_id": "Subject.8/Fall forward",
+        "n_windows": 7,
+        "n_pos": 7,
+        "valid_frac_mean": 0.0,
+        "valid_frac_min": 0.0,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 7
+      },
+      {
+        "video_id": "Subject.8/Fall right",
+        "n_windows": 16,
+        "n_pos": 15,
+        "valid_frac_mean": 0.16319444496184587,
+        "valid_frac_min": 0.0,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 16
+      },
+      {
+        "video_id": "Subject.6/Fall left",
+        "n_windows": 16,
+        "n_pos": 15,
+        "valid_frac_mean": 0.1753077651374042,
+        "valid_frac_min": 0.0,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 16
+      },
+      {
+        "video_id": "Subject.6/Pick up object",
+        "n_windows": 13,
+        "n_pos": 0,
+        "valid_frac_mean": 0.41788073227955747,
+        "valid_frac_min": 0.0,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 12
+      },
+      {
+        "video_id": "Subject.8/Pick up object",
+        "n_windows": 19,
+        "n_pos": 0,
+        "valid_frac_mean": 0.6561004833171242,
+        "valid_frac_min": 0.5183081030845642,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 2
+      },
+      {
+        "video_id": "Subject.4/Fall sitting",
+        "n_windows": 13,
+        "n_pos": 11,
+        "valid_frac_mean": 0.6717171714856074,
+        "valid_frac_min": 0.47853535413742065,
+        "frame_valid_min": 0.45454545454545453,
+        "low_quality_windows": 1
+      },
+      {
+        "video_id": "Subject.4/Kneel",
+        "n_windows": 15,
+        "n_pos": 0,
+        "valid_frac_mean": 0.6824074069658915,
+        "valid_frac_min": 0.5321969985961914,
+        "frame_valid_min": 0.48484848484848486,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.8/Kneel",
+        "n_windows": 18,
+        "n_pos": 0,
+        "valid_frac_mean": 0.6831509524749385,
+        "valid_frac_min": 0.11489898711442947,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 8
+      },
+      {
+        "video_id": "Subject.6/Kneel",
+        "n_windows": 12,
+        "n_pos": 0,
+        "valid_frac_mean": 0.6901830782492956,
+        "valid_frac_min": 0.38257575035095215,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 3
+      },
+      {
+        "video_id": "Subject.10/Sit down",
+        "n_windows": 16,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7048611119389534,
+        "valid_frac_min": 0.6010100841522217,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 5
+      },
+      {
+        "video_id": "Subject.2/Sit down",
+        "n_windows": 6,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7058080732822418,
+        "valid_frac_min": 0.6395202279090881,
+        "frame_valid_min": 0.5757575757575758,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.3/Fall forward",
+        "n_windows": 9,
+        "n_pos": 5,
+        "valid_frac_mean": 0.7173821594980028,
+        "valid_frac_min": 0.5915403962135315,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 7
+      },
+      {
+        "video_id": "Subject.3/Walk",
+        "n_windows": 11,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7224517871033062,
+        "valid_frac_min": 0.3042929172515869,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 6
+      },
+      {
+        "video_id": "Subject.1/Fall forward",
+        "n_windows": 12,
+        "n_pos": 5,
+        "valid_frac_mean": 0.735479798167944,
+        "valid_frac_min": 0.1666666716337204,
+        "frame_valid_min": 0.0,
+        "low_quality_windows": 6
+      },
+      {
+        "video_id": "Subject.2/Fall right",
+        "n_windows": 9,
+        "n_pos": 9,
+        "valid_frac_mean": 0.744458470079634,
+        "valid_frac_min": 0.6969696879386902,
+        "frame_valid_min": 0.696969696969697,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.3/Fall sitting",
+        "n_windows": 13,
+        "n_pos": 12,
+        "valid_frac_mean": 0.7602467078429002,
+        "valid_frac_min": 0.6546717286109924,
+        "frame_valid_min": 0.6060606060606061,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.2/Kneel",
+        "n_windows": 7,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7619047505514962,
+        "valid_frac_min": 0.6906565427780151,
+        "frame_valid_min": 0.5757575757575758,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.1/Sit down",
+        "n_windows": 12,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7737268557151159,
+        "valid_frac_min": 0.7272727489471436,
+        "frame_valid_min": 0.696969696969697,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.9/Sit down",
+        "n_windows": 16,
+        "n_pos": 0,
+        "valid_frac_mean": 0.781052716076374,
+        "valid_frac_min": 0.7272727489471436,
+        "frame_valid_min": 0.696969696969697,
+        "low_quality_windows": 0
+      },
+      {
+        "video_id": "Subject.1/Kneel",
+        "n_windows": 15,
+        "n_pos": 0,
+        "valid_frac_mean": 0.7838804682095846,
+        "valid_frac_min": 0.7083333134651184,
+        "frame_valid_min": 0.6060606060606061,
+        "low_quality_windows": 0
+      }
+    ]
+  },
+  "splits": {
+    "train": {
+      "n_windows": 1024,
+      "n_videos": 80,
+      "y_counts": {
+        "0": 614,
+        "1": 410
+      },
+      "low_quality_windows": 141,
+      "valid_frac": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.5571022778749466,
+        "p10": 0.6693181872367859,
+        "median": 0.8885732293128967,
+        "mean": 0.8465872105371091,
+        "p90": 1.0
+      },
+      "avg_conf": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.4355130314826966,
+        "p10": 0.5300402462482453,
+        "median": 0.7224817276000977,
+        "mean": 0.7045666952835745,
+        "p90": 0.8826291501522064
+      },
+      "frame_valid_min": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0,
+        "median": 0.7575757575757576,
+        "mean": 0.6913174715909091,
+        "p90": 1.0
+      },
+      "low_frame_frac_50": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0,
+        "median": 0.0,
+        "mean": 0.05546061197916666,
+        "p90": 0.1875
+      },
+      "worst_videos": [
+        {
+          "video_id": "Subject.8/Fall forward",
+          "n_windows": 7,
+          "n_pos": 7,
+          "valid_frac_mean": 0.0,
+          "valid_frac_min": 0.0,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 7
+        },
+        {
+          "video_id": "Subject.8/Fall right",
+          "n_windows": 16,
+          "n_pos": 15,
+          "valid_frac_mean": 0.16319444496184587,
+          "valid_frac_min": 0.0,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 16
+        },
+        {
+          "video_id": "Subject.8/Pick up object",
+          "n_windows": 19,
+          "n_pos": 0,
+          "valid_frac_mean": 0.6561004833171242,
+          "valid_frac_min": 0.5183081030845642,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 2
+        },
+        {
+          "video_id": "Subject.4/Fall sitting",
+          "n_windows": 13,
+          "n_pos": 11,
+          "valid_frac_mean": 0.6717171714856074,
+          "valid_frac_min": 0.47853535413742065,
+          "frame_valid_min": 0.45454545454545453,
+          "low_quality_windows": 1
+        },
+        {
+          "video_id": "Subject.4/Kneel",
+          "n_windows": 15,
+          "n_pos": 0,
+          "valid_frac_mean": 0.6824074069658915,
+          "valid_frac_min": 0.5321969985961914,
+          "frame_valid_min": 0.48484848484848486,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.8/Kneel",
+          "n_windows": 18,
+          "n_pos": 0,
+          "valid_frac_mean": 0.6831509524749385,
+          "valid_frac_min": 0.11489898711442947,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 8
+        },
+        {
+          "video_id": "Subject.10/Sit down",
+          "n_windows": 16,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7048611119389534,
+          "valid_frac_min": 0.6010100841522217,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 5
+        },
+        {
+          "video_id": "Subject.2/Sit down",
+          "n_windows": 6,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7058080732822418,
+          "valid_frac_min": 0.6395202279090881,
+          "frame_valid_min": 0.5757575757575758,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.3/Fall forward",
+          "n_windows": 9,
+          "n_pos": 5,
+          "valid_frac_mean": 0.7173821594980028,
+          "valid_frac_min": 0.5915403962135315,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 7
+        },
+        {
+          "video_id": "Subject.3/Walk",
+          "n_windows": 11,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7224517871033062,
+          "valid_frac_min": 0.3042929172515869,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 6
+        },
+        {
+          "video_id": "Subject.1/Fall forward",
+          "n_windows": 12,
+          "n_pos": 5,
+          "valid_frac_mean": 0.735479798167944,
+          "valid_frac_min": 0.1666666716337204,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 6
+        },
+        {
+          "video_id": "Subject.2/Fall right",
+          "n_windows": 9,
+          "n_pos": 9,
+          "valid_frac_mean": 0.744458470079634,
+          "valid_frac_min": 0.6969696879386902,
+          "frame_valid_min": 0.696969696969697,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.3/Fall sitting",
+          "n_windows": 13,
+          "n_pos": 12,
+          "valid_frac_mean": 0.7602467078429002,
+          "valid_frac_min": 0.6546717286109924,
+          "frame_valid_min": 0.6060606060606061,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.2/Kneel",
+          "n_windows": 7,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7619047505514962,
+          "valid_frac_min": 0.6906565427780151,
+          "frame_valid_min": 0.5757575757575758,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.1/Sit down",
+          "n_windows": 12,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7737268557151159,
+          "valid_frac_min": 0.7272727489471436,
+          "frame_valid_min": 0.696969696969697,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.1/Kneel",
+          "n_windows": 15,
+          "n_pos": 0,
+          "valid_frac_mean": 0.7838804682095846,
+          "valid_frac_min": 0.7083333134651184,
+          "frame_valid_min": 0.6060606060606061,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.3/Fall right",
+          "n_windows": 15,
+          "n_pos": 14,
+          "valid_frac_mean": 0.7936868667602539,
+          "valid_frac_min": 0.6944444179534912,
+          "frame_valid_min": 0.6666666666666666,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.3/Sit down",
+          "n_windows": 18,
+          "n_pos": 0,
+          "valid_frac_mean": 0.80471380882793,
+          "valid_frac_min": 0.7449495196342468,
+          "frame_valid_min": 0.6060606060606061,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.8/Sit down",
+          "n_windows": 14,
+          "n_pos": 0,
+          "valid_frac_mean": 0.807990622307573,
+          "valid_frac_min": 0.20580808818340302,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 4
+        },
+        {
+          "video_id": "Subject.4/Fall right",
+          "n_windows": 9,
+          "n_pos": 9,
+          "valid_frac_mean": 0.8127104308870103,
+          "valid_frac_min": 0.7285353541374207,
+          "frame_valid_min": 0.7272727272727273,
+          "low_quality_windows": 0
+        }
+      ]
+    },
+    "val": {
+      "n_windows": 144,
+      "n_videos": 10,
+      "y_counts": {
+        "0": 85,
+        "1": 59
+      },
+      "low_quality_windows": 8,
+      "valid_frac": {
+        "min": 0.4457070827484131,
+        "p01": 0.5875883996486664,
+        "p05": 0.6530302792787552,
+        "p10": 0.7146464705467224,
+        "median": 0.8993055522441864,
+        "mean": 0.8731499020424154,
+        "p90": 1.0
+      },
+      "avg_conf": {
+        "min": 0.3435419499874115,
+        "p01": 0.5032662171125412,
+        "p05": 0.559042751789093,
+        "p10": 0.5763288676738739,
+        "median": 0.7021135091781616,
+        "mean": 0.7124772421601746,
+        "p90": 0.8753089547157288
+      },
+      "frame_valid_min": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0727272727272729,
+        "p10": 0.5545454545454546,
+        "median": 0.8181818181818182,
+        "mean": 0.746422558922559,
+        "p90": 1.0
+      },
+      "low_frame_frac_50": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0,
+        "median": 0.0,
+        "mean": 0.016927083333333332,
+        "p90": 0.0
+      },
+      "worst_videos": [
+        {
+          "video_id": "Subject.9/Sit down",
+          "n_windows": 16,
+          "n_pos": 0,
+          "valid_frac_mean": 0.781052716076374,
+          "valid_frac_min": 0.7272727489471436,
+          "frame_valid_min": 0.696969696969697,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.9/Kneel",
+          "n_windows": 15,
+          "n_pos": 0,
+          "valid_frac_mean": 0.8077441056569418,
+          "valid_frac_min": 0.6470959782600403,
+          "frame_valid_min": 0.6060606060606061,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.9/Fall forward",
+          "n_windows": 9,
+          "n_pos": 8,
+          "valid_frac_mean": 0.819795184665256,
+          "valid_frac_min": 0.4457070827484131,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 2
+        },
+        {
+          "video_id": "Subject.9/Fall left",
+          "n_windows": 14,
+          "n_pos": 13,
+          "valid_frac_mean": 0.8246302349226815,
+          "valid_frac_min": 0.5827020406723022,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 1
+        },
+        {
+          "video_id": "Subject.9/Walk",
+          "n_windows": 16,
+          "n_pos": 0,
+          "valid_frac_mean": 0.8609532825648785,
+          "valid_frac_min": 0.6515151262283325,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 2
+        },
+        {
+          "video_id": "Subject.9/Fall backwards",
+          "n_windows": 18,
+          "n_pos": 16,
+          "valid_frac_mean": 0.8901164399252998,
+          "valid_frac_min": 0.5940656661987305,
+          "frame_valid_min": 0.5757575757575758,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.9/Fall right",
+          "n_windows": 12,
+          "n_pos": 11,
+          "valid_frac_mean": 0.9113531162341436,
+          "valid_frac_min": 0.8516414165496826,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 1
+        },
+        {
+          "video_id": "Subject.9/Fall sitting",
+          "n_windows": 15,
+          "n_pos": 11,
+          "valid_frac_mean": 0.9159932692845663,
+          "valid_frac_min": 0.8851010203361511,
+          "frame_valid_min": 0.8181818181818182,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.9/Pick up object",
+          "n_windows": 15,
+          "n_pos": 0,
+          "valid_frac_mean": 0.9404040376345316,
+          "valid_frac_min": 0.8503788113594055,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 1
+        },
+        {
+          "video_id": "Subject.9/Hop",
+          "n_windows": 14,
+          "n_pos": 0,
+          "valid_frac_mean": 0.9727182473455157,
+          "valid_frac_min": 0.8996211886405945,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 1
+        }
+      ]
+    },
+    "test": {
+      "n_windows": 146,
+      "n_videos": 10,
+      "y_counts": {
+        "0": 82,
+        "1": 64
+      },
+      "low_quality_windows": 42,
+      "valid_frac": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0416666679084301,
+        "median": 0.8869949579238892,
+        "mean": 0.7514658586109337,
+        "p90": 1.0
+      },
+      "avg_conf": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.02926042303442955,
+        "median": 0.7187046110630035,
+        "mean": 0.6337095355130222,
+        "p90": 0.9036349654197693
+      },
+      "frame_valid_min": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0,
+        "median": 0.7272727272727273,
+        "mean": 0.5923619759236197,
+        "p90": 1.0
+      },
+      "low_frame_frac_50": {
+        "min": 0.0,
+        "p01": 0.0,
+        "p05": 0.0,
+        "p10": 0.0,
+        "median": 0.0,
+        "mean": 0.18450342465753425,
+        "p90": 0.9583333333333333
+      },
+      "worst_videos": [
+        {
+          "video_id": "Subject.6/Fall left",
+          "n_windows": 16,
+          "n_pos": 15,
+          "valid_frac_mean": 0.1753077651374042,
+          "valid_frac_min": 0.0,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 16
+        },
+        {
+          "video_id": "Subject.6/Pick up object",
+          "n_windows": 13,
+          "n_pos": 0,
+          "valid_frac_mean": 0.41788073227955747,
+          "valid_frac_min": 0.0,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 12
+        },
+        {
+          "video_id": "Subject.6/Kneel",
+          "n_windows": 12,
+          "n_pos": 0,
+          "valid_frac_mean": 0.6901830782492956,
+          "valid_frac_min": 0.38257575035095215,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 3
+        },
+        {
+          "video_id": "Subject.6/Fall sitting",
+          "n_windows": 17,
+          "n_pos": 12,
+          "valid_frac_mean": 0.8277257891262279,
+          "valid_frac_min": 0.5549242496490479,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 5
+        },
+        {
+          "video_id": "Subject.6/Walk",
+          "n_windows": 19,
+          "n_pos": 0,
+          "valid_frac_mean": 0.8346956435002779,
+          "valid_frac_min": 0.5031565427780151,
+          "frame_valid_min": 0.45454545454545453,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.6/Sit down",
+          "n_windows": 12,
+          "n_pos": 0,
+          "valid_frac_mean": 0.8419086833794912,
+          "valid_frac_min": 0.751893937587738,
+          "frame_valid_min": 0.6666666666666666,
+          "low_quality_windows": 0
+        },
+        {
+          "video_id": "Subject.6/Fall backwards",
+          "n_windows": 18,
+          "n_pos": 14,
+          "valid_frac_mean": 0.8902918100357056,
+          "valid_frac_min": 0.689393937587738,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 1
+        },
+        {
+          "video_id": "Subject.6/Hop",
+          "n_windows": 10,
+          "n_pos": 0,
+          "valid_frac_mean": 0.9020833373069763,
+          "valid_frac_min": 0.4375,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 3
+        },
+        {
+          "video_id": "Subject.6/Fall forward",
+          "n_windows": 13,
+          "n_pos": 10,
+          "valid_frac_mean": 0.9583333363899817,
+          "valid_frac_min": 0.6041666865348816,
+          "frame_valid_min": 0.0,
+          "low_quality_windows": 2
+        },
+        {
+          "video_id": "Subject.6/Fall right",
+          "n_windows": 16,
+          "n_pos": 13,
+          "valid_frac_mean": 0.9785353429615498,
+          "valid_frac_min": 0.9267676472663879,
+          "frame_valid_min": 0.8484848484848485,
+          "low_quality_windows": 0
+        }
+      ]
+    }
+  },
+  "metrics": {
+    "ctr_s2025": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 4.69565224647522,
+        "false_alerts": 0,
+        "alert_frac": 0.2777777777777778
+      },
+      "Subject.6/Fall forward": {
+        "recall": 1.0,
+        "delay_s": 4.695652008056641,
+        "false_alerts": 0,
+        "alert_frac": 0.07692307692307693
+      },
+      "Subject.6/Fall left": {
+        "recall": 1.0,
+        "delay_s": 3.13043475151062,
+        "false_alerts": 0,
+        "alert_frac": 0.5625
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 5.217391490936279,
+        "false_alerts": 0,
+        "alert_frac": 0.1875
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 4.69565224647522,
+        "false_alerts": 0,
+        "alert_frac": 0.17647058823529413
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "ctr_s1337": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 3.6521737575531006,
+        "false_alerts": 0,
+        "alert_frac": 0.3888888888888889
+      },
+      "Subject.6/Fall forward": {
+        "recall": 1.0,
+        "delay_s": 4.17391300201416,
+        "false_alerts": 0,
+        "alert_frac": 0.15384615384615385
+      },
+      "Subject.6/Fall left": {
+        "recall": 1.0,
+        "delay_s": 5.739130258560181,
+        "false_alerts": 0,
+        "alert_frac": 0.25
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 3.6521739959716797,
+        "false_alerts": 0,
+        "alert_frac": 0.375
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 3.13043475151062,
+        "false_alerts": 0,
+        "alert_frac": 0.35294117647058826
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "ctr_s17": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 5.2173912525177,
+        "false_alerts": 0,
+        "alert_frac": 0.2222222222222222
+      },
+      "Subject.6/Fall forward": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall left": {
+        "recall": 1.0,
+        "delay_s": 0.0,
+        "false_alerts": 0,
+        "alert_frac": 0.9375
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 5.217391490936279,
+        "false_alerts": 0,
+        "alert_frac": 0.1875
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 4.69565224647522,
+        "false_alerts": 0,
+        "alert_frac": 0.17647058823529413
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "ctr_s33724876": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 4.69565224647522,
+        "false_alerts": 0,
+        "alert_frac": 0.2777777777777778
+      },
+      "Subject.6/Fall forward": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall left": {
+        "recall": 1.0,
+        "delay_s": 6.260869741439819,
+        "false_alerts": 0,
+        "alert_frac": 0.1875
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 5.217391490936279,
+        "false_alerts": 0,
+        "alert_frac": 0.1875
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 5.2173912525177,
+        "false_alerts": 0,
+        "alert_frac": 0.11764705882352941
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "ctr_s42": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 3.6521737575531006,
+        "false_alerts": 0,
+        "alert_frac": 0.3888888888888889
+      },
+      "Subject.6/Fall forward": {
+        "recall": 1.0,
+        "delay_s": 4.695652008056641,
+        "false_alerts": 0,
+        "alert_frac": 0.07692307692307693
+      },
+      "Subject.6/Fall left": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 3.6521739959716797,
+        "false_alerts": 0,
+        "alert_frac": 0.375
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 3.6521737575531006,
+        "false_alerts": 0,
+        "alert_frac": 0.29411764705882354
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "tcn_rtA": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 5.739130258560181,
+        "false_alerts": 0,
+        "alert_frac": 0.16666666666666666
+      },
+      "Subject.6/Fall forward": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall left": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 5.217391490936279,
+        "false_alerts": 0,
+        "alert_frac": 0.1875
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 5.2173912525177,
+        "false_alerts": 0,
+        "alert_frac": 0.11764705882352941
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    },
+    "tcn_rtD": {
+      "Subject.6/Fall backwards": {
+        "recall": 1.0,
+        "delay_s": 5.2173912525177,
+        "false_alerts": 0,
+        "alert_frac": 0.2222222222222222
+      },
+      "Subject.6/Fall forward": {
+        "recall": 1.0,
+        "delay_s": 4.695652008056641,
+        "false_alerts": 0,
+        "alert_frac": 0.07692307692307693
+      },
+      "Subject.6/Fall left": {
+        "recall": 0.0,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Fall right": {
+        "recall": 1.0,
+        "delay_s": 4.695652008056641,
+        "false_alerts": 0,
+        "alert_frac": 0.25
+      },
+      "Subject.6/Fall sitting": {
+        "recall": 1.0,
+        "delay_s": 4.69565224647522,
+        "false_alerts": 0,
+        "alert_frac": 0.17647058823529413
+      },
+      "Subject.6/Hop": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Kneel": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Pick up object": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Sit down": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      },
+      "Subject.6/Walk": {
+        "recall": NaN,
+        "delay_s": NaN,
+        "false_alerts": 0,
+        "alert_frac": 0.0
+      }
+    }
+  },
+  "csv": "outputs/metrics/caucafall_W48S12_c2_window_quality_audit_2026-05-06.csv"
+}

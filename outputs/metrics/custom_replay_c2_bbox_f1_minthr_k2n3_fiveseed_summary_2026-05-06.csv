@@ -1,0 +1,11 @@
+model,seed,tp,tn,fp,fn,correct,n_videos,accuracy,recall_fall,specificity_nonfall,precision_fall,metrics_path
+ctr_gcn_c2_bbox_bone_f1_minthr_k2n3,42,11,10,2,1,21,24,0.875,0.9166666666666666,0.8333333333333334,0.8461538461538461,artifacts/fall_test_eval_20260506_ctr_c2_bbox_bone_f1_minthr_k2n3/summary_ctr_gcn_s42_op2_metrics.json
+ctr_gcn_c2_bbox_bone_f1_minthr_k2n3,1337,5,11,1,7,16,24,0.6666666666666666,0.4166666666666667,0.9166666666666666,0.8333333333333334,artifacts/fall_test_eval_20260506_ctr_c2_bbox_bone_f1_minthr_k2n3/summary_ctr_gcn_s1337_op2_metrics.json
+ctr_gcn_c2_bbox_bone_f1_minthr_k2n3,17,9,9,3,3,18,24,0.75,0.75,0.75,0.75,artifacts/fall_test_eval_20260506_ctr_c2_bbox_bone_f1_minthr_k2n3/summary_ctr_gcn_s17_op2_metrics.json
+ctr_gcn_c2_bbox_bone_f1_minthr_k2n3,2025,9,9,3,3,18,24,0.75,0.75,0.75,0.75,artifacts/fall_test_eval_20260506_ctr_c2_bbox_bone_f1_minthr_k2n3/summary_ctr_gcn_s2025_op2_metrics.json
+ctr_gcn_c2_bbox_bone_f1_minthr_k2n3,33724876,9,9,3,3,18,24,0.75,0.75,0.75,0.75,artifacts/fall_test_eval_20260506_ctr_c2_bbox_bone_f1_minthr_k2n3/summary_ctr_gcn_s33724876_op2_metrics.json
+tcn_c2_bbox_f1_minthr_k2n3,42,11,8,4,1,19,24,0.7916666666666666,0.9166666666666666,0.6666666666666666,0.7333333333333333,artifacts/fall_test_eval_20260506_tcn_c2_bbox_f1_minthr_k2n3/summary_tcn_s42_op2_metrics.json
+tcn_c2_bbox_f1_minthr_k2n3,1337,10,2,10,2,12,24,0.5,0.8333333333333334,0.16666666666666666,0.5,artifacts/fall_test_eval_20260506_tcn_c2_bbox_f1_minthr_k2n3/summary_tcn_s1337_op2_metrics.json
+tcn_c2_bbox_f1_minthr_k2n3,17,11,9,3,1,20,24,0.8333333333333334,0.9166666666666666,0.75,0.7857142857142857,artifacts/fall_test_eval_20260506_tcn_c2_bbox_f1_minthr_k2n3/summary_tcn_s17_op2_metrics.json
+tcn_c2_bbox_f1_minthr_k2n3,2025,10,8,4,2,18,24,0.75,0.8333333333333334,0.6666666666666666,0.7142857142857143,artifacts/fall_test_eval_20260506_tcn_c2_bbox_f1_minthr_k2n3/summary_tcn_s2025_op2_metrics.json
+tcn_c2_bbox_f1_minthr_k2n3,33724876,12,2,10,0,14,24,0.5833333333333334,1.0,0.16666666666666666,0.5454545454545454,artifacts/fall_test_eval_20260506_tcn_c2_bbox_f1_minthr_k2n3/summary_tcn_s33724876_op2_metrics.json

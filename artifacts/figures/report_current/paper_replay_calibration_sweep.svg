@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="340" viewBox="0 0 540 340" role="img" aria-labelledby="title desc">
+  <title id="title">Replay delivery-calibration sweep for the locked TCN profile</title>
+  <desc id="desc">Single-column line chart showing replay correct decisions, false positives, and false negatives across delivery gate values. Gate 0.18 reaches 23 out of 24 replay decisions with no false negatives; higher gates introduce false negatives.</desc>
+  <rect width="540" height="380" fill="#ffffff"/>
+  <style>
+    .axis { stroke: #4b5563; stroke-width: 1.5; }
+    .grid { stroke: #d8dee9; stroke-width: 1; }
+    .tick { font: 15px Arial, Helvetica, sans-serif; fill: #374151; }
+    .label { font: 17px Arial, Helvetica, sans-serif; fill: #111827; }
+    .legend { font: 15px Arial, Helvetica, sans-serif; fill: #111827; }
+    .note { font: 15px Arial, Helvetica, sans-serif; fill: #111827; }
+    .warn { font: 15px Arial, Helvetica, sans-serif; fill: #92400e; }
+  </style>
+
+  <!-- Plot frame: x 58-374, y 30-244. Values map from 0-24 clips. -->
+  <line x1="58" y1="244" x2="374" y2="244" class="axis"/>
+  <line x1="58" y1="30" x2="58" y2="244" class="axis"/>
+
+  <line x1="58" y1="244" x2="374" y2="244" class="grid"/>
+  <line x1="58" y1="199.4" x2="374" y2="199.4" class="grid"/>
+  <line x1="58" y1="154.8" x2="374" y2="154.8" class="grid"/>
+  <line x1="58" y1="110.2" x2="374" y2="110.2" class="grid"/>
+  <line x1="58" y1="65.7" x2="374" y2="65.7" class="grid"/>
+  <line x1="58" y1="30" x2="374" y2="30" class="grid"/>
+
+  <text x="48" y="249" text-anchor="end" class="tick">0</text>
+  <text x="48" y="204.4" text-anchor="end" class="tick">5</text>
+  <text x="48" y="159.8" text-anchor="end" class="tick">10</text>
+  <text x="48" y="115.2" text-anchor="end" class="tick">15</text>
+  <text x="48" y="70.7" text-anchor="end" class="tick">20</text>
+  <text x="48" y="35" text-anchor="end" class="tick">24</text>
+
+  <text x="216" y="316" text-anchor="middle" class="label">Minimum high-motion gate</text>
+  <text x="18" y="137" text-anchor="middle" transform="rotate(-90 18 137)" class="label">Replay clip count</text>
+
+  <g class="tick" text-anchor="middle">
+    <text x="72" y="270">none</text>
+    <text x="104" y="270">.10</text>
+    <text x="136" y="270">.12</text>
+    <text x="168" y="270">.14</text>
+    <text x="200" y="270">.16</text>
+    <text x="232" y="270">.18</text>
+    <text x="264" y="270">.20</text>
+    <text x="296" y="270">.22</text>
+    <text x="328" y="270">.24</text>
+    <text x="360" y="270">.26</text>
+  </g>
+
+  <line x1="232" y1="30" x2="232" y2="244" stroke="#111827" stroke-width="2" stroke-dasharray="7 5"/>
+
+  <!-- Correct: 20,20,21,22,22,23,23,22,21,21 -->
+  <polyline fill="none" stroke="#1f5fd6" stroke-width="3.5" points="72,65.7 104,65.7 136,56.8 168,47.8 200,47.8 232,38.9 264,38.9 296,47.8 328,56.8 360,56.8"/>
+  <g fill="#1f5fd6">
+    <circle cx="72" cy="65.7" r="4.8"/><circle cx="104" cy="65.7" r="4.8"/><circle cx="136" cy="56.8" r="4.8"/>
+    <circle cx="168" cy="47.8" r="4.8"/><circle cx="200" cy="47.8" r="4.8"/><circle cx="232" cy="38.9" r="4.8"/>
+    <circle cx="264" cy="38.9" r="4.8"/><circle cx="296" cy="47.8" r="4.8"/><circle cx="328" cy="56.8" r="4.8"/><circle cx="360" cy="56.8" r="4.8"/>
+  </g>
+
+  <!-- False positives: 4,4,3,2,2,1,1,1,1,1 -->
+  <polyline fill="none" stroke="#d62728" stroke-width="3" points="72,208.3 104,208.3 136,217.3 168,226.2 200,226.2 232,235.1 264,235.1 296,235.1 328,235.1 360,235.1"/>
+  <g fill="#d62728">
+    <rect x="68" y="204.3" width="8" height="8"/><rect x="100" y="204.3" width="8" height="8"/><rect x="132" y="213.3" width="8" height="8"/>
+    <rect x="164" y="222.2" width="8" height="8"/><rect x="196" y="222.2" width="8" height="8"/><rect x="228" y="231.1" width="8" height="8"/>
+    <rect x="260" y="231.1" width="8" height="8"/><rect x="292" y="231.1" width="8" height="8"/><rect x="324" y="231.1" width="8" height="8"/><rect x="356" y="231.1" width="8" height="8"/>
+  </g>
+
+  <!-- False negatives: 0,0,0,0,0,0,0,1,2,2 -->
+  <polyline fill="none" stroke="#d97706" stroke-width="3" points="72,244 104,244 136,244 168,244 200,244 232,244 264,244 296,235.1 328,226.2 360,226.2"/>
+  <g fill="#d97706">
+    <path d="M72 239 l5 9 h-10 z"/><path d="M104 239 l5 9 h-10 z"/><path d="M136 239 l5 9 h-10 z"/>
+    <path d="M168 239 l5 9 h-10 z"/><path d="M200 239 l5 9 h-10 z"/><path d="M232 239 l5 9 h-10 z"/>
+    <path d="M264 239 l5 9 h-10 z"/><path d="M296 230.1 l5 9 h-10 z"/><path d="M328 221.2 l5 9 h-10 z"/><path d="M360 221.2 l5 9 h-10 z"/>
+  </g>
+
+  <g transform="translate(402 90)">
+    <line x1="0" y1="0" x2="31" y2="0" stroke="#1f5fd6" stroke-width="3.5"/><circle cx="15.5" cy="0" r="4.8" fill="#1f5fd6"/>
+    <text x="41" y="5" class="legend">Correct</text>
+    <line x1="0" y1="31" x2="31" y2="31" stroke="#d62728" stroke-width="3"/><rect x="11.5" y="27" width="8" height="8" fill="#d62728"/>
+    <text x="41" y="36" class="legend">FP</text>
+    <line x1="0" y1="62" x2="31" y2="62" stroke="#d97706" stroke-width="3"/><path d="M15.5 57 l5 9 h-10 z" fill="#d97706"/>
+    <text x="41" y="67" class="legend">FN</text>
+  </g>
+</svg>

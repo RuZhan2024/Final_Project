@@ -1,0 +1,17 @@
+{
+  "arch": "tcn",
+  "latency_ms": {
+    "max": 72.70679998327978,
+    "mean": 4.339503999217413,
+    "median": 2.4556000232696533,
+    "min": 2.179699979024008,
+    "p95": 7.460569858551025,
+    "p99": 10.599447288513504
+  },
+  "n_windows_available": 146,
+  "profile": "tcn_mix25_cpu_local_20260511",
+  "runs": 100,
+  "warmup": 10,
+  "window_dir": "data/processed/caucafall/windows_eval_W48_S12_c2_bbox/test",
+  "with_model": true
+}

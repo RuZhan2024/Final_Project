@@ -111,7 +111,8 @@ sweep_cfg:
   thr_max: 0.95
   thr_step: 0.01
   tau_low_ratio: 0.78
-sweep_json: "artifacts/archive/generated_ops_specs_20260506/tcn_caucafall_W48S12_c2_bbox_mix25_balanced_policy_f1_minthr_k2n3_s42.sweep.json"
+evidence_json: "outputs/metrics/phase17_controlled_mix25_balanced_validation_clean_candidates_2026-05-06.json"
+delivery_gate_sweep_csv: "outputs/metrics/phase18_tcn_mix25_s42_delivery_gate_sweep_2026-05-06.csv"
 calibration:
   method: "temperature"
   T: 1.1073843240737915

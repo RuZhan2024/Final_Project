@@ -1,4 +1,4 @@
-windows_dir: artifacts/fall_test_eval_20260315/windows/unsplit
+replay_clips_dir: ops/deploy_assets/replay_clips
 ops_yaml: ops/configs/ops/tcn_caucafall.yaml
 op_code: OP2
 out_prefix: artifacts/archive/report_evidence_20260506/eval/fall_test_eval_20260506_phase18_tcn_mix25_s42_motion_gate/tcn_mix25_s42_op2_motion018
@@ -13,3 +13,8 @@ nonfall_contains:
 
 delivery_gate:
   min_mean_motion_high: 0.18
+
+notes:
+  - Current replay clips are the promoted MP4 clips under ops/deploy_assets/replay_clips.
+  - The old generated NPZ window bundle under artifacts/fall_test_eval_20260315 was removed during report cleanup.
+  - The locked phase18 metrics are preserved under outputs/metrics and artifacts/archive/report_evidence_20260506.

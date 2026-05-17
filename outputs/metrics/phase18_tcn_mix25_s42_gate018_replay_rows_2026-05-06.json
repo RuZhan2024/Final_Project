@@ -1,0 +1,252 @@
+{
+  "metrics": {
+    "n": 24,
+    "tp": 12,
+    "tn": 11,
+    "fp": 1,
+    "fn": 0,
+    "correct": 23
+  },
+  "rows": [
+    {
+      "video_id": "corridor__corridor_back_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9990831613540649,
+      "mean_motion_high": 0.42244014143943787,
+      "max_lying": 0.4417036771774292,
+      "first_start": 6.366666793823242,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_back_1.mp4"
+    },
+    {
+      "video_id": "corridor__corridor_back_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 1.0,
+      "mean_motion_high": 1.1299322843551636,
+      "max_lying": 0.5977294445037842,
+      "first_start": 12.766666412353516,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_back_2.mp4"
+    },
+    {
+      "video_id": "corridor__corridor_front_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9986883997917175,
+      "mean_motion_high": 0.38973891735076904,
+      "max_lying": 0.11569336801767349,
+      "first_start": 2.366666555404663,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_front_1.mp4"
+    },
+    {
+      "video_id": "corridor__corridor_front_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9999998807907104,
+      "mean_motion_high": 0.5242664813995361,
+      "max_lying": 0.46425294876098633,
+      "first_start": 11.966666221618652,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_front_2.mp4"
+    },
+    {
+      "video_id": "corridor__corridor_side_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9938492178916931,
+      "mean_motion_high": 0.23199662566184998,
+      "max_lying": 0.09335821866989136,
+      "first_start": 2.366666555404663,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_side_1.mp4"
+    },
+    {
+      "video_id": "corridor__corridor_side_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9999998807907104,
+      "mean_motion_high": 0.5010272860527039,
+      "max_lying": 0.0484088696539402,
+      "first_start": 12.766666412353516,
+      "src": "/Users/ruzhan/fall_test/corridor/corridor_side_2.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_bend_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.10772472620010376,
+      "mean_motion_high": 0.0,
+      "max_lying": 0.09839737415313721,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_bend_1.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_bend_2",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.9463346004486084,
+      "mean_motion_high": 0.46535754203796387,
+      "max_lying": 0.1789158582687378,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_bend_2.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_squat_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.27165237069129944,
+      "mean_motion_high": 0.0,
+      "max_lying": 0.01268019713461399,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_squat_1.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_squat_2",
+      "true": 0,
+      "pred": 1,
+      "max_p": 0.9998268485069275,
+      "mean_motion_high": 0.7112247943878174,
+      "max_lying": 0.32345113158226013,
+      "first_start": 11.166666984558105,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_squat_2.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_walk_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.1523221731185913,
+      "mean_motion_high": 0.0,
+      "max_lying": 0.022322559729218483,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_walk_1.mp4"
+    },
+    {
+      "video_id": "corridor_adl__corridor_walk_2",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.7058447599411011,
+      "mean_motion_high": 0.21278955042362213,
+      "max_lying": 0.11368703842163086,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/corridor_adl/corridor_walk_2.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_back_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9898204803466797,
+      "mean_motion_high": 0.4326719343662262,
+      "max_lying": 0.37815216183662415,
+      "first_start": 2.366666555404663,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_back_1.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_back_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9999997615814209,
+      "mean_motion_high": 0.8416091799736023,
+      "max_lying": 0.4346223771572113,
+      "first_start": 18.366666793823242,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_back_2.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_front_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.578702449798584,
+      "mean_motion_high": 0.511786937713623,
+      "max_lying": 0.09739884734153748,
+      "first_start": 2.366666555404663,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_front_1.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_front_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9999998807907104,
+      "mean_motion_high": 0.6270046830177307,
+      "max_lying": 0.47142964601516724,
+      "first_start": 14.366666793823242,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_front_2.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_side_1",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9999996423721313,
+      "mean_motion_high": 0.21382160484790802,
+      "max_lying": 0.5031375885009766,
+      "first_start": 6.366666793823242,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_side_1.mp4"
+    },
+    {
+      "video_id": "kitchen__kitchen_side_2",
+      "true": 1,
+      "pred": 1,
+      "max_p": 0.9955234527587891,
+      "mean_motion_high": 0.3045161962509155,
+      "max_lying": 0.2887519896030426,
+      "first_start": 2.366666555404663,
+      "src": "/Users/ruzhan/fall_test/kitchen/kitchen_side_2.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_lie_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.9999191761016846,
+      "mean_motion_high": 0.11371515691280365,
+      "max_lying": 0.7811341881752014,
+      "first_start": 19.96666717529297,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_lie_1.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_lie_2",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.9999551773071289,
+      "mean_motion_high": 0.12479594349861145,
+      "max_lying": 0.5099090933799744,
+      "first_start": 9.566666603088379,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_lie_2.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_sit_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.963119387626648,
+      "mean_motion_high": 0.380414217710495,
+      "max_lying": 0.6994116902351379,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_sit_1.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_sit_2",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.9273261427879333,
+      "mean_motion_high": 0.4062018394470215,
+      "max_lying": 0.4787076711654663,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_sit_2.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_sit_bend_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.9609778523445129,
+      "mean_motion_high": 0.16484291851520538,
+      "max_lying": 0.821293830871582,
+      "first_start": 44.766666412353516,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_sit_bend_1.mp4"
+    },
+    {
+      "video_id": "kitchen_adl__kitchen_walk_1",
+      "true": 0,
+      "pred": 0,
+      "max_p": 0.6686999201774597,
+      "mean_motion_high": 0.11091606318950653,
+      "max_lying": 0.4734242558479309,
+      "first_start": null,
+      "src": "/Users/ruzhan/fall_test/kitchen_adl/kitchen_walk_1.mp4"
+    }
+  ]
+}

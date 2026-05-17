@@ -1,0 +1,13 @@
+﻿{
+    "root":  "data/processed/caucafall/windows_eval_W48_S12_c2_trainq50",
+    "source_root":  "data/processed/caucafall/windows_eval_W48_S12_c2",
+    "rule":  "train only: keep windows with valid_frac \u003e= 0.5 and avg_conf \u003e= 0.15; val/test copied unchanged from locked W48/S12 c2",
+    "train_before":  1024,
+    "train_after":  987,
+    "dropped_train":  37,
+    "dropped_pos":  20,
+    "dropped_neg":  17,
+    "val":  144,
+    "test":  146,
+    "note":  "This avoids filtering the test benchmark while removing unusable pose windows from training."
+}

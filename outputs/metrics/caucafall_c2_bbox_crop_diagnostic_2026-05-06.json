@@ -1,0 +1,60 @@
+{
+  "decision": "bbox_crop_fallback_is_promising_for_caucafall_extraction_recovery",
+  "rule_tested": "MediaPipe full-frame first; if no pose, rerun on sidecar YOLO bbox crop scaled 1.4 and map landmarks back to full-frame coordinates; preprocess unchanged after extraction.",
+  "rows": [
+    {
+      "video_id": "Subject.6/Fall left",
+      "existing_c2_valid_mean": 0.2209486166007905,
+      "existing_c2_valid_min": 0.0,
+      "existing_c2_valid_p10": 0.0,
+      "existing_c2_zero_frames": 179,
+      "existing_c2_conf_mean": 0.169964998960495,
+      "bbox_raw_valid_mean": 0.67167325428195,
+      "bbox_raw_valid_min": 0.0,
+      "bbox_raw_valid_p10": 0.0,
+      "bbox_raw_zero_frames": 48,
+      "bbox_raw_conf_mean": 0.5869206190109253,
+      "bbox_pre_valid_mean": 0.8404479578392622,
+      "bbox_pre_valid_min": 0.0,
+      "bbox_pre_valid_p10": 0.45454545454545453,
+      "bbox_pre_zero_frames": 22,
+      "bbox_pre_conf_mean": 0.6155139803886414
+    },
+    {
+      "video_id": "Subject.8/Fall forward",
+      "existing_c2_valid_mean": 0.0,
+      "existing_c2_valid_min": 0.0,
+      "existing_c2_valid_p10": 0.0,
+      "existing_c2_zero_frames": 123,
+      "existing_c2_conf_mean": 0.0,
+      "bbox_raw_valid_mean": 0.8689332347868933,
+      "bbox_raw_valid_min": 0.0,
+      "bbox_raw_valid_p10": 0.6121212121212122,
+      "bbox_raw_zero_frames": 8,
+      "bbox_raw_conf_mean": 0.7523192763328552,
+      "bbox_pre_valid_mean": 0.9396403054939639,
+      "bbox_pre_valid_min": 0.45454545454545453,
+      "bbox_pre_valid_p10": 0.8545454545454546,
+      "bbox_pre_zero_frames": 0,
+      "bbox_pre_conf_mean": 0.7630171775817871
+    },
+    {
+      "video_id": "Subject.8/Fall right",
+      "existing_c2_valid_mean": 0.13623188405797101,
+      "existing_c2_valid_min": 0.0,
+      "existing_c2_valid_p10": 0.0,
+      "existing_c2_zero_frames": 196,
+      "existing_c2_conf_mean": 0.11125176399946213,
+      "bbox_raw_valid_mean": 0.7337285902503292,
+      "bbox_raw_valid_min": 0.0,
+      "bbox_raw_valid_p10": 0.0,
+      "bbox_raw_zero_frames": 46,
+      "bbox_raw_conf_mean": 0.6194503307342529,
+      "bbox_pre_valid_mean": 0.8840579710144927,
+      "bbox_pre_valid_min": 0.0,
+      "bbox_pre_valid_p10": 0.8181818181818182,
+      "bbox_pre_zero_frames": 14,
+      "bbox_pre_conf_mean": 0.6467112898826599
+    }
+  ]
+}

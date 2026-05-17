@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="390" viewBox="0 0 540 390" role="img" aria-labelledby="title desc">
+  <title id="title">Compact auditable pose-window fall monitoring pipeline</title>
+  <desc id="desc">Two-row flow diagram linking video input, pose extraction, temporal windows, model scoring, validation-fitted operating policy, delivery gate, accepted event, and evidence boundary checks.</desc>
+  <rect width="540" height="390" fill="#ffffff"/>
+  <style>
+    .box { stroke: #1f2937; stroke-width: 1.4; rx: 9; }
+    .input { fill: #dbeafe; }
+    .pose { fill: #e0f2fe; }
+    .model { fill: #dcfce7; }
+    .policy { fill: #fef3c7; }
+    .gate { fill: #fee2e2; }
+    .event { fill: #ede9fe; }
+    .boundary { fill: #f9fafb; stroke: #64748b; stroke-width: 1.2; rx: 10; }
+    .main { font: 700 15px Arial, Helvetica, sans-serif; fill: #111827; }
+    .sub { font: 12px Arial, Helvetica, sans-serif; fill: #374151; }
+    .label { font: 700 14px Arial, Helvetica, sans-serif; fill: #111827; }
+    .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .return { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrow-muted); stroke-dasharray: 5 4; }
+  </style>
+
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-muted" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- Row 1 -->
+  <rect x="22" y="32" width="118" height="74" class="box input"/>
+  <text x="81" y="63" text-anchor="middle" class="main">Video input</text>
+  <text x="81" y="86" text-anchor="middle" class="sub">camera or replay</text>
+
+  <path d="M140 69 H172" class="arrow"/>
+  <rect x="176" y="32" width="128" height="74" class="box pose"/>
+  <text x="240" y="62" text-anchor="middle" class="main">Pose extraction</text>
+  <text x="240" y="85" text-anchor="middle" class="sub">MediaPipe Pose</text>
+
+  <path d="M304 69 H336" class="arrow"/>
+  <rect x="340" y="32" width="178" height="74" class="box pose"/>
+  <text x="429" y="62" text-anchor="middle" class="main">W48/S12 windows</text>
+  <text x="429" y="85" text-anchor="middle" class="sub">33 joints x 5 features</text>
+
+  <!-- Turn arrow -->
+  <path d="M429 106 V138 H429" class="arrow"/>
+
+  <!-- Row 2, right-to-left -->
+  <rect x="352" y="150" width="166" height="74" class="box model"/>
+  <text x="435" y="180" text-anchor="middle" class="main">TCN / CTR-GCN</text>
+  <text x="435" y="203" text-anchor="middle" class="sub">pose-window score</text>
+
+  <path d="M352 187 H318" class="arrow"/>
+  <rect x="180" y="150" width="134" height="74" class="box policy"/>
+  <text x="247" y="181" text-anchor="middle" class="main">Fitted OP</text>
+  <text x="247" y="203" text-anchor="middle" class="sub">temperature + sweep</text>
+
+  <path d="M180 187 H146" class="arrow"/>
+  <rect x="22" y="150" width="120" height="74" class="box gate"/>
+  <text x="82" y="181" text-anchor="middle" class="main">Delivery gate</text>
+  <text x="82" y="203" text-anchor="middle" class="sub">motion + persistence</text>
+
+  <path d="M82 224 V256" class="arrow"/>
+  <rect x="22" y="268" width="120" height="62" class="box event"/>
+  <text x="82" y="294" text-anchor="middle" class="main">Accepted event</text>
+  <text x="82" y="315" text-anchor="middle" class="sub">history / alert state</text>
+
+  <path d="M146 299 H178" class="return"/>
+  <rect x="182" y="260" width="336" height="78" class="boundary"/>
+  <text x="350" y="289" text-anchor="middle" class="label">Evidence boundary</text>
+  <text x="350" y="313" text-anchor="middle" class="sub">offline metrics, validation policy, replay checks,</text>
+  <text x="350" y="331" text-anchor="middle" class="sub">and runtime assets answer different questions</text>
+</svg>
