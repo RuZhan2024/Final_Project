@@ -112,11 +112,9 @@ function Monitor({ isActive = true }: MonitorProps) {
     return String(fromSpec || activeDatasetCode || "caucafall");
   }, [chosenSpec, models, chosen, activeDatasetCode]);
 
-  // ---- Operating point params (YAML-derived preferred; legacy DB fallback) ----
+  // ---- Operating point params from the active deploy profile ----
   const { opCode, tauLow, tauHigh, confirmK, confirmN, cooldownS } = useOperatingPointParams({
-    apiBase,
     settingsPayload: typedSettingsPayload,
-    modelCode: activeModelCode,
   });
 
   const resolvedTauHigh = useMemo(() => {

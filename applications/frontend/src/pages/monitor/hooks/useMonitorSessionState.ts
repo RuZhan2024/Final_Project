@@ -17,7 +17,6 @@ const FALL_HISTORY_DEDUP_MS_DEFAULT = 30_000;
  * values for the current monitor session.
  */
 export function useMonitorSessionState({
-  mode,
   settingsPayload,
   inputSourceRef,
   clipFlags,
@@ -119,7 +118,6 @@ export function useMonitorSessionState({
 
     const nextState = extractPredictionState({
       data,
-      mode,
       previousStable: triageStableRef.current,
       settingsPayload,
       smoothTriage: (inputSourceRef.current || "camera") !== "video",
@@ -186,7 +184,6 @@ export function useMonitorSessionState({
     addTimelineMarker,
     clipFlags,
     inputSourceRef,
-    mode,
     maybeFinalizeClipUpload,
     pendingClipRef,
     queueClipForEvent,

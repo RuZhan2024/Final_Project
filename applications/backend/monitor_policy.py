@@ -21,17 +21,11 @@ DEFAULT_LIVE_GUARD_BY_DATASET = {
         "min_motion_for_fall": 0.020,
         "min_fps_ratio": 0.70,
         "min_conf_mean": 0.35,
-        "allow_low_motion_high_conf_bypass": False,
-        "low_motion_high_conf_k": 0,
-        "low_motion_high_conf_max_lying": None,
     },
     "le2i": {
         "min_motion_for_fall": 0.020,
         "min_fps_ratio": 0.70,
         "min_conf_mean": 0.35,
-        "allow_low_motion_high_conf_bypass": False,
-        "low_motion_high_conf_k": 0,
-        "low_motion_high_conf_max_lying": None,
     },
 }
 
@@ -65,9 +59,6 @@ def op_live_guard(
         "enable_occlusion_gate": True,
         "enable_structural_gate": True,
         "enable_low_fps_persist_gate": True,
-        "allow_low_motion_high_conf_bypass": coerce_bool(ds_defaults.get("allow_low_motion_high_conf_bypass"), False),
-        "low_motion_high_conf_k": int(ds_defaults.get("low_motion_high_conf_k", 0) or 0),
-        "low_motion_high_conf_max_lying": ds_defaults.get("low_motion_high_conf_max_lying"),
     }
     try:
         spec = specs.get(spec_key)
@@ -90,12 +81,6 @@ def op_live_guard(
             out["enable_low_fps_persist_gate"] = coerce_bool(
                 lg.get("enable_low_fps_persist_gate"), out["enable_low_fps_persist_gate"]
             )
-            out["allow_low_motion_high_conf_bypass"] = coerce_bool(
-                lg.get("allow_low_motion_high_conf_bypass"), out["allow_low_motion_high_conf_bypass"]
-            )
-            out["low_motion_high_conf_k"] = int(lg.get("low_motion_high_conf_k", out["low_motion_high_conf_k"]))
-            if lg.get("low_motion_high_conf_max_lying") is not None:
-                out["low_motion_high_conf_max_lying"] = float(lg.get("low_motion_high_conf_max_lying"))
     except (TypeError, ValueError, AttributeError):
         pass
 
@@ -108,66 +93,6 @@ def op_live_guard(
     out["min_coverage_ratio"] = float(min(1.2, max(0.1, out["min_coverage_ratio"])))
     out["min_conf_mean"] = float(min(1.0, max(0.0, out["min_conf_mean"])))
     out["min_joints_med"] = int(max(1, out["min_joints_med"]))
-    out["low_motion_high_conf_k"] = int(max(0, out["low_motion_high_conf_k"]))
-    return out
-
-
-def op_delivery_gate(specs: Dict[str, Any], spec_key: str, op_code: str, *, norm_op_code) -> Dict[str, Any]:
-    """Read optional fall-delivery confirmation rules for one operating point."""
-
-    out = {
-        "enabled": False,
-        "max_lying": None,
-        "max_start_lying": None,
-        "min_mean_motion_high": None,
-        "max_event_start_s": None,
-    }
-    try:
-        spec = specs.get(spec_key)
-        ops = spec.ops if spec is not None and hasattr(spec, "ops") else {}
-        op = (ops or {}).get(norm_op_code(op_code)) or {}
-        gate = op.get("delivery_gate") if isinstance(op, dict) else {}
-        if isinstance(gate, dict):
-            out["enabled"] = coerce_bool(gate.get("enabled"), False)
-            if gate.get("max_lying") is not None:
-                out["max_lying"] = float(gate.get("max_lying"))
-            if gate.get("max_start_lying") is not None:
-                out["max_start_lying"] = float(gate.get("max_start_lying"))
-            if gate.get("min_mean_motion_high") is not None:
-                out["min_mean_motion_high"] = float(gate.get("min_mean_motion_high"))
-            if gate.get("max_event_start_s") is not None:
-                out["max_event_start_s"] = float(gate.get("max_event_start_s"))
-    except (TypeError, ValueError, AttributeError):
-        pass
-    return out
-
-
-def op_uncertain_promote(specs: Dict[str, Any], spec_key: str, op_code: str, *, norm_op_code) -> Dict[str, Any]:
-    """Read optional replay-only rules for promoting uncertain windows."""
-
-    out = {
-        "enabled": False,
-        "video_only": True,
-        "min_p_alert": None,
-        "min_motion": None,
-        "max_lying": None,
-    }
-    try:
-        spec = specs.get(spec_key)
-        ops = spec.ops if spec is not None and hasattr(spec, "ops") else {}
-        op = (ops or {}).get(norm_op_code(op_code)) or {}
-        cfg = op.get("uncertain_promote") if isinstance(op, dict) else {}
-        if isinstance(cfg, dict):
-            out["enabled"] = coerce_bool(cfg.get("enabled"), False)
-            out["video_only"] = coerce_bool(cfg.get("video_only"), True)
-            if cfg.get("min_p_alert") is not None:
-                out["min_p_alert"] = float(cfg.get("min_p_alert"))
-            if cfg.get("min_motion") is not None:
-                out["min_motion"] = float(cfg.get("min_motion"))
-            if cfg.get("max_lying") is not None:
-                out["max_lying"] = float(cfg.get("max_lying"))
-    except (TypeError, ValueError, AttributeError):
-        pass
     return out
 
 

@@ -45,20 +45,3 @@ export interface TriggerTestFallResponse {
   message?: string;
   [key: string]: unknown;
 }
-
-export interface LegacyOperatingPointRecord {
-  id?: number | null;
-  code?: string | null;
-  op_code?: string | null;
-  name?: string | null;
-  thr_low_conf?: number | string | null;
-  thr_high_conf?: number | string | null;
-  threshold_low?: number | string | null;
-  threshold_high?: number | string | null;
-  [key: string]: unknown;
-}
-
-export interface LegacyOperatingPointsResponse {
-  operating_points?: LegacyOperatingPointRecord[];
-  [key: string]: unknown;
-}

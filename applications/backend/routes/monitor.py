@@ -14,7 +14,6 @@ import time
 from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
-import numpy as np
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -37,9 +36,7 @@ from ..deploy_runtime import (
 from ..monitor_policy import (
     DEFAULT_LIVE_GUARD_BY_DATASET,
     DEFAULT_LIVE_GUARD_GLOBAL,
-    op_delivery_gate as _op_delivery_gate,
     op_live_guard as _op_live_guard,
-    op_uncertain_promote as _op_uncertain_promote,
     resolve_monitor_specs as _resolve_monitor_specs,
 )
 from ..monitor_windowing import (
@@ -70,33 +67,11 @@ from ..services.monitor_runtime_service import (
 from ..services.monitor_session_service import reset_monitor_session
 from ..services.value_coercion import coerce_bool
 from ..runtime_state import get_session_store, set_last_prediction_snapshot
-from fall_detection.deploy.confirm import WindowRaw, compute_confirm_scores
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _LOW_MOTION_MEMORY_WINDOWS = 5
-
-
-def _compute_confirm_scores_from_window(
-    *,
-    xy: List[Any],
-    conf: Optional[List[Any]],
-    effective_fps: float,
-) -> tuple[Optional[float], Optional[float]]:
-    """Compute confirm scores without importing torch-backed runtime modules."""
-    try:
-        raw_window = WindowRaw(
-            joints_xy=np.asarray(xy, dtype=np.float32),
-            motion_xy=None,
-            conf=np.asarray(conf, dtype=np.float32) if conf else None,
-            mask=None,
-            fps=float(effective_fps),
-            meta=None,
-        )
-        return compute_confirm_scores(raw_window)
-    except Exception:
-        return None, None
 
 
 def _recent_motion_support(
@@ -126,50 +101,19 @@ def _recent_motion_support(
     return any(float(v) >= float(min_motion) for v in hist)
 
 
-def _low_motion_high_conf_bypass(
-    st: Dict[str, Any],
-    *,
-    dataset_code: str,
-    mode: str,
-    p_raw: float,
-    tau_high: float,
-    lying_score: Optional[float],
-    enabled: bool,
-    min_hits: int,
-    max_lying: Optional[float],
-) -> bool:
-    """Allow specific low-motion clips through when confidence stays high.
-
-    This is meant for scenes where true falls can become nearly static very
-    quickly. We require a short streak of high-confidence windows, and if a
-    max-lying guard is configured every window in the streak must stay below it.
-    """
-    key = f"low_motion_high_conf:{dataset_code}:{mode}"
-    if not enabled or min_hits <= 0:
-        st.pop(key, None)
-        return False
-
-    prev = st.get(key)
-    count = int(prev.get("count", 0) or 0) if isinstance(prev, dict) else 0
-    current_ok = bool(float(p_raw) >= float(tau_high))
-    if current_ok and max_lying is not None:
-        if lying_score is None or (not math.isfinite(float(lying_score))) or float(lying_score) > float(max_lying):
-            current_ok = False
-
-    if current_ok:
-        count += 1
-        st[key] = {"count": count}
-    else:
-        st.pop(key, None)
-        count = 0
-    return bool(count >= int(min_hits))
-
 def _compact_model_out(model_out: Any) -> Dict[str, Any]:
     """Trim model output to the fields still consumed by compact monitor clients."""
     src = model_out if isinstance(model_out, dict) else {}
     tri = src.get("triage") if isinstance(src.get("triage"), dict) else {}
     out: Dict[str, Any] = {}
-    for key in ("mu", "sigma", "p_alert_in", "p_det"):
+    for key in (
+        "mu",
+        "sigma",
+        "p_alert_in",
+        "p_det",
+        "policy_score",
+        "raw_model_score",
+    ):
         if src.get(key) is not None:
             out[key] = src.get(key)
     tri_out: Dict[str, Any] = {}
@@ -221,7 +165,6 @@ def _compact_monitor_response(resp: Dict[str, Any], mode: str) -> Dict[str, Any]
 
 
 @router.post("/api/monitor/reset_session")
-@router.post("/api/v1/monitor/reset_session")
 def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
     """Reset per-session tracker state for the supplied monitor session id."""
 
@@ -229,13 +172,11 @@ def reset_session(session_id: str = Query(...)) -> Dict[str, Any]:
 
 
 @router.post("/api/monitor/predict_window")
-@router.post("/api/v1/monitor/predict_window")
 def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]:
     """Score one monitor window and return the API prediction contract.
 
-    The route accepts both live and replay payloads, coordinates the full
-    monitor pipeline, and preserves response shape compatibility for compact and
-    non-compact clients.
+    The route accepts live and replay payloads and coordinates the full monitor
+    pipeline before returning the current response contract.
     """
     t0 = time.time()
     perf_started = time.perf_counter()
@@ -301,14 +242,11 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     specs = prepared.specs
     tcn_key = prepared.tcn_key
     guard_spec_key = prepared.guard_spec_key
-    primary_spec_key = prepared.primary_spec_key
     window_end_t_ms = prepared.window_end_t_ms
     window_seq = prepared.window_seq
     _mark_perf("window_prepare_ms")
 
     motion_score = _window_motion_score(xy)
-    lying_score = None
-    confirm_motion_score = None
 
     try:
         if window_end_t_ms is not None:
@@ -321,26 +259,15 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         _now_ms = time.time() * 1000.0
     _t_s = float(_now_ms) / 1000.0
 
-    lying_score, confirm_motion_score = _compute_confirm_scores_from_window(
-        xy=xy,
-        conf=conf,
-        effective_fps=float(effective_fps),
-    )
-    _mark_perf("confirm_scores_ms")
-
     st_trackers = st["trackers"]
     st_trackers_cfg = st["trackers_cfg"]
     started_tcn = False
 
     live_guard = _op_live_guard(specs, guard_spec_key, op_code, dataset_code, norm_op_code=norm_op_code)
-    delivery_gate = _op_delivery_gate(specs, primary_spec_key, op_code, norm_op_code=norm_op_code)
-    uncertain_promote = _op_uncertain_promote(specs, primary_spec_key, op_code, norm_op_code=norm_op_code)
     if is_replay:
         # Replay clips are already a controlled analysis path. Browser pose
         # throughput can be lower than the dataset FPS, but that should not
-        # activate live-camera safety gates and hide fall windows. Keep the
-        # final delivery gate active so replay stays aligned with offline
-        # delivery evaluation.
+        # activate live-camera safety gates and hide fall windows.
         live_guard = {
             **live_guard,
             "enable_stale_drop": False,
@@ -388,7 +315,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     )
     low_joints_block = bool(joints_med > 0 and joints_med < int(live_guard["min_joints_med"]))
     occlusion_block = bool(low_conf_block or low_joints_block)
-    low_motion_high_conf_bypass = False
     _mark_perf("specs_and_guards_ms")
 
     # Stale-drop is deliberately conservative: severely delayed windows are
@@ -432,7 +358,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
             target_T=target_T,
             motion_score=motion_score,
             recent_motion_support=recent_motion_support,
-            low_motion_high_conf_bypass=low_motion_high_conf_bypass,
             min_motion=float(min_motion),
             low_motion_block=low_motion_block,
             low_quality_block=low_quality_block,
@@ -481,10 +406,7 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         effective_mc_M=int(effective_mc_M),
         tcn_key=tcn_key,
         dataset_code=dataset_code,
-        lying_score=lying_score,
-        confirm_motion_score=confirm_motion_score,
         live_guard=live_guard,
-        st=st,
         st_trackers=st_trackers,
         st_trackers_cfg=st_trackers_cfg,
         current_t_s=float(_t_s),
@@ -494,12 +416,10 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         predict_spec=_predict_spec,
         apply_uncertainty_fall_gate=apply_uncertainty_fall_gate,
         tracker_cls=OnlineAlertTracker,
-        low_motion_high_conf_bypass_fn=_low_motion_high_conf_bypass,
     )
     models_out = inference.models_out
     tri_tcn = inference.tri_tcn
     policy_alerts = inference.policy_alerts
-    low_motion_high_conf_bypass = inference.low_motion_high_conf_bypass
     started_tcn = inference.started_tcn
     if inference.infer_tcn_ms is not None:
         perf["infer_tcn_ms"] = int(inference.infer_tcn_ms)
@@ -513,23 +433,13 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         models_out=models_out,
         tri_tcn=tri_tcn,
         policy_alerts=policy_alerts,
-        primary_spec_key=primary_spec_key,
-        resident_id=resident_id,
         dataset_code=dataset_code,
-        op_code=op_code,
         st=st,
-        current_t_s=float(_t_s),
-        is_replay=bool(is_replay),
         live_guard=live_guard,
-        delivery_gate=delivery_gate,
-        uncertain_promote=uncertain_promote,
         low_motion_block=bool(low_motion_block),
         recent_motion_support=bool(recent_motion_support),
-        low_motion_high_conf_bypass=bool(low_motion_high_conf_bypass),
         structural_quality_block=bool(structural_quality_block),
         occlusion_block=bool(occlusion_block),
-        lying_score=lying_score,
-        confirm_motion_score=confirm_motion_score,
         started_tcn=bool(started_tcn),
         low_fps_mode=bool(low_fps_mode),
     )
@@ -541,8 +451,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
     low_fps_confirm_count = decision.low_fps_confirm_count
     low_fps_need = decision.low_fps_need
     low_fps_gate_reason = decision.low_fps_gate_reason
-    delivery_gate_diag = decision.delivery_gate_diag
-    uncertain_promoted = decision.uncertain_promoted
     safe_state_out = decision.safe_state_out
     recall_state_out = decision.recall_state_out
 
@@ -652,11 +560,8 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         effective_fps=float(effective_fps),
         target_T=target_T,
         motion_score=motion_score,
-        lying_score=lying_score,
-        confirm_motion_score=confirm_motion_score,
         low_motion_block=low_motion_block,
         recent_motion_support=recent_motion_support,
-        low_motion_high_conf_bypass=low_motion_high_conf_bypass,
         min_motion=float(min_motion),
         low_quality_block=low_quality_block,
         structural_quality_block=structural_quality_block,
@@ -678,8 +583,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
         effective_use_mc=bool(effective_use_mc),
         requested_use_mc=bool(requested_use_mc),
         effective_mc_M=int(effective_mc_M),
-        delivery_gate_diag=delivery_gate_diag,
-        uncertain_promoted=bool(uncertain_promoted),
         saved_event_id=saved_event_id,
         notification_dispatch=notification_dispatch,
         persist_suppressed=persist_suppressed,
@@ -710,7 +613,6 @@ def predict_window(payload: MonitorPredictPayload = Body(...)) -> Dict[str, Any]
 
 
 @router.websocket("/api/monitor/ws")
-@router.websocket("/api/v1/monitor/ws")
 async def monitor_ws(websocket: WebSocket):
     """Serve monitor predictions over a persistent WebSocket connection.
 

@@ -175,7 +175,6 @@ export interface UseMonitorMediaRuntimeOptions {
 }
 
 export interface UseMonitorSessionStateOptions {
-  mode: string;
   settingsPayload: SettingsResponse | null;
   inputSourceRef: MutableRefObject<string>;
   clipFlags: MonitorClipFlags;

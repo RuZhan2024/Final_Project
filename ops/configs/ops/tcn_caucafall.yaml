@@ -1,7 +1,7 @@
 # STATUS_TAG: locked_champion_2026-05-06
 # PURPOSE: canonical CAUCAFall TCN runtime profile locked to the current project champion.
-# CHAMPION: TCN + CAUCAFall/LE2i controlled mix25 balanced, seed 42, OP2, delivery motion gate 0.18.
-# REPLAY_LOCK: 23/24 custom replay (TP=12, TN=11, FP=1, FN=0).
+# CHAMPION: TCN + CAUCAFall/LE2i controlled mix25 balanced, seed 42, OP2.
+# REPLAY_LOCK: 22/24 custom replay under the OP2-only runtime (TP=12, TN=10, FP=2, FN=0).
 # NOTE: OP1/OP2/OP3 remain as calibration records; the deployed UI should expose only the locked OP2 policy.
 ops:
   OP1:
@@ -20,9 +20,6 @@ ops:
   OP2:
     tau_high: 0.40999993681907654
     tau_low: 0.3197999596595764
-    delivery_gate:
-      enabled: true
-      min_mean_motion_high: 0.18
     precision: 1.0
     recall: 1.0
     f1: 1.0
@@ -67,9 +64,8 @@ ops_meta:
     training_protocol: "caucafall_le2i_controlled_mix25_balanced"
     seed: 42
     selected_op: "OP2"
-    custom_replay: "23/24"
-    confusion: "TP=12,TN=11,FP=1,FN=0"
-    delivery_gate: "min_mean_motion_high=0.18"
+    custom_replay: "22/24"
+    confusion: "TP=12,TN=10,FP=2,FN=0"
 alert_cfg:
   ema_alpha: 0.2
   k: 2
@@ -112,7 +108,6 @@ sweep_cfg:
   thr_step: 0.01
   tau_low_ratio: 0.78
 evidence_json: "outputs/metrics/phase17_controlled_mix25_balanced_validation_clean_candidates_2026-05-06.json"
-delivery_gate_sweep_csv: "outputs/metrics/phase18_tcn_mix25_s42_delivery_gate_sweep_2026-05-06.csv"
 calibration:
   method: "temperature"
   T: 1.1073843240737915

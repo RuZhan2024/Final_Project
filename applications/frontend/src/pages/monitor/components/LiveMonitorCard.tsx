@@ -100,7 +100,7 @@ export function LiveMonitorCard({
           </span>
         </div>
         <div className={styles.predictionItem}>
-          <span className={styles.label}>P (fall)</span>
+          <span className={styles.label}>Policy fall score</span>
           <span className={styles.value}>{pText}</span>
         </div>
         <div className={styles.predictionItem}>

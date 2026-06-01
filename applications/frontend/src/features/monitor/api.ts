@@ -63,7 +63,7 @@ function normalizeReplayClip(
 }
 
 export async function fetchMonitorSpecModels(apiBase: string): Promise<SpecModel[]> {
-  /** Load deploy spec models and normalize current/legacy response shapes. */
+  /** Load deploy spec models for monitor setup. */
   const data = await apiRequest<{ models?: SpecModel[] } | SpecModel[]>(apiBase, "/api/spec");
   const models = Array.isArray(data)
     ? data
@@ -87,19 +87,6 @@ export async function fetchReplayClips(apiBase: string): Promise<ReplayClipsResp
     configuredDir: String(data?.configured_dir || ""),
     available: Boolean(data?.available),
   };
-}
-
-export async function fetchOperatingPoints(
-  apiBase: string,
-  modelCode: string,
-  datasetCode = "caucafall"
-): Promise<unknown> {
-  // The backend falls back to CAUCAFall if dataset_code is omitted, so always
-  // pass the active dataset when using this legacy compatibility path.
-  return await apiRequest<unknown>(
-    apiBase,
-    `/api/operating_points?model_code=${encodeURIComponent(modelCode)}&dataset_code=${encodeURIComponent(datasetCode)}`
-  );
 }
 
 export async function fetchReplayClipBlob(
@@ -142,18 +129,11 @@ export async function resetMonitorSession(
   apiBase: string,
   sessionId: string
 ): Promise<unknown> {
-  /** Reset backend session state, with fallback to the legacy v1 route prefix. */
+  /** Reset backend session state for the active monitor session. */
   const encoded = encodeURIComponent(String(sessionId || ""));
-  try {
-    return await apiRequest<unknown>(apiBase, `/api/monitor/reset_session?session_id=${encoded}`, {
-      method: "POST",
-    });
-  } catch (err) {
-    if (Number((err as { status?: number })?.status) !== 404) throw err;
-    return await apiRequest<unknown>(apiBase, `/api/v1/monitor/reset_session?session_id=${encoded}`, {
-      method: "POST",
-    });
-  }
+  return await apiRequest<unknown>(apiBase, `/api/monitor/reset_session?session_id=${encoded}`, {
+    method: "POST",
+  });
 }
 
 export async function uploadSkeletonClip(

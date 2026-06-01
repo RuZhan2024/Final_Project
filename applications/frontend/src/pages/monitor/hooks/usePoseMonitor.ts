@@ -178,7 +178,6 @@ export function usePoseMonitor({
     applyPredictionResponse,
     resetSessionUiState,
   } = useMonitorSessionState({
-    mode,
     settingsPayload,
     inputSourceRef,
     clipFlags,

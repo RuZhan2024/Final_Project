@@ -1,28 +1,15 @@
 from __future__ import annotations
 
-"""Final policy stage for monitor prediction responses.
-
-Inference has already produced the tracker state. This module defines the
-API-level contract: one triage state, safe/recall alert flags, persistence edge
-signals, and diagnostics explaining any gate that downgraded a fall.
-"""
+"""Final policy stage for monitor prediction responses."""
 
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..code_normalization import norm_op_code
-
 
 @dataclass(frozen=True)
 class MonitorDecisionResult:
-    """Decision payload returned to the route after all alert gates are applied.
-
-    ``triage_state`` is the user-facing state. ``safe_alert`` controls delivery
-    and persistence for conservative paths, while ``recall_alert`` preserves a
-    more sensitive signal for UI comparison. Gate diagnostics must reflect the
-    final decision, not just the raw model tracker output.
-    """
+    """Decision payload returned to the route after all alert gates are applied."""
 
     triage_state: str
     p_display: float
@@ -32,10 +19,54 @@ class MonitorDecisionResult:
     low_fps_confirm_count: int
     low_fps_need: int
     low_fps_gate_reason: Optional[str]
-    delivery_gate_diag: Dict[str, Any]
-    uncertain_promoted: bool
     safe_state_out: str
     recall_state_out: str
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out):
+        return None
+    return out
+
+
+def _set_policy_state(
+    policy_alerts: Dict[str, Any],
+    *,
+    triage_state: str,
+    safe_alert: bool,
+    recall_alert: bool,
+    started_event: bool,
+) -> None:
+    for name, alert in (("safe", safe_alert), ("recall", recall_alert)):
+        policy = policy_alerts.setdefault(name, {})
+        policy["state"] = triage_state
+        policy["alert"] = bool(alert)
+        policy["started_event"] = bool(started_event and alert and triage_state == "fall")
+
+
+def _primary_model_context(models_out: Dict[str, Any], p_display: float) -> tuple[Dict[str, Any], Dict[str, Any], float, float]:
+    primary_model = models_out["tcn"]
+    primary_triage = primary_model["triage"] if isinstance(primary_model.get("triage"), dict) else {}
+    tau_high = _finite_float(primary_triage.get("tau_high"))
+    if tau_high is None:
+        tau_high = _finite_float(primary_model.get("tau_high")) or 0.41
+    score_input = _finite_float(primary_triage.get("ps"))
+    if score_input is None:
+        score_input = _finite_float(primary_model.get("p_alert_in")) or float(p_display)
+    return primary_model, primary_triage, float(tau_high), float(score_input)
+
+
+def _attach_policy_scores(*, primary_model: Dict[str, Any], policy_score: float) -> None:
+    primary_model["policy_score"] = float(policy_score)
+    raw_model_score = _finite_float(primary_model.get("mu"))
+    if raw_model_score is None:
+        raw_model_score = _finite_float(primary_model.get("p_det"))
+    if raw_model_score is not None:
+        primary_model["raw_model_score"] = float(raw_model_score)
 
 
 def resolve_monitor_decision(
@@ -43,68 +74,47 @@ def resolve_monitor_decision(
     models_out: Dict[str, Any],
     tri_tcn: Optional[str],
     policy_alerts: Dict[str, Any],
-    primary_spec_key: str,
-    resident_id: int,
     dataset_code: str,
-    op_code: str,
     st: Dict[str, Any],
-    current_t_s: float,
-    is_replay: bool,
     live_guard: Dict[str, Any],
-    delivery_gate: Dict[str, Any],
-    uncertain_promote: Dict[str, Any],
     low_motion_block: bool,
     recent_motion_support: bool,
-    low_motion_high_conf_bypass: bool,
     structural_quality_block: bool,
     occlusion_block: bool,
-    lying_score: Optional[float],
-    confirm_motion_score: Optional[float],
     started_tcn: bool,
     low_fps_mode: bool,
 ) -> MonitorDecisionResult:
-    """Resolve the single-model monitor decision.
+    """Resolve tracker output into one visible monitor decision."""
 
-    Precedence is: model tracker state -> MC uncertainty downgrade -> live
-    quality downgrades -> low-FPS persistence confirmation -> delivery gate ->
-    optional replay-only uncertain promotion.
-    The only intentional mutation is session-state bookkeeping for decisions
-    that depend on consecutive windows.
-    """
+    safe_policy = policy_alerts["safe"]
+    recall_policy = policy_alerts["recall"]
+    triage_state = str(safe_policy.get("state") or tri_tcn or "not_fall")
+    safe_alert = bool(safe_policy.get("alert"))
+    recall_alert = bool(recall_policy.get("alert"))
+    started_event = bool(safe_policy.get("started_event") or started_tcn)
+    p_display = float(models_out["tcn"].get("p_alert_in", models_out["tcn"].get("mu", 0.0)) or 0.0)
 
-    safe_alert = (
-        bool(policy_alerts.get("safe", {}).get("alert"))
-        if "safe" in policy_alerts
-        else bool((tri_tcn or "not_fall") == "fall")
-    )
-    recall_alert = (
-        bool(policy_alerts.get("recall", {}).get("alert"))
-        if "recall" in policy_alerts
-        else bool(safe_alert)
-    )
-    triage_state = str(policy_alerts.get("safe", {}).get("state") or tri_tcn or "not_fall")
-    p_display = float(models_out.get("tcn", {}).get("p_alert_in", models_out.get("tcn", {}).get("mu", 0.0)))
+    def apply_decision(state: str, *, safe: bool, recall: bool, started: bool) -> None:
+        nonlocal triage_state, safe_alert, recall_alert, started_event
+        triage_state = state
+        safe_alert = bool(safe)
+        recall_alert = bool(recall)
+        started_event = bool(started)
+        _set_policy_state(
+            policy_alerts,
+            triage_state=triage_state,
+            safe_alert=safe_alert,
+            recall_alert=recall_alert,
+            started_event=started_event,
+        )
 
-    primary_uncertainty_eval = (
-        models_out.get("tcn", {}).get("uncertainty_gate_eval", {})
-        if isinstance(models_out.get("tcn"), dict)
-        else {}
-    )
+    primary_uncertainty_eval = models_out["tcn"].get("uncertainty_gate_eval", {})
     if (
         isinstance(primary_uncertainty_eval, dict)
         and bool(primary_uncertainty_eval.get("blocked_fall", False))
         and triage_state == "fall"
     ):
-        # Uncertainty downgrades after tracker evaluation without erasing model
-        # diagnostics.
-        triage_state = "uncertain"
-        safe_alert = False
-        recall_alert = False
-
-    if "safe" in policy_alerts:
-        started_event = bool(policy_alerts.get("safe", {}).get("started_event"))
-    else:
-        started_event = bool(started_tcn)
+        apply_decision("uncertain", safe=False, recall=False, started=False)
 
     if (
         isinstance(primary_uncertainty_eval, dict)
@@ -119,29 +129,17 @@ def resolve_monitor_decision(
     if (
         bool(live_guard["enable_low_motion_gate"])
         and low_motion_block
-        and (not recent_motion_support)
-        and (not low_motion_high_conf_bypass)
+        and not recent_motion_support
         and triage_state == "fall"
     ):
-        triage_state = "uncertain"
-        started_event = False
-        safe_alert = False
-        recall_alert = False
+        apply_decision("uncertain", safe=False, recall=False, started=False)
     if bool(live_guard["enable_occlusion_gate"]) and occlusion_block and triage_state == "fall":
-        triage_state = "uncertain"
-        started_event = False
-        safe_alert = False
-        recall_alert = False
+        apply_decision("uncertain", safe=False, recall=False, started=False)
     if bool(live_guard["enable_structural_gate"]) and structural_quality_block and triage_state == "fall":
-        triage_state = "uncertain"
-        started_event = False
-        safe_alert = False
-        recall_alert = False
+        apply_decision("uncertain", safe=False, recall=False, started=False)
 
     low_fps_need = int(live_guard["low_fps_fall_persist_n"])
     if bool(live_guard["enable_low_fps_persist_gate"]) and triage_state == "fall" and low_fps_mode:
-        # Low-FPS confirmation protects the persistence edge, not the model
-        # score: slow capture can compress motion enough to mimic an impact.
         safe_gate_ok = bool(safe_alert)
         motion_gate_ok = not low_motion_block
         structure_gate_ok = not structural_quality_block
@@ -151,162 +149,19 @@ def resolve_monitor_decision(
             st[low_fps_gate_key] = low_fps_confirm_count
             if low_fps_confirm_count < low_fps_need:
                 low_fps_gate_reason = "need_more_consecutive_fall_windows"
-                triage_state = "uncertain"
-                started_event = False
-                safe_alert = False
-                recall_alert = False
+                apply_decision("uncertain", safe=False, recall=False, started=False)
         else:
             low_fps_confirm_count = 0
             st[low_fps_gate_key] = 0
             low_fps_gate_reason = "failed_low_fps_strict_gate"
-            triage_state = "uncertain"
-            started_event = False
-            safe_alert = False
-            recall_alert = False
+            apply_decision("uncertain", safe=False, recall=False, started=False)
     else:
         st[low_fps_gate_key] = 0
         low_fps_confirm_count = 0
 
-    delivery_gate_diag: Dict[str, Any] = {
-        "enabled": bool(delivery_gate.get("enabled", False)),
-        "blocked": False,
-        "reason": None,
-        "start_lying": None,
-        "max_lying": None,
-        "mean_motion_high": None,
-        "event_start_s": None,
-    }
-    if bool(delivery_gate.get("enabled", False)):
-        gate_state_key = f"delivery_gate:{primary_spec_key}:{norm_op_code(op_code)}"
-        if triage_state == "fall":
-            gate_state = st.setdefault(gate_state_key, {})
-            if started_event or not bool(gate_state.get("active", False)):
-                # Preserve the first lying score separately from the running max;
-                # bedroom false positives often start already horizontal, while
-                # real falls may become horizontal only after impact.
-                gate_state.clear()
-                gate_state["active"] = True
-                gate_state["event_start_t_s"] = float(current_t_s)
-                gate_state["start_lying"] = (
-                    float(lying_score) if lying_score is not None and math.isfinite(float(lying_score)) else float("-inf")
-                )
-                gate_state["max_lying"] = (
-                    float(lying_score) if lying_score is not None and math.isfinite(float(lying_score)) else float("-inf")
-                )
-                gate_state["motion_high_sum"] = 0.0
-                gate_state["motion_high_count"] = 0
-            if lying_score is not None and math.isfinite(float(lying_score)):
-                gate_state["max_lying"] = max(float(gate_state.get("max_lying", float("-inf"))), float(lying_score))
-            tau_high_live = float(models_out.get("tcn", {}).get("triage", {}).get("tau_high", 1.0))
-            if (
-                confirm_motion_score is not None
-                and math.isfinite(float(confirm_motion_score))
-                and float(models_out.get("tcn", {}).get("p_alert_in", 0.0)) >= tau_high_live
-            ):
-                # Motion confirmation is tied to high-probability windows; using
-                # every window would let quiet pre/post-roll dilute the impact.
-                gate_state["motion_high_sum"] = float(gate_state.get("motion_high_sum", 0.0)) + float(confirm_motion_score)
-                gate_state["motion_high_count"] = int(gate_state.get("motion_high_count", 0)) + 1
-
-            mean_motion_high = None
-            if int(gate_state.get("motion_high_count", 0)) > 0:
-                mean_motion_high = float(gate_state["motion_high_sum"]) / float(gate_state["motion_high_count"])
-            event_start_s = float(gate_state.get("event_start_t_s", current_t_s)) - float(st.get("session_start_t_s", current_t_s))
-            max_lying_seen = gate_state.get("max_lying")
-            start_lying_seen = gate_state.get("start_lying")
-            if isinstance(start_lying_seen, (int, float)) and math.isfinite(float(start_lying_seen)):
-                delivery_gate_diag["start_lying"] = float(start_lying_seen)
-            if isinstance(max_lying_seen, (int, float)) and math.isfinite(float(max_lying_seen)):
-                delivery_gate_diag["max_lying"] = float(max_lying_seen)
-            delivery_gate_diag["mean_motion_high"] = mean_motion_high
-            delivery_gate_diag["event_start_s"] = float(event_start_s)
-
-            gate_reason = None
-            if (
-                delivery_gate.get("max_start_lying") is not None
-                and delivery_gate_diag["start_lying"] is not None
-                and delivery_gate_diag["start_lying"] > float(delivery_gate["max_start_lying"])
-            ):
-                gate_reason = "start_lying"
-            elif (
-                delivery_gate.get("max_lying") is not None
-                and delivery_gate_diag["max_lying"] is not None
-                and delivery_gate_diag["max_lying"] > float(delivery_gate["max_lying"])
-            ):
-                gate_reason = "max_lying"
-            elif (
-                delivery_gate.get("min_mean_motion_high") is not None
-                and mean_motion_high is not None
-                and mean_motion_high < float(delivery_gate["min_mean_motion_high"])
-            ):
-                gate_reason = "mean_motion_high"
-            elif (
-                delivery_gate.get("max_event_start_s") is not None
-                and event_start_s > float(delivery_gate["max_event_start_s"])
-            ):
-                gate_reason = "event_start_s"
-
-            if gate_reason is not None:
-                # Delivery gating downgrades after model/tracker consensus so the
-                # response still exposes the underlying fall evidence for review.
-                triage_state = "uncertain"
-                started_event = False
-                safe_alert = False
-                recall_alert = False
-                delivery_gate_diag["blocked"] = True
-                delivery_gate_diag["reason"] = gate_reason
-        else:
-            # Once the fall-like episode clears, drop any accumulated delivery-gate state.
-            st.pop(gate_state_key, None)
-
-    uncertain_promoted = False
-    if (
-        triage_state == "uncertain"
-        and bool(uncertain_promote.get("enabled", False))
-        and (not bool(uncertain_promote.get("video_only", True)) or is_replay)
-    ):
-        # Promotion is late and usually replay-only because it reverses earlier
-        # conservative gates; live alerts should not become fall unless delivery
-        # evidence is already strong before this point.
-        p_alert_live = float(models_out.get("tcn", {}).get("p_alert_in", 0.0) or 0.0)
-        p_ok = (
-            uncertain_promote.get("min_p_alert") is None
-            or p_alert_live >= float(uncertain_promote["min_p_alert"])
-        )
-        motion_ok = (
-            uncertain_promote.get("min_motion") is None
-            or (
-                confirm_motion_score is not None
-                and math.isfinite(float(confirm_motion_score))
-                and float(confirm_motion_score) >= float(uncertain_promote["min_motion"])
-            )
-        )
-        lying_ok = (
-            uncertain_promote.get("max_lying") is None
-            or (
-                lying_score is not None
-                and math.isfinite(float(lying_score))
-                and float(lying_score) <= float(uncertain_promote["max_lying"])
-            )
-        )
-        if p_ok and motion_ok and lying_ok:
-            triage_state = "fall"
-            safe_alert = True
-            recall_alert = True
-            uncertain_promoted = True
-
-    safe_state_out = policy_alerts.get("safe", {}).get("state")
-    recall_state_out = policy_alerts.get("recall", {}).get("state")
-    if not safe_state_out:
-        if triage_state == "uncertain":
-            safe_state_out = "uncertain"
-        else:
-            safe_state_out = "fall" if bool(safe_alert) else "not_fall"
-    if not recall_state_out:
-        if triage_state == "uncertain":
-            recall_state_out = "uncertain"
-        else:
-            recall_state_out = "fall" if bool(recall_alert) else "not_fall"
+    primary_model, _, tau_high_live, score_input = _primary_model_context(models_out, p_display)
+    p_display = float(score_input)
+    _attach_policy_scores(primary_model=primary_model, policy_score=score_input)
 
     return MonitorDecisionResult(
         triage_state=str(triage_state),
@@ -317,8 +172,6 @@ def resolve_monitor_decision(
         low_fps_confirm_count=int(low_fps_confirm_count),
         low_fps_need=int(low_fps_need),
         low_fps_gate_reason=low_fps_gate_reason,
-        delivery_gate_diag=delivery_gate_diag,
-        uncertain_promoted=bool(uncertain_promoted),
-        safe_state_out=str(safe_state_out),
-        recall_state_out=str(recall_state_out),
+        safe_state_out=str(policy_alerts["safe"]["state"]),
+        recall_state_out=str(policy_alerts["recall"]["state"]),
     )

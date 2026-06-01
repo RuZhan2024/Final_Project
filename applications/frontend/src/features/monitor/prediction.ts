@@ -169,13 +169,11 @@ export function resolveStableTriage(
 
 export function extractPredictionState({
   data,
-  mode,
   previousStable,
   settingsPayload,
   smoothTriage,
 }: {
   data: Record<string, any>;
-  mode: string;
   previousStable: { fall?: number; uncertain?: number; safe?: number; last?: string };
   settingsPayload: SettingsResponse | null;
   smoothTriage?: boolean;
@@ -183,50 +181,35 @@ export function extractPredictionState({
   /**
    * Parse a backend prediction response into frontend monitor state.
    *
-   * Resolution order prefers current policy-alert fields, then older top-level
-   * fields, so the monitor UI stays compatible with both current and legacy API
-   * responses.
+   * The backend owns final triage and delivery gating; the frontend only
+   * smooths the visible state and renders the supplied policy score.
    */
-  const safeObj = data?.policy_alerts?.safe;
-  const recallObj = data?.policy_alerts?.recall;
-  const triRaw =
-    data?.triage_state != null || data?.triageState != null
-      ? String(data?.triage_state ?? data?.triageState).toLowerCase()
-      : "";
-  const safeStateRaw = String(data?.safe_state || safeObj?.state || "").toLowerCase();
-  const safeAlert =
-    typeof data?.safe_alert === "boolean"
-      ? data.safe_alert
-      : typeof safeObj?.alert === "boolean"
-        ? safeObj.alert
-        : null;
-  const recallAlert =
-    typeof data?.recall_alert === "boolean"
-      ? data.recall_alert
-      : typeof recallObj?.alert === "boolean"
-        ? recallObj.alert
-        : null;
-  const safeState = (data?.safe_state || safeObj?.state || null) ?? null;
-  const recallState = (data?.recall_state || recallObj?.state || null) ?? null;
+  const triRaw = data?.triage_state != null ? String(data.triage_state).toLowerCase() : "";
+  const safeAlert = typeof data?.safe_alert === "boolean" ? data.safe_alert : null;
+  const recallAlert = typeof data?.recall_alert === "boolean" ? data.recall_alert : null;
+  const safeState = data?.safe_state ?? null;
+  const recallState = data?.recall_state ?? null;
 
-  let triageCandidate = triRaw || safeStateRaw || "not_fall";
+  let triageCandidate = triRaw || "not_fall";
   if (triageCandidate !== "fall" && triageCandidate !== "uncertain") triageCandidate = "not_fall";
   const { stable, triageState } = resolveStableTriage(previousStable, triageCandidate, safeAlert, {
     smooth: smoothTriage,
   });
 
-  const modelOutput = data?.models?.tcn || data?.models?.[mode];
-  const pFall = modelOutput
-    ? modelOutput?.triage?.ps != null
-      ? Number(modelOutput.triage.ps)
-      : modelOutput?.p_alert_in != null
-        ? Number(modelOutput.p_alert_in)
-        : modelOutput?.mu != null
-          ? Number(modelOutput.mu)
-          : modelOutput?.p_det != null
-            ? Number(modelOutput.p_det)
-            : null
-    : null;
+  const modelOutput = data?.models?.tcn;
+  const scoreValue =
+    modelOutput?.policy_score != null
+      ? Number(modelOutput.policy_score)
+      : modelOutput?.triage?.ps != null
+        ? Number(modelOutput.triage.ps)
+        : modelOutput?.p_alert_in != null
+          ? Number(modelOutput.p_alert_in)
+          : modelOutput?.mu != null
+            ? Number(modelOutput.mu)
+            : modelOutput?.p_det != null
+              ? Number(modelOutput.p_det)
+              : null;
+  const displayPFall = scoreValue != null && Number.isFinite(scoreValue) ? clamp01(scoreValue) : null;
   const sigma = modelOutput?.sigma != null ? Number(modelOutput.sigma) : null;
 
   let markerKind: "safe" | "fall" | "uncertain" = "safe";
@@ -247,7 +230,7 @@ export function extractPredictionState({
     recallState,
     stable,
     triageState,
-    pFall,
+    pFall: displayPFall,
     sigma,
     markerKind,
     dedupMs,

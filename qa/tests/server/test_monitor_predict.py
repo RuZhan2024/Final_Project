@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from applications.backend.main import app
 from applications.backend.routes import monitor as monitor_route
+from applications.backend.services.monitor_decision_service import resolve_monitor_decision
 
 
 class _DummyTracker:
@@ -549,3 +550,128 @@ def test_resample_pose_window_fallback_preserves_original_indices():
     assert len(conf_out) == 3
     assert math.isclose(float(xy_out[2][0][0]), 0.5, rel_tol=1e-6, abs_tol=1e-6)
     assert math.isclose(float(conf_out[2][0]), 0.5, rel_tol=1e-6, abs_tol=1e-6)
+
+
+def test_monitor_decision_preserves_op2_fall_state():
+    models_out = {
+        "tcn": {
+            "p_alert_in": 0.95,
+            "mu": 0.95,
+            "triage": {"ps": 0.95, "tau_high": 0.41},
+        }
+    }
+    policy_alerts = {
+        "safe": {"state": "fall", "alert": True, "started_event": True},
+        "recall": {"state": "fall", "alert": True, "started_event": True},
+    }
+
+    result = resolve_monitor_decision(
+        models_out=models_out,
+        tri_tcn="fall",
+        policy_alerts=policy_alerts,
+        dataset_code="caucafall",
+        st={},
+        live_guard={
+            "enable_low_motion_gate": False,
+            "enable_occlusion_gate": False,
+            "enable_structural_gate": False,
+            "enable_low_fps_persist_gate": False,
+            "low_fps_fall_persist_n": 3,
+        },
+        low_motion_block=False,
+        recent_motion_support=False,
+        structural_quality_block=False,
+        occlusion_block=False,
+        started_tcn=True,
+        low_fps_mode=False,
+    )
+
+    assert result.triage_state == "fall"
+    assert result.safe_alert is True
+    assert result.recall_alert is True
+    assert math.isclose(result.p_display, 0.95, rel_tol=1e-6, abs_tol=1e-6)
+    assert models_out["tcn"]["policy_score"] == 0.95
+    assert policy_alerts["safe"]["state"] == "fall"
+
+
+def test_monitor_decision_keeps_uncertain_without_motion_promotion():
+    models_out = {
+        "tcn": {
+            "p_alert_in": 0.95,
+            "mu": 0.95,
+            "triage": {"ps": 0.46, "tau_high": 0.41},
+        }
+    }
+    policy_alerts = {
+        "safe": {"state": "uncertain", "alert": False, "started_event": False},
+        "recall": {"state": "uncertain", "alert": False, "started_event": False},
+    }
+
+    result = resolve_monitor_decision(
+        models_out=models_out,
+        tri_tcn="uncertain",
+        policy_alerts=policy_alerts,
+        dataset_code="caucafall",
+        st={},
+        live_guard={
+            "enable_low_motion_gate": False,
+            "enable_occlusion_gate": False,
+            "enable_structural_gate": False,
+            "enable_low_fps_persist_gate": False,
+            "low_fps_fall_persist_n": 3,
+        },
+        low_motion_block=False,
+        recent_motion_support=False,
+        structural_quality_block=False,
+        occlusion_block=False,
+        started_tcn=False,
+        low_fps_mode=False,
+    )
+
+    assert result.triage_state == "uncertain"
+    assert result.safe_alert is False
+    assert result.recall_alert is False
+    assert math.isclose(result.p_display, 0.46, rel_tol=1e-6, abs_tol=1e-6)
+    assert models_out["tcn"]["policy_score"] == 0.46
+    assert policy_alerts["safe"]["state"] == "uncertain"
+
+
+def test_live_low_motion_guard_can_still_degrade_fall_to_uncertain():
+    models_out = {
+        "tcn": {
+            "p_alert_in": 0.95,
+            "mu": 0.95,
+            "triage": {"ps": 0.95, "tau_high": 0.41},
+        }
+    }
+    policy_alerts = {
+        "safe": {"state": "fall", "alert": True, "started_event": True},
+        "recall": {"state": "fall", "alert": True, "started_event": True},
+    }
+
+    result = resolve_monitor_decision(
+        models_out=models_out,
+        tri_tcn="fall",
+        policy_alerts=policy_alerts,
+        dataset_code="caucafall",
+        st={},
+        live_guard={
+            "enable_low_motion_gate": True,
+            "enable_occlusion_gate": False,
+            "enable_structural_gate": False,
+            "enable_low_fps_persist_gate": False,
+            "low_fps_fall_persist_n": 3,
+        },
+        low_motion_block=True,
+        recent_motion_support=False,
+        structural_quality_block=False,
+        occlusion_block=False,
+        started_tcn=True,
+        low_fps_mode=False,
+    )
+
+    assert result.triage_state == "uncertain"
+    assert result.safe_alert is False
+    assert result.recall_alert is False
+    assert math.isclose(result.p_display, 0.95, rel_tol=1e-6, abs_tol=1e-6)
+    assert policy_alerts["safe"]["state"] == "uncertain"

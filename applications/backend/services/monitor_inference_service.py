@@ -25,7 +25,6 @@ class MonitorInferenceResult:
     models_out: Dict[str, Any]
     tri_tcn: Optional[str]
     policy_alerts: Dict[str, Any]
-    low_motion_high_conf_bypass: bool
     started_tcn: bool
     infer_tcn_ms: Optional[int]
 
@@ -41,10 +40,7 @@ def run_monitor_inference(
     effective_mc_M: int,
     tcn_key: str,
     dataset_code: str,
-    lying_score: Optional[float],
-    confirm_motion_score: Optional[float],
     live_guard: Dict[str, Any],
-    st: Dict[str, Any],
     st_trackers: Dict[str, Any],
     st_trackers_cfg: Dict[str, Any],
     current_t_s: float,
@@ -54,7 +50,6 @@ def run_monitor_inference(
     predict_spec,
     apply_uncertainty_fall_gate,
     tracker_cls,
-    low_motion_high_conf_bypass_fn,
 ) -> MonitorInferenceResult:
     """Run the monitor TCN model and update tracker state.
 
@@ -68,7 +63,6 @@ def run_monitor_inference(
     models_out: Dict[str, Any] = {}
     tri_tcn = None
     policy_alerts: Dict[str, Any] = {}
-    low_motion_high_conf_bypass = False
     started_tcn = False
     infer_tcn_ms: Optional[int] = None
     # Keep the original model output intact and feed only the alert input
@@ -92,26 +86,11 @@ def run_monitor_inference(
     p_raw_tcn = float(out_tcn.get("mu") if out_tcn.get("mu") is not None else out_tcn.get("p_det", 0.0))
     sigma_tcn = float(out_tcn.get("sigma", 0.0) or 0.0)
     uncertainty_gate_tcn = out_tcn.get("uncertainty_gate") if isinstance(out_tcn.get("uncertainty_gate"), dict) else {}
-    # A bypass requires both a policy opt-in and repeated high-confidence
-    # evidence; this prevents one static high score from defeating the
-    # low-motion false-positive guard.
-    low_motion_high_conf_bypass = low_motion_high_conf_bypass_fn(
-        st,
-        dataset_code=dataset_code,
-        mode="tcn",
-        p_raw=p_raw_tcn,
-        tau_high=tau_high_tcn,
-        lying_score=lying_score,
-        enabled=bool(live_guard.get("allow_low_motion_high_conf_bypass", False)),
-        min_hits=int(live_guard.get("low_motion_high_conf_k", 0)),
-        max_lying=live_guard.get("low_motion_high_conf_max_lying"),
-    )
     if (
         (
             bool(live_guard["enable_low_motion_gate"])
             and low_motion_block
             and not recent_motion_support
-            and not low_motion_high_conf_bypass
         )
         or (bool(live_guard["enable_structural_gate"]) and structural_quality_block)
     ):
@@ -130,8 +109,6 @@ def run_monitor_inference(
     )
     out_tcn["uncertainty_gate_eval"] = uncertainty_eval_tcn
     out_tcn["p_alert_in"] = float(p_alert_tcn)
-    out_tcn["lying_score"] = None if lying_score is None else float(lying_score)
-    out_tcn["confirm_motion_score"] = None if confirm_motion_score is None else float(confirm_motion_score)
     trk = st_trackers.get(tcn_key)
     if trk is None or st_trackers_cfg.get(tcn_key) != cfg_tcn:
         # Tracker state is valid only for the alert config that created it;
@@ -183,7 +160,6 @@ def run_monitor_inference(
         models_out=models_out,
         tri_tcn=tri_tcn,
         policy_alerts=policy_alerts,
-        low_motion_high_conf_bypass=low_motion_high_conf_bypass,
         started_tcn=started_tcn,
         infer_tcn_ms=infer_tcn_ms,
     )
