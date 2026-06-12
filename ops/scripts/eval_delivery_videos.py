@@ -84,6 +84,21 @@ def _build_alert_cfg(ops_obj: dict[str, Any], op_code: str) -> AlertCfg:
     )
 
 
+def _temperature_from_ops(ops_obj: dict[str, Any], ops_path: Path) -> float:
+    calibration = ops_obj.get("calibration") if isinstance(ops_obj, dict) else None
+    if not isinstance(calibration, dict):
+        raise SystemExit(f"[err] ops_yaml is missing calibration: {ops_path}")
+    if str(calibration.get("method", "")).strip().lower() != "temperature":
+        raise SystemExit(f"[err] ops_yaml must use temperature calibration: {ops_path}")
+    try:
+        temperature = float(calibration["T"])
+    except (KeyError, TypeError, ValueError):
+        raise SystemExit(f"[err] ops_yaml has invalid calibration.T: {ops_path}") from None
+    if not np.isfinite(temperature) or temperature <= 0.0:
+        raise SystemExit(f"[err] ops_yaml has non-positive calibration.T: {ops_path}")
+    return temperature
+
+
 def main() -> None:
     """Run delivery-style replay evaluation and write per-video artifacts.
 
@@ -135,6 +150,7 @@ def main() -> None:
     ops_obj = yaml.safe_load(ops_path.read_text(encoding="utf-8"))
     op_code = str(cfg_obj.get("op_code", args.op_code))
     alert_cfg = _build_alert_cfg(ops_obj, op_code)
+    temperature = _temperature_from_ops(ops_obj, ops_path)
 
     alert_override = dict(cfg_obj.get("alert_override", {}) or {})
     delivery_gate = dict(cfg_obj.get("delivery_gate", {}) or {})
@@ -222,15 +238,15 @@ def main() -> None:
                 if arch == "tcn":
                     x = build_tcn_input(X, feat_cfg_obj)
                     xb = torch.from_numpy(x).to(torch.float32).unsqueeze(0).to(device)
-                    p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
+                    p = float(p_fall_from_logits(model(xb) / float(temperature)).detach().cpu().numpy().reshape(-1)[0])
                 elif arch == "ctr_gcn" and bool(model_cfg.get("two_stream", False)):
                     xj, xm = split_ctr_gcn_two_stream(X, feat_cfg_obj, stream_mode="joint_bone")
                     xjb = torch.from_numpy(xj).to(torch.float32).unsqueeze(0).to(device)
                     xmb = torch.from_numpy(xm).to(torch.float32).unsqueeze(0).to(device)
-                    p = float(p_fall_from_logits(model(xjb, xmb)).detach().cpu().numpy().reshape(-1)[0])
+                    p = float(p_fall_from_logits(model(xjb, xmb) / float(temperature)).detach().cpu().numpy().reshape(-1)[0])
                 elif arch == "ctr_gcn":
                     xb = torch.from_numpy(X).to(torch.float32).unsqueeze(0).to(device)
-                    p = float(p_fall_from_logits(model(xb)).detach().cpu().numpy().reshape(-1)[0])
+                    p = float(p_fall_from_logits(model(xb) / float(temperature)).detach().cpu().numpy().reshape(-1)[0])
                 else:
                     raise ValueError(f"Unknown arch: {arch}")
                 probs.append(p)
@@ -303,6 +319,7 @@ def main() -> None:
         },
         "config_yaml": args.config_yaml,
         "ops_yaml": str(ops_path),
+        "calibration": {"method": "temperature", "T": float(temperature)},
         "op_code": op_code,
         "checkpoint": str(ckpt),
     }

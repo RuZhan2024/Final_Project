@@ -13,6 +13,7 @@ For deployment behaviour, we treat **ops/deploy_assets/manifest.json** as the
 source of truth (not DB rows, broad directory scans, or heuristics). Manifest
 profiles point to the small runtime-approved YAML set containing:
 - feat_cfg (how windows were built during training/eval)
+- calibration (the fitted probability scale used by the operating points)
 - alert_cfg (EMA smoothing, k-of-n persistence, cooldown, etc.)
 - ops (OP-1/OP-2/OP-3 thresholds)
 
@@ -47,6 +48,7 @@ class DeploySpec:
     feat_cfg: Dict[str, Any]      # from ops/configs/ops/*.yaml
     model_cfg: Dict[str, Any]     # from reports/ckpt (fallback)
     data_cfg: Dict[str, Any]      # from reports/ckpt (fallback)
+    temperature: float             # scalar T from calibration.T
     alert_cfg: Dict[str, Any]     # from ops/configs/ops/*.yaml
     ops: Dict[str, Dict[str, Any]]  # OP-1/2/3 -> op dict (includes tau_low/high)
     ops_path: str = ""            # where this spec came from
@@ -55,11 +57,26 @@ class DeploySpec:
 def _safe_float(x: Any, default: float) -> float:
     try:
         v = float(x)
-        if v != v:  # NaN
+        if not np.isfinite(v):
             return default
         return v
     except (TypeError, ValueError):
         return default
+
+
+def _read_temperature(data: Dict[str, Any], source: Path) -> float:
+    calibration = data.get("calibration")
+    if not isinstance(calibration, dict):
+        raise ValueError(f"Runtime profile {source} is missing calibration.")
+    if str(calibration.get("method", "")).strip().lower() != "temperature":
+        raise ValueError(f"Runtime profile {source} must use temperature calibration.")
+    try:
+        t = float(calibration["T"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"Runtime profile {source} has an invalid calibration.T.") from None
+    if not np.isfinite(t) or t <= 0.0:
+        raise ValueError(f"Runtime profile {source} has a non-positive calibration.T.")
+    return t
 
 
 def _repo_root() -> Path:
@@ -193,6 +210,7 @@ def _build_spec_from_ops_yaml(
     feat_cfg = data.get("feat_cfg") or model_block.get("feat_cfg") or {}
     alert_cfg = data.get("alert_cfg") or {}
     ops = _standardise_ops(data.get("ops") or {})
+    temperature = _read_temperature(data, p)
 
     return DeploySpec(
         key=spec_key,
@@ -202,6 +220,7 @@ def _build_spec_from_ops_yaml(
         feat_cfg=feat_cfg if isinstance(feat_cfg, dict) else {},
         model_cfg={},
         data_cfg={},
+        temperature=float(temperature),
         alert_cfg=alert_cfg if isinstance(alert_cfg, dict) else {},
         ops=ops,
         ops_path=str(p),
@@ -642,17 +661,23 @@ def _prepare_features(
     return {"kind": "ctr_gcn_single_stream", "xb": xb}
 
 
-def _forward_prob(model: Any, prepared: Dict[str, Any]) -> Any:
+def _forward_logits(model: Any, prepared: Dict[str, Any]) -> Any:
     kind = prepared["kind"]
     if kind == "tcn":
-        logits = model(prepared["x_t"])
+        return model(prepared["x_t"])
     elif kind == "ctr_gcn_two_stream":
-        logits = model(prepared["xj_t"], prepared["xb_t"])
+        return model(prepared["xj_t"], prepared["xb_t"])
     elif kind == "ctr_gcn_single_stream":
-        logits = model(prepared["xb"])
-    else:
-        raise ValueError(f"Unknown prepared feature kind: {kind}")
-    return logits.sigmoid().view(-1)
+        return model(prepared["xb"])
+    raise ValueError(f"Unknown prepared feature kind: {kind}")
+
+
+def _prob_from_logits(logits: Any, *, temperature: float) -> Any:
+    return (logits / float(temperature)).sigmoid().view(-1)
+
+
+def _forward_prob(model: Any, prepared: Dict[str, Any], *, temperature: float) -> Any:
+    return _prob_from_logits(_forward_logits(model, prepared), temperature=float(temperature))
 
 
 def predict_spec(
@@ -698,7 +723,7 @@ def predict_spec(
 
     def forward_fn():
         with torch.inference_mode():
-            return _forward_prob(infer_model, prepared)
+            return _forward_prob(infer_model, prepared, temperature=float(spec.temperature))
 
     p_det = float(forward_fn().detach().cpu().view(-1)[0].item())
 
@@ -730,6 +755,7 @@ def predict_spec(
         "dataset": spec.dataset,
         "arch": spec.arch,
         "p_det": float(p_det),
+        "temperature": float(spec.temperature),
         "mu": float(mu),
         "sigma": float(sigma),
         "mc_applied": bool(mc_applied),

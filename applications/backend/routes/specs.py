@@ -127,6 +127,7 @@ def models_summary() -> Dict[str, Any]:
                 "name": f"{getattr(s, 'dataset', '')} {getattr(s, 'arch', '')}".strip(),
                 "fps_default": fps_default,
                 "ckpt": str(getattr(s, "ckpt", "")),
+                "temperature": float(s.temperature),
                 "ops": (s.ops or {}),
                 "alert_cfg": (getattr(s, "alert_cfg", None) or {}),
                 "tau_low": op2.get("tau_low"),
@@ -169,6 +170,7 @@ def deploy_specs() -> Dict[str, Any]:
                 "dataset_code": ds,
                 "arch": s.arch,
                 "ckpt": str(s.ckpt),
+                "temperature": float(s.temperature),
                 "ops": s.ops,
             }
         )
@@ -180,6 +182,7 @@ def deploy_specs() -> Dict[str, Any]:
                 "dataset_code": ds,
                 "arch": s.arch,
                 "ckpt": str(s.ckpt),
+                "temperature": float(s.temperature),
                 "alert_cfg": dict(getattr(s, "alert_cfg", {}) or {}),
                 "ops": s.ops,
             }

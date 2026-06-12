@@ -338,6 +338,7 @@ def test_deploy_specs_endpoint_current_shape(monkeypatch):
         dataset="caucafall",
         arch="tcn",
         ckpt="/tmp/c.pt",
+        temperature=1.107,
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.85}},
         alert_cfg={"k": 2},
     )
@@ -349,3 +350,4 @@ def test_deploy_specs_endpoint_current_shape(monkeypatch):
     body = resp.json()
     assert body["datasets"] == ["caucafall"]
     assert body["specs"][0]["spec_key"] == "caucafall_tcn"
+    assert body["specs"][0]["temperature"] == 1.107

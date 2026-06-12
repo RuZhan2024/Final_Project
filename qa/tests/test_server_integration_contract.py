@@ -44,9 +44,12 @@ def test_discover_from_ops_yaml_supports_nested_model_schema_and_relative_ckpt(t
                 "    tau_high: 0.6",
                 "alert_cfg:",
                 "  ema_alpha: 0.2",
+                "calibration:",
+                "  method: \"temperature\"",
+                "  T: 1.107",
                 "model:",
                 "  arch: \"tcn\"",
-                    "  ckpt: \"../../../outputs/caucafall_tcn/best.pt\"",
+                "  ckpt: \"../../../outputs/caucafall_tcn/best.pt\"",
                 "  feat_cfg:",
                 "    center: \"pelvis\"",
             ]
@@ -61,6 +64,7 @@ def test_discover_from_ops_yaml_supports_nested_model_schema_and_relative_ckpt(t
     assert spec.dataset == "caucafall"
     assert spec.ckpt == str(ckpt.resolve())
     assert spec.feat_cfg.get("center") == "pelvis"
+    assert spec.temperature == 1.107
 
 
 def test_monitor_mode_specific_missing_spec_errors(monkeypatch) -> None:

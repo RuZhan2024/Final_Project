@@ -72,6 +72,13 @@ class _FakeTensor:
             return float(np.asarray(self.value).reshape(-1)[0])
         return float(self.value)
 
+    def __truediv__(self, other):
+        return _FakeTensor(np.asarray(self.value, dtype=np.float32) / float(other))
+
+    def sigmoid(self):
+        x = np.asarray(self.value, dtype=np.float32)
+        return _FakeTensor(1.0 / (1.0 + np.exp(-x)))
+
     def to(self, **_kwargs):
         return self
 
@@ -146,6 +153,7 @@ def test_deploy_runtime_discover_from_ops_yaml(tmp_path: Path):
     yml = {
         "arch": "tcn",
         "ckpt": "outputs/caucafall_tcn/best.pt",
+        "calibration": {"method": "temperature", "T": 1.25},
         "feat_cfg": {"use_motion": True},
         "alert_cfg": {"k": 2, "n": 3},
         "ops": {
@@ -160,6 +168,7 @@ def test_deploy_runtime_discover_from_ops_yaml(tmp_path: Path):
     specs = dr._discover_from_ops_yaml(root, (yml_path,))
     assert "caucafall_tcn" in specs
     assert specs["caucafall_tcn"].ops["OP-2"]["tau_high"] == 0.8
+    assert specs["caucafall_tcn"].temperature == 1.25
 
 
 def test_deploy_runtime_discovers_ctr_gcn_ops_yaml(tmp_path: Path):
@@ -176,6 +185,7 @@ def test_deploy_runtime_discovers_ctr_gcn_ops_yaml(tmp_path: Path):
             "feat_cfg": {"use_motion": True, "use_bone": True},
             "model_cfg": {"num_joints": 33, "in_feats": 8},
         },
+        "calibration": {"method": "temperature", "T": 1.5},
         "ops": {"OP2": {"tau_low": 0.3, "tau_high": 0.4}},
     }
     yml_path = root / "ops" / "configs" / "ops" / "ctr_gcn_caucafall.yaml"
@@ -190,6 +200,7 @@ def test_deploy_runtime_discovers_ctr_gcn_ops_yaml(tmp_path: Path):
     assert spec.dataset == "caucafall"
     assert spec.ckpt == str(ckpt.resolve())
     assert spec.ops["OP-2"]["tau_high"] == 0.4
+    assert spec.temperature == 1.5
 
 
 def test_deploy_runtime_alert_cfg():
@@ -201,6 +212,7 @@ def test_deploy_runtime_alert_cfg():
         feat_cfg={},
         model_cfg={},
         data_cfg={},
+        temperature=1.0,
         alert_cfg={"tau_low": 0.4, "tau_high": 0.9},
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.8}},
     )
@@ -224,6 +236,7 @@ def test_get_pose_preprocess_cfg_prefers_checkpoint_over_spec(monkeypatch):
         feat_cfg={},
         model_cfg={},
         data_cfg={"pose_preprocess": {"smooth_k": 3, "normalize": "none"}},
+        temperature=1.0,
         alert_cfg={},
         ops={},
     )
@@ -273,6 +286,7 @@ def test_predict_spec_applies_mc_when_gate_allows(monkeypatch):
         feat_cfg={},
         model_cfg={},
         data_cfg={},
+        temperature=1.0,
         alert_cfg={},
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.8}},
     )
@@ -280,7 +294,7 @@ def test_predict_spec_applies_mc_when_gate_allows(monkeypatch):
     monkeypatch.setattr(dr, "_load_model_and_cfg", lambda _spec: {"model": object(), "device": "cpu", "feat_cfg": {}, "model_cfg": {}})
     monkeypatch.setattr(dr, "_prepare_features", lambda **_kwargs: {"kind": "tcn", "x_t": _FakeTensor([0.0])})
     monkeypatch.setattr(dr, "_get_optimized_infer_model", lambda **_kwargs: object())
-    monkeypatch.setattr(dr, "_forward_prob", lambda _model, _prepared: _FakeTensor(0.55))
+    monkeypatch.setattr(dr, "_forward_prob", lambda _model, _prepared, *, temperature: _FakeTensor(0.55))
     monkeypatch.setattr(dr, "should_run_mc", lambda **_kwargs: (True, "boundary_window"))
     monkeypatch.setattr(
         dr,
@@ -319,6 +333,7 @@ def test_predict_spec_skips_mc_when_gate_blocks(monkeypatch):
         feat_cfg={},
         model_cfg={},
         data_cfg={},
+        temperature=1.0,
         alert_cfg={},
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.8}},
     )
@@ -326,7 +341,7 @@ def test_predict_spec_skips_mc_when_gate_blocks(monkeypatch):
     monkeypatch.setattr(dr, "_load_model_and_cfg", lambda _spec: {"model": object(), "device": "cpu", "feat_cfg": {}, "model_cfg": {}})
     monkeypatch.setattr(dr, "_prepare_features", lambda **_kwargs: {"kind": "tcn", "x_t": _FakeTensor([0.0])})
     monkeypatch.setattr(dr, "_get_optimized_infer_model", lambda **_kwargs: object())
-    monkeypatch.setattr(dr, "_forward_prob", lambda _model, _prepared: _FakeTensor(0.55))
+    monkeypatch.setattr(dr, "_forward_prob", lambda _model, _prepared, *, temperature: _FakeTensor(0.55))
     monkeypatch.setattr(dr, "should_run_mc", lambda **_kwargs: (False, "outside_boundary"))
     monkeypatch.setattr(
         dr,
@@ -354,6 +369,20 @@ def test_predict_spec_skips_mc_when_gate_blocks(monkeypatch):
     assert out["mc_reason"] == "outside_boundary"
 
 
+def test_forward_prob_applies_temperature_before_sigmoid():
+    class _Model:
+        def __call__(self, _x):
+            return _FakeTensor(2.0)
+
+    out = dr._forward_prob(
+        _Model(),
+        {"kind": "tcn", "x_t": _FakeTensor([0.0])},
+        temperature=2.0,
+    )
+
+    assert np.isclose(out.item(), 1.0 / (1.0 + np.exp(-1.0)), rtol=1e-6)
+
+
 def test_prepare_features_tcn_uses_runtime_builders(monkeypatch):
     seen = {"fps": None}
 
@@ -372,7 +401,7 @@ def test_prepare_features_tcn_uses_runtime_builders(monkeypatch):
     )
 
     out = dr._prepare_features(
-        spec=dr.DeploySpec("k", "caucafall", "tcn", "/tmp/x", {}, {}, {}, {}, {}),
+        spec=dr.DeploySpec("k", "caucafall", "tcn", "/tmp/x", {}, {}, {}, 1.0, {}, {}),
         model=object(),
         device="cpu",
         feat_cfg={},
@@ -403,7 +432,7 @@ def test_prepare_features_ctr_gcn_two_stream_uses_runtime_splitter(monkeypatch):
         two_stream = True
 
     out = dr._prepare_features(
-        spec=dr.DeploySpec("k", "caucafall", "ctr_gcn", "/tmp/x", {}, {}, {}, {}, {}),
+        spec=dr.DeploySpec("k", "caucafall", "ctr_gcn", "/tmp/x", {}, {}, {}, 1.0, {}, {}),
         model=_TwoStreamModel(),
         device="cpu",
         feat_cfg={},

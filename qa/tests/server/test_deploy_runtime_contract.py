@@ -12,6 +12,7 @@ def test_discover_specs_reads_promoted_runtime_assets() -> None:
         spec = specs["caucafall_tcn"]
         assert "/ops/configs/ops/" in spec.ops_path.replace("\\", "/")
         assert "/ops/deploy_assets/checkpoints/" in spec.ckpt.replace("\\", "/")
+        assert spec.temperature > 0.0
         assert spec.ops
     finally:
         dr._SPECS = old_specs

@@ -42,6 +42,7 @@ def test_models_summary_uses_specs_and_db_fallback(monkeypatch):
         dataset="muvim",
         arch="ctr_gcn",
         ckpt="/tmp/mock.pt",
+        temperature=1.25,
         data_cfg={"fps_default": 30},
         ops={"OP-2": {"tau_low": 0.2, "tau_high": 0.8}},
         alert_cfg={"k": 2},
@@ -60,6 +61,7 @@ def test_models_summary_uses_specs_and_db_fallback(monkeypatch):
     body = resp.json()
     assert len(body["models"]) == 1
     assert body["models"][0]["spec_key"] == "muvim_ctr_gcn"
+    assert body["models"][0]["temperature"] == 1.25
     assert body["db_models"] == []
 
 

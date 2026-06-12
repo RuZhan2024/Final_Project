@@ -158,6 +158,23 @@ def _load_ops_yaml(path: str) -> dict:
         return {}
 
 
+def _extract_temperature(d: dict, source: str) -> float:
+    if not source:
+        return 1.0
+    cal = d.get("calibration") if isinstance(d, dict) else None
+    if not isinstance(cal, dict):
+        raise SystemExit(f"[err] ops_yaml is missing calibration: {source}")
+    if str(cal.get("method", "")).strip().lower() != "temperature":
+        raise SystemExit(f"[err] ops_yaml must use temperature calibration: {source}")
+    try:
+        t = float(cal["T"])
+    except (KeyError, TypeError, ValueError):
+        raise SystemExit(f"[err] ops_yaml has invalid calibration.T: {source}") from None
+    if not np.isfinite(t) or t <= 0.0:
+        raise SystemExit(f"[err] ops_yaml has non-positive calibration.T: {source}")
+    return t
+
+
 def _extract_policy_and_ops(d: dict) -> tuple[dict, dict]:
     """Return (policy_dict, ops_dict) from a variety of YAML schemas.
 
@@ -276,7 +293,7 @@ def _collate(batch):
 
 
 @torch.no_grad()
-def infer_probs(model, loader, device, arch: str, two_stream: bool):
+def infer_probs(model, loader, device, arch: str, two_stream: bool, *, temperature: float = 1.0):
     """Run inference and preserve the metadata needed for alert-policy metrics."""
     probs = []
     vids, ws, we, fps = [], [], [], []
@@ -296,7 +313,7 @@ def infer_probs(model, loader, device, arch: str, two_stream: bool):
                 xb = torch.from_numpy(np.stack(Xs, axis=0)).to(device)
                 logits = logits_1d(model(xb))
 
-        p = torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
+        p = torch.sigmoid(logits / float(temperature)).detach().cpu().numpy().reshape(-1)
         probs.append(p)
 
         for m in metas:
@@ -682,7 +699,18 @@ def main() -> None:
     ds = LabeledWindows(args.win_dir, feat_cfg=feat_cfg, fps_default=fps_default, arch=arch, two_stream=two_stream)
     loader = DataLoader(ds, batch_size=int(args.batch), shuffle=False, num_workers=0, collate_fn=_collate)
 
-    probs, vids_arr, ws_arr, we_arr, fps_arr, y_true, ls_arr, ms_arr = infer_probs(model, loader, device, arch, two_stream)
+    ops_path = str(args.ops_yaml) if args.ops_yaml else ""
+    ops_blob = _load_ops_yaml(ops_path)
+    temperature = _extract_temperature(ops_blob, ops_path)
+
+    probs, vids_arr, ws_arr, we_arr, fps_arr, y_true, ls_arr, ms_arr = infer_probs(
+        model,
+        loader,
+        device,
+        arch,
+        two_stream,
+        temperature=temperature,
+    )
 
     # Start from CLI defaults...
     base_alert_cfg = AlertCfg(
@@ -701,7 +729,6 @@ def main() -> None:
         start_guard_prefixes=([x.strip() for x in str(args.start_guard_prefixes).split(",") if x.strip()] or None),
     )
 
-    ops_blob = _load_ops_yaml(str(args.ops_yaml) if args.ops_yaml else "")
     policy_d, ops_d = _extract_policy_and_ops(ops_blob)
 
     # If ops_yaml includes a policy section, override base cfg (keep CLI as fallback).
@@ -890,6 +917,7 @@ def main() -> None:
         "arch": arch,
         "ckpt": args.ckpt,
         "win_dir": args.win_dir,
+        "calibration": {"method": "temperature", "T": float(temperature)},
         "selected": {"name": str(sel_name), "tau_high": float(alert_cfg.tau_high), "tau_low": float(alert_cfg.tau_low)},
         "alert_cfg": alert_cfg.to_dict(),
         "event_cfg": {
