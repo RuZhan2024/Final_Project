@@ -30,6 +30,15 @@ data/
 /tmp/fall_detection_backend.log
 apps/build/
 applications/frontend/build/
+
+# Clean rebuild generated files
+applications/web/node_modules/
+applications/web/.next/
+applications/web/tsconfig.tsbuildinfo
+applications/web/AGENTS.md
+applications/web/CLAUDE.md
+*.egg-info/
+
 artifacts/archive/
 artifacts/logs/
 artifacts/fall_test_eval_20260506*/
